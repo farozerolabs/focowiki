@@ -201,6 +201,44 @@ describe("folder upload session client", () => {
     }));
   });
 
+  it("retries a transient entry-body transfer without cancelling the batch", async () => {
+    vi.mocked(sealUploadManifest).mockResolvedValue({
+      session: uploadSession("manifest_sealed", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      sample: [],
+      nextCursor: null
+    });
+    vi.mocked(getUploadSession).mockResolvedValue({
+      session: uploadSession("uploading", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      entries: {
+        items: [uploadEntry("upload-entry-retry", "handbook/retry.md")],
+        nextCursor: null
+      }
+    });
+    let attempts = 0;
+    vi.mocked(uploadSessionContent).mockImplementation(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? { messageKey: "errors.uploadFailed" }
+        : { entry: uploadEntry("upload-entry-retry", "handbook/retry.md", "uploaded") };
+    });
+
+    const result = await runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Retry", "handbook/retry.md")],
+      onProgress: vi.fn()
+    });
+
+    expect(result.ok).toBe(true);
+    expect(uploadSessionContent).toHaveBeenCalledTimes(2);
+    expect(cancelUploadSession).not.toHaveBeenCalled();
+  });
+
   it("cancels a session when classification rejects a deleting path", async () => {
     vi.mocked(sealUploadManifest).mockResolvedValue({
       session: uploadSession("manifest_sealed", {
@@ -267,6 +305,7 @@ describe("folder upload session client", () => {
       knowledgeBaseId: "kb-docs",
       sessionId: "upload-session-test"
     });
+    expect(uploadSessionContent).toHaveBeenCalledTimes(3);
   });
 
   it("cancels a created session after an unexpected client exception", async () => {

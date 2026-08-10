@@ -53,7 +53,7 @@ describe("Meilisearch key bootstrap", () => {
         "tasks.get",
         "settings.*"
       ],
-      indexes: ["focowiki_prod_*"],
+      indexes: ["focowiki_prod_*", "focowiki_prod-semantic-*"],
       expiresAt: null
     });
     expect(posts[0]?.body).not.toHaveProperty("fileName");
@@ -95,7 +95,9 @@ describe("Meilisearch key bootstrap", () => {
               "tasks.get",
               "settings.*"
             ],
-        indexes: isMetrics ? ["*"] : ["focowiki_*"],
+        indexes: isMetrics
+          ? ["*"]
+          : ["focowiki_*", "focowiki-semantic-*"],
         expiresAt: null
       });
     }) as typeof globalThis.fetch;

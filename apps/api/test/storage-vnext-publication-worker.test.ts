@@ -144,6 +144,138 @@ describe("storage vNext publication worker", () => {
     expect(fixture.workflow.complete).not.toHaveBeenCalled();
   });
 
+  it("waits for mutation semantic stages before publishing the search candidate", async () => {
+    const fixture = createFixture();
+    fixture.work.kind = "mutation";
+    fixture.work.checkpoint = {
+      version: 1,
+      kind: "source_replace",
+      targetKind: "source_file",
+      targetPublicId: "source-mutation",
+      expectedResourceRevision: 3
+    };
+    const mutations = {
+      prepare: vi.fn(async () => ({
+        checkpoint: {
+          ...fixture.work.checkpoint,
+          phase: "planning",
+          candidatePublicId: fixture.candidate.publicId,
+          semanticState: "ready"
+        }
+      })),
+      ensureSemanticStages: vi.fn(async () => undefined),
+      inspectSemanticStages: vi.fn(async () => ({ state: "pending" as const }))
+    };
+    const worker = createWorker(fixture, undefined, mutations);
+
+    await expect(worker.runOnce(runRequest())).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      retried: 1,
+      terminal: 0
+    });
+
+    expect(fixture.workflow.saveCheckpoint).toHaveBeenCalledWith({
+      publicId: fixture.work.publicId,
+      owner: "publication-worker-one",
+      checkpoint: expect.objectContaining({
+        phase: "planning",
+        candidatePublicId: fixture.candidate.publicId,
+        semanticState: "ready"
+      })
+    });
+    expect(fixture.workflow.releaseForContinuation).toHaveBeenCalledWith({
+      publicId: fixture.work.publicId,
+      owner: "publication-worker-one",
+      nextAttemptAt: "2026-08-02T00:01:00.000Z"
+    });
+    expect(mutations.ensureSemanticStages).toHaveBeenCalledWith({
+      work: expect.objectContaining({
+        checkpoint: expect.objectContaining({ semanticState: "ready" })
+      })
+    });
+    expect(mutations.ensureSemanticStages.mock.invocationCallOrder[0])
+      .toBeLessThan(mutations.inspectSemanticStages.mock.invocationCallOrder[0]!);
+    expect(fixture.processor.publish).not.toHaveBeenCalled();
+    expect(fixture.releases.activateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("waits for current semantic publication stages before building a release", async () => {
+    const fixture = createFixture();
+    const readiness = {
+      inspect: vi.fn(async () => ({ state: "pending" as const }))
+    };
+    const worker = createWorker(fixture, undefined, undefined, undefined, readiness);
+
+    await expect(worker.runOnce(runRequest())).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      retried: 1,
+      terminal: 0
+    });
+
+    expect(readiness.inspect).toHaveBeenCalledWith({
+      knowledgeBaseId: fixture.work.knowledgeBaseId
+    });
+    expect(fixture.workflow.releaseForContinuation).toHaveBeenCalledWith({
+      publicId: fixture.work.publicId,
+      owner: "publication-worker-one",
+      nextAttemptAt: "2026-08-02T00:01:00.000Z"
+    });
+    expect(fixture.processor.publish).not.toHaveBeenCalled();
+    expect(fixture.releases.activateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("waits for an uncommitted coalesced candidate without recording a failure", async () => {
+    const fixture = createFixture();
+    fixture.releases.getLiveCandidate.mockResolvedValueOnce(null);
+    const onFailure = vi.fn();
+    const worker = createWorker(fixture, onFailure);
+
+    await expect(worker.runOnce(runRequest())).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      retried: 1,
+      terminal: 0
+    });
+
+    expect(fixture.workflow.releaseForContinuation).toHaveBeenCalledWith({
+      publicId: fixture.work.publicId,
+      owner: "publication-worker-one",
+      nextAttemptAt: "2026-08-02T00:01:00.000Z"
+    });
+    expect(fixture.workflow.releaseForRetry).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("supersedes a coalescing loser when another live candidate owns the scope", async () => {
+    const fixture = createFixture();
+    fixture.releases.getLiveCandidate.mockResolvedValueOnce({
+      ...fixture.candidate,
+      publicId: "candidate-winner",
+      operationPublicId: "publication-operation-winner"
+    });
+    const onFailure = vi.fn();
+    const worker = createWorker(fixture, onFailure);
+
+    await expect(worker.runOnce(runRequest())).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      retried: 0,
+      terminal: 1
+    });
+
+    expect(fixture.workflow.complete).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({
+        state: "superseded",
+        resultCode: "PUBLICATION_SUPERSEDED",
+        correlationPublicId: "candidate-winner"
+      })
+    }));
+    expect(fixture.workflow.releaseForRetry).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
   it("releases a failed attempt for retry without terminating the candidate", async () => {
     const fixture = createFixture();
     fixture.processor.publish.mockRejectedValueOnce(new Error("provider payload"));
@@ -351,6 +483,16 @@ function createWorker(
       work: StorageVnextLiveWork;
       signal?: AbortSignal;
     }): Promise<{ checkpoint: StorageVnextLiveWork["checkpoint"] }>;
+    inspectSemanticStages?(input: {
+      work: StorageVnextLiveWork;
+    }): Promise<
+      | { state: "ready" }
+      | { state: "pending" }
+      | { state: "failed"; safeCode: string }
+    >;
+    ensureSemanticStages?(input: {
+      work: StorageVnextLiveWork;
+    }): Promise<void>;
     terminate?(input: {
       work: StorageVnextLiveWork;
       outcome: "failed" | "timed_out";
@@ -359,7 +501,13 @@ function createWorker(
       resultExpiresAt: string;
     }): Promise<void>;
   },
-  webhooks?: { dispatch(event: Record<string, unknown>): Promise<void> }
+  webhooks?: { dispatch(event: Record<string, unknown>): Promise<void> },
+  readiness?: {
+    inspect(input: { knowledgeBaseId: string }): Promise<
+      | { state: "ready" }
+      | { state: "pending" }
+    >;
+  }
 ) {
   return createStorageVnextPublicationWorker({
     workflow: fixture.workflow,
@@ -376,6 +524,7 @@ function createWorker(
       rollbackRetentionMilliseconds: 86_400_000
     },
     clock: () => "2026-08-02T00:00:00.000Z",
+    ...(readiness ? { readiness } : {}),
     ...(mutations ? { mutations } : {}),
     ...(onFailure ? { onFailure } : {}),
     ...(webhooks ? { webhooks } : {})
@@ -414,6 +563,7 @@ function createFixture() {
     expectedActiveRootPublicId: null,
     expectedActiveRevision: 0,
     state: "building" as const,
+    factRevision: 1,
     changedFactCount: 1,
     affectedDependencyCount: 1,
     manifestChecksum: null,
@@ -425,7 +575,8 @@ function createFixture() {
     renew: vi.fn(async () => true),
     saveCheckpoint: vi.fn(async () => undefined),
     complete: vi.fn(async () => undefined),
-    releaseForRetry: vi.fn(async () => undefined)
+    releaseForRetry: vi.fn(async () => undefined),
+    releaseForContinuation: vi.fn(async () => undefined)
   };
   const releases = {
     getLiveCandidate: vi.fn(async () => candidate as typeof candidate | null),

@@ -9,6 +9,7 @@ const SETTING_KEYS: readonly RuntimeSettingKey[] = [
   "publication",
   "graph",
   "maintenance",
+  "semantic",
   "search"
 ];
 

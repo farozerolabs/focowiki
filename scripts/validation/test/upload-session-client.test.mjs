@@ -205,6 +205,58 @@ test("validation uploads entry bodies with the advertised bounded concurrency", 
   assert.equal(maxActiveTransfers, 2);
 });
 
+test("validation retries one transient entry-body transfer without restarting the session", async () => {
+  const entry = {
+    id: "entry-retry",
+    relativePath: "guides/retry.md",
+    name: "retry.md",
+    disposition: "upload_required",
+    transferState: "missing",
+    sourceFileId: "source-file-retry",
+    generatedPath: "pages/guides/retry.md"
+  };
+  let contentAttempts = 0;
+  const request = async (pathname, options = {}) => {
+    if (pathname.endsWith("/upload-sessions") && options.method === "POST") {
+      return {
+        session: { id: "upload-session-retry", state: "draft", counts: {} },
+        transport: { manifestPageSize: 10, contentUploadConcurrency: 2 }
+      };
+    }
+    if (pathname.endsWith("/entries")) return { session: { state: "manifest_building" } };
+    if (pathname.endsWith("/seal")) {
+      return {
+        session: {
+          state: "manifest_sealed",
+          counts: { waitingReservation: 0, rejectedDeleting: 0 }
+        }
+      };
+    }
+    if (pathname.endsWith("/entries/entry-retry/content")) {
+      contentAttempts += 1;
+      if (contentAttempts === 1) throw new Error("transient storage failure");
+      entry.transferState = "uploaded";
+      return { entry };
+    }
+    if (pathname.endsWith("/finalize")) {
+      return { session: { id: "upload-session-retry", state: "completed" } };
+    }
+    if (options.query?.transferState === "missing") {
+      return { session: { state: "uploading" }, entries: { items: [entry], nextCursor: null } };
+    }
+    return { session: { state: "completed" }, entries: { items: [entry], nextCursor: null } };
+  };
+
+  const result = await uploadMarkdownFilesWithSession({
+    request,
+    routeBase: "/openapi/v2/knowledge-bases/kb-test/upload-sessions",
+    files: [{ relativePath: entry.relativePath, bytes: Buffer.from("# Retry") }]
+  });
+
+  assert.equal(result.session.state, "completed");
+  assert.equal(contentAttempts, 2);
+});
+
 test("validation rejects the removed upload limits contract", async () => {
   await assert.rejects(
     uploadMarkdownFilesWithSession({

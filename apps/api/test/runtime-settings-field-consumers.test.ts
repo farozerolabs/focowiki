@@ -76,6 +76,18 @@ const consumers: readonly FieldConsumer[] = [
   search("cleanupBatchSize", "storage-vnext/maintenance/production-runtime.ts", "snapshot.search.cleanupBatchSize"),
   search("stagingRetentionHours", "storage-vnext/maintenance/production-runtime.ts", "snapshot.search.stagingRetentionHours"),
   search("cropLength", "main.ts", "snapshot.search.cropLength"),
+  semantic("maximumChunkCharacters", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumChunkCharacters"),
+  semantic("maximumChunks", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumChunks"),
+  semantic("maximumEvidenceTargets", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumEvidenceTargets"),
+  semantic("maximumCommunityPartitions", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumCommunityPartitions"),
+  semantic("maximumCommunityEntities", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumCommunityEntities"),
+  semantic("maximumCommunityRelationships", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumCommunityRelationships"),
+  semantic("maximumCommunityBoundaryRelationships", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumCommunityBoundaryRelationships"),
+  semantic("maximumCommunitySummaryCharacters", "semantic/application/source-handoff.ts", "snapshot.semantic.maximumCommunitySummaryCharacters"),
+  semantic("communityAdapterTimeoutMs", "semantic/application/source-handoff.ts", "snapshot.semantic.communityAdapterTimeoutMs"),
+  semantic("searchLaneCutoffMs", "main.ts", "snapshot.semantic.searchLaneCutoffMs"),
+  semantic("queryEmbeddingConcurrency", "semantic/search/production-runtime.ts", "settings.queryEmbeddingConcurrency"),
+  semantic("queryEmbeddingCacheEntries", "semantic/search/production-runtime.ts", "settings.queryEmbeddingCacheEntries"),
   model("displayName", "runtime-settings/repository.ts", "displayName: input.displayName"),
   model("apiMode", "runtime-settings/model-assistance-gateway.ts", "model.apiMode"),
   model("baseUrl", "runtime-settings/model-assistance-gateway.ts", "model.baseUrl"),
@@ -91,7 +103,7 @@ const consumers: readonly FieldConsumer[] = [
 
 describe("runtime settings field consumers", () => {
   it("covers every exposed settings field exactly once", () => {
-    expect(consumers).toHaveLength(74);
+    expect(consumers).toHaveLength(86);
     expect(new Set(consumers.map((entry) => entry.id)).size).toBe(consumers.length);
   });
 
@@ -148,6 +160,10 @@ function search(field: string, source: string, token: string): FieldConsumer {
   return fieldConsumer("search", field, source, token);
 }
 
+function semantic(field: string, source: string, token: string): FieldConsumer {
+  return fieldConsumer("semantic", field, source, token);
+}
+
 function model(field: string, source: string, token: string): FieldConsumer {
   return {
     id: `model.${field}`,
@@ -158,7 +174,7 @@ function model(field: string, source: string, token: string): FieldConsumer {
 }
 
 function fieldConsumer(
-  section: "worker" | "publication" | "graph" | "maintenance" | "search",
+  section: "worker" | "publication" | "graph" | "maintenance" | "search" | "semantic",
   field: string,
   source: string,
   token: string

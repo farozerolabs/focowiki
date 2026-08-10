@@ -140,6 +140,12 @@ export type SourceFileRecord = {
     | "metadata_resolution"
     | "llm_suggestion"
     | "graph_generation"
+    | "graphrag_processing"
+    | "semantic_reconciliation"
+    | "embedding_generation"
+    | "affected_projection"
+    | "search_publication"
+    | "semantic_maintenance_required"
     | "projection_generation"
     | "generation_validation"
     | "generation_activation";
@@ -472,6 +478,100 @@ export type SearchSettings = {
   cropLength: number;
 };
 
+export type SemanticSettings = {
+  maximumChunkCharacters: number;
+  maximumChunks: number;
+  maximumEvidenceTargets: number;
+  maximumCommunityPartitions: number;
+  maximumCommunityEntities: number;
+  maximumCommunityRelationships: number;
+  maximumCommunityBoundaryRelationships: number;
+  maximumCommunitySummaryCharacters: number;
+  communityAdapterTimeoutMs: number;
+  searchLaneCutoffMs: number;
+  queryEmbeddingConcurrency: number;
+  queryEmbeddingCacheEntries: number;
+};
+
+export type EmbeddingConfiguration = {
+  publicId: string;
+  revisionPublicId: string;
+  revision: number;
+  displayName: string;
+  authenticationMode: "api_key" | "none";
+  baseUrl: string;
+  apiKeyConfigured: boolean;
+  modelName: string;
+  requestedDimension: number | null;
+  resolvedDimension: number | null;
+  normalization: "none" | "l2";
+  maximumInputTokens: number;
+  batchSize: number;
+  timeoutMs: number;
+  retryCount: number;
+  minimumIntervalMs: number;
+  concurrency: number;
+  maximumResponseBytes: number;
+  minimumVectorRelevance: number;
+  vectorProducingRevisionPublicId: string;
+  queryPolicyRevisionPublicId: string;
+  validationStatus: "not_tested" | "valid" | "invalid";
+  validationFingerprintSha256: string | null;
+  safeValidationErrorCode: string | null;
+  lifecycleStatus: "draft" | "active" | "paused";
+  createdAt: string;
+};
+
+export type EmbeddingConfigurationDraft = Pick<
+  EmbeddingConfiguration,
+  | "displayName"
+  | "authenticationMode"
+  | "baseUrl"
+  | "modelName"
+  | "requestedDimension"
+  | "normalization"
+  | "maximumInputTokens"
+  | "batchSize"
+  | "timeoutMs"
+  | "retryCount"
+  | "minimumIntervalMs"
+  | "concurrency"
+  | "maximumResponseBytes"
+  | "minimumVectorRelevance"
+> & { apiKey: string | null };
+
+export type RerankerConfiguration = {
+  publicId: string;
+  revisionPublicId: string;
+  revision: number;
+  displayName: string;
+  authenticationMode: "api_key" | "none";
+  baseUrl: string;
+  apiKeyConfigured: boolean;
+  modelName: string;
+  timeoutMs: number;
+  retryCount: number;
+  minimumIntervalMs: number;
+  concurrency: number;
+  validationStatus: "not_tested" | "valid" | "invalid";
+  validationFingerprintSha256: string | null;
+  safeValidationErrorCode: string | null;
+  lifecycleStatus: "draft" | "active" | "paused";
+  createdAt: string;
+};
+
+export type RerankerConfigurationDraft = Pick<
+  RerankerConfiguration,
+  | "displayName"
+  | "authenticationMode"
+  | "baseUrl"
+  | "modelName"
+  | "timeoutMs"
+  | "retryCount"
+  | "minimumIntervalMs"
+  | "concurrency"
+> & { apiKey: string | null };
+
 export type RuntimeModelConfig = {
   id: string;
   displayName: string;
@@ -499,6 +599,7 @@ export type RuntimeSettingsResponse = {
     publication: PublicationSettings;
     graph: GraphSettings;
     maintenance: MaintenanceSettings;
+    semantic: SemanticSettings;
     search: SearchSettings;
     activeModel: RuntimeModelConfig | null;
   };
@@ -787,6 +888,232 @@ export async function updateSearchSettings(
   input: SearchSettings
 ): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
   return updateRuntimeSettings("/admin/api/settings/search", input);
+}
+
+export async function updateSemanticSettings(
+  input: SemanticSettings
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  return updateRuntimeSettings("/admin/api/settings/semantic", input);
+}
+
+export async function fetchEmbeddingConfigurations(): Promise<
+  { configurations: EmbeddingConfiguration[] } | ApiFailure
+> {
+  const response = await adminFetch("/admin/api/settings/embeddings");
+  const body = (await response.json()) as
+    | { configurations: EmbeddingConfiguration[] }
+    | { error?: { messageKey?: string } };
+  return response.ok
+    ? body as { configurations: EmbeddingConfiguration[] }
+    : readFailure(body, "errors.embeddingConfigurationUnavailable");
+}
+
+export async function createEmbeddingConfiguration(
+  input: EmbeddingConfigurationDraft
+): Promise<{ configuration: EmbeddingConfiguration } | ApiFailure> {
+  return writeEmbeddingConfiguration("/admin/api/settings/embeddings", "POST", input);
+}
+
+export async function updateEmbeddingConfiguration(input: {
+  configurationId: string;
+  expectedRevision: number;
+  configuration: EmbeddingConfigurationDraft;
+}): Promise<{ configuration: EmbeddingConfiguration } | ApiFailure> {
+  return writeEmbeddingConfiguration(
+    `/admin/api/settings/embeddings/${encodeURIComponent(input.configurationId)}`,
+    "PUT",
+    { expectedRevision: input.expectedRevision, configuration: input.configuration }
+  );
+}
+
+export async function testEmbeddingConfiguration(configurationId: string) {
+  return writeEmbeddingConfiguration(
+    `/admin/api/settings/embeddings/${encodeURIComponent(configurationId)}/test`,
+    "POST"
+  );
+}
+
+export async function activateEmbeddingConfiguration(
+  configurationId: string,
+  expectedRevision: number
+) {
+  return embeddingLifecycleAction(configurationId, "activate", expectedRevision);
+}
+
+export async function pauseEmbeddingConfiguration(
+  configurationId: string,
+  expectedRevision: number
+) {
+  return embeddingLifecycleAction(configurationId, "pause", expectedRevision);
+}
+
+export async function resumeEmbeddingConfiguration(
+  configurationId: string,
+  expectedRevision: number
+) {
+  return embeddingLifecycleAction(configurationId, "resume", expectedRevision);
+}
+
+export async function deleteEmbeddingConfiguration(
+  configurationId: string,
+  expectedRevision: number
+): Promise<{ deleted: true } | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/settings/embeddings/${encodeURIComponent(configurationId)}`,
+    {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision })
+    }
+  );
+  const body = (await response.json()) as
+    | { deleted: true }
+    | { error?: { messageKey?: string } };
+  return response.ok
+    ? body as { deleted: true }
+    : readFailure(body, "errors.embeddingConfigurationActionFailed");
+}
+
+function embeddingLifecycleAction(
+  configurationId: string,
+  action: "activate" | "pause" | "resume",
+  expectedRevision: number
+) {
+  return writeEmbeddingConfiguration(
+    `/admin/api/settings/embeddings/${encodeURIComponent(configurationId)}/${action}`,
+    "POST",
+    { expectedRevision }
+  );
+}
+
+async function writeEmbeddingConfiguration(
+  path: string,
+  method: "POST" | "PUT",
+  input?: unknown
+): Promise<{ configuration: EmbeddingConfiguration } | ApiFailure> {
+  const response = await adminFetch(path, {
+    method,
+    ...(input === undefined ? {} : {
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    })
+  });
+  const body = (await response.json()) as
+    | { configuration: EmbeddingConfiguration }
+    | { error?: { messageKey?: string } };
+  return response.ok
+    ? body as { configuration: EmbeddingConfiguration }
+    : readFailure(body, "errors.embeddingConfigurationActionFailed");
+}
+
+export async function fetchRerankerConfigurations(): Promise<
+  { configurations: RerankerConfiguration[] } | ApiFailure
+> {
+  const response = await adminFetch("/admin/api/settings/rerankers");
+  const body = (await response.json()) as
+    | { configurations: RerankerConfiguration[] }
+    | { error?: { messageKey?: string } };
+  return response.ok
+    ? body as { configurations: RerankerConfiguration[] }
+    : readFailure(body, "errors.rerankerConfigurationUnavailable");
+}
+
+export async function createRerankerConfiguration(
+  input: RerankerConfigurationDraft
+): Promise<{ configuration: RerankerConfiguration } | ApiFailure> {
+  return writeRerankerConfiguration("/admin/api/settings/rerankers", "POST", input);
+}
+
+export async function updateRerankerConfiguration(input: {
+  configurationId: string;
+  expectedRevision: number;
+  configuration: RerankerConfigurationDraft;
+}): Promise<{ configuration: RerankerConfiguration } | ApiFailure> {
+  return writeRerankerConfiguration(
+    `/admin/api/settings/rerankers/${encodeURIComponent(input.configurationId)}`,
+    "PUT",
+    { expectedRevision: input.expectedRevision, configuration: input.configuration }
+  );
+}
+
+export async function testRerankerConfiguration(configurationId: string) {
+  return writeRerankerConfiguration(
+    `/admin/api/settings/rerankers/${encodeURIComponent(configurationId)}/test`,
+    "POST"
+  );
+}
+
+export async function activateRerankerConfiguration(
+  configurationId: string,
+  expectedRevision: number
+) {
+  return rerankerLifecycleAction(configurationId, "activate", expectedRevision);
+}
+
+export async function pauseRerankerConfiguration(
+  configurationId: string,
+  expectedRevision: number
+) {
+  return rerankerLifecycleAction(configurationId, "pause", expectedRevision);
+}
+
+export async function resumeRerankerConfiguration(
+  configurationId: string,
+  expectedRevision: number
+) {
+  return rerankerLifecycleAction(configurationId, "resume", expectedRevision);
+}
+
+export async function deleteRerankerConfiguration(
+  configurationId: string,
+  expectedRevision: number
+): Promise<{ deleted: true } | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/settings/rerankers/${encodeURIComponent(configurationId)}`,
+    {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision })
+    }
+  );
+  const body = (await response.json()) as
+    | { deleted: true }
+    | { error?: { messageKey?: string } };
+  return response.ok
+    ? body as { deleted: true }
+    : readFailure(body, "errors.rerankerConfigurationActionFailed");
+}
+
+function rerankerLifecycleAction(
+  configurationId: string,
+  action: "activate" | "pause" | "resume",
+  expectedRevision: number
+) {
+  return writeRerankerConfiguration(
+    `/admin/api/settings/rerankers/${encodeURIComponent(configurationId)}/${action}`,
+    "POST",
+    { expectedRevision }
+  );
+}
+
+async function writeRerankerConfiguration(
+  path: string,
+  method: "POST" | "PUT",
+  input?: unknown
+): Promise<{ configuration: RerankerConfiguration } | ApiFailure> {
+  const response = await adminFetch(path, {
+    method,
+    ...(input === undefined ? {} : {
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    })
+  });
+  const body = (await response.json()) as
+    | { configuration: RerankerConfiguration }
+    | { error?: { messageKey?: string } };
+  return response.ok
+    ? body as { configuration: RerankerConfiguration }
+    : readFailure(body, "errors.rerankerConfigurationActionFailed");
 }
 
 export async function createRuntimeModel(input: {
@@ -1353,6 +1680,22 @@ export async function requestKnowledgeBaseIndexMaintenance(input: {
     result: "accepted" | "already_active";
     maintenance: ProcessingSummary["indexMaintenance"];
   };
+}
+
+export async function cancelKnowledgeBaseIndexMaintenance(input: {
+  knowledgeBaseId: string;
+}): Promise<{ result: "cancelled" | "not_active" } | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/index-maintenance/cancel`,
+    { method: "POST" }
+  );
+  const body = (await response.json()) as
+    | { result: "cancelled" | "not_active" }
+    | { error?: { messageKey?: string } };
+  if (!response.ok) {
+    return readFailure(body, "errors.indexMaintenanceCancelFailed");
+  }
+  return body as { result: "cancelled" | "not_active" };
 }
 
 export async function fetchKnowledgeBasePublicUrls(input: {

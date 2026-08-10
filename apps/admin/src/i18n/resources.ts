@@ -104,6 +104,9 @@ export const resources = {
           graph: "Graph",
           maintenance: "Maintenance",
           search: "Search",
+          semantic: "Semantic",
+          embeddings: "Embeddings",
+          rerankers: "Rerankers",
           models: "Models"
         },
         rateLimits: {
@@ -194,6 +197,10 @@ export const resources = {
         search: {
           title: "Search",
           description: "Set bounded search requests, result candidates, indexing batches, retries, and cleanup."
+        },
+        semantic: {
+          title: "Semantic search",
+          description: "Set bounded GraphRAG extraction, community, and query embedding limits."
         },
         maintenanceModes: {
           manual: "Manual",
@@ -361,6 +368,20 @@ export const resources = {
             stagingRetentionHours: "Hours to retain failed or superseded staging indexes for bounded diagnosis. Recommended: 24 hours.",
             cropLength: "Maximum evidence excerpt length requested for each search hit before public response limits are applied. Recommended: 800 to 1200 characters."
           },
+          semantic: {
+            maximumChunkCharacters: "Maximum characters in one bounded extraction chunk. Recommended: 8000.",
+            maximumChunks: "Maximum chunks extracted from one source revision. Maximum: 32.",
+            maximumEvidenceTargets: "Maximum evidence targets retained per bounded semantic unit. Recommended: 64.",
+            maximumCommunityPartitions: "Maximum deterministic community partitions. Maximum: 256.",
+            maximumCommunityEntities: "Maximum entities loaded for one bounded community unit. Maximum: 10000.",
+            maximumCommunityRelationships: "Maximum internal relationships loaded for one bounded community unit. Maximum: 20000.",
+            maximumCommunityBoundaryRelationships: "Maximum boundary relationships loaded for one bounded community unit. Maximum: 10000.",
+            maximumCommunitySummaryCharacters: "Maximum characters accepted in one community summary. Recommended: 8000.",
+            communityAdapterTimeoutMs: "Maximum time for one bounded GraphRAG community operation. Recommended: 30000 ms.",
+            searchLaneCutoffMs: "Maximum time allocated to semantic lanes within the overall search request. Recommended: 2500 ms.",
+            queryEmbeddingConcurrency: "Maximum concurrent query embedding requests per process. Recommended: 4.",
+            queryEmbeddingCacheEntries: "Maximum bounded query embedding cache entries per process. Recommended: 1000."
+          },
           models: {
             displayName: "Admin-facing model name. Recommended: include provider and usage.",
             apiMode: "Provider protocol used for model requests. Use Responses API for OpenAI Structured Outputs providers; use Chat Completions API for providers that expose /chat/completions JSON output.",
@@ -484,6 +505,18 @@ export const resources = {
           cleanupBatchSize: "Search cleanup batch size",
           stagingRetentionHours: "Staging retention hours",
           cropLength: "Search evidence crop length",
+          maximumChunkCharacters: "Maximum chunk characters",
+          maximumChunks: "Maximum chunks",
+          maximumEvidenceTargets: "Maximum evidence targets",
+          maximumCommunityPartitions: "Maximum community partitions",
+          maximumCommunityEntities: "Maximum community entities",
+          maximumCommunityRelationships: "Maximum community relationships",
+          maximumCommunityBoundaryRelationships: "Maximum boundary relationships",
+          maximumCommunitySummaryCharacters: "Maximum community summary characters",
+          communityAdapterTimeoutMs: "Community adapter timeout ms",
+          searchLaneCutoffMs: "Semantic search cutoff ms",
+          queryEmbeddingConcurrency: "Query embedding concurrency",
+          queryEmbeddingCacheEntries: "Query embedding cache entries",
           rootSummaryLimit: "Root summary limit",
           directoryIndexMaxEntries: "Directory index entries per page",
           directoryIndexMaxBytes: "Directory index bytes per page",
@@ -499,7 +532,114 @@ export const resources = {
           requestIdleTimeoutMs: "Request idle timeout ms",
           suggestionConcurrency: "Suggestion concurrency",
           transientRetryDelayMs: "Transient retry delay ms",
-          requestMinIntervalMs: "Request min interval ms"
+          requestMinIntervalMs: "Request min interval ms",
+          authenticationMode: "Authentication mode",
+          normalization: "Normalization",
+          requestedDimension: "Requested dimension",
+          maximumInputTokens: "Maximum input tokens",
+          timeoutMs: "Timeout ms",
+          retryCount: "Retry count",
+          minimumIntervalMs: "Minimum interval ms",
+          concurrency: "Concurrency",
+          maximumResponseBytes: "Maximum response bytes",
+          minimumVectorRelevance: "Minimum vector relevance",
+          resolvedDimension: "Resolved dimension",
+          validationStatus: "Validation status",
+          lifecycleStatus: "Lifecycle status",
+          actions: "Actions"
+        },
+        embeddings: {
+          title: "Embedding models",
+          description: "Configure OpenAI-compatible cloud or local embedding endpoints for semantic search.",
+          add: "Add embedding model",
+          edit: "Edit",
+          editTitle: "Edit embedding model",
+          formDescription: "Configure and test the endpoint before activation.",
+          create: "Create embedding model",
+          update: "Update embedding model",
+          empty: "No embedding models configured",
+          test: "Test",
+          activate: "Activate",
+          pause: "Pause",
+          resume: "Resume",
+          requestedDimensionHint: "Only set this when the provider supports custom dimensions. If the test fails, leave it blank and use the resolved dimension.",
+          validationError: "Complete every required field with a value inside its allowed range.",
+          deleteTitle: "Delete embedding model",
+          deleteDescription: "Delete {{name}}. Referenced configurations cannot be deleted.",
+          deleteConfirm: "Delete embedding model",
+          authentication: {
+            api_key: "API key",
+            none: "No authentication"
+          },
+          normalization: {
+            none: "None",
+            l2: "L2"
+          },
+          secret: {
+            configured: "Configured",
+            notConfigured: "Not configured",
+            keepExisting: "Leave blank to keep the existing key"
+          },
+          validation: {
+            not_tested: "Not tested",
+            valid: "Valid",
+            invalid: "Invalid"
+          },
+          lifecycle: {
+            draft: "Draft",
+            active: "Active",
+            paused: "Paused"
+          },
+          toast: {
+            saved: "Embedding model saved",
+            updated: "Embedding model updated",
+            deleted: "Embedding model deleted",
+            failed: "Embedding model action failed"
+          }
+        },
+        rerankers: {
+          title: "Reranker models",
+          description: "Configure an optional standard rerank model for query-time ranking.",
+          add: "Add reranker model",
+          edit: "Edit",
+          editTitle: "Edit reranker model",
+          formDescription: "Enter the provider base URL, such as https://provider.example/v1. Focowiki automatically appends /rerank and supports only the standard rerank protocol. Test it before activation.",
+          create: "Create reranker model",
+          update: "Update reranker model",
+          empty: "No reranker models configured",
+          test: "Test",
+          activate: "Activate",
+          pause: "Pause",
+          resume: "Resume",
+          validationError: "Complete every required field with a value inside its allowed range.",
+          deleteTitle: "Delete reranker model",
+          deleteDescription: "Delete {{name}}. Active configurations cannot be deleted.",
+          deleteConfirm: "Delete reranker model",
+          authentication: {
+            api_key: "API key",
+            none: "No authentication"
+          },
+          secret: {
+            configured: "Configured",
+            notConfigured: "Not configured",
+            keepExisting: "Leave blank to keep the existing key"
+          },
+          validation: {
+            not_tested: "Not tested",
+            valid: "Valid",
+            invalid: "Invalid"
+          },
+          lifecycle: {
+            draft: "Draft",
+            active: "Active",
+            paused: "Paused"
+          },
+          toast: {
+            saved: "Reranker model saved",
+            updated: "Reranker model updated",
+            deleted: "Reranker model deleted",
+            failed: "Reranker model action failed"
+          }
         },
         models: {
           title: "Models",
@@ -599,10 +739,16 @@ export const resources = {
         preparing: "Preparing",
         action: "Maintain index",
         running: "Maintenance in progress",
+        cancelAction: "Cancel maintenance",
         confirmTitle: "Maintain this knowledge base?",
         confirmDescription: "Maintenance runs in the background. Existing content remains available while it completes.",
         confirmAction: "Start maintenance",
         submitting: "Starting",
+        cancelConfirmTitle: "Cancel this maintenance run?",
+        cancelConfirmDescription:
+          "Completed partitions remain reusable. The current active knowledge base stays available.",
+        cancelConfirmAction: "Cancel maintenance",
+        cancelling: "Cancelling",
         states: {
           idle: "Idle",
           queued: "Queued",
@@ -617,14 +763,20 @@ export const resources = {
         toast: {
           accepted: "Maintenance started",
           alreadyActive: "Maintenance is already in progress",
-          failed: "Maintenance could not start"
+          failed: "Maintenance could not start",
+          cancelled: "Maintenance cancelled",
+          notActive: "No active maintenance run",
+          cancelFailed: "Maintenance could not be cancelled"
         },
         stages: {
           preparing: "Preparing maintenance",
           projection: "Updating file navigation and relationships",
           search: "Updating search indexes",
           compaction: "Optimizing index storage",
+          catchUp: "Waiting for bounded indexing work",
           validating: "Checking maintenance results",
+          activating: "Activating validated indexes",
+          cleanup: "Cleaning up candidate resources",
           retrying: "Waiting to retry"
         },
         failures: {
@@ -741,6 +893,12 @@ export const resources = {
           metadataResolution: "Metadata resolution",
           llmSuggestion: "LLM suggestions",
           graphGeneration: "Graph generation",
+          graphragProcessing: "GraphRAG processing",
+          semanticReconciliation: "Semantic reconciliation",
+          embeddingGeneration: "Embedding generation",
+          affectedProjection: "Affected projection",
+          searchPublication: "Search publication",
+          semanticMaintenanceRequired: "Semantic maintenance required",
           projectionGeneration: "Projection generation",
           generationValidation: "Generation validation",
           generationActivation: "Generation activation"
@@ -917,6 +1075,28 @@ export const resources = {
         openapiKeyFailed: "OpenAPI key request failed",
         runtimeSettingsUnavailable: "Runtime settings are unavailable",
         runtimeSettingsValidationFailed: "Runtime settings are invalid",
+        embeddingConfigurationUnavailable: "Embedding configuration is unavailable",
+        embeddingConfigurationActionFailed: "Embedding configuration action failed",
+        embeddingConfigurationAuthenticationFailed: "Embedding endpoint authentication failed",
+        embeddingConfigurationValidationError: "Embedding configuration is invalid",
+        embeddingConfigurationValidationRequired: "Test the embedding configuration before activation",
+        embeddingConfigurationConfigurationInUse: "The embedding configuration is still in use",
+        embeddingConfigurationRevisionConflict: "The embedding configuration changed; reload and retry",
+        rerankerConfigurationUnavailable: "Reranker configuration is unavailable",
+        rerankerConfigurationActionFailed: "Reranker configuration action failed",
+        rerankerConfigurationAuthenticationFailed: "Reranker endpoint authentication failed",
+        rerankerConfigurationValidationError: "Reranker configuration is invalid",
+        rerankerConfigurationValidationRequired: "Test the reranker configuration before activation",
+        rerankerConfigurationConfigurationInUse: "The reranker configuration is active",
+        rerankerConfigurationRevisionConflict: "The reranker configuration changed; reload and retry",
+        rerankerConfigurationCredentialUnavailable: "The reranker credential is unavailable",
+        rerankerConfigurationInvalidRequest: "The reranker rejected the validation request",
+        rerankerConfigurationInvalidResponse: "The reranker returned an invalid response",
+        rerankerConfigurationPayloadTooLarge: "The reranker validation payload is too large",
+        rerankerConfigurationProviderUnavailable: "The reranker endpoint is unavailable",
+        rerankerConfigurationRateLimited: "The reranker endpoint rate limit was reached",
+        rerankerConfigurationResponseTooLarge: "The reranker validation response is too large",
+        rerankerConfigurationTimeout: "The reranker validation request timed out",
         editKnowledgeBaseFailed: "Knowledge base update failed",
         loadDirectoriesFailed: "Directories could not be loaded",
         loadSourceContentFailed: "Source content could not be loaded",
@@ -924,7 +1104,10 @@ export const resources = {
         knowledgeBaseNotFound: "Knowledge base not found",
         knowledgeBaseUnavailable: "Knowledge base is unavailable",
         indexMaintenanceRequestFailed: "Knowledge-base maintenance could not start",
+        indexMaintenanceCancelFailed: "Knowledge-base maintenance could not be cancelled",
         invalidIndexMaintenanceRequest: "Knowledge-base maintenance request is invalid",
+        semanticConfigurationRequired:
+          "Configure and validate both generation and embedding models before semantic adoption",
         replaceSourceContentFailed: "Source content replacement failed",
         loadOperationsFailed: "Resource operations could not be loaded",
         resourceEditFailed: "Resource update failed",
@@ -1042,6 +1225,9 @@ export const resources = {
           graph: "图关系",
           maintenance: "维护",
           search: "搜索",
+          semantic: "语义搜索",
+          embeddings: "向量模型",
+          rerankers: "重排模型",
           models: "模型"
         },
         rateLimits: {
@@ -1132,6 +1318,10 @@ export const resources = {
         search: {
           title: "搜索",
           description: "设置有界搜索请求、结果候选、索引批次、重试和清理参数。"
+        },
+        semantic: {
+          title: "语义搜索",
+          description: "设置有界 GraphRAG 提取、社区和查询向量参数。"
         },
         maintenanceModes: {
           manual: "手动维护",
@@ -1299,6 +1489,20 @@ export const resources = {
             stagingRetentionHours: "失败或被替代的暂存索引保留时间，用于有界排查。推荐 24 小时。",
             cropLength: "公共响应限制生效前，每个搜索命中请求的证据片段长度上限。推荐 800 到 1200 个字符。"
           },
+          semantic: {
+            maximumChunkCharacters: "单个有界提取分块的最大字符数。推荐 8000。",
+            maximumChunks: "单个来源 revision 的最大提取分块数。最大 32。",
+            maximumEvidenceTargets: "单个有界语义单元保留的证据目标上限。推荐 64。",
+            maximumCommunityPartitions: "确定性社区分区上限。最大 256。",
+            maximumCommunityEntities: "单个有界社区单元读取的实体上限。最大 10000。",
+            maximumCommunityRelationships: "单个有界社区单元读取的内部关系上限。最大 20000。",
+            maximumCommunityBoundaryRelationships: "单个有界社区单元读取的边界关系上限。最大 10000。",
+            maximumCommunitySummaryCharacters: "单个社区摘要允许的最大字符数。推荐 8000。",
+            communityAdapterTimeoutMs: "单个有界 GraphRAG 社区操作的最大时长。推荐 30000 毫秒。",
+            searchLaneCutoffMs: "整体搜索请求内语义通道允许的最长时间。推荐 2500 毫秒。",
+            queryEmbeddingConcurrency: "单进程查询向量请求并发上限。推荐 4。",
+            queryEmbeddingCacheEntries: "单进程查询向量有界缓存条目上限。推荐 1000。"
+          },
           models: {
             displayName: "管理后台展示的模型名称。推荐写清提供商和用途。",
             apiMode: "模型请求使用的接口协议。支持 OpenAI Structured Outputs 的服务商使用 Responses API；只提供 /chat/completions JSON 输出的服务商使用 Chat Completions API。",
@@ -1422,6 +1626,18 @@ export const resources = {
           cleanupBatchSize: "搜索清理批次大小",
           stagingRetentionHours: "暂存保留小时数",
           cropLength: "搜索证据截取长度",
+          maximumChunkCharacters: "最大分块字符数",
+          maximumChunks: "最大分块数",
+          maximumEvidenceTargets: "最大证据目标数",
+          maximumCommunityPartitions: "最大社区分区数",
+          maximumCommunityEntities: "最大社区实体数",
+          maximumCommunityRelationships: "最大社区关系数",
+          maximumCommunityBoundaryRelationships: "最大边界关系数",
+          maximumCommunitySummaryCharacters: "最大社区摘要字符数",
+          communityAdapterTimeoutMs: "社区适配器超时毫秒",
+          searchLaneCutoffMs: "语义搜索截止毫秒",
+          queryEmbeddingConcurrency: "查询向量并发",
+          queryEmbeddingCacheEntries: "查询向量缓存条目数",
           rootSummaryLimit: "根摘要上限",
           directoryIndexMaxEntries: "目录索引单页条目数",
           directoryIndexMaxBytes: "目录索引单页字节数",
@@ -1437,7 +1653,114 @@ export const resources = {
           requestIdleTimeoutMs: "请求空闲超时毫秒",
           suggestionConcurrency: "建议生成并发",
           transientRetryDelayMs: "临时错误重试延迟毫秒",
-          requestMinIntervalMs: "请求最小间隔毫秒"
+          requestMinIntervalMs: "请求最小间隔毫秒",
+          authenticationMode: "认证模式",
+          normalization: "归一化",
+          requestedDimension: "请求向量维度",
+          maximumInputTokens: "最大输入 tokens",
+          timeoutMs: "超时毫秒",
+          retryCount: "重试次数",
+          minimumIntervalMs: "最小间隔毫秒",
+          concurrency: "并发数",
+          maximumResponseBytes: "最大响应字节数",
+          minimumVectorRelevance: "最低向量相关度",
+          resolvedDimension: "实际向量维度",
+          validationStatus: "验证状态",
+          lifecycleStatus: "生命周期状态",
+          actions: "操作"
+        },
+        embeddings: {
+          title: "向量模型",
+          description: "为语义搜索配置 OpenAI 兼容的云端或本地向量接口。",
+          add: "添加向量模型",
+          edit: "编辑",
+          editTitle: "编辑向量模型",
+          formDescription: "配置接口并在激活前完成测试。",
+          create: "创建向量模型",
+          update: "更新向量模型",
+          empty: "暂无向量模型配置",
+          test: "测试",
+          activate: "激活",
+          pause: "暂停",
+          resume: "恢复",
+          requestedDimensionHint: "仅在服务商支持自定义维度时填写；如果测试失败，建议留空，由系统使用模型返回的实际维度。",
+          validationError: "请完整填写必填字段，并确保数值处于允许范围。",
+          deleteTitle: "删除向量模型",
+          deleteDescription: "删除 {{name}}。仍被引用的配置无法删除。",
+          deleteConfirm: "删除向量模型",
+          authentication: {
+            api_key: "API key",
+            none: "无需认证"
+          },
+          normalization: {
+            none: "不归一化",
+            l2: "L2"
+          },
+          secret: {
+            configured: "已配置",
+            notConfigured: "未配置",
+            keepExisting: "留空以保留现有 key"
+          },
+          validation: {
+            not_tested: "未测试",
+            valid: "有效",
+            invalid: "无效"
+          },
+          lifecycle: {
+            draft: "草稿",
+            active: "已激活",
+            paused: "已暂停"
+          },
+          toast: {
+            saved: "向量模型已保存",
+            updated: "向量模型已更新",
+            deleted: "向量模型已删除",
+            failed: "向量模型操作失败"
+          }
+        },
+        rerankers: {
+          title: "重排模型",
+          description: "配置可选的标准重排模型，用于查询时结果排序。",
+          add: "添加重排模型",
+          edit: "编辑",
+          editTitle: "编辑重排模型",
+          formDescription: "请填写服务商 Base URL，例如 https://provider.example/v1。Focowiki 会自动补全 /rerank，且只支持标准 rerank 协议；激活前请先测试。",
+          create: "创建重排模型",
+          update: "更新重排模型",
+          empty: "暂无重排模型配置",
+          test: "测试",
+          activate: "激活",
+          pause: "暂停",
+          resume: "恢复",
+          validationError: "请完整填写必填字段，并确保数值处于允许范围。",
+          deleteTitle: "删除重排模型",
+          deleteDescription: "删除 {{name}}。已激活的配置无法删除。",
+          deleteConfirm: "删除重排模型",
+          authentication: {
+            api_key: "API key",
+            none: "无需认证"
+          },
+          secret: {
+            configured: "已配置",
+            notConfigured: "未配置",
+            keepExisting: "留空以保留现有 key"
+          },
+          validation: {
+            not_tested: "未测试",
+            valid: "有效",
+            invalid: "无效"
+          },
+          lifecycle: {
+            draft: "草稿",
+            active: "已激活",
+            paused: "已暂停"
+          },
+          toast: {
+            saved: "重排模型已保存",
+            updated: "重排模型已更新",
+            deleted: "重排模型已删除",
+            failed: "重排模型操作失败"
+          }
         },
         models: {
           title: "模型",
@@ -1537,10 +1860,15 @@ export const resources = {
         preparing: "准备中",
         action: "维护索引",
         running: "正在维护",
+        cancelAction: "取消维护",
         confirmTitle: "维护当前知识库？",
         confirmDescription: "维护将在后台运行，完成前现有内容仍可正常读取。",
         confirmAction: "开始维护",
         submitting: "正在启动",
+        cancelConfirmTitle: "取消本次维护？",
+        cancelConfirmDescription: "已完成的分区仍可复用，当前已激活知识库会保持可用。",
+        cancelConfirmAction: "取消维护",
+        cancelling: "正在取消",
         states: {
           idle: "空闲",
           queued: "等待中",
@@ -1555,14 +1883,20 @@ export const resources = {
         toast: {
           accepted: "维护已启动",
           alreadyActive: "当前知识库正在维护",
-          failed: "无法启动维护"
+          failed: "无法启动维护",
+          cancelled: "维护已取消",
+          notActive: "当前没有正在执行的维护",
+          cancelFailed: "无法取消维护"
         },
         stages: {
           preparing: "正在准备维护",
           projection: "正在更新文件导航和关系",
           search: "正在更新搜索索引",
           compaction: "正在优化索引存储",
+          catchUp: "正在等待受限索引任务完成",
           validating: "正在检查维护结果",
+          activating: "正在激活已校验索引",
+          cleanup: "正在清理候选资源",
           retrying: "等待重试"
         },
         failures: {
@@ -1679,6 +2013,12 @@ export const resources = {
           metadataResolution: "元数据解析",
           llmSuggestion: "LLM 建议",
           graphGeneration: "图关系生成",
+          graphragProcessing: "GraphRAG 处理",
+          semanticReconciliation: "语义关系协调",
+          embeddingGeneration: "向量生成",
+          affectedProjection: "受影响投影生成",
+          searchPublication: "搜索入库",
+          semanticMaintenanceRequired: "需要维护语义索引",
           projectionGeneration: "投影生成",
           generationValidation: "Generation 校验",
           generationActivation: "Generation 激活"
@@ -1855,6 +2195,28 @@ export const resources = {
         openapiKeyFailed: "OpenAPI key 请求失败",
         runtimeSettingsUnavailable: "运行时设置不可用",
         runtimeSettingsValidationFailed: "运行时设置无效",
+        embeddingConfigurationUnavailable: "向量模型配置不可用",
+        embeddingConfigurationActionFailed: "向量模型配置操作失败",
+        embeddingConfigurationAuthenticationFailed: "向量模型接口认证失败",
+        embeddingConfigurationValidationError: "向量模型配置无效",
+        embeddingConfigurationValidationRequired: "激活前请先测试向量模型配置",
+        embeddingConfigurationConfigurationInUse: "向量模型配置仍在使用中",
+        embeddingConfigurationRevisionConflict: "向量模型配置已变化，请刷新后重试",
+        rerankerConfigurationUnavailable: "重排模型配置不可用",
+        rerankerConfigurationActionFailed: "重排模型配置操作失败",
+        rerankerConfigurationAuthenticationFailed: "重排模型接口认证失败",
+        rerankerConfigurationValidationError: "重排模型配置无效",
+        rerankerConfigurationValidationRequired: "激活前请先测试重排模型配置",
+        rerankerConfigurationConfigurationInUse: "重排模型配置已激活",
+        rerankerConfigurationRevisionConflict: "重排模型配置已变化，请刷新后重试",
+        rerankerConfigurationCredentialUnavailable: "重排模型凭证不可用",
+        rerankerConfigurationInvalidRequest: "重排模型拒绝了验证请求",
+        rerankerConfigurationInvalidResponse: "重排模型返回了无效响应",
+        rerankerConfigurationPayloadTooLarge: "重排模型验证请求过大",
+        rerankerConfigurationProviderUnavailable: "重排模型接口不可用",
+        rerankerConfigurationRateLimited: "重排模型接口触发限流",
+        rerankerConfigurationResponseTooLarge: "重排模型验证响应过大",
+        rerankerConfigurationTimeout: "重排模型验证请求超时",
         editKnowledgeBaseFailed: "知识库修改失败",
         loadDirectoriesFailed: "无法加载目录",
         loadSourceContentFailed: "无法加载来源正文",
@@ -1862,7 +2224,10 @@ export const resources = {
         knowledgeBaseNotFound: "知识库不存在",
         knowledgeBaseUnavailable: "知识库当前不可用",
         indexMaintenanceRequestFailed: "无法启动知识库维护",
+        indexMaintenanceCancelFailed: "无法取消知识库维护",
         invalidIndexMaintenanceRequest: "知识库维护请求无效",
+        semanticConfigurationRequired:
+          "执行语义采用前，请先配置并验证生成模型和向量模型",
         replaceSourceContentFailed: "来源正文替换失败",
         loadOperationsFailed: "无法加载资源操作",
         resourceEditFailed: "资源修改失败",

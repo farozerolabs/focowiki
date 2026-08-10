@@ -140,6 +140,7 @@ describe("storage vNext version-aware deletion and lifecycle", () => {
           objectId: "object-owned",
           owners: [{ kind: "rollback_root" }],
           ownerCount: 1,
+          referenceCount: 1,
           graceExpiresAt: null
         })),
         markDeleting: vi.fn(),
@@ -160,6 +161,7 @@ describe("storage vNext version-aware deletion and lifecycle", () => {
       objectId: "object-zero",
       owners: [],
       ownerCount: 0,
+      referenceCount: 0,
       graceExpiresAt: "2026-08-01T00:00:00.000Z"
     }));
     const purge = vi.fn(async () => ({
@@ -206,7 +208,7 @@ describe("storage vNext version-aware deletion and lifecycle", () => {
           state: "deleted"
         })),
         getClosure: vi.fn(async () => ({
-          ownerCount: 0
+          referenceCount: 0
         })),
         markDeleting,
         markDeleted

@@ -1,5 +1,9 @@
 import type { DatabaseClient } from "../../db/client.js";
-import { MIGRATION_FILES, readMigrationSql } from "../../db/migrations.js";
+import {
+  MIGRATION_FILES,
+  RUNTIME_SCHEMA_GENERATION,
+  readMigrationSql
+} from "../../db/migrations.js";
 import type { TransactionSql } from "postgres";
 import type { StorageVnextOwnedScopeProof } from "../lifecycle/ports.js";
 import type {
@@ -112,7 +116,7 @@ async function inspectPostgres(
         FROM focowiki.runtime_generation
         WHERE singleton = true
       `;
-      bootstrapState = generationRows[0]?.generation === "storage-vnext-v2"
+      bootstrapState = generationRows[0]?.generation === RUNTIME_SCHEMA_GENERATION
         ? "current"
         : "incompatible";
     } else {

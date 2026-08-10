@@ -15,7 +15,7 @@ const config = loadRuntimeConfig();
 if (process.argv.includes("--healthcheck")) {
   await runRuntimeDeploymentHealthcheck(config, {
     role: "maintenance-worker",
-    ...(config.search?.provider === "opensearch"
+    ...(config.search
       ? { assertTokenizer: assertNodeJiebaRuntimeAvailable }
       : {})
   });

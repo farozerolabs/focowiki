@@ -62,6 +62,15 @@ export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
             }
           }, 409);
         }
+        if (result.outcome === "configuration_required") {
+          return context.json({
+            error: {
+              code: "SEMANTIC_CONFIGURATION_REQUIRED",
+              messageKey: "errors.semanticConfigurationRequired",
+              safeCode: result.safeCode ?? "semantic_configuration_required"
+            }
+          }, 409);
+        }
         if (!("request" in result)) {
           return context.json({
             error: {
@@ -101,6 +110,39 @@ export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
           error: {
             code: "INDEX_MAINTENANCE_REQUEST_FAILED",
             messageKey: "errors.indexMaintenanceRequestFailed"
+          }
+        }, 500);
+      }
+    }
+  );
+  app.post(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/index-maintenance/cancel",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
+      try {
+        const result = await services.application.cancelMaintenance({
+          knowledgeBaseId: context.req.param("knowledgeBaseId")
+        });
+        if (!result.available) {
+          return context.json({
+            error: {
+              code: "INDEX_MAINTENANCE_UNAVAILABLE",
+              messageKey: "errors.indexMaintenanceUnavailable"
+            }
+          }, 503);
+        }
+        await services.audit.record({
+          context,
+          eventType: "knowledge_base_index_maintenance_cancelled",
+          result: "success"
+        });
+        return context.json({ result: result.outcome }, 200);
+      } catch {
+        return context.json({
+          error: {
+            code: "INDEX_MAINTENANCE_CANCEL_FAILED",
+            messageKey: "errors.indexMaintenanceCancelFailed"
           }
         }, 500);
       }

@@ -6,15 +6,20 @@ import {
   type GraphSearchDepth
 } from "../search/graph-search-documents.js";
 import type { RuntimeGraphSettings } from "../runtime-settings/types.js";
+import { normalizeAndValidateSearchQuery } from "./search-query-contract.js";
+
+export const DEVELOPER_GRAPH_EXPANSION_ERROR_CODES = [
+  "GRAPH_EXPANSION_SEED_REQUIRED",
+  "GRAPH_EXPANSION_SEED_CONFLICT",
+  "GRAPH_EXPANSION_QUERY_TOO_SHORT",
+  "GRAPH_EXPANSION_QUERY_TOO_LONG",
+  "INVALID_GRAPH_EXPANSION_QUERY",
+  "INVALID_GRAPH_EXPANSION_DEPTH",
+  "INVALID_GRAPH_EXPANSION_FANOUT"
+] as const;
 
 export type DeveloperGraphExpansionErrorCode =
-  | "GRAPH_EXPANSION_SEED_REQUIRED"
-  | "GRAPH_EXPANSION_SEED_CONFLICT"
-  | "GRAPH_EXPANSION_QUERY_TOO_SHORT"
-  | "GRAPH_EXPANSION_QUERY_TOO_LONG"
-  | "INVALID_GRAPH_EXPANSION_QUERY"
-  | "INVALID_GRAPH_EXPANSION_DEPTH"
-  | "INVALID_GRAPH_EXPANSION_FANOUT";
+  (typeof DEVELOPER_GRAPH_EXPANSION_ERROR_CODES)[number];
 
 export type DeveloperGraphExpansionFilterResult =
   | {
@@ -28,9 +33,6 @@ export type DeveloperGraphExpansionFilterResult =
     }
   | { ok: false; code: DeveloperGraphExpansionErrorCode };
 
-const QUERY_MIN_LENGTH = 2;
-const QUERY_MAX_LENGTH = 160;
-
 export function readDeveloperGraphExpansionFilters(input: {
   fileId?: string | undefined;
   nodeId?: string | undefined;
@@ -43,7 +45,11 @@ export function readDeveloperGraphExpansionFilters(input: {
   const fileId = input.fileId?.trim() || null;
   const nodeId = input.nodeId?.trim() || null;
   const edgeId = input.edgeId?.trim() || null;
-  const query = input.query?.trim() || null;
+  const rawQuery = input.query;
+  const queryResult = rawQuery === undefined || rawQuery.trim() === ""
+    ? null
+    : normalizeAndValidateSearchQuery(rawQuery);
+  const query = queryResult === null || !queryResult.ok ? null : queryResult.value;
   const seedCount = [fileId, nodeId, edgeId, query].filter(Boolean).length;
 
   if (seedCount === 0) {
@@ -54,19 +60,14 @@ export function readDeveloperGraphExpansionFilters(input: {
     return { ok: false, code: "GRAPH_EXPANSION_SEED_CONFLICT" };
   }
 
-  if (query) {
-    if (query.length < QUERY_MIN_LENGTH) {
-      return { ok: false, code: "GRAPH_EXPANSION_QUERY_TOO_SHORT" };
-    }
-
-    if (query.length > QUERY_MAX_LENGTH) {
-      return { ok: false, code: "GRAPH_EXPANSION_QUERY_TOO_LONG" };
-    }
-
-    if (/[\u0000-\u001F\u007F]/u.test(query)) {
-      return { ok: false, code: "INVALID_GRAPH_EXPANSION_QUERY" };
-    }
-  }
+  if (queryResult && !queryResult.ok) return {
+    ok: false,
+    code: queryResult.error === "too_short"
+      ? "GRAPH_EXPANSION_QUERY_TOO_SHORT"
+      : queryResult.error === "too_long"
+        ? "GRAPH_EXPANSION_QUERY_TOO_LONG"
+        : "INVALID_GRAPH_EXPANSION_QUERY"
+  };
 
   const depth = readGraphDepth(input.depth, input.graphSettings);
 

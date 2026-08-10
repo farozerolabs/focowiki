@@ -171,6 +171,12 @@ export async function supersedeConflictingWork(input: {
     FOR UPDATE OF work, operation
   `;
   const operationPublicIds = rows.map((row) => row.public_id);
+  await requestSemanticCancellation({
+    transaction,
+    request,
+    target,
+    operationPublicIds
+  });
   if (operationPublicIds.length === 0) return 0;
   const objectIds = await transaction<Array<{ object_id: string }>>`
     DELETE FROM focowiki.object_owners
@@ -229,6 +235,50 @@ export async function supersedeConflictingWork(input: {
     request.requestedAt
   );
   return operationPublicIds.length;
+}
+
+async function requestSemanticCancellation(input: {
+  transaction: StorageVnextDeletionTransaction;
+  request: StorageVnextNormalizedDeletionRequest;
+  target: StorageVnextDeletionTarget;
+  operationPublicIds: readonly string[];
+}): Promise<void> {
+  const { transaction, request, target } = input;
+  const directoryPattern = request.targetKind === "source_directory"
+    ? `${escapeLike(target.normalizedPath!)}/%`
+    : "";
+  await transaction`
+    UPDATE focowiki.semantic_stage_work_items stage
+    SET cancellation_requested_at = COALESCE(
+          stage.cancellation_requested_at, ${request.requestedAt}
+        ),
+        state = CASE WHEN stage.state IN ('queued', 'retry')
+          THEN 'cancelled' ELSE stage.state END,
+        completed_at = CASE WHEN stage.state IN ('queued', 'retry')
+          THEN ${request.requestedAt} ELSE stage.completed_at END,
+        revision = stage.revision + 1,
+        updated_at = ${request.requestedAt}
+    WHERE stage.knowledge_base_id = ${request.knowledgeBaseId}
+      AND stage.state IN ('queued', 'running', 'retry')
+      AND (
+        stage.operation_public_id = ANY(${input.operationPublicIds})
+        OR ${request.targetKind === "knowledge_base"}
+        OR (
+          ${request.targetKind === "source_file"}
+          AND stage.source_file_public_id = ${request.targetPublicId}
+        )
+        OR (
+          ${request.targetKind === "source_directory"}
+          AND EXISTS (
+            SELECT 1
+            FROM focowiki.source_files source
+            WHERE source.knowledge_base_id = stage.knowledge_base_id
+              AND source.public_id = stage.source_file_public_id
+              AND source.normalized_path LIKE ${directoryPattern} ESCAPE '\\'
+          )
+        )
+      )
+  `;
 }
 
 function conflictScope(

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveStorageVnextSemanticChangedFacts,
   deriveStorageVnextReleaseDependencyClosure,
+  includeStorageVnextSemanticDependencyClosure,
   includeStorageVnextNavigationProfileUpgrade
 } from "../src/storage-vnext/release/dependency-closure.js";
 
@@ -58,6 +60,83 @@ describe("storage vNext bounded release dependency closure", () => {
       { kind: "schema", publicId: "schema.md", reasonCode: "required_schema" },
       { kind: "log", publicId: "log.md", reasonCode: "bounded_update_log" }
     ]));
+  });
+
+  it("adds only the bounded semantic affected closure without a full-scope fallback", () => {
+    const base = deriveStorageVnextReleaseDependencyClosure({
+      knowledgeBaseId: "kb-semantic",
+      mutationKind: "replacement",
+      sourceFilePublicIds: ["file-main"],
+      sourceLogicalPaths: ["Guides/Main.md"],
+      previousSourceLogicalPaths: ["Guides/Main.md"],
+      directoryLogicalPaths: [],
+      searchSourceFilePublicIds: ["file-main"],
+      graphSourceFilePublicIds: ["file-main"],
+      graphEdgePublicIds: []
+    });
+    const semantic = semanticImpact();
+    const extended = includeStorageVnextSemanticDependencyClosure({ base, semantic });
+    expect(extended.affectedSourceFilePublicIds).toEqual([
+      "file-main", "file-neighbor"
+    ]);
+    expect(extended.affectedLogicalPaths).toEqual(expect.arrayContaining([
+      "pages/Guides/Main.md", "_graph/by-file/file-main.json"
+    ]));
+    expect(extended.dependencies).toEqual(expect.arrayContaining([
+      { kind: "semantic", publicId: "entity-main", reasonCode: "semantic_entity" },
+      { kind: "semantic", publicId: "relationship-main", reasonCode: "semantic_relationship" },
+      { kind: "semantic", publicId: "evidence-main", reasonCode: "semantic_evidence" },
+      { kind: "semantic", publicId: "entity:entity-main", reasonCode: "semantic_reverse_reference" },
+      { kind: "vector", publicId: "entity-main", reasonCode: "semantic_vector_owner" },
+      { kind: "community", publicId: "entity-en", reasonCode: "semantic_dirty_partition" },
+      { kind: "graph", publicId: "graph-abcd", reasonCode: "semantic_graph_shard" },
+      { kind: "search", publicId: "search-abcd", reasonCode: "semantic_search_shard" }
+    ]));
+    expect(extended.dependencies).not.toContainEqual(expect.objectContaining({
+      kind: "scope", reasonCode: "semantic_full_rebuild"
+    }));
+    expect(deriveStorageVnextSemanticChangedFacts({
+      semantic, change: "updated"
+    })).toEqual(expect.arrayContaining([
+      { kind: "semantic_entity", publicId: "entity-main", change: "updated" },
+      { kind: "semantic_relationship", publicId: "relationship-main", change: "updated" },
+      { kind: "semantic_evidence", publicId: "evidence-main", change: "updated" },
+      { kind: "semantic_reverse_reference", publicId: "entity:entity-main", change: "updated" },
+      { kind: "semantic_vector", publicId: "entity-main", change: "updated" },
+      { kind: "semantic_community", publicId: "entity-en", change: "updated" }
+    ]));
+  });
+
+  it("keeps the source-path reason when semantic evidence targets the same page", () => {
+    const base = deriveStorageVnextReleaseDependencyClosure({
+      knowledgeBaseId: "kb-semantic-overlap",
+      mutationKind: "graph_change",
+      sourceFilePublicIds: ["file-main"],
+      sourceLogicalPaths: ["Guides/Main.md"],
+      previousSourceLogicalPaths: [],
+      directoryLogicalPaths: [],
+      searchSourceFilePublicIds: ["file-main"],
+      graphSourceFilePublicIds: ["file-main"],
+      graphEdgePublicIds: []
+    });
+    const semantic = {
+      ...semanticImpact(),
+      generatedLogicalPaths: [
+        "pages/Guides/Main.md",
+        "_graph/by-file/file-main.json"
+      ]
+    };
+
+    const extended = includeStorageVnextSemanticDependencyClosure({ base, semantic });
+
+    expect(extended.dependencies.filter((dependency) =>
+      dependency.kind === "path"
+      && dependency.publicId === "pages/Guides/Main.md"
+    )).toEqual([{
+      kind: "path",
+      publicId: "pages/Guides/Main.md",
+      reasonCode: "source_path"
+    }]);
   });
 
   it("covers both old and new ancestors for rename and move without duplicates", () => {
@@ -203,3 +282,20 @@ describe("storage vNext bounded release dependency closure", () => {
     }
   });
 });
+
+function semanticImpact() {
+  return {
+    sourceFilePublicIds: ["file-main"],
+    sourceRevisionPublicIds: ["revision-main"],
+    entityPublicIds: ["entity-main"],
+    relationshipPublicIds: ["relationship-main"],
+    evidencePublicIds: ["evidence-main"],
+    reverseReferencePublicIds: ["entity:entity-main"],
+    vectorOwnerPublicIds: ["entity-main"],
+    dirtyPartitionKeys: ["entity-en"],
+    affectedFileNeighborPublicIds: ["file-neighbor"],
+    generatedLogicalPaths: ["_graph/by-file/file-main.json"],
+    graphShardPublicIds: ["graph-abcd"],
+    searchShardPublicIds: ["search-abcd"]
+  };
+}

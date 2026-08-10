@@ -142,10 +142,8 @@ export function evaluateStorageVnextObjectFanoutBudget(
 
 function maximumActiveObjectsForSources(sourceFileCount: number): number {
   if (sourceFileCount === 0) return MIN_STORAGE_VNEXT_RELEASED_OBJECTS;
-  return Math.max(
-    sourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE,
-    MIN_STORAGE_VNEXT_FILE_FIRST_OBJECT_CEILING
-  );
+  return MIN_STORAGE_VNEXT_FILE_FIRST_OBJECT_CEILING
+    + sourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE;
 }
 
 function scaleMaximumActiveObjectsForSources(sourceFileCount: number): number {

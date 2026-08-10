@@ -26,6 +26,8 @@ export function createStorageVnextSearchSettings(input: {
     filterableAttributes: [
       "knowledgeBaseId",
       "documentKind",
+      "contentKind",
+      "fileKind",
       "schemaVersion",
       "sourceFilePublicId",
       "okfSignals.status",

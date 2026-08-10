@@ -6,7 +6,8 @@ const PREFIX_SEGMENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 export type StorageVnextImmutableObjectFormat =
   | "source-markdown-v1"
   | "okf-generated-markdown-v1"
-  | "okf-generated-json-v1";
+  | "okf-generated-json-v1"
+  | "semantic-vector-v1";
 
 export type StorageVnextImmutableObjectDescriptor = {
   objectId: string;
@@ -18,9 +19,9 @@ export type StorageVnextImmutableObjectDescriptor = {
 };
 
 const FORMATS: Record<StorageVnextImmutableObjectFormat, {
-  family: "source" | "generated";
+  family: "source" | "generated" | "semantic";
   contentType: string;
-  extension: "md" | "json";
+  extension: "md" | "json" | "bin";
 }> = {
   "source-markdown-v1": {
     family: "source",
@@ -36,6 +37,11 @@ const FORMATS: Record<StorageVnextImmutableObjectFormat, {
     family: "generated",
     contentType: "application/json; charset=utf-8",
     extension: "json"
+  },
+  "semantic-vector-v1": {
+    family: "semantic",
+    contentType: "application/octet-stream",
+    extension: "bin"
   }
 };
 
@@ -60,7 +66,7 @@ export function describeStorageVnextImmutableObject(input: {
   const checksum = createHash("sha256").update(input.bytes).digest("hex");
   const objectId = format.family === "source"
     ? `source-sha256:${checksum}`
-    : `generated-sha256:${input.objectFormat}:${checksum}`;
+    : `${format.family}-sha256:${input.objectFormat}:${checksum}`;
   const formatPath = format.family === "source" ? "" : `${input.objectFormat}/`;
   return {
     objectId,

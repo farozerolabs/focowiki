@@ -16,6 +16,9 @@ import {
   openSearchStatusCode
 } from "./opensearch-errors.js";
 import { createOpenSearchIndexBody } from "./opensearch-index-schema.js";
+import { createOpenSearchVectorPort } from "./opensearch-vector-port.js";
+import { createValidatedSearchProviderVectorPort } from
+  "../../semantic/vector/provider-contract.js";
 
 type BulkLimits = Parameters<typeof createOpenSearchBulkWriter>[0]["limits"];
 
@@ -217,6 +220,10 @@ export function createOpenSearchProviderRuntime(input: {
         return null;
       }
     },
+    vector: createValidatedSearchProviderVectorPort(createOpenSearchVectorPort({
+      client: input.client,
+      maximumBulkBytes: input.bulkLimits.maximumBytes
+    })),
     close() {
       return execute(() => input.client.close());
     }

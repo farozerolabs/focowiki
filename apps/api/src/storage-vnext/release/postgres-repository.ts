@@ -113,7 +113,7 @@ export function createPostgresStorageVnextReleaseRepository(
       const rows = await sql<StorageVnextReleaseCandidateRow[]>`
         SELECT public_id, knowledge_base_id, operation_public_id,
                candidate_root_public_id, expected_active_root_public_id,
-               expected_active_revision, state, changed_fact_count,
+               expected_active_revision, state, fact_revision, changed_fact_count,
                affected_dependency_count, manifest_checksum_sha256,
                created_at, updated_at
         FROM focowiki.release_candidates
@@ -457,13 +457,13 @@ export function createPostgresStorageVnextReleaseRepository(
           INSERT INTO focowiki.release_candidates (
             public_id, knowledge_base_id, operation_public_id,
             candidate_root_public_id, expected_active_root_public_id,
-            expected_active_revision, state, changed_fact_count,
+            expected_active_revision, state, fact_revision, changed_fact_count,
             affected_dependency_count, manifest_checksum_sha256,
             created_at, updated_at
           ) VALUES (
             ${input.publicId}, ${input.knowledgeBaseId}, ${input.operationPublicId},
             ${input.candidateRootPublicId}, ${input.expectedActiveRootPublicId},
-            ${input.expectedActiveRevision}, 'building', 0, 0, NULL,
+            ${input.expectedActiveRevision}, 'building', 0, 0, 0, NULL,
             ${input.createdAt}, ${input.createdAt}
           )
         `;
@@ -526,7 +526,10 @@ export function createPostgresStorageVnextReleaseRepository(
           RETURNING public_id
         `;
         await assertShardDescriptors(transaction, candidate.knowledge_base_id, input.shards);
-        const replacedObjects = await transaction<Array<{ object_id: string }>>`
+        const replacedShards = await transaction<Array<{
+          public_id: string;
+          object_id: string;
+        }>>`
           WITH incoming AS (
             SELECT *
             FROM unnest(
@@ -555,7 +558,7 @@ export function createPostgresStorageVnextReleaseRepository(
                   OR incoming.first_logical_path = existing.first_logical_path
                 )
             )
-          RETURNING existing.object_id
+          RETURNING existing.public_id, existing.object_id
         `;
         const attachments = await transaction<Array<{ release_shard_public_id: string }>>`
           INSERT INTO focowiki.release_root_shards (
@@ -577,11 +580,23 @@ export function createPostgresStorageVnextReleaseRepository(
           kind: "candidate_root",
           objectIds: uniqueStorageVnextValues(input.shards.map((item) => item.objectId))
         });
+        if (replacedShards.length > 0) {
+          await transaction`
+            DELETE FROM focowiki.release_shards shard
+            WHERE shard.knowledge_base_id = ${candidate.knowledge_base_id}
+              AND shard.public_id = ANY(${replacedShards.map((row) => row.public_id)})
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.release_root_shards attached
+                WHERE attached.knowledge_base_id = shard.knowledge_base_id
+                  AND attached.release_shard_public_id = shard.public_id
+              )
+          `;
+        }
         await releaseUnusedRootOwners(transaction, {
           knowledgeBaseId: candidate.knowledge_base_id,
           operationPublicId: candidate.operation_public_id,
           rootPublicId: candidate.candidate_root_public_id,
-          objectIds: uniqueStorageVnextValues(replacedObjects.map((row) => row.object_id))
+          objectIds: uniqueStorageVnextValues(replacedShards.map((row) => row.object_id))
         });
         const counts = await transaction<Array<{ total: number | string }>>`
           SELECT count(*) AS total
@@ -752,6 +767,10 @@ export function createPostgresStorageVnextReleaseRepository(
         SET state = 'validating', updated_at = now()
         WHERE public_id = ${input.candidatePublicId}
           AND state = 'building'
+          AND (
+            ${input.expectedFactRevision ?? null}::bigint IS NULL
+            OR fact_revision = ${input.expectedFactRevision ?? null}::bigint
+          )
         RETURNING public_id
       `;
       return rows.length === 1;
@@ -1371,7 +1390,7 @@ async function readCandidateByKnowledgeBase(
   const rows = await sql<StorageVnextReleaseCandidateRow[]>`
     SELECT public_id, knowledge_base_id, operation_public_id,
            candidate_root_public_id, expected_active_root_public_id,
-           expected_active_revision, state, changed_fact_count,
+           expected_active_revision, state, fact_revision, changed_fact_count,
            affected_dependency_count, manifest_checksum_sha256,
            created_at, updated_at
     FROM focowiki.release_candidates
@@ -1391,7 +1410,7 @@ async function readCandidateByPublicId(
   const rows = await sql<StorageVnextReleaseCandidateRow[]>`
     SELECT public_id, knowledge_base_id, operation_public_id,
            candidate_root_public_id, expected_active_root_public_id,
-           expected_active_revision, state, changed_fact_count,
+           expected_active_revision, state, fact_revision, changed_fact_count,
            affected_dependency_count, manifest_checksum_sha256,
            created_at, updated_at
     FROM focowiki.release_candidates
@@ -1504,8 +1523,9 @@ async function persistCandidateFacts(
     dependencies: readonly StorageVnextCandidateDependency[];
   }
 ): Promise<void> {
+  let modifiedFactCount = 0;
   if (input.changedFacts.length > 0) {
-    await sql`
+    const modified = await sql<Array<{ changed: number }>>`
       INSERT INTO focowiki.release_candidate_changed_facts (
         knowledge_base_id, candidate_public_id, fact_kind,
         fact_public_id, change_kind
@@ -1519,10 +1539,14 @@ async function persistCandidateFacts(
       )
       ON CONFLICT (candidate_public_id, fact_kind, fact_public_id) DO UPDATE
       SET change_kind = EXCLUDED.change_kind
+      WHERE focowiki.release_candidate_changed_facts.change_kind
+        IS DISTINCT FROM EXCLUDED.change_kind
+      RETURNING 1 AS changed
     `;
+    modifiedFactCount += modified.length;
   }
   if (input.dependencies.length > 0) {
-    await sql`
+    const modified = await sql<Array<{ changed: number }>>`
       INSERT INTO focowiki.release_candidate_dependencies (
         knowledge_base_id, candidate_public_id, dependency_kind,
         dependency_public_id, reason_code
@@ -1536,7 +1560,11 @@ async function persistCandidateFacts(
       )
       ON CONFLICT (candidate_public_id, dependency_kind, dependency_public_id) DO UPDATE
       SET reason_code = EXCLUDED.reason_code
+      WHERE focowiki.release_candidate_dependencies.reason_code
+        IS DISTINCT FROM EXCLUDED.reason_code
+      RETURNING 1 AS changed
     `;
+    modifiedFactCount += modified.length;
   }
   const counts = await candidateCounts(sql, input.candidatePublicId);
   if (
@@ -1545,13 +1573,16 @@ async function persistCandidateFacts(
   ) {
     throw new StorageVnextReleaseRepositoryError("candidate_limit_exceeded");
   }
-  await sql`
-    UPDATE focowiki.release_candidates
-    SET changed_fact_count = ${counts.changedFacts},
-        affected_dependency_count = ${counts.dependencies},
-        updated_at = now()
-    WHERE public_id = ${input.candidatePublicId}
-  `;
+  if (modifiedFactCount > 0) {
+    await sql`
+      UPDATE focowiki.release_candidates
+      SET fact_revision = fact_revision + 1,
+          changed_fact_count = ${counts.changedFacts},
+          affected_dependency_count = ${counts.dependencies},
+          updated_at = now()
+      WHERE public_id = ${input.candidatePublicId}
+    `;
+  }
 }
 
 async function candidateCounts(sql: ReadSql, candidatePublicId: string) {

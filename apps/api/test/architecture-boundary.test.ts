@@ -169,7 +169,7 @@ describe("lightweight architecture boundaries", () => {
     ).toBe(false);
   });
 
-  it("packages one shared tokenizer for source facts and OpenSearch roles", () => {
+  it("packages one shared tokenizer for source facts and all search roles", () => {
     const runtimeBuild = readWorkspaceFile("apps/api/scripts/build-runtime.mjs");
     const dockerfile = readWorkspaceFile("Dockerfile");
     const sourceMain = readWorkspaceFile("apps/api/src/source-worker-main.ts");
@@ -193,9 +193,9 @@ describe("lightweight architecture boundaries", () => {
     expect(sourceRuntime.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
     expect(sourceMain).toContain("assertTokenizer: assertNodeJiebaRuntimeAvailable");
     expect(sourceRuntime).toContain("assertNodeJiebaRuntimeAvailable()");
-    expect(maintenanceRuntime).toContain('searchConfig.provider === "opensearch"');
+    expect(maintenanceRuntime).not.toContain('searchConfig.provider === "opensearch"');
     expect(maintenanceRuntime.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
-    expect(publicationRuntime).toContain('searchConfig.provider === "opensearch"');
+    expect(publicationRuntime).not.toContain('searchConfig.provider === "opensearch"');
     expect(publicationRuntime.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
   });
 

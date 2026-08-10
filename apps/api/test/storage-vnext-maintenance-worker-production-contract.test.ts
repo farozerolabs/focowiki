@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   shouldWaitForStorageVnextMaintenancePoll,
-  storageVnextStagingRetentionCutoff
+  storageVnextStagingRetentionCutoff,
+  storageVnextWebhookRequestTimeoutMilliseconds
 } from "../src/storage-vnext/maintenance/production-runtime.js";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
@@ -98,6 +99,15 @@ describe("storage vNext maintenance worker production contract", () => {
       24
     )).toBe("2026-08-05T12:00:00.000Z");
     expect(read(runtimePath)).toContain("snapshot.search.stagingRetentionHours");
+  });
+
+  it("keeps webhook timeouts inside fresh per-phase worker leases", () => {
+    expect(storageVnextWebhookRequestTimeoutMilliseconds(60)).toBe(48_000);
+    expect(storageVnextWebhookRequestTimeoutMilliseconds(1)).toBe(800);
+    const runtime = read(runtimePath);
+    expect(runtime).toContain("const nextLeaseExpiresAt = () =>");
+    expect(runtime.match(/leaseExpiresAt: nextLeaseExpiresAt\(\)/gu)?.length)
+      .toBeGreaterThanOrEqual(4);
   });
 });
 

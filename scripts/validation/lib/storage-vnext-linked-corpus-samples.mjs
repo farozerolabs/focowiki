@@ -24,7 +24,7 @@ export function selectClosedMarkdownSample(input) {
     for (const match of input.readText(filePath).matchAll(MARKDOWN_LINK)) {
       const target = resolveTarget(filePath, match[1], known, byBasename);
       if (!target) {
-        invalid.add(filePath);
+        if (!input.allowUnresolvedLinks) invalid.add(filePath);
         continue;
       }
       targets.push(target);

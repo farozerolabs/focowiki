@@ -41,12 +41,16 @@ import {
 } from "./openapi-presenters.js";
 import {
   findStorageVnextGeneratedIdentity,
+  listStorageVnextGraphExpansionRelationships,
   listStorageVnextRelationships,
   listStorageVnextSearchGraphContexts,
+  readStorageVnextGraphSearchSummary,
   resolveStorageVnextGraphSeed,
   type StorageVnextOpenApiSearchGraphContext
 } from "./postgres-openapi-read.js";
 import type { createPostgresStorageVnextOpenApiWebhooks } from "./postgres-openapi-webhooks.js";
+import type { StorageVnextKnowledgeBaseCreationPort } from
+  "./postgres-knowledge-base-creation.js";
 
 export function createPostgresStorageVnextOpenApiApplication(input: {
   sql: DatabaseClient;
@@ -59,12 +63,15 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
   source: StorageVnextAdminSourceApplication;
   search: StorageVnextSearchQueryPort | null;
   webhooks: ReturnType<typeof createPostgresStorageVnextOpenApiWebhooks>;
+  knowledgeBaseCreation?: StorageVnextKnowledgeBaseCreationPort;
 }): DeveloperOpenApiApplication {
   return {
     async createKnowledgeBase(request) {
       const name = request.name.trim();
       if (!name) throw validationError("Knowledge base name is required.", { field: "name" });
-      const record = await input.catalog.createKnowledgeBase({
+      const record = await (input.knowledgeBaseCreation ?? {
+        create: input.catalog.createKnowledgeBase.bind(input.catalog)
+      }).create({
         publicId: `knowledge-base-${randomUUID()}`,
         name,
         description: request.description?.trim() || null
@@ -173,10 +180,10 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
       if (!input.search) throw repositoryUnavailable();
       const root = await input.releases.getActiveRoot(request.knowledgeBaseId);
       if (!root) return emptyOpenApiSearchResponse(request, null);
-      const normalizedQuery = request.query.trim();
+      const normalizedQuery = request.query;
       if (!normalizedQuery) throw validationError("Search query is required.", { field: "query" });
       if (request.fileKind !== null && request.fileKind !== "page") {
-        return emptyOpenApiSearchResponse(request, root.publicId);
+        throw validationError("Search file kind is invalid.", { field: "fileKind" });
       }
       const kinds = request.mode === "file" ? ["file" as const]
         : request.mode === "graph" ? ["graph" as const]
@@ -187,22 +194,37 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
           knowledgeBaseId: request.knowledgeBaseId,
           query: normalizedQuery,
           kinds,
+          scope: request.scope,
+          fileKind: request.fileKind,
           limit: request.limit,
+          rerank: request.rerank,
+          rerankTopK: request.rerankTopK,
+          rerankScoreThreshold: request.rerankScoreThreshold,
           cursor: request.cursor,
-          ...(request.okfFilters === undefined
-            ? {}
-            : { okfFilters: request.okfFilters })
+          okfFilters: request.okfFilters ?? {
+            status: null,
+            trustTier: null,
+            freshness: null,
+            requestEpochDay: null
+          }
         });
       } catch (error) {
         throw mapSearchError(error);
       }
-      const graphContexts = request.mode === "file"
-        ? new Map<string, StorageVnextOpenApiSearchGraphContext>()
-        : await listStorageVnextSearchGraphContexts(input.sql, {
-            knowledgeBaseId: request.knowledgeBaseId,
-            sourceFileIds: page.items.map((item) => item.sourceFilePublicId),
-            limitPerSource: request.graphFanout
-          });
+      const [graphContexts, graphSummary] = request.mode === "file"
+        ? [new Map<string, StorageVnextOpenApiSearchGraphContext>(), {
+            indexedDocumentCount: 0,
+            indexedRelationshipCount: 0
+          }] as const
+        : await Promise.all([
+            listStorageVnextSearchGraphContexts(input.sql, {
+              knowledgeBaseId: request.knowledgeBaseId,
+              sourceFileIds: page.items.map((item) => item.sourceFilePublicId),
+              depth: request.graphDepth,
+              limitPerSource: request.graphFanout
+            }),
+            readStorageVnextGraphSearchSummary(input.sql, request.knowledgeBaseId)
+          ]);
       const items = page.items.map((item) => {
         const graph = graphContexts.get(item.sourceFilePublicId);
         return presentOpenApiSearchResult({
@@ -215,23 +237,21 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
           relationships: graph?.relationships ?? []
         });
       });
-      const indexedRelationshipCount = request.mode === "file" ? 0 : new Set(
-        [...graphContexts.values()].flatMap((context) =>
-          context.relationships.map((relationship) => relationship.public_id)
-        )
-      ).size;
       return {
         generationId: root.publicId,
         query: openApiSearchQuery(request, normalizedQuery),
         items,
         nextCursor: page.nextCursor,
+        ...(page.semanticStatus ? { semanticStatus: page.semanticStatus } : {}),
+        ...(page.evidenceStatus ? { evidenceStatus: page.evidenceStatus } : {}),
+        ...(page.rerankerStatus ? { rerankerStatus: page.rerankerStatus } : {}),
         searchStatus: items.length > 0 ? "ok" : "no_candidates",
         searchMode: request.mode,
         graphStatus: request.mode === "file" ? "disabled_for_file_mode" : "available",
         graphSummary: {
           available: request.mode !== "file",
-          indexedDocumentCount: items.length,
-          indexedRelationshipCount,
+          indexedDocumentCount: graphSummary.indexedDocumentCount,
+          indexedRelationshipCount: graphSummary.indexedRelationshipCount,
           depth: request.graphDepth,
           fanout: request.graphFanout
         },
@@ -295,9 +315,11 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
       const seed = await resolveStorageVnextGraphSeed(input.sql, request);
       if (!seed) throw notFound();
       const rootId = await activeRootId(input.releases, request.knowledgeBaseId);
-      const page = await listStorageVnextRelationships(input.sql, {
+      const page = await listStorageVnextGraphExpansionRelationships(input.sql, {
         knowledgeBaseId: request.knowledgeBaseId,
         sourceFileId: seed.sourceFileId,
+        depth: request.depth,
+        fanout: request.fanout,
         limit: request.limit,
         cursor: request.cursor
       });
@@ -334,7 +356,13 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
           rootId,
           item
         )),
-        graphPaths: [seed.sourceFileId, ...page.items.map((item) => item.source_file_public_id)]
+        graphPaths: [...new Set([
+          seed.sourceFileId,
+          ...page.items.flatMap((item) => [
+            item.from_source_file_public_id ?? seed.sourceFileId,
+            item.source_file_public_id
+          ])
+        ])]
           .map(graphRefForFile),
         nextCursor: page.nextCursor,
         resultSummary: {

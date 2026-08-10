@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../../db/client.js";
 import { isWebhookEventType } from "../../webhooks/events.js";
 import type {
@@ -24,31 +24,7 @@ export function createPostgresStorageVnextWebhookRepository(
 ): StorageVnextWebhookRepository {
   return {
     async enqueue(input: StorageVnextWebhookEnqueue): Promise<number> {
-      const identity = randomUUID();
-      const rows = await sql<Array<{ public_id: string }>>`
-        INSERT INTO focowiki.webhook_deliveries (
-          public_id, knowledge_base_id, subscription_public_id,
-          operation_public_id, event_public_id, event_type, event_payload,
-          state, attempt_count, next_attempt_at, created_at, updated_at,
-          expires_at
-        )
-        SELECT 'delivery-' || ${identity} || '-' ||
-                 row_number() OVER (ORDER BY subscription.public_id),
-               NULL, subscription.public_id, NULL, ${input.eventPublicId},
-               ${input.eventType}, ${sql.json(input.payload as never)}, 'queued', 0,
-               ${input.createdAt}, ${input.createdAt}, ${input.createdAt},
-               ${input.expiresAt}
-        FROM focowiki.webhook_subscriptions subscription
-        WHERE subscription.knowledge_base_id IS NULL
-          AND subscription.enabled = true
-          AND subscription.event_types ? ${input.eventType}
-          AND subscription.created_at <= ${input.createdAt}
-        ON CONFLICT (subscription_public_id, event_public_id)
-          WHERE redelivery_of_public_id IS NULL
-        DO NOTHING
-        RETURNING public_id
-      `;
-      return rows.length;
+      return enqueuePostgresStorageVnextWebhookEvents(sql, [input]);
     },
 
     async claim(input) {
@@ -110,6 +86,47 @@ export function createPostgresStorageVnextWebhookRepository(
       return rows.length === 1;
     }
   };
+}
+
+const MAXIMUM_WEBHOOK_EVENT_BATCH = 1_000;
+
+export async function enqueuePostgresStorageVnextWebhookEvents(
+  sql: DatabaseClient | TransactionSql,
+  events: readonly StorageVnextWebhookEnqueue[]
+): Promise<number> {
+  if (events.length === 0) return 0;
+  if (events.length > MAXIMUM_WEBHOOK_EVENT_BATCH) {
+    throw new Error("Storage vNext webhook event batch exceeds the supported limit");
+  }
+  const rows = await sql<Array<{ public_id: string }>>`
+    INSERT INTO focowiki.webhook_deliveries (
+      public_id, knowledge_base_id, subscription_public_id,
+      operation_public_id, event_public_id, event_type, event_payload,
+      state, attempt_count, next_attempt_at, created_at, updated_at,
+      expires_at
+    )
+    SELECT 'delivery-' || md5(
+             subscription.public_id || chr(31) || event."eventPublicId"
+           ),
+           NULL, subscription.public_id, NULL, event."eventPublicId",
+           event."eventType", event.payload, 'queued', 0,
+           event."createdAt", event."createdAt", event."createdAt",
+           event."expiresAt"
+    FROM jsonb_to_recordset(${sql.json(events as never)}) AS event(
+      "eventPublicId" text, "eventType" text, payload jsonb,
+      "createdAt" timestamptz, "expiresAt" timestamptz
+    )
+    JOIN focowiki.webhook_subscriptions subscription
+      ON subscription.knowledge_base_id IS NULL
+     AND subscription.enabled = true
+     AND subscription.event_types ? event."eventType"
+     AND subscription.created_at <= event."createdAt"
+    ON CONFLICT (subscription_public_id, event_public_id)
+      WHERE redelivery_of_public_id IS NULL
+    DO NOTHING
+    RETURNING public_id
+  `;
+  return rows.length;
 }
 
 function mapClaimed(row: ClaimedRow): StorageVnextClaimedWebhookDelivery {

@@ -90,6 +90,7 @@ describe("storage vNext search candidate validation", () => {
   it("validates counts, checksums, paths, query parity, ranking, and hydration", async () => {
     const fixture = createFixture();
     const refreshIndex = vi.spyOn(fixture.provider.write, "refreshIndex");
+    const queryIndex = vi.spyOn(fixture.provider.query, "query");
 
     await validateStorageVnextSearchCandidate({
       repository: fixture.repository,
@@ -114,6 +115,15 @@ describe("storage vNext search candidate validation", () => {
     expect(fixture.hydration.hydrateCurrentSources).toHaveBeenCalledWith(
       expect.objectContaining({ candidatePublicId: "candidate-a" })
     );
+    const rankingRequests = queryIndex.mock.calls
+      .map(([request]) => request)
+      .filter((request) => request.query === "employment contract"
+        && request.searchFields.includes("title")
+        && request.searchFields.includes("searchText"));
+    expect(rankingRequests).toHaveLength(2);
+    expect(rankingRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceFamilies: ["exact", "text"] })
+    ]));
   });
 
   it("translates candidate OKF matrix cases through the shared provider filter contract", async () => {

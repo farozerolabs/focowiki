@@ -171,12 +171,12 @@ test("the Chinese explorer localizes display copy without changing the source co
     "查看文件和目录移动、替换及删除的处理进度与结果。"
   );
   assert.equal(searchOperation.summary, "搜索文件");
-  assert.match(searchOperation.description, /查找已发布文件/);
+  assert.match(searchOperation.description, /完整自然语言问题/);
   assert.deepEqual(searchOperation.tags, ["文件"]);
   assert.match(
     searchOperation.parameters.find((parameter) => parameter.name === "query")
       ?.description ?? "",
-    /搜索词/
+    /完整独立的自然语言问题/
   );
   assert.equal(
     (source.tags as Array<{ name: string }>)[0]?.name,
@@ -425,6 +425,53 @@ test("every generated operation page lists every documented error exactly once",
         actualRows.length,
         `${file} contains duplicate error rows.`
       );
+    }
+  }
+});
+
+test("every generated operation page lists its validation detail codes exactly once", async () => {
+  const contract = JSON.parse(await fs.readFile(contractPath, "utf8")) as {
+    paths: Record<
+      string,
+      Record<
+        string,
+        {
+          operationId?: string;
+          "x-validation-detail-codes"?: string[];
+        }
+      >
+    >;
+  };
+  const validationCodesByOperationId = new Map(
+    Object.values(contract.paths).flatMap((pathItem) =>
+      Object.values(pathItem)
+        .filter(
+          (operation) =>
+            typeof operation.operationId === "string"
+            && (operation["x-validation-detail-codes"]?.length ?? 0) > 0
+        )
+        .map(
+          (operation) =>
+            [operation.operationId as string, operation["x-validation-detail-codes"] ?? []] as const
+        )
+    )
+  );
+
+  for (const operationsDir of [
+    path.join(docsRoot, "openapi", "operations"),
+    path.join(docsRoot, "zh-CN", "openapi", "operations")
+  ]) {
+    for (const file of (await fs.readdir(operationsDir)).filter((name) => name.endsWith(".md"))) {
+      const content = await fs.readFile(path.join(operationsDir, file), "utf8");
+      const operationId = content.match(/^operationId:\s*"([^"]+)"/m)?.[1];
+      if (!operationId) continue;
+      for (const code of validationCodesByOperationId.get(operationId) ?? []) {
+        assert.equal(
+          content.split(`\`${code}\``).length - 1,
+          1,
+          `${file} must list validation detail code ${code} exactly once.`
+        );
+      }
     }
   }
 });

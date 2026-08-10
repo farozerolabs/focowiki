@@ -23,12 +23,14 @@ export function createStorageVnextReleaseCandidateIdentity(input: {
   knowledgeBaseId: string;
   activeRootPublicId: string | null;
   activeRevision: number;
+  triggerOperationPublicId: string;
 }): { candidatePublicId: string; candidateRootPublicId: string } {
   const value = digest([
-    "source-release-candidate-v1",
+    "source-release-candidate-v2",
     input.knowledgeBaseId,
     input.activeRootPublicId ?? "none",
-    String(input.activeRevision)
+    String(input.activeRevision),
+    input.triggerOperationPublicId
   ]);
   return {
     candidatePublicId: `release-candidate-${value}`,
@@ -39,26 +41,30 @@ export function createStorageVnextReleaseCandidateIdentity(input: {
 export function createStorageVnextPublicationWorkIdentity(input: {
   knowledgeBaseId: string;
   candidatePublicId: string;
+  triggerOperationPublicId: string;
 }): {
   operationPublicId: string;
   idempotency: { key: string; requestHash: string };
 } {
   const identity = digest([
-    "publication-operation-v1",
+    "publication-operation-v2",
     input.knowledgeBaseId,
-    input.candidatePublicId
+    input.candidatePublicId,
+    input.triggerOperationPublicId
   ]);
   return {
     operationPublicId: `publication-operation-${identity}`,
     idempotency: {
       key: `publication-${digest([
         input.knowledgeBaseId,
-        input.candidatePublicId
+        input.candidatePublicId,
+        input.triggerOperationPublicId
       ])}`,
       requestHash: digest([
-        "publication-request-v1",
+        "publication-request-v2",
         input.knowledgeBaseId,
-        input.candidatePublicId
+        input.candidatePublicId,
+        input.triggerOperationPublicId
       ])
     }
   };

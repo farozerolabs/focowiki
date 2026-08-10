@@ -234,7 +234,6 @@ export function createPostgresStorageVnextDeletionPurgeRepository(
             `;
           }
         }
-        await deletePurgedRegistrations(transaction);
       });
     },
 
@@ -299,7 +298,6 @@ export function createPostgresStorageVnextDeletionPurgeRepository(
               WHERE owner.object_id = registration.object_id
             )
         `;
-        await deletePurgedRegistrations(transaction);
       });
     },
 
@@ -410,17 +408,6 @@ async function markZeroOwner(
     SET zero_owner_since = COALESCE(zero_owner_since, now())
     WHERE registration.object_id = ANY(${unique}::text[])
       AND registration.state = 'verified'
-      AND NOT EXISTS (
-        SELECT 1 FROM focowiki.object_owners owner
-        WHERE owner.object_id = registration.object_id
-      )
-  `;
-}
-
-async function deletePurgedRegistrations(transaction: TransactionSql): Promise<void> {
-  await transaction`
-    DELETE FROM focowiki.object_registrations registration
-    WHERE registration.state = 'deleted'
       AND NOT EXISTS (
         SELECT 1 FROM focowiki.object_owners owner
         WHERE owner.object_id = registration.object_id

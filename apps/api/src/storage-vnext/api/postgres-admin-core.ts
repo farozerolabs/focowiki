@@ -16,6 +16,8 @@ import { StorageVnextSourceEventRepositoryError } from
 import type { StorageVnextAdminCoreApplication } from "./admin-core-application.js";
 import type { StorageVnextAdminMutationApplication } from "./admin-mutation-application.js";
 import type { StorageVnextAdminResourceRead } from "./postgres-admin-resources.js";
+import type { StorageVnextKnowledgeBaseCreationPort } from
+  "./postgres-knowledge-base-creation.js";
 
 type GeneratedRow = {
   logical_path: string;
@@ -46,10 +48,13 @@ export function createPostgresStorageVnextAdminCore(input: {
   mutations: StorageVnextAdminMutationApplication;
   bodies: StorageVnextImmutableBodyStore;
   maximumGeneratedBytes: number;
+  knowledgeBaseCreation?: StorageVnextKnowledgeBaseCreationPort;
 }): StorageVnextAdminCoreApplication {
   return {
     async createKnowledgeBase(request) {
-      const record = await input.catalog.createKnowledgeBase({
+      const record = await (input.knowledgeBaseCreation ?? {
+        create: input.catalog.createKnowledgeBase.bind(input.catalog)
+      }).create({
         publicId: `knowledge-base-${randomUUID()}`,
         name: request.name,
         description: request.description

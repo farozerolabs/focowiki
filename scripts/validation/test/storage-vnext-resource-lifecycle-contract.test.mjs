@@ -62,6 +62,8 @@ test("resource lifecycle selects a link-closed sample with corpus-relative paths
 
   assert.match(source, /selectClosedMarkdownSample\(\{/u);
   assert.match(source, /const selectedPaths = exactOkfCorpus\s+\? markdownFiles/u);
+  assert.match(source, /RESERVED_SOURCE_FILENAME/u);
+  assert.match(source, /!RESERVED_SOURCE_FILENAME\.test\(path\.basename\(filePath\)\)/u);
   assert.match(source, /path\.relative\(sampleRoot, filePath\)/u);
   assert.doesNotMatch(source, /real-corpus\/group-/u);
 });

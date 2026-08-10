@@ -41,7 +41,11 @@ describe("storage vNext publication processor", () => {
       publish: vi.fn(async () => { events.push("artifacts:publish"); })
     };
     const releases = {
-      getCandidate: vi.fn(async () => ({ state: "building" as const })),
+      getCandidate: vi.fn(async () => ({
+        state: "building" as const,
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        factRevision: 4
+      })),
       validate: vi.fn(async () => { events.push("release:validate"); })
     };
     const processor = createStorageVnextPublicationProcessor({
@@ -98,8 +102,10 @@ describe("storage vNext publication processor", () => {
     expect(releases.validate).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-one",
       candidatePublicId: "candidate-one",
-      searchProjectionPublicId: "candidate-one"
+      searchProjectionPublicId: "candidate-one",
+      expectedCandidateFactRevision: 4
     });
+    expect(releases.getCandidate).toHaveBeenCalledTimes(2);
   });
 
   it("stops at an aborted boundary before publishing generated artifacts", async () => {
@@ -130,7 +136,11 @@ describe("storage vNext publication processor", () => {
       },
       artifacts,
       releases: {
-        getCandidate: vi.fn(async () => ({ state: "building" as const })),
+        getCandidate: vi.fn(async () => ({
+          state: "building" as const,
+          updatedAt: "2026-08-02T00:00:00.000Z",
+          factRevision: 4
+        })),
         validate: vi.fn(async () => undefined)
       },
       schemaChecksum: "a".repeat(64),
@@ -157,7 +167,11 @@ describe("storage vNext publication processor", () => {
     const graph = { reconcile: vi.fn() };
     const artifacts = { publish: vi.fn() };
     const releases = {
-      getCandidate: vi.fn(async () => ({ state: "validating" as const })),
+      getCandidate: vi.fn(async () => ({
+        state: "validating" as const,
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        factRevision: 4
+      })),
       validate: vi.fn(async () => undefined)
     };
     const processor = createStorageVnextPublicationProcessor({
@@ -199,7 +213,11 @@ describe("storage vNext publication processor", () => {
     const graph = { reconcile: vi.fn() };
     const artifacts = { publish: vi.fn(async () => undefined) };
     const releases = {
-      getCandidate: vi.fn(async () => ({ state: "building" as const })),
+      getCandidate: vi.fn(async () => ({
+        state: "building" as const,
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        factRevision: 4
+      })),
       validate: vi.fn(async () => undefined)
     };
     const processor = createStorageVnextPublicationProcessor({
@@ -245,7 +263,8 @@ describe("storage vNext publication processor", () => {
     expect(releases.validate).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-one",
       candidatePublicId: "candidate-one",
-      searchProjectionPublicId: "search-meilisearch-active"
+      searchProjectionPublicId: "search-meilisearch-active",
+      expectedCandidateFactRevision: 4
     });
   });
 });

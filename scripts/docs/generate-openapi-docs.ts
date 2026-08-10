@@ -46,6 +46,8 @@ type LocaleCopy = {
   explanationColumn: string;
   noErrorResponse: string;
   errorCodesIntro: string;
+  validationDetailCodesHeading: string;
+  validationDetailCodesIntro: string;
   errorCodeDescriptions: Record<string, string>;
   nextStepsHeading: string;
   yes: string;
@@ -232,6 +234,7 @@ function renderOperationPage(
   const requestBody = readRecord(entry.operation.requestBody);
   const summary = operationSummary(copy, entry);
   const nextSteps = renderNextSteps(copy, entry.operationId, operations);
+  const validationDetailCodes = renderValidationDetailCodes(entry.operation);
 
   return [
     "---",
@@ -279,6 +282,9 @@ function renderOperationPage(
     `## ${copy.errorCodesHeading}`,
     "",
     renderErrorResponses(copy, errorResponses),
+    ...(validationDetailCodes
+      ? ["", `### ${copy.validationDetailCodesHeading}`, "", copy.validationDetailCodesIntro, "", validationDetailCodes]
+      : []),
     ...(nextSteps ? ["", `## ${copy.nextStepsHeading}`, "", nextSteps] : []),
     ""
   ].join("\n");
@@ -499,6 +505,12 @@ function renderErrorResponses(copy: LocaleCopy, responses: [string, unknown][]):
       );
     })
   ].join("\n");
+}
+
+function renderValidationDetailCodes(operation: OperationObject): string {
+  const codes = [...new Set(readArray(operation["x-validation-detail-codes"]).map(String))];
+  if (codes.length === 0) return "";
+  return codes.map((code) => `- \`${code}\``).join("\n");
 }
 
 function renderResponseHeaders(

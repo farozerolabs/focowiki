@@ -206,10 +206,60 @@ describe("Developer OpenAPI released reads", () => {
     }
   });
 
-  it("requires authorization before OKF search filters reach the application", async () => {
+  it("normalizes a complete omitted-mode question and applies search-specific defaults", async () => {
+    const fixture = createFixture();
+    const response = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=${encodeURIComponent("  Ｗｈｉｃｈ\tfile explains availability？  ")}`
+    );
+
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        searchMode: "hybrid",
+        query: {
+          normalizedQuery: "Which file explains availability?",
+          mode: "hybrid",
+          limit: 10,
+          rerank: false,
+          rerankTopK: null,
+          rerankScoreThreshold: null
+        }
+      }
+    });
+    expect(fixture.lastSearchInput).toMatchObject({
+      query: "Which file explains availability?",
+      mode: "hybrid",
+      limit: 10,
+      rerank: false,
+      rerankTopK: null,
+      rerankScoreThreshold: null
+    });
+  });
+
+  it("returns the stable validation envelope before application search for invalid reranker controls", async () => {
+    const fixture = createFixture();
+    const response = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=availability&limit=10&rerank=false&rerankTopK=30`
+    );
+
+    expect(response).toMatchObject({
+      status: 422,
+      body: {
+        error: {
+          code: "VALIDATION_ERROR",
+          details: { code: "INVALID_FILE_SEARCH_RERANK_CONTROLS" }
+        }
+      }
+    });
+    expect(fixture.lastSearchInput).toBeNull();
+  });
+
+  it("requires authorization before search filters or reranking reach the application", async () => {
     const fixture = createFixture();
     const response = await fixture.app.request(
-      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&okfStatus=stable`
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&okfStatus=stable&rerank=true&rerankTopK=30&rerankScoreThreshold=0.35`
     );
 
     expect(response.status).toBe(401);
@@ -474,6 +524,24 @@ function createFixture(options: {
       lastSearchInput = request;
       return {
         generationId: rootId,
+        query: {
+          query: request.query,
+          normalizedQuery: request.query,
+          scope: request.scope,
+          fileKind: request.fileKind ?? "all",
+          mode: request.mode,
+          graphDepth: request.graphDepth,
+          graphFanout: request.graphFanout,
+          okfStatus: request.okfFilters?.status ?? null,
+          okfTrustTier: request.okfFilters?.trustTier ?? null,
+          okfFreshness: request.okfFilters?.freshness ?? null,
+          limit: request.limit,
+          rerank: request.rerank,
+          rerankTopK: request.rerankTopK,
+          rerankScoreThreshold: request.rerankScoreThreshold,
+          cursorProvided: Boolean(request.cursor)
+        },
+        searchMode: request.mode,
         searchStatus: "ok",
         graphSummary: {
           available: true,

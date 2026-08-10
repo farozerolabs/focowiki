@@ -97,6 +97,10 @@ export type StorageVnextWorkflowWritePort = {
     requestHash: string;
   }): Promise<StorageVnextWorkflowOutcome | null>;
   enqueue(work: StorageVnextLiveWork): Promise<StorageVnextWorkflowOutcome>;
+  rescheduleQueued(input: {
+    publicId: StorageVnextPublicId;
+    nextAttemptAt: StorageVnextTimestamp;
+  }): Promise<boolean>;
   saveCheckpoint(input: {
     publicId: StorageVnextPublicId;
     owner: string;

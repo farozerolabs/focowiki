@@ -47,6 +47,13 @@ describe("storage vNext concrete run-owned reset/bootstrap planes", () => {
     );
   });
 
+  it("uses the shared current runtime generation for PostgreSQL inspection", () => {
+    const source = readFileSync(resolve(sourceRoot, files.postgres), "utf8");
+
+    expect(source).toContain("RUNTIME_SCHEMA_GENERATION");
+    expect(source).not.toContain('generation === "storage-vnext-v2"');
+  });
+
   it("exposes only proof-file commands and requires an explicit checksum authorization", () => {
     const mainPath = resolve(sourceRoot, files.main);
     if (!existsSync(mainPath)) return;

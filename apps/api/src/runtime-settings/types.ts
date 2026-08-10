@@ -10,6 +10,7 @@ export type RuntimeSettingKey =
   | "publication"
   | "graph"
   | "maintenance"
+  | "semantic"
   | "search";
 export type ModelConfigStatus = "active" | "paused" | "deleted";
 export type ModelApiMode = "responses" | "chat_completions";
@@ -86,12 +87,28 @@ export type RuntimeSearchSettings = {
   cropLength: number;
 };
 
+export type RuntimeSemanticSettings = {
+  maximumChunkCharacters: number;
+  maximumChunks: number;
+  maximumEvidenceTargets: number;
+  maximumCommunityPartitions: number;
+  maximumCommunityEntities: number;
+  maximumCommunityRelationships: number;
+  maximumCommunityBoundaryRelationships: number;
+  maximumCommunitySummaryCharacters: number;
+  communityAdapterTimeoutMs: number;
+  searchLaneCutoffMs: number;
+  queryEmbeddingConcurrency: number;
+  queryEmbeddingCacheEntries: number;
+};
+
 export type RuntimeSettingsSnapshot = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
   graph: RuntimeGraphSettings;
   maintenance: RuntimeMaintenanceSettings;
+  semantic: RuntimeSemanticSettings;
   search: RuntimeSearchSettings;
   activeModel: RuntimeModelConfigPrivate | null;
 };
@@ -127,6 +144,7 @@ export type RuntimeModelConfigPublic = {
 
 export type RuntimeModelConfigPrivate = RuntimeModelConfigPublic & {
   apiKey: string;
+  configurationRevision?: number;
 };
 
 export type RuntimeModelConfigDraft = {
@@ -167,6 +185,7 @@ export type RuntimeSettingsDefaults = {
   publication: RuntimePublicationSettings;
   graph: RuntimeGraphSettings;
   maintenance: RuntimeMaintenanceSettings;
+  semantic: RuntimeSemanticSettings;
   search: RuntimeSearchSettings;
   model: RuntimeModelConfigDraft | null;
 };

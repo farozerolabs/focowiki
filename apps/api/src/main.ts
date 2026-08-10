@@ -3,7 +3,11 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { loadRuntimeConfig, type RuntimeConfig } from "./config.js";
+import {
+  loadRuntimeConfig,
+  resolveSecurityConfig,
+  type RuntimeConfig
+} from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createS3ClientConfig } from "./storage/s3.js";
@@ -57,8 +61,45 @@ import { createPostgresStorageVnextAdminMutation } from "./storage-vnext/api/pos
 import { createPostgresStorageVnextAdminCore } from "./storage-vnext/api/postgres-admin-core.js";
 import { createPostgresStorageVnextOpenApiWebhooks } from "./storage-vnext/api/postgres-openapi-webhooks.js";
 import { createPostgresStorageVnextOpenApiApplication } from "./storage-vnext/api/postgres-openapi-application.js";
+import { createPostgresKnowledgeBaseCreation } from
+  "./storage-vnext/api/postgres-knowledge-base-creation.js";
 import { createPostgresStorageVnextSourceEventRepository } from
   "./storage-vnext/source-events/postgres-repository.js";
+import { createPostgresEmbeddingConfigurationRepository } from
+  "./semantic/infrastructure/postgres-embedding-configuration-repository.js";
+import { createEmbeddingConfigurationService } from
+  "./semantic/embedding/service.js";
+import { createOpenAiCompatibleEmbeddingTransport } from
+  "./semantic/embedding/openai-compatible-transport.js";
+import { createEmbeddingConfigurationAuditAdapter } from
+  "./semantic/embedding/audit-adapter.js";
+import { loadDeploymentSecret } from "./security/runtime-secrets.js";
+import { createEmbeddingGateway } from "./semantic/embedding/gateway.js";
+import { createPostgresRerankerConfigurationRepository } from
+  "./semantic/infrastructure/postgres-reranker-configuration-repository.js";
+import { createRerankerConfigurationService } from
+  "./semantic/reranker/service.js";
+import { createOpenAiCompatibleRerankerTransport } from
+  "./semantic/reranker/openai-compatible-transport.js";
+import { createRerankerConfigurationAuditAdapter } from
+  "./semantic/reranker/audit-adapter.js";
+import { createRerankerGateway } from "./semantic/reranker/gateway.js";
+import { createSemanticSearchProductionRuntime } from
+  "./semantic/search/production-runtime.js";
+import { createPostgresSemanticGenerationRepository } from
+  "./semantic/infrastructure/postgres-generation-repository.js";
+import { createStorageVnextSemanticSearch } from
+  "./storage-vnext/search/semantic-search.js";
+import {
+  createSemanticAdoptionStageSettings,
+  resolveSemanticAdoptionTarget
+} from "./semantic/application/adoption-target.js";
+import { createSemanticAdoptionService } from
+  "./semantic/application/adoption.js";
+import { classifySemanticAdoption } from
+  "./semantic/application/adoption-policy.js";
+import { createPostgresSemanticStageRepository } from
+  "./semantic/infrastructure/postgres-stage-repository.js";
 
 loadLocalEnvFile();
 
@@ -87,26 +128,30 @@ async function runApi(): Promise<void> {
   const storageVnextActiveSearchProjections =
     createPostgresStorageVnextActiveSearchProjectionRepository(sql);
   const initialRuntimeSettings = await runtimeSettings.getSnapshot();
-  const searchTokenizer = config.search?.provider === "opensearch"
+  const searchTokenizer = config.search
     ? createNodeJiebaTokenizer()
     : undefined;
   const completedWorkRetentionMilliseconds =
     initialRuntimeSettings.worker.completedJobRetentionDays * 86_400_000;
-  const storageVnextSearch = config.search
+  const storageVnextSearchHydration = createPostgresStorageVnextSearchHydration(sql);
+  const searchProvider = config.search
+    ? createDynamicRuntimeSearchQueryProvider({
+        config: config.search,
+        indexDefinition: createStorageVnextSearchSettings({
+          searchCutoffMs: initialRuntimeSettings.search.engineSearchCutoffMs
+        }),
+        ...(searchTokenizer ? { tokenizer: searchTokenizer } : {}),
+        async resolveSettings() {
+          const snapshot = await runtimeSettings.getSnapshot();
+          return snapshot.search;
+        }
+      })
+    : null;
+  const lexicalSearch = searchProvider
     ? createStorageVnextActiveSearch({
         projections: storageVnextActiveSearchProjections,
-        provider: createDynamicRuntimeSearchQueryProvider({
-          config: config.search,
-          indexDefinition: createStorageVnextSearchSettings({
-            searchCutoffMs: initialRuntimeSettings.search.engineSearchCutoffMs
-          }),
-          ...(searchTokenizer ? { tokenizer: searchTokenizer } : {}),
-          async resolveSettings() {
-            const snapshot = await runtimeSettings.getSnapshot();
-            return snapshot.search;
-          }
-        }),
-        hydration: createPostgresStorageVnextSearchHydration(sql),
+        provider: searchProvider,
+        hydration: storageVnextSearchHydration,
         maxPageSize: config.pagination.maxPageSize,
         overfetchFactor: initialRuntimeSettings.search.overfetchFactor,
         cropLength: initialRuntimeSettings.search.cropLength,
@@ -123,6 +168,77 @@ async function runApi(): Promise<void> {
         }
       })
     : null;
+  const deploymentSecret = loadDeploymentSecret();
+  const embeddingConfigurationRepository =
+    createPostgresEmbeddingConfigurationRepository(sql);
+  const rerankerConfigurationRepository =
+    createPostgresRerankerConfigurationRepository(sql);
+  const embeddingTransport = createOpenAiCompatibleEmbeddingTransport();
+  const rerankerTransport = createOpenAiCompatibleRerankerTransport();
+  const rerankerGateway = createRerankerGateway({
+    resolveActiveConfiguration: () => rerankerConfigurationRepository.getActive(),
+    transport: rerankerTransport,
+    deploymentSecret
+  });
+  const embeddingGateway = createEmbeddingGateway({
+    transport: embeddingTransport,
+    deploymentSecret
+  });
+  const semanticGenerations = createPostgresSemanticGenerationRepository(sql);
+  const storageVnextKnowledgeBaseCreation = createPostgresKnowledgeBaseCreation({
+    sql,
+    async resolveSemanticTarget(knowledgeBaseId) {
+      try {
+        const [snapshot, configurations] = await Promise.all([
+          runtimeSettings.getSnapshot(),
+          embeddingConfigurationRepository.list()
+        ]);
+        return resolveSemanticAdoptionTarget({
+          knowledgeBaseId,
+          runtimeSettings: snapshot,
+          embeddingConfigurations: configurations,
+          searchProviderKind: requireSearchProviderKind(config.search)
+        }).target;
+      } catch (error) {
+        if (isInitialSemanticConfigurationUnavailable(error)) return null;
+        throw error;
+      }
+    }
+  });
+  const semanticCancellation = createSemanticAdoptionService({
+    generations: semanticGenerations,
+    stages: createPostgresSemanticStageRepository(sql),
+    catalog: storageVnextCatalog
+  });
+  const storageVnextSearch = config.search && searchProvider && lexicalSearch
+    ? createStorageVnextSemanticSearch({
+        semanticGenerations,
+        resolveActiveRerankerRevision: async () =>
+          (await rerankerConfigurationRepository.getActive())?.revisionPublicId ?? null,
+        lexicalProjections: storageVnextActiveSearchProjections,
+        semantic: createSemanticSearchProductionRuntime({
+          sql,
+          provider: searchProvider,
+          embeddingConfigurations: embeddingConfigurationRepository,
+          embeddingGateway,
+          hydration: storageVnextSearchHydration,
+          runtimeSettings,
+          reranker: rerankerGateway
+        }),
+        fallback: lexicalSearch,
+        hydration: storageVnextSearchHydration,
+        providerKind: config.search.provider,
+        vectorIndexPrefix: config.search.indexPrefix,
+        maxPageSize: config.pagination.maxPageSize,
+        async resolveRuntimeSettings() {
+          const snapshot = await runtimeSettings.getSnapshot();
+          return {
+            requestTimeoutMs: snapshot.search.requestTimeoutMs,
+            searchLaneCutoffMs: snapshot.semantic.searchLaneCutoffMs
+          };
+        }
+      })
+    : lexicalSearch;
   const storageVnextAdminRead = createPostgresStorageVnextAdminRead({
     sql,
     catalog: storageVnextCatalog,
@@ -130,6 +246,24 @@ async function runApi(): Promise<void> {
     search: storageVnextSearch
   });
   const storageVnextAudit = createPostgresStorageVnextAuditRepository(sql);
+  const embeddingConfigurations = createEmbeddingConfigurationService({
+    repository: embeddingConfigurationRepository,
+    transport: embeddingTransport,
+    audit: createEmbeddingConfigurationAuditAdapter({
+      audit: storageVnextAudit,
+      retentionDays: resolveSecurityConfig(config).audit.retentionDays
+    }),
+    deploymentSecret
+  });
+  const rerankerConfigurations = createRerankerConfigurationService({
+    repository: rerankerConfigurationRepository,
+    transport: rerankerTransport,
+    audit: createRerankerConfigurationAuditAdapter({
+      audit: storageVnextAudit,
+      retentionDays: resolveSecurityConfig(config).audit.retentionDays
+    }),
+    deploymentSecret
+  });
   const storageVnextApiKeys = createPostgresStorageVnextApiKeyRepository(sql);
   const selectedSearchProviderKind = requireSearchProviderKind(config.search);
   const storageVnextMaintenance = createPostgresStorageVnextMaintenanceRepository(sql, {
@@ -140,6 +274,52 @@ async function runApi(): Promise<void> {
     searchProviderKind: selectedSearchProviderKind,
     activeSearchProjections: storageVnextActiveSearchProjections
   });
+  const semanticAdoption = {
+    async resolve(input: {
+      knowledgeBaseId: string;
+      settingsRevisionPublicId: string;
+    }) {
+      try {
+        const [snapshot, configurations, active] = await Promise.all([
+          runtimeSettings.getSnapshot(),
+          embeddingConfigurationRepository.list(),
+          semanticGenerations.getActiveProjection(input.knowledgeBaseId)
+        ]);
+        const resolved = resolveSemanticAdoptionTarget({
+          knowledgeBaseId: input.knowledgeBaseId,
+          runtimeSettings: snapshot,
+          embeddingConfigurations: configurations,
+          searchProviderKind: selectedSearchProviderKind
+        });
+        const adoptionMode = classifySemanticAdoption(active, resolved.target);
+        if (!adoptionMode) {
+          return { available: true as const, snapshot: null };
+        }
+        return {
+          available: true as const,
+          snapshot: {
+            mode: adoptionMode,
+            target: resolved.target,
+            stageSettings: createSemanticAdoptionStageSettings({
+              runtimeSettingsRevisionPublicId: input.settingsRevisionPublicId,
+              runtimeSettings: snapshot,
+              target: resolved.target,
+              embedding: resolved.embedding,
+              maximumSourceBytes: config.pagination.generatedContentMaxBytes
+            }),
+            expectedPredecessorPublicId: active?.publicId ?? null,
+            expectedPredecessorRevision: active?.revision ?? 0,
+            sourcePageSize: Math.min(100, snapshot.maintenance.scanBatchSize)
+          }
+        };
+      } catch (error) {
+        return {
+          available: false as const,
+          safeCode: semanticAdoptionSafeCode(error)
+        };
+      }
+    }
+  };
   const storageVnextAdminProcessing = createPostgresStorageVnextAdminProcessing({
     sql,
     catalog: storageVnextCatalog,
@@ -235,7 +415,8 @@ async function runApi(): Promise<void> {
         sourceEvents: storageVnextSourceEvents,
         mutations: storageVnextAdminMutation,
         bodies: storageVnextImmutableBodies,
-        maximumGeneratedBytes: config.pagination.generatedContentMaxBytes
+        maximumGeneratedBytes: config.pagination.generatedContentMaxBytes,
+        knowledgeBaseCreation: storageVnextKnowledgeBaseCreation
       })
     : undefined;
   const storageVnextOpenApi = storageVnextAdminCore
@@ -253,7 +434,8 @@ async function runApi(): Promise<void> {
         search: storageVnextSearch,
         webhooks: createPostgresStorageVnextOpenApiWebhooks(sql, {
           resultRetentionMilliseconds: completedWorkRetentionMilliseconds
-        })
+        }),
+        knowledgeBaseCreation: storageVnextKnowledgeBaseCreation
       })
     : undefined;
   const sharedServices = {
@@ -261,11 +443,15 @@ async function runApi(): Promise<void> {
     runtimeSettings,
     storageVnextAdminRead,
     storageVnextAudit,
+    embeddingConfigurations,
+    rerankerConfigurations,
     storageVnextApiKeys,
     storageVnextAdminProcessing,
     storageVnextCatalog,
     storageVnextMaintenanceRequests,
     storageVnextMaintenanceStatus: storageVnextMaintenance,
+    semanticAdoption,
+    semanticCancellation,
     storageVnextAdminUpload,
     ...(storageVnextAdminMutation ? { storageVnextAdminMutation } : {}),
     ...(storageVnextAdminCore ? { storageVnextAdminCore } : {}),
@@ -289,6 +475,25 @@ async function runApi(): Promise<void> {
   logger.info("api.public_openapi_started");
 }
 
+function semanticAdoptionSafeCode(error: unknown): string {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = String(error.code);
+    if (/^semantic_[a-z0-9_]+$/u.test(code) && code.length <= 128) return code;
+  }
+  return "semantic_configuration_unavailable";
+}
+
+function isInitialSemanticConfigurationUnavailable(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  return [
+    "semantic_generation_model_required",
+    "semantic_embedding_model_required",
+    "semantic_embedding_revision_not_validated"
+  ].includes(String(error.code));
+}
+
 function requireSearchProviderKind(
   search: RuntimeConfig["search"]
 ): NonNullable<RuntimeConfig["search"]>["provider"] {
@@ -299,7 +504,7 @@ function requireSearchProviderKind(
 async function runHealthcheck(): Promise<void> {
   await runRuntimeDeploymentHealthcheck(config, {
     role: "api",
-    ...(config.search?.provider === "opensearch"
+    ...(config.search
       ? { assertTokenizer: assertNodeJiebaRuntimeAvailable }
       : {}),
     httpPorts: [config.ports.adminApi, config.ports.publicOpenApi]

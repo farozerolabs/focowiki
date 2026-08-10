@@ -79,11 +79,11 @@ services:
     restart: unless-stopped
 
   source-worker:
-    image: focowiki-api:dev
+    image: ${FOCOWIKI_SOURCE_WORKER_IMAGE:?Set FOCOWIKI_SOURCE_WORKER_IMAGE in .env}
     build:
       context: .
       dockerfile: Dockerfile
-      target: api
+      target: source-worker
     command: ["node", "--max-old-space-size=256", "apps/api/runtime/source-worker.mjs"]
     env_file:
       - .env
@@ -104,6 +104,9 @@ services:
       timeout: 15s
       retries: 8
       start_period: 20s
+    cpus: ${SOURCE_WORKER_CPUS:?Set SOURCE_WORKER_CPUS in .env}
+    mem_limit: ${SOURCE_WORKER_MEMORY_LIMIT:?Set SOURCE_WORKER_MEMORY_LIMIT in .env}
+    pids_limit: ${SOURCE_WORKER_PIDS_LIMIT:?Set SOURCE_WORKER_PIDS_LIMIT in .env}
     stop_grace_period: 30s
     logging: *docker-logging
     restart: unless-stopped

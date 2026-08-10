@@ -100,6 +100,9 @@ export type RuntimeSettingsRepository = {
   softDeleteModel: (id: string) => Promise<RuntimeModelConfigPrivate | null>;
   countRunningModelInvocations: (modelConfigId: string) => Promise<number>;
   countRunningSourceFileJobs: () => Promise<number>;
+  countActiveSemanticGenerationReferences: (
+    modelConfigId: string
+  ) => Promise<number>;
 };
 
 export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSettingsRepository {
@@ -237,7 +240,7 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
           await lockActiveModel(transaction);
           await transaction`
             UPDATE focowiki.model_configs
-            SET enabled = false, revision = revision + 1, updated_at = now()
+            SET enabled = false, updated_at = now()
             WHERE knowledge_base_id IS NULL AND enabled = true
           `;
         }
@@ -268,7 +271,7 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
           await lockActiveModel(transaction);
           await transaction`
             UPDATE focowiki.model_configs
-            SET enabled = false, revision = revision + 1, updated_at = now()
+            SET enabled = false, updated_at = now()
             WHERE knowledge_base_id IS NULL AND enabled = true
           `;
         }
@@ -299,14 +302,13 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
         if (!target[0]) return [] as ModelConfigRow[];
         await transaction`
           UPDATE focowiki.model_configs
-          SET enabled = false, revision = revision + 1, updated_at = now()
+          SET enabled = false, updated_at = now()
           WHERE knowledge_base_id IS NULL AND enabled = true
         `;
         return transaction<ModelConfigRow[]>`
           UPDATE focowiki.model_configs
           SET config = config || ${transaction.json({ status: "active" })},
               enabled = true,
-              revision = revision + 1,
               updated_at = now()
           WHERE public_id = ${id} AND knowledge_base_id IS NULL
           RETURNING public_id, provider, model, secret_reference, config,
@@ -350,6 +352,17 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
       `;
 
       return Number(rows[0]?.count ?? 0);
+    },
+    async countActiveSemanticGenerationReferences(modelConfigId) {
+      const rows = await sql<Array<{ count: number | string }>>`
+        SELECT count(*) AS count
+        FROM focowiki.semantic_generations
+        WHERE generation_model_configuration_public_id = ${modelConfigId}
+          AND generation_role = 'active'
+          AND state = 'active'
+          AND deleted_at IS NULL
+      `;
+      return Number(rows[0]?.count ?? 0);
     }
   };
 }
@@ -365,6 +378,7 @@ const SETTING_KEYS: readonly RuntimeSettingKey[] = [
   "publication",
   "graph",
   "maintenance",
+  "semantic",
   "search"
 ];
 
@@ -483,6 +497,7 @@ function toPrivateModel(
     apiMode: config.apiMode,
     baseUrl: config.baseUrl,
     apiKey: row.secret_reference,
+    configurationRevision: Number(row.revision),
     apiKeyFingerprint: config.apiKeyFingerprint,
     modelName: row.model,
     contextWindowTokens: config.contextWindowTokens,

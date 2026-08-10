@@ -13,6 +13,8 @@ import type {
   StorageVnextGraphEdgeFact,
   StorageVnextGraphNodeFact
 } from "../graph/ports.js";
+import type { SemanticSourcePresentationContext } from
+  "../../semantic/presentation/source-context.js";
 import type {
   StorageVnextDirectorySummary,
   StorageVnextKnowledgeBaseSummary,
@@ -54,6 +56,7 @@ export type StorageVnextPublicationPageInput = {
   neighborhood: readonly StorageVnextGraphEdgeFact[];
   endpointNodes: readonly StorageVnextGraphNodeFact[];
   sourceBody: string;
+  semanticContext?: SemanticSourcePresentationContext;
 };
 
 export type StorageVnextPublicationDirectoryInput = {

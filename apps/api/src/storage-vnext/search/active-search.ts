@@ -26,6 +26,7 @@ import {
   normalizeOkfSearchFilterContract,
   type OkfSearchFilters
 } from "./okf-signals.js";
+import { normalizeAndValidateSearchQuery } from "./query-contract.js";
 
 const SEARCH_ATTRIBUTES = ["title", "logicalPath", "searchText", "rankingTerms"];
 const RESULT_ATTRIBUTES = [
@@ -37,7 +38,6 @@ const RESULT_ATTRIBUTES = [
   "searchText",
   "okfSignals"
 ];
-const MAX_QUERY_BYTES = 512;
 const MAX_REFILL_PAGES = 10;
 
 export class StorageVnextSearchUnavailableError extends SearchProviderError {
@@ -86,6 +86,7 @@ type ParsedHit = {
   snippet: string | null;
   kind: "file" | "graph";
   normalizedScore: number;
+  matchedFields: readonly string[];
   continuationAfter: string;
 };
 
@@ -106,10 +107,15 @@ export function createStorageVnextActiveSearch(
         knowledgeBaseId: input.knowledgeBaseId,
         query: normalized.query,
         kinds: normalized.kinds,
+        scope: normalized.scope,
+        fileKind: normalized.fileKind,
         providerKind: config.provider.kind,
         projectionPublicId: projection.publicId,
         providerIndexUid: projection.providerIndexUid,
-        okfFilters: normalized.okfFilters
+        okfFilters: normalized.okfFilters,
+        rerank: normalized.rerank,
+        rerankTopK: normalized.rerankTopK,
+        rerankScoreThreshold: normalized.rerankScoreThreshold
       });
       const cursor = decodeCursor(input.cursor, scopeHash);
       if (
@@ -147,11 +153,13 @@ export function createStorageVnextActiveSearch(
           filters: createFilter(
             input.knowledgeBaseId,
             normalized.kinds,
+            normalized.scope,
+            normalized.fileKind,
             normalized.okfFilters
           ),
           limit: providerLimit,
           continuation: providerContinuation,
-          searchFields: SEARCH_ATTRIBUTES,
+          searchFields: searchAttributes(normalized.scope),
           returnFields: RESULT_ATTRIBUTES,
           cropLength: runtimeSettings.cropLength,
           deadlineMs: Math.min(
@@ -178,6 +186,7 @@ export function createStorageVnextActiveSearch(
           if (
             !seenSources.has(candidate.sourceFilePublicId)
             && isCurrent(candidate, source)
+            && (normalized.fileKind === null || normalized.fileKind === "page")
             && matchesHydratedOkfFilters(source, normalized.okfFilters)
           ) {
             seenSources.add(candidate.sourceFilePublicId);
@@ -201,7 +210,11 @@ export function createStorageVnextActiveSearch(
           snippet: candidate.snippet,
           score: candidate.normalizedScore,
           kind: candidate.kind,
-          metadata: source.metadata
+          metadata: source.metadata,
+          evidenceFamilies: [candidate.kind === "graph" ? "file_graph" : "lexical"],
+          matchedFields: publicMatchedFields(candidate),
+          evidenceTypes: publicEvidenceTypes(candidate),
+          sourceExcerpt: candidate.kind === "file" ? candidate.snippet : null
         })),
         nextCursor: createNextCursor({
           providerContinuation: nextProviderContinuation,
@@ -209,7 +222,11 @@ export function createStorageVnextActiveSearch(
           selectedCount: selected.length,
           pageLimit: input.limit,
           scopeHash
-        })
+        }),
+        evidenceStatus: {
+          completedFamilies: completedEvidenceFamilies(normalized.kinds),
+          degradedFamilies: []
+        }
       };
     }
   };
@@ -219,18 +236,34 @@ function normalizeInput(
   input: Parameters<StorageVnextSearchQueryPort["search"]>[0],
   maxPageSize: number
 ) {
-  const query = input.query.trim().replace(/\s+/gu, " ");
+  const query = normalizeAndValidateSearchQuery(input.query);
+  const scope = input.scope ?? "all";
+  const fileKind = input.fileKind === undefined ? "page" : input.fileKind;
+  const rerank = input.rerank ?? false;
+  const rerankTopK = input.rerankTopK ?? null;
+  const rerankScoreThreshold = input.rerankScoreThreshold ?? null;
   const kinds = [...new Set(input.kinds)].sort();
   if (
     !input.knowledgeBaseId
     || Buffer.byteLength(input.knowledgeBaseId) > 255
-    || !query
-    || Buffer.byteLength(query) > MAX_QUERY_BYTES
+    || !query.ok
     || !Number.isSafeInteger(input.limit)
     || input.limit < 1
     || input.limit > maxPageSize
     || kinds.length < 1
     || kinds.some((kind) => kind !== "file" && kind !== "graph")
+    || !["all", "path", "metadata"].includes(scope)
+    || rerank && (
+      !Number.isSafeInteger(rerankTopK)
+      || Number(rerankTopK) < input.limit
+      || Number(rerankTopK) > 50
+      || !Number.isFinite(rerankScoreThreshold)
+      || Number(rerankScoreThreshold) < 0
+      || Number(rerankScoreThreshold) > 1
+    )
+    || !rerank && (
+      rerankTopK !== null || rerankScoreThreshold !== null
+    )
   ) throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_INPUT");
   let okfFilters: OkfSearchFilters;
   try {
@@ -238,20 +271,37 @@ function normalizeInput(
   } catch {
     throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_INPUT");
   }
-  return { query, kinds: kinds as Array<"file" | "graph">, okfFilters };
+  return {
+    query: query.value,
+    kinds: kinds as Array<"file" | "graph">,
+    scope,
+    fileKind,
+    rerank,
+    rerankTopK,
+    rerankScoreThreshold,
+    okfFilters
+  };
 }
 
 function createFilter(
   knowledgeBaseId: string,
   kinds: readonly ("file" | "graph")[],
+  scope: "all" | "path" | "metadata",
+  fileKind: string | null,
   okfFilters: OkfSearchFilters
 ): SearchFilterExpression {
-  const clauses = kinds.map((kind) => kind === "file"
+  const eligibleKinds = scope === "metadata" ? ["file" as const] : kinds;
+  const clauses = eligibleKinds.map((kind) => kind === "file"
     ? {
         kind: "and" as const,
         operands: [
           { kind: "equals" as const, field: "documentKind" as const, value: "content" },
-          { kind: "equals" as const, field: "schemaVersion" as const, value: STORAGE_VNEXT_CONTENT_SCHEMA_VERSION }
+          { kind: "equals" as const, field: "schemaVersion" as const, value: STORAGE_VNEXT_CONTENT_SCHEMA_VERSION },
+          ...(scope === "metadata" ? [{
+            kind: "equals" as const,
+            field: "contentKind" as const,
+            value: "file"
+          }] : [])
         ]
       }
     : {
@@ -267,6 +317,11 @@ function createFilter(
     field: "knowledgeBaseId",
     value: knowledgeBaseId
   }, { kind: "or", operands: clauses }];
+  if (fileKind !== null) filterClauses.push({
+    kind: "equals",
+    field: "fileKind",
+    value: fileKind
+  });
   if (okfFilters.status !== null) filterClauses.push({
     kind: "equals",
     field: "okfSignals.status",
@@ -309,8 +364,40 @@ function parseHit(
     snippet: hit.snippets[0] ?? null,
     kind,
     normalizedScore: hit.normalizedScore,
+    matchedFields: hit.matchedFields ?? [],
     continuationAfter: hit.continuationAfter
   };
+}
+
+function completedEvidenceFamilies(
+  kinds: readonly ("file" | "graph")[]
+): string[] {
+  return [
+    ...(kinds.includes("file") ? ["lexical"] : []),
+    ...(kinds.includes("graph") ? ["file_graph"] : [])
+  ];
+}
+
+function publicMatchedFields(candidate: ParsedHit): string[] {
+  const mapped = candidate.matchedFields.flatMap((field) => {
+    if (field === "logicalPath") return ["path"];
+    if (field === "title") return ["title"];
+    if (candidate.kind === "graph") return ["file_relationship"];
+    if (["searchText", "headingAncestors", "rankingTerms"].includes(field)) {
+      return ["content"];
+    }
+    return [];
+  });
+  if (mapped.length === 0 && candidate.snippet) {
+    mapped.push(candidate.kind === "graph" ? "file_relationship" : "content");
+  }
+  return [...new Set(mapped)];
+}
+
+function publicEvidenceTypes(candidate: ParsedHit): string[] {
+  if (candidate.kind === "graph") return ["file_relationship"];
+  return [...new Set(publicMatchedFields(candidate).map((field) =>
+    field === "path" ? "path" : field === "title" ? "title" : "content"))];
 }
 
 function isCurrent(
@@ -357,14 +444,25 @@ function createScopeHash(input: {
   knowledgeBaseId: string;
   query: string;
   kinds: readonly string[];
+  scope: "all" | "path" | "metadata";
+  fileKind: string | null;
   providerKind: string;
   projectionPublicId: string;
   providerIndexUid: string;
   okfFilters: OkfSearchFilters;
+  rerank: boolean;
+  rerankTopK: number | null;
+  rerankScoreThreshold: number | null;
 }) {
   return createHash("sha256")
     .update(JSON.stringify(input))
     .digest("hex");
+}
+
+function searchAttributes(scope: "all" | "path" | "metadata"): readonly string[] {
+  if (scope === "path") return ["logicalPath", "title"];
+  if (scope === "metadata") return ["title", "logicalPath", "searchText"];
+  return SEARCH_ATTRIBUTES;
 }
 
 function encodeCursor(cursor: SearchCursor) {

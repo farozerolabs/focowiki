@@ -85,13 +85,20 @@ export function createStorageVnextPublicationCandidateValidator(input: {
       knowledgeBaseId: string;
       candidatePublicId: string;
       searchProjectionPublicId: string;
+      expectedCandidateFactRevision?: number;
     }) {
       const candidate = await requireCandidate(input.releases, request);
       if (candidate.state === "building") {
+        const expectedFactRevision = request.expectedCandidateFactRevision
+          ?? candidate.factRevision;
+        if (candidate.factRevision !== expectedFactRevision) {
+          throw candidateValidationError("candidate_changed");
+        }
         const changed = await input.releases.markCandidateValidating({
-          candidatePublicId: candidate.publicId
+          candidatePublicId: candidate.publicId,
+          expectedFactRevision
         });
-        if (!changed) throw new Error("Storage vNext publication validation transition failed");
+        if (!changed) throw candidateValidationError("candidate_changed");
       } else if (candidate.state !== "validating") {
         throw new Error("Storage vNext publication candidate is not validatable");
       }
@@ -148,6 +155,13 @@ export function createStorageVnextPublicationCandidateValidator(input: {
       return receipt;
     }
   };
+}
+
+function candidateValidationError(code: string): Error & { code: string } {
+  return Object.assign(
+    new Error(`Storage vNext publication candidate validation error: ${code}`),
+    { code }
+  );
 }
 
 async function validateCatalog(

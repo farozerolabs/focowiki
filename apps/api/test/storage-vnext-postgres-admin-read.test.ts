@@ -81,7 +81,7 @@ describe("PostgreSQL storage vNext Admin reads", () => {
       "source.model_invocation_source_revision_public_id IS DISTINCT FROM revision.public_id"
     );
     expect(queries[0]?.values).toEqual(expect.arrayContaining([
-      ["pending", "processing", "failed"],
+      "pending",
       "not_recorded",
       "2026-08-01T00:00:00.000Z",
       "2026-08-02T00:00:00.000Z",
@@ -89,6 +89,34 @@ describe("PostgreSQL storage vNext Admin reads", () => {
       "SOURCE",
       "none"
     ]));
+    expect(queries[0]?.values.filter((value) => value === "pending").length)
+      .toBeGreaterThanOrEqual(4);
+  });
+
+  it("selects a source revision stage from its latest semantic operation", async () => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ text: strings.join("?"), values });
+      return Promise.resolve([]);
+    }) as unknown as DatabaseClient;
+    const application = createPostgresStorageVnextAdminResourceRead(sql);
+
+    await application.listSourceFiles({
+      knowledgeBaseId: "kb-latest-semantic-operation",
+      directoryId: undefined,
+      filters: emptySourceFileFilters(),
+      limit: 20,
+      cursor: null
+    });
+
+    const query = queries[0]?.text ?? "";
+    const operationOrder = query.indexOf("semantic_operation.created_at DESC");
+    const stageOrder = query.indexOf("CASE WHEN stage.state = 'failed'");
+    expect(query).toContain(
+      "JOIN focowiki.operations semantic_operation"
+    );
+    expect(operationOrder).toBeGreaterThan(-1);
+    expect(stageOrder).toBeGreaterThan(operationOrder);
   });
 
   it("returns the durable model invocation used for the current source revision", async () => {
@@ -280,6 +308,24 @@ describe("PostgreSQL storage vNext Admin reads", () => {
     }
   });
 });
+
+function emptySourceFileFilters() {
+  return {
+    pathQuery: null,
+    sourceFileIdPrefix: null,
+    state: null,
+    currentStage: null,
+    modelInvocationStatus: null,
+    generatedOutputStatus: null,
+    startedFrom: null,
+    startedTo: null,
+    endedFrom: null,
+    endedTo: null,
+    errorState: null,
+    errorCodeQuery: null,
+    actionState: null
+  };
+}
 
 function directoryRow(logicalPath: string) {
   return {

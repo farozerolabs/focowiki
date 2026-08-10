@@ -8,6 +8,7 @@ export type StorageVnextHardDeleteCleanupResource =
   | "process_resource"
   | "coordination"
   | "unified_search_scope"
+  | "semantic_scope"
   | "object_body"
   | "object_owner"
   | "catalog_scope"
@@ -29,6 +30,7 @@ export function createStorageVnextHardDeleteCleanupAdapter(input: {
       { resourceKind: "process_resource", plane: "process" },
       { resourceKind: "coordination", plane: "redis" },
       { resourceKind: "unified_search_scope", plane: "search" },
+      { resourceKind: "semantic_scope", plane: "search" },
       { resourceKind: "graph_scope", plane: "postgres" },
       { resourceKind: "release_scope", plane: "postgres" },
       { resourceKind: "object_owner", plane: "postgres" },

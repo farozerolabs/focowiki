@@ -9,6 +9,14 @@ import { createGraphEdgeScorer } from
 import { INCREMENTAL_PUBLICATION_DEFAULTS } from
   "../../publication/incremental-defaults.js";
 import type { RuntimeSettingsSnapshot } from "../../runtime-settings/types.js";
+import { createPostgresSemanticFileGraphEvidenceRepository } from
+  "../../semantic/infrastructure/postgres-file-graph-evidence-repository.js";
+import { createPostgresSemanticSourcePresentationRepository } from
+  "../../semantic/infrastructure/postgres-source-presentation-repository.js";
+import {
+  loadSemanticFileGraphEdges,
+  mergeFileGraphEdges
+} from "../../semantic/presentation/file-graph-evidence.js";
 import type { createPostgresStorageVnextCatalogRepository } from
   "../catalog/postgres-repository.js";
 import type { StorageVnextCatalogReadPort } from "../catalog/ports.js";
@@ -134,6 +142,10 @@ export function createStorageVnextProductionPublicationPipeline(input: {
   const searchSettings = createStorageVnextSearchSettings({
     searchCutoffMs: input.snapshot.search.engineSearchCutoffMs
   });
+  const semanticFileRelationships =
+    createPostgresSemanticFileGraphEvidenceRepository(input.sql);
+  const semanticPresentation =
+    createPostgresSemanticSourcePresentationRepository(input.sql);
   const schemaChecksum = createStorageVnextSearchSchemaChecksum();
   const settingsChecksum = createStorageVnextSearchSettingsChecksum(searchSettings);
   const searchProvider = input.searchProvider;
@@ -205,6 +217,7 @@ export function createStorageVnextProductionPublicationPipeline(input: {
       catalog,
       graph,
       sourceBodies: input.sourceBodies,
+      semanticPresentation,
       snapshot: publicationSnapshot,
       limits: {
         catalogPageSize: Math.min(
@@ -256,7 +269,7 @@ export function createStorageVnextProductionPublicationPipeline(input: {
           deadlineMs: input.snapshot.search.requestTimeoutMs,
           graph
         });
-        return reconcileStorageVnextGraphFacts({
+        const fileGraph = await reconcileStorageVnextGraphFacts({
           candidateTerms: buildPersistedGraphCandidateTerms,
           candidates,
           edgeScorer: graphEdgeScorer,
@@ -271,6 +284,22 @@ export function createStorageVnextProductionPublicationPipeline(input: {
           body: request.body,
           signal: request.signal
         });
+        const semanticEdges = await loadSemanticFileGraphEdges({
+          knowledgeBaseId: request.current.sourceFile.knowledgeBaseId,
+          operationPublicId: request.operationPublicId,
+          source: fileGraph.node,
+          relationships: semanticFileRelationships,
+          graph,
+          maximumEdges: input.snapshot.graph.acceptedEdgeLimit
+        });
+        return {
+          node: fileGraph.node,
+          edges: mergeFileGraphEdges({
+            primary: fileGraph.edges,
+            semantic: semanticEdges,
+            maximumEdges: input.snapshot.graph.acceptedEdgeLimit
+          })
+        };
       },
       sourcePageSize: pageSize(input.config),
       sourceConcurrency:
@@ -338,7 +367,11 @@ export function createStorageVnextProductionPublicationPipeline(input: {
             return candidate
               && candidate.publicId === identity.candidatePublicId
               && candidate.operationPublicId === identity.operationPublicId
-              ? { state: candidate.state }
+              ? {
+                  state: candidate.state,
+                  updatedAt: candidate.updatedAt,
+                  factRevision: candidate.factRevision
+                }
               : null;
           },
           validate: releaseValidation.validate

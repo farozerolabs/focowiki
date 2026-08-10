@@ -105,6 +105,51 @@ describe("Meilisearch provider runtime", () => {
     });
   });
 
+  it("normalizes blended natural-language queries before relaxed matching", async () => {
+    const transport = legacyTransport();
+    const tokenizer = {
+      contractVersion: "lexical-tokenizer-test-v1",
+      tokenizeDocument: vi.fn(() => []),
+      tokenizeQuery: vi.fn(() => [
+        "what", "does", "gross", "margin", "for", "period", "define",
+        "or", "describe"
+      ])
+    };
+    const runtime = createMeilisearchProviderRuntime(transport, tokenizer);
+
+    await runtime.query.query({
+      indexUid: "owned_active",
+      query: "What does Gross margin for a period define or describe?",
+      evidenceFamilies: ["exact", "text", "phrase", "typo", "jieba", "graph"],
+      filters: {
+        kind: "equals",
+        field: "knowledgeBaseId",
+        value: "kb-a"
+      },
+      searchFields: ["title", "logicalPath", "searchText", "rankingTerms"],
+      returnFields: [
+        "id", "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath",
+        "title"
+      ],
+      limit: 10,
+      continuation: null,
+      cropLength: 40,
+      deadlineMs: 1_000,
+      matchingStrategy: "all",
+      distinctBy: "sourceFilePublicId"
+    });
+
+    expect(tokenizer.tokenizeQuery).toHaveBeenCalledWith(
+      "What does Gross margin for a period define or describe?",
+      64
+    );
+    expect(transport.search).toHaveBeenCalledWith(expect.objectContaining({
+      query: "gross margin period",
+      matchingStrategy: "last",
+      rankingScoreThreshold: 0.05
+    }));
+  });
+
   it("rejects operation references owned by another provider", async () => {
     const runtime = createMeilisearchProviderRuntime(legacyTransport());
 

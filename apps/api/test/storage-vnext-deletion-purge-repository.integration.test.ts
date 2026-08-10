@@ -281,6 +281,61 @@ describeOwnedDatabase("storage vNext deletion purge PostgreSQL repository", () =
       .toBe(1);
   });
 
+  it("does not globally purge a deleted registration retained by another release", async () => {
+    await seedKnowledgeBase("kb-purge-local-catalog");
+    await seedObject("object-purge-local-catalog");
+    await seedSource(
+      "kb-purge-local-catalog",
+      "source-purge-local-catalog",
+      "Local.md",
+      "object-purge-local-catalog",
+      true
+    );
+    await seedKnowledgeBase("kb-purge-retained-registration");
+    await seedObject("object-purge-retained-registration");
+    await sql`
+      INSERT INTO focowiki.release_roots (
+        public_id, knowledge_base_id, root_role,
+        manifest_checksum_sha256, revision
+      ) VALUES (
+        'root-purge-retained-registration',
+        'kb-purge-retained-registration', 'base', ${"7".repeat(64)}, 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.release_catalog_entries (
+        knowledge_base_id, release_root_public_id, logical_path, entry_kind,
+        checksum_sha256, object_id, byte_count, ordinal
+      ) VALUES (
+        'kb-purge-retained-registration', 'root-purge-retained-registration',
+        'retained.md', 'index', ${checksum("object-purge-retained-registration")},
+        'object-purge-retained-registration', 10, 0
+      )
+    `;
+    await sql`
+      UPDATE focowiki.object_registrations
+      SET state = 'deleted'
+      WHERE object_id = 'object-purge-retained-registration'
+    `;
+    const current = scope({
+      knowledgeBaseId: "kb-purge-local-catalog",
+      operationPublicId: "operation-purge-local-catalog",
+      targetPublicId: "source-purge-local-catalog"
+    });
+
+    await expect(repository.purgeSourceCatalog({
+      ...current,
+      sourceFilePublicIds: ["source-purge-local-catalog"],
+      finalPage: true
+    })).resolves.toBeUndefined();
+    await expect(repository.verifyDeletionClosure(current)).resolves.toBeUndefined();
+    const retained = await sql<Array<{ state: string }>>`
+      SELECT state FROM focowiki.object_registrations
+      WHERE object_id = 'object-purge-retained-registration'
+    `;
+    expect(retained).toEqual([{ state: "deleted" }]);
+  });
+
   it("purges a deleted directory in bounded pages while preserving its sibling", async () => {
     await seedKnowledgeBase("kb-purge-directory");
     await seedDirectory(

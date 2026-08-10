@@ -47,11 +47,16 @@ type PublicationProcessorInput = {
       knowledgeBaseId: string;
       candidatePublicId: string;
       operationPublicId: string;
-    }): Promise<{ state: "building" | "validating" | "ready" } | null>;
+    }): Promise<{
+      state: "building" | "validating" | "ready";
+      updatedAt: string;
+      factRevision: number;
+    } | null>;
     validate(input: {
       knowledgeBaseId: string;
       candidatePublicId: string;
       searchProjectionPublicId: string;
+      expectedCandidateFactRevision?: number;
     }): Promise<unknown>;
   };
   schemaChecksum: string;
@@ -130,10 +135,19 @@ export function createStorageVnextPublicationProcessor(
         });
         throwIfAborted(request.signal);
       }
+      const completedCandidate = await input.releases.getCandidate({
+        knowledgeBaseId: request.knowledgeBaseId,
+        candidatePublicId: request.candidatePublicId,
+        operationPublicId: request.operationPublicId
+      });
+      if (!completedCandidate || completedCandidate.state !== "building") {
+        throw processorError("candidate_changed");
+      }
       await input.releases.validate({
         knowledgeBaseId: request.knowledgeBaseId,
         candidatePublicId: request.candidatePublicId,
-        searchProjectionPublicId
+        searchProjectionPublicId,
+        expectedCandidateFactRevision: completedCandidate.factRevision
       });
       return { searchProjectionPublicId };
     }

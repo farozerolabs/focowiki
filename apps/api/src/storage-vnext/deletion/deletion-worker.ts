@@ -265,6 +265,7 @@ export function createStorageVnextDeletionWorker(input: {
 
 function isContinuationReason(reasonCode: string | null): reasonCode is string {
   return reasonCode === "DELETION_SCOPE_PAGE_REMAINING"
+    || reasonCode === "DELETION_SEMANTIC_PAGE_REMAINING"
     || reasonCode === "DELETION_SEARCH_TASK_PAGE_REMAINING"
     || reasonCode === "DELETION_SEARCH_PROVIDER_REQUIRED";
 }

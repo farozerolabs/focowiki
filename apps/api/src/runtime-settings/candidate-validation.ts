@@ -104,9 +104,10 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
   const publication = section(input.value, "publication");
   const graph = section(input.value, "graph");
   const maintenance = section(input.value, "maintenance");
+  const semantic = section(input.value, "semantic");
   const search = section(input.value, "search");
   const activeModel = input.value.activeModel;
-  if (!worker || !publication || !graph || !maintenance || !search) {
+  if (!worker || !publication || !graph || !maintenance || !semantic || !search) {
     return [issue("settings", "Settings sections are incomplete")];
   }
 
@@ -141,6 +142,22 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
   integerRange(search, "maxInFlightTasks", 1, 32, "search", issues);
   integerRange(search, "cleanupBatchSize", 1, 5_000, "search", issues);
   integerRange(search, "stagingRetentionHours", 1, 720, "search", issues);
+  integerRange(
+    semantic,
+    "searchLaneCutoffMs",
+    50,
+    numberValue(search.requestTimeoutMs),
+    "semantic",
+    issues
+  );
+  integerRange(
+    semantic,
+    "queryEmbeddingConcurrency",
+    1,
+    32,
+    "semantic",
+    issues
+  );
 
   positiveInteger(
     worker,

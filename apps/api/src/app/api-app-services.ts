@@ -79,7 +79,9 @@ export function resolveApiAppServices(options: ApiAppOptions) {
       catalog: options.storageVnextCatalog ?? null,
       requests: options.storageVnextMaintenanceRequests ?? null,
       status: options.storageVnextMaintenanceStatus ?? null,
-      runtimeSettings
+      runtimeSettings,
+      semanticAdoption: options.semanticAdoption ?? null,
+      semanticCancellation: options.semanticCancellation ?? null
     }),
     adminUploadApplication: createStorageVnextAdminUploadApplication({
       backend: storageVnextAdminUpload
@@ -99,6 +101,8 @@ export function resolveApiAppServices(options: ApiAppOptions) {
     sessionManager,
     redis: options.redis ?? null,
     runtimeSettings,
+    embeddingConfigurations: options.embeddingConfigurations ?? null,
+    rerankerConfigurations: options.rerankerConfigurations ?? null,
     logger
   };
 }

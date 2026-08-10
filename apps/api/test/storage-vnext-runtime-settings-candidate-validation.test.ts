@@ -156,7 +156,22 @@ function candidate(overrides: Record<string, unknown> = {}) {
       lexicalRebuildSourceReadConcurrency: 2,
       lexicalRebuildMaxInFlightSourceBytes: 67_108_864
     },
+    semantic: {
+      maximumChunkCharacters: 16_000,
+      maximumChunks: 32,
+      maximumEvidenceTargets: 64,
+      maximumCommunityPartitions: 256,
+      maximumCommunityEntities: 10_000,
+      maximumCommunityRelationships: 20_000,
+      maximumCommunityBoundaryRelationships: 10_000,
+      maximumCommunitySummaryCharacters: 8_000,
+      communityAdapterTimeoutMs: 30_000,
+      searchLaneCutoffMs: 1_000,
+      queryEmbeddingConcurrency: 4,
+      queryEmbeddingCacheEntries: 1_000
+    },
     search: {
+      requestTimeoutMs: 3_000,
       maxInFlightTasks: 3,
       indexBatchDocumentCount: 500,
       indexBatchCompressedBytes: 65_536,

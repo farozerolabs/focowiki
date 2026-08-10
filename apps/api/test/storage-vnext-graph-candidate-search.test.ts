@@ -11,6 +11,8 @@ import { createMeilisearchProviderRuntime } from
   "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import { STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION } from
   "../src/storage-vnext/search/documents.js";
+import { SearchProviderError } from
+  "../src/application/ports/search-provider-runtime.js";
 
 describe("storage vNext graph candidate search", () => {
   it("hydrates current graph nodes from the knowledge-base unified active index", async () => {
@@ -151,6 +153,88 @@ describe("storage vNext graph candidate search", () => {
     expect(query).toHaveBeenNthCalledWith(2, expect.objectContaining({
       deadlineMs: 2_000
     }));
+  });
+
+  it("retries transient provider overloads without restarting source model processing", async () => {
+    const query = vi.fn()
+      .mockRejectedValueOnce(new SearchProviderError("SEARCH_ENGINE_OVERLOADED", true))
+      .mockRejectedValueOnce(new SearchProviderError("SEARCH_ENGINE_TIMEOUT", true))
+      .mockResolvedValue({ hits: [], continuation: null, processingTimeMs: 1 });
+    const sleep = vi.fn(async () => undefined);
+    const search = createStorageVnextGraphCandidateSearch({
+      projections: {
+        getActiveProjection: vi.fn(async () => ({
+          publicId: "projection-active",
+          knowledgeBaseId: "kb-1",
+          providerKind: "opensearch" as const,
+          role: "active" as const,
+          providerIndexUid: "kb-1-unified-active",
+          schemaChecksum: "a".repeat(64),
+          settingsChecksum: "b".repeat(64),
+          documentCount: 0,
+          documentChecksum: "c".repeat(64),
+          providerOperationRef: null,
+          state: "active" as const,
+          createdAt: "2026-08-02T00:00:00.000Z",
+          activatedAt: "2026-08-02T00:00:00.000Z",
+          cleanupAfter: null
+        }))
+      },
+      provider: { kind: "opensearch", query: { query } },
+      deadlineMs: 5_000,
+      retry: { maximumAttempts: 3, delayMs: 25, sleep },
+      graph: { listNodesBySourceFiles: vi.fn() }
+    });
+
+    await expect(search.findCandidates({
+      knowledgeBaseId: "kb-1",
+      sourceFilePublicId: "source-current",
+      terms: ["transient overload"],
+      limit: 10
+    })).resolves.toEqual([]);
+
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenNthCalledWith(1, 25);
+    expect(sleep).toHaveBeenNthCalledWith(2, 50);
+  });
+
+  it("does not retry non-retryable candidate search failures", async () => {
+    const error = new SearchProviderError("SEARCH_ENGINE_AUTHORIZATION_FAILED", false);
+    const query = vi.fn(async () => { throw error; });
+    const sleep = vi.fn(async () => undefined);
+    const search = createStorageVnextGraphCandidateSearch({
+      projections: {
+        getActiveProjection: vi.fn(async () => ({
+          publicId: "projection-active",
+          knowledgeBaseId: "kb-1",
+          providerKind: "opensearch" as const,
+          role: "active" as const,
+          providerIndexUid: "kb-1-unified-active",
+          schemaChecksum: "a".repeat(64),
+          settingsChecksum: "b".repeat(64),
+          documentCount: 0,
+          documentChecksum: "c".repeat(64),
+          providerOperationRef: null,
+          state: "active" as const,
+          createdAt: "2026-08-02T00:00:00.000Z",
+          activatedAt: "2026-08-02T00:00:00.000Z",
+          cleanupAfter: null
+        }))
+      },
+      provider: { kind: "opensearch", query: { query } },
+      deadlineMs: 5_000,
+      retry: { maximumAttempts: 3, delayMs: 25, sleep },
+      graph: { listNodesBySourceFiles: vi.fn() }
+    });
+
+    await expect(search.findCandidates({
+      knowledgeBaseId: "kb-1",
+      sourceFilePublicId: "source-current",
+      terms: ["authorization failure"],
+      limit: 10
+    })).rejects.toBe(error);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("bounds long candidate terms to the Meilisearch query byte contract", async () => {

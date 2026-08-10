@@ -38,6 +38,13 @@ export function createStorageVnextSourceReleaseHandoff(input: {
         node: request.node,
         edges: request.edges
       });
+      if (request.publicationMode === "semantic_final") {
+        return {
+          outcome: "deferred",
+          candidatePublicId: null,
+          releaseOperationPublicId: null
+        };
+      }
       const changedFacts = deriveChangedFacts(request);
       const dependencies = deriveStorageVnextReleaseDependencyClosure({
         knowledgeBaseId: request.knowledgeBaseId,
@@ -71,11 +78,13 @@ export function createStorageVnextSourceReleaseHandoff(input: {
       const identity = createStorageVnextReleaseCandidateIdentity({
         knowledgeBaseId: request.knowledgeBaseId,
         activeRootPublicId: expectedActiveRootPublicId,
-        activeRevision: expectedActiveRevision
+        activeRevision: expectedActiveRevision,
+        triggerOperationPublicId: request.operationPublicId
       });
       const publication = createStorageVnextPublicationWorkIdentity({
         knowledgeBaseId: request.knowledgeBaseId,
-        candidatePublicId: identity.candidatePublicId
+        candidatePublicId: identity.candidatePublicId,
+        triggerOperationPublicId: request.operationPublicId
       });
       const nextAttemptAt = input.publicationDelayMilliseconds === 0
         ? null

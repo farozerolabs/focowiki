@@ -13,6 +13,28 @@ import type {
 } from "../src/storage-vnext/graph/ports.js";
 
 describe("storage vNext publication page artifact", () => {
+  it("accepts a current processing source selected by the candidate loader", () => {
+    const current = currentSource();
+    current.sourceFile.status = "processing";
+    const node = graphNode({
+      publicId: "node-setup",
+      sourceFilePublicId: current.sourceFile.publicId,
+      sourceRevisionPublicId: current.sourceRevision.publicId,
+      logicalPath: "pages/guides/setup.md",
+      label: "Setup"
+    });
+
+    expect(() => assembleStorageVnextPageArtifact({
+      current,
+      node,
+      neighborhood: [],
+      endpointNodes: [node],
+      sourceBody: "# Setup\n\nCandidate source body.",
+      ordinal: 7,
+      relatedFileLimit: 10
+    })).not.toThrow();
+  });
+
   it("removes a source Markdown link when its target was deleted", () => {
     const current = currentSource();
     const setup = graphNode({
@@ -179,6 +201,42 @@ describe("storage vNext publication page artifact", () => {
     expect(expected).toContain(
       "Incoming from \"Overview\" to \"Setup\": Overview introduces setup as the next step."
     );
+  });
+
+  it("adds bounded source-evidenced entity context without exposing semantic internals", () => {
+    const current = currentSource();
+    const setup = graphNode({
+      publicId: "node-setup",
+      sourceFilePublicId: "source-setup",
+      sourceRevisionPublicId: "revision-setup",
+      logicalPath: "pages/guides/setup.md",
+      label: "Setup"
+    });
+    const artifact = assembleStorageVnextPageArtifact({
+      current,
+      node: setup,
+      neighborhood: [],
+      endpointNodes: [setup],
+      semanticContext: {
+        entities: [{
+          label: "Runtime service",
+          kind: "component",
+          description: "Processes queued source revisions.",
+          confidence: 0.94,
+          evidencePaths: ["pages/guides/setup.md"]
+        }]
+      },
+      sourceBody: "# Setup\n\nThe runtime service processes queued source revisions.",
+      ordinal: 9,
+      relatedFileLimit: 10
+    });
+    const content = Buffer.from(artifact.bytes).toString("utf8");
+
+    expect(content).toContain("## Concepts");
+    expect(content).toContain("**Runtime service** (`component`)");
+    expect(content).toContain("Processes queued source revisions.");
+    expect(content).toContain("[Source evidence](/pages/guides/setup.md)");
+    expect(content).not.toMatch(/semantic[_ -]?generation|entity[_ -]?public[_ -]?id|vector|prompt/iu);
   });
 
   it("publishes irregular source metadata without repair or generated citations", () => {

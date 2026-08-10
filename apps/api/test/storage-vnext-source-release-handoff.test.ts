@@ -6,10 +6,12 @@ import type {
 } from "../src/storage-vnext/graph/ports.js";
 
 type Handoff = {
-  apply(input: ReturnType<typeof handoffRequest>): Promise<{
-    outcome: "active" | "candidate";
-    candidatePublicId: string;
-    releaseOperationPublicId: string;
+  apply(input: ReturnType<typeof handoffRequest> & {
+    publicationMode?: "immediate" | "semantic_final";
+  }): Promise<{
+    outcome: "active" | "candidate" | "deferred";
+    candidatePublicId: string | null;
+    releaseOperationPublicId: string | null;
   }>;
 };
 
@@ -98,6 +100,24 @@ describe("storage vNext source-to-graph-to-release handoff", () => {
     expect(fixture.releases.createCandidate).not.toHaveBeenCalled();
   });
 
+  it("persists source graph facts but defers release and search publication for a contracted upload", async () => {
+    const fixture = createFixture();
+    const handoff = createHandoff(fixture);
+
+    await expect(handoff.apply({
+      ...handoffRequest(),
+      publicationMode: "semantic_final"
+    })).resolves.toEqual({
+      outcome: "deferred",
+      candidatePublicId: null,
+      releaseOperationPublicId: null
+    });
+    expect(fixture.graph.replaceSourceFileGraph).toHaveBeenCalledOnce();
+    expect(fixture.releases.getLiveCandidate).not.toHaveBeenCalled();
+    expect(fixture.workflow.enqueue).not.toHaveBeenCalled();
+    expect(fixture.releases.createCandidate).not.toHaveBeenCalled();
+  });
+
   it("retains changed graph edges without repeating source-derived revision or node facts", async () => {
     const fixture = createFixture();
     const handoff = createHandoff(fixture);
@@ -154,6 +174,9 @@ describe("storage vNext source-to-graph-to-release handoff", () => {
     const handoff = createHandoff(fixture);
 
     const first = await handoff.apply(handoffRequest());
+    if (!first.candidatePublicId || !first.releaseOperationPublicId) {
+      throw new Error("Immediate source handoff did not create a candidate");
+    }
     fixture.liveCandidate = candidate(
       first.candidatePublicId,
       first.releaseOperationPublicId
@@ -162,6 +185,22 @@ describe("storage vNext source-to-graph-to-release handoff", () => {
 
     expect(replay).toEqual(first);
     expect(fixture.releases.createCandidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates fresh publication work and candidate after a failed attempt", async () => {
+    const fixture = createFixture();
+    const handoff = createHandoff(fixture);
+
+    const first = await handoff.apply(handoffRequest());
+    fixture.liveCandidate = null;
+    const second = await handoff.apply({
+      ...handoffRequest(),
+      operationPublicId: "operation-source-retry"
+    });
+
+    expect(second.candidatePublicId).not.toBe(first.candidatePublicId);
+    expect(second.releaseOperationPublicId).not.toBe(first.releaseOperationPublicId);
+    expect(fixture.workflow.enqueue).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -142,4 +142,120 @@ describe("storage vNext OpenAPI search presentation", () => {
     expect(JSON.stringify(result.readActions)).not.toContain("runtime.py");
     expect(JSON.stringify(result.readActions)).not.toContain("attester.py");
   });
+
+  it("drops semantic implementation details from source-file search results", () => {
+    const internalItem = {
+      publicId: "file-a",
+      sourceFilePublicId: "file-a",
+      logicalPath: "pages/a.md",
+      title: "Alpha",
+      snippet: "readable source evidence",
+      score: 1,
+      kind: "file",
+      metadata: {},
+      semanticEntityPublicId: "internal-entity-a",
+      vector: [0.1, 0.2],
+      providerScore: 0.99,
+      prompt: "internal-prompt-a",
+      workerDiagnostics: { attempt: 3 },
+      databaseIdentity: 42,
+      objectKey: "internal-object-key-a",
+      candidateFacts: ["internal-candidate-fact-a"]
+    } as Parameters<typeof presentOpenApiSearchResult>[0]["item"];
+    const result = presentOpenApiSearchResult({
+      knowledgeBaseId: "kb-a",
+      generationId: "root-a",
+      mode: "hybrid",
+      depth: 1,
+      nodePublicId: "node-a",
+      item: internalItem,
+      relationships: []
+    });
+    const payload = JSON.stringify(result);
+
+    for (const internalValue of [
+      "internal-entity-a",
+      "internal-prompt-a",
+      "internal-object-key-a",
+      "internal-candidate-fact-a",
+      "providerScore",
+      "workerDiagnostics",
+      "databaseIdentity",
+      "vector"
+    ]) {
+      expect(payload).not.toContain(internalValue);
+    }
+    expect(result).toMatchObject({
+      sourceFileId: "file-a",
+      path: "pages/a.md",
+      description: "readable source evidence"
+    });
+  });
+
+  it("presents semantic-only evidence truthfully as a readable source file", () => {
+    const result = presentOpenApiSearchResult({
+      knowledgeBaseId: "kb-a",
+      generationId: "root-a",
+      mode: "hybrid",
+      depth: 1,
+      nodePublicId: null,
+      item: {
+        publicId: "file-semantic",
+        sourceFilePublicId: "file-semantic",
+        logicalPath: "pages/semantic.md",
+        title: "Semantic source",
+        snippet: "Source-grounded excerpt from the Markdown body.",
+        sourceExcerpt: "Source-grounded excerpt from the Markdown body.",
+        score: 0.25,
+        kind: "file",
+        metadata: {},
+        evidenceFamilies: ["entity_vector", "relationship_vector"]
+      } as Parameters<typeof presentOpenApiSearchResult>[0]["item"],
+      relationships: []
+    });
+
+    expect(result).toMatchObject({
+      fileId: "file-semantic",
+      path: "pages/semantic.md",
+      matchedFields: ["content"],
+      evidenceTypes: ["entity", "relationship"],
+      sourceExcerpt: "Source-grounded excerpt from the Markdown body.",
+      readActions: {
+        fileContentById:
+          "/openapi/v2/knowledge-bases/kb-a/files/file-semantic/content"
+      }
+    });
+    expect(result.matchedFields).not.toContain("title");
+    expect(result).not.toHaveProperty("answer");
+    expect(JSON.stringify(result)).not.toContain("relevance_score");
+  });
+
+  it("derives match type from actual evidence instead of the requested mode", () => {
+    const base = {
+      publicId: "file-a",
+      sourceFilePublicId: "file-a",
+      logicalPath: "pages/a.md",
+      title: "Alpha",
+      snippet: null,
+      score: 1,
+      kind: "file" as const,
+      metadata: {}
+    };
+    const present = (evidenceFamilies: readonly string[]) =>
+      presentOpenApiSearchResult({
+        knowledgeBaseId: "kb-a",
+        generationId: "root-a",
+        mode: "hybrid",
+        depth: 1,
+        nodePublicId: null,
+        item: { ...base, evidenceFamilies },
+        relationships: []
+      }).matchType;
+
+    expect(present(["lexical"])).toBe("file_direct");
+    expect(present(["file_graph"])).toBe("graph_neighbor");
+    expect(present(["relationship_vector"])).toBe("graph_edge");
+    expect(present(["entity_vector"])).toBe("graph_node");
+    expect(present(["lexical", "entity_vector"])).toBe("hybrid");
+  });
 });

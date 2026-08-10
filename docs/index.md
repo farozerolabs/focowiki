@@ -102,7 +102,7 @@ Markdown links are the primary relationship mechanism. Links in body content hel
 ## Next Steps
 
 - [Understand Open Knowledge Format](./guide/open-knowledge-format.md)
-- [Understand file-first graph relationships](./guide/file-first-graph.md)
+- [Understand source-file evidence and graph relationships](./guide/file-first-graph.md)
 - [Deploy with Docker Compose](./deployment/docker-compose.md)
 - [Use Developer OpenAPI](./openapi/index.md)
 - [Connect Agents](./agent-integration/index.md)

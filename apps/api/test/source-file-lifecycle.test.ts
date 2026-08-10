@@ -7,6 +7,21 @@ import {
 const OCCURRED_AT = "2026-07-16T14:00:00.000Z";
 
 describe("source-file lifecycle", () => {
+  it("keeps semantic maintenance required visible after source publication", () => {
+    expect(deriveSourceFileLifecycle({
+      processingStatus: "completed",
+      processingStage: "semantic_maintenance_required",
+      generatedOutputStatus: "visible",
+      generatedPath: "pages/source.md",
+      failure: null
+    })).toEqual({
+      state: "visible",
+      currentStage: "semantic_maintenance_required",
+      failure: null,
+      actions: ["open_generated_file"]
+    });
+  });
+
   it("projects publication failure as failed with publication recovery actions", () => {
     const failure = terminalFailure("projection_generation", "publication");
 

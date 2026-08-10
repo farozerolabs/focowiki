@@ -1,5 +1,4 @@
 import type { SourceResourceFileRecord } from "../../domain/source-resource.js";
-import type { GeneratedFileKind } from "../../okf/publication-files.js";
 import type { GeneratedFileSearchScope } from "../../search/generated-file-search-documents.js";
 import type {
   GraphSearchDepth,
@@ -46,12 +45,15 @@ export type DeveloperOpenApiApplication = {
     knowledgeBaseId: string;
     query: string;
     scope: GeneratedFileSearchScope;
-    fileKind: GeneratedFileKind | null;
+    fileKind: "page" | null;
     mode: GraphSearchMode;
     graphDepth: GraphSearchDepth;
     graphFanout: number;
     okfFilters?: OkfSearchFilters;
     limit: number;
+    rerank: boolean;
+    rerankTopK: number | null;
+    rerankScoreThreshold: number | null;
     cursor: string | null;
   }): Promise<Record<string, unknown>>;
   getFileById(input: { knowledgeBaseId: string; fileId: string }): Promise<Record<string, unknown>>;

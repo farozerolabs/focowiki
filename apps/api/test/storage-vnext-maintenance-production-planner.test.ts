@@ -14,6 +14,7 @@ describe("storage vNext maintenance production planner", () => {
       expectedActiveRootPublicId: "root-active",
       expectedActiveRevision: 7,
       state: "building" as const,
+      factRevision: 1,
       changedFactCount: 1,
       affectedDependencyCount: 0,
       manifestChecksum: null,

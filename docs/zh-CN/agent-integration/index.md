@@ -70,20 +70,19 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | 模式 | 接口示例 |
 | --- | --- |
 | 自有 Agent 客户端 | `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "limit=50"`、`curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"` |
-| 第三方 Agent 客户端 | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`、`curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>"` |
+| 第三方 Agent 客户端 | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`、`curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<完整独立的用户问题>"` |
 
 ## 探索流程
 
-Agent 读取应采用小型循环，在回答前完成广度发现、深度阅读、线索提取和证据检查。
+Agent 读取采用一条有界的来源优先流程。
 
-1. 从 `index.md` 开始，文件约定或 metadata 不清晰时读取 `schema.md`。
-2. 在生成索引、链接、manifest 或目录线索有助于缩小范围时，检查文件树和 `_index/*`。
-3. 通过搜索、文件树、图扩展、图文件、相关文件或 Markdown links 发现候选文件。
-4. 按 `fileId` 或逻辑 `path` 读取有价值的候选文件。
-5. 从已读文件中提取新的短语、路径、链接、标题、heading、metadata terms、图关系和剩余缺口。
-6. 当新线索可以补充证据时，继续重复广度发现和深度阅读。
-7. 记录已经访问过的 `fileId` 和 `path`。
-8. 当已收集证据覆盖用户范围、剩余缺口没有新的相关候选，或后续轮次只会重复已读文件时停止。
+1. 第一次搜索发送用户的完整独立问题；除非任务明确需要 `file` 或 `graph`，否则使用默认 `hybrid` 检索。
+2. 将所有搜索条目视为发现候选，并通过返回的 `readActions` 读取最有价值的来源 Markdown 正文。
+3. 记录已访问的 `fileId` 和 `path`，同一轮探索不重复读取同一来源。
+4. 来源证据仍不完整时，可以扩展图关系，并最多执行两轮后续搜索。每个后续问题都必须来自已读来源 Markdown 中发现的术语、路径、链接、标题或证据缺口。
+5. 第一次搜索为空或知识库范围仍不清晰时，再读取 `index.md`、文件树和 `_index/*`。
+6. 来源文件已经覆盖用户范围、没有新的相关来源，或两轮后续搜索已经用完时停止。
+7. 最终回答只能使用读取到的来源 Markdown；搜索摘要、实体或关系描述、社区报告和 Reranker 输出都不能作为回答证据。
 
 这个流程可以保持请求可控，并减少浅层回答。
 

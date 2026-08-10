@@ -54,9 +54,9 @@ The exact routes belong to your product. This example shows a small shape that w
 | `GET /agent/knowledge/files/{fileId}/content` | `getFileContentById` | Markdown content. |
 | `GET /agent/knowledge/files/content?path=...` | `getFileContentByPath` | Markdown content by logical path. |
 | `GET /agent/knowledge/files/{fileId}/related` | `listRelatedFiles` | Bounded related file records. |
-| `GET /agent/knowledge/search?query=<agent-generated phrase>` | `searchGeneratedFiles` or your read layer | Candidate files for the Agent to read. |
+| `GET /agent/knowledge/search?query=<standalone natural-language question>` | `searchGeneratedFiles` or your read layer | Candidate source files for the Agent to read. |
 
-The `search` route is optional. The Agent should create the query phrase, and the route should return ranked file-level candidates for that phrase. Focowiki Developer OpenAPI returns `searchStatus`, candidate `fileId`, candidate `path`, `matchedFields`, and optional `nextActions`. Empty or unavailable search responses should include safe continuation guidance so the Agent can continue with `index.md`, tree listing, shorter phrases, links, graph files, or related-file reads.
+The `search` route is optional. Send the user's complete standalone question first and use the recommended default `hybrid` mode. The route returns ranked source-file candidates with `fileId`, `path`, actual `matchedFields`, safe `evidenceTypes`, bounded `sourceExcerpt`, `readActions`, family status, and reranker status. The Agent must read selected Markdown files before using their content as evidence. It may expand the graph and run at most two bounded follow-up searches derived from those source reads, while deduplicating `fileId` and `path`. Search snippets, semantic labels, community summaries, and reranker output never support the final answer by themselves.
 
 For third-party Agent clients, you can publish the read-only base URL as `https://knowledge.example.com` and route it internally to the same `/agent/knowledge` adapter. The Skill then sees shorter paths such as `/tree`, `/files/{fileId}`, and `/files/content?path=index.md`, while your backend still controls authentication, authorization, and Focowiki OpenAPI access.
 
@@ -68,7 +68,7 @@ For own Agent clients, register tools with the same contract:
 | `get_file` | `GET /agent/knowledge/files/{fileId}` |
 | `read_file` | `GET /agent/knowledge/files/{fileId}/content` or `GET /agent/knowledge/files/content?path=...` |
 | `read_related` | `GET /agent/knowledge/files/{fileId}/related` or a content read using the returned `graphRef` |
-| `search_files` | `GET /agent/knowledge/search?query=<agent-generated phrase>` |
+| `search_files` | `GET /agent/knowledge/search?query=<complete standalone user question>` |
 
 ## Identifier Flow
 

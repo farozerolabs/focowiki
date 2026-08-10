@@ -144,6 +144,7 @@ function evidenceFamilies(
 ): readonly ("exact" | "text" | "phrase" | "typo" | "jieba" | "graph")[] {
   if (kind.startsWith("okf_")) return ["exact", "text"];
   if (kind === "exact" || kind === "title" || kind === "path") return ["exact"];
+  if (kind === "ranking") return ["exact", "text"];
   if (kind === "phrase") return ["phrase", "text"];
   if (kind === "typo") return ["typo", "text"];
   if (kind === "chinese" || kind === "mixed_script") return ["jieba", "text"];

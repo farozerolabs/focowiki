@@ -15,6 +15,9 @@ import { normalizeOpenSearchError } from "./opensearch-errors.js";
 const MAXIMUM_QUERY_BYTES = 4_096;
 const MAXIMUM_PAGE_SIZE = 1_000;
 const MAXIMUM_JIEBA_QUERY_TERMS = 64;
+const MAXIMUM_EXECUTION_TERMS = 32;
+const MAXIMUM_HAN_EXECUTION_CODE_POINTS = 64;
+const MAXIMUM_OTHER_EXECUTION_CODE_POINTS = 128;
 const CURSOR_VERSION = 1;
 const EVIDENCE_FAMILIES = new Set([
   "exact", "text", "phrase", "typo", "jieba", "graph"
@@ -39,6 +42,10 @@ const FIELD_BOOSTS: Readonly<Record<string, number>> = {
   searchText: 1,
   rankingTerms: 2
 };
+const HAN_QUERY_INTENT_TERMS = new Set([
+  "哪些", "什么", "如何", "怎么", "怎样", "为何", "为什么", "是否",
+  "文件", "文档", "内容", "主要", "属于", "类别", "相关", "对应"
+]);
 
 type QuerySort = readonly [number, string, string];
 type QueryContinuation = {
@@ -132,6 +139,13 @@ function buildEvidenceClauses(
   const families = new Set(request.evidenceFamilies);
   const fields = weightedFields(request.searchFields);
   const clauses: Record<string, unknown>[] = [];
+  const needsLexicalQuery = ([
+    "text", "phrase", "typo", "jieba", "graph"
+  ] as const)
+    .some((family) => families.has(family));
+  const execution = needsLexicalQuery
+    ? buildExecutionQuery(tokenizer, request.query)
+    : { query: "", terms: [] };
   if (families.has("exact")) {
     const exact = normalizeExact(request.query);
     if (request.searchFields.includes("title")) {
@@ -144,10 +158,13 @@ function buildEvidenceClauses(
   if (families.has("text") && fields.length > 0) {
     clauses.push({
       multi_match: {
-        query: request.query,
+        query: execution.query,
         fields,
         type: "best_fields",
         operator: request.matchingStrategy === "all" ? "and" : "or",
+        ...(request.matchingStrategy === "last"
+          ? { minimum_should_match: "2<-70%" }
+          : {}),
         tie_breaker: 0.2,
         boost: 4
       }
@@ -156,7 +173,7 @@ function buildEvidenceClauses(
   if (families.has("phrase") && fields.length > 0) {
     clauses.push({
       multi_match: {
-        query: request.query,
+        query: execution.query,
         fields,
         type: "phrase",
         slop: 1,
@@ -164,26 +181,28 @@ function buildEvidenceClauses(
       }
     });
   }
-  if (families.has("typo") && isEligibleForFuzzyEvidence(request.query)) {
+  if (
+    families.has("typo")
+    && isEligibleForFuzzyEvidence(request.query, execution.terms)
+  ) {
     clauses.push({
       multi_match: {
-        query: request.query,
+        query: execution.query,
         fields,
         type: "best_fields",
         fuzziness: "AUTO",
         prefix_length: 1,
-        max_expansions: 25,
+        max_expansions: 10,
         boost: 0.8
       }
     });
   }
   if (families.has("jieba")) {
-    const terms = tokenizeQuery(tokenizer, request.query);
-    if (terms.length > 0) {
+    if (execution.terms.length > 0) {
       clauses.push({
         match: {
           _focowikiJiebaText: {
-            query: terms.join(" "),
+            query: execution.query,
             operator: request.matchingStrategy === "all" ? "and" : "or",
             boost: 5
           }
@@ -200,16 +219,72 @@ function buildEvidenceClauses(
     if (graphFields.length > 0) {
       clauses.push({
         multi_match: {
-          query: request.query,
+          query: execution.query,
           fields: graphFields,
           type: "most_fields",
           operator: "or",
+          ...(request.matchingStrategy === "last"
+            ? { minimum_should_match: "2<-70%" }
+            : {}),
           boost: 3
         }
       });
     }
   }
+  if (
+    request.matchingStrategy === "last"
+    && /\p{Script=Han}/u.test(request.query)
+    && needsLexicalQuery
+    && clauses.length > 0
+  ) {
+    const meaningfulTerms = execution.terms.filter((term) =>
+      !HAN_QUERY_INTENT_TERMS.has(term));
+    const confidenceTerms = meaningfulTerms.length > 0
+      ? meaningfulTerms : execution.terms;
+    return [{
+      bool: {
+        must: [{
+          match: {
+            _focowikiJiebaText: {
+              query: confidenceTerms.join(" "),
+              operator: "or",
+              minimum_should_match: "2<-20%"
+            }
+          }
+        }],
+        should: clauses,
+        minimum_should_match: 1
+      }
+    }];
+  }
   return clauses;
+}
+
+function buildExecutionQuery(
+  tokenizer: LexicalTokenizer,
+  query: string
+): { query: string; terms: string[] } {
+  const maximumCodePoints = /\p{Script=Han}/u.test(query)
+    ? MAXIMUM_HAN_EXECUTION_CODE_POINTS
+    : MAXIMUM_OTHER_EXECUTION_CODE_POINTS;
+  const sourceTerms = tokenizeQuery(tokenizer, query);
+  const terms: string[] = [];
+  let codePoints = 0;
+  for (const sourceTerm of sourceTerms) {
+    if (terms.length >= MAXIMUM_EXECUTION_TERMS) break;
+    const remaining = maximumCodePoints - codePoints;
+    if (remaining <= 0) break;
+    const term = Array.from(sourceTerm).slice(0, remaining).join("");
+    if (!term) continue;
+    terms.push(term);
+    codePoints += Array.from(term).length;
+  }
+  if (terms.length === 0) {
+    const fallback = Array.from(query).slice(0, maximumCodePoints).join("").trim();
+    if (!fallback) throw requestError();
+    return { query: fallback, terms: [fallback] };
+  }
+  return { query: terms.join(" "), terms };
 }
 
 function parseResult(
@@ -275,6 +350,7 @@ function parseHit(
     title: typeof source.title === "string" ? source.title : "",
     normalizedScore: score / (1 + score),
     snippets: readSnippets(hit, cropLength),
+    matchedFields: readMatchedFields(hit),
     sortKey: [...sort],
     continuationAfter: encodeContinuation(scopeHash, {
       offset: nextOffset,
@@ -282,6 +358,26 @@ function parseHit(
     }),
     document: source
   };
+}
+
+function readMatchedFields(hit: Record<string, unknown>): string[] {
+  const topLevel = highlightFields(hit.highlight);
+  const innerHits = objectValue(hit.inner_hits);
+  const bestSegment = objectValue(innerHits?.best_segment);
+  const nested = objectValue(bestSegment?.hits)?.hits;
+  const nestedFields = Array.isArray(nested) && nested.length > 0
+    ? highlightFields(objectValue(nested[0])?.highlight)
+    : [];
+  return [...new Set([...topLevel, ...nestedFields])].sort((left, right) =>
+    left.localeCompare(right, "en"));
+}
+
+function highlightFields(value: unknown): string[] {
+  const highlight = objectValue(value);
+  if (!highlight) return [];
+  return Object.entries(highlight)
+    .filter(([, fragments]) => Array.isArray(fragments) && fragments.length > 0)
+    .map(([field]) => field.replace(/^segments\./u, ""));
 }
 
 function readSnippets(
@@ -408,8 +504,10 @@ function weightedFields(fields: readonly string[]): string[] {
   return fields.map((field) => `${field}^${FIELD_BOOSTS[field] ?? 1}`);
 }
 
-function isEligibleForFuzzyEvidence(query: string) {
-  return query.split(/\s+/u).some((term) => /^[A-Za-z][A-Za-z0-9-]{3,}$/u.test(term));
+function isEligibleForFuzzyEvidence(query: string, terms: readonly string[]) {
+  return terms.length <= 4
+    && /(?:^|\s)[A-Za-z][A-Za-z0-9-]{3,}(?:\s|$)/u.test(query)
+    && terms.some((term) => /^[A-Za-z][A-Za-z0-9-]{3,}$/u.test(term));
 }
 
 function normalizeExact(value: string) {

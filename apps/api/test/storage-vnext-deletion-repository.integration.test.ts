@@ -205,6 +205,12 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
       targetKind: "knowledge_base",
       targetPublicId: "kb-deletion-scope"
     });
+    await seedSemanticWork({
+      knowledgeBaseId: "kb-deletion-scope",
+      operationPublicId: "operation-deletion-maintenance",
+      sourceFilePublicId: "file-deletion-scope",
+      sourceRevisionPublicId: "revision-file-deletion-scope"
+    });
     await seedTerminalOperation("kb-deletion-scope", "failed");
     await seedTerminalOperation("kb-deletion-scope", "completed");
 
@@ -234,6 +240,37 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
       WHERE public_id = 'operation-deletion-maintenance'
     `;
     expect(work).toEqual([{ state: "superseded" }]);
+    const semanticStages = await sql<Array<{
+      stage_kind: string;
+      state: string;
+      cancellation_requested_at: Date | null;
+      completed_at: Date | null;
+    }>>`
+      SELECT stage_kind, state, cancellation_requested_at, completed_at
+      FROM focowiki.semantic_stage_work_items
+      WHERE knowledge_base_id = 'kb-deletion-scope'
+      ORDER BY stage_kind
+    `;
+    expect(semanticStages).toEqual([
+      expect.objectContaining({
+        stage_kind: "embedding",
+        state: "running",
+        cancellation_requested_at: new Date("2026-08-01T06:00:00.000Z"),
+        completed_at: null
+      }),
+      expect.objectContaining({
+        stage_kind: "extraction",
+        state: "running",
+        cancellation_requested_at: new Date("2026-08-01T06:00:00.000Z"),
+        completed_at: null
+      }),
+      expect.objectContaining({
+        stage_kind: "reconciliation",
+        state: "cancelled",
+        cancellation_requested_at: new Date("2026-08-01T06:00:00.000Z"),
+        completed_at: new Date("2026-08-01T06:00:00.000Z")
+      })
+    ]);
     const historical = await sql<Array<{ state: string }>>`
       SELECT state FROM focowiki.operations
       WHERE knowledge_base_id = 'kb-deletion-scope'
@@ -625,6 +662,99 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
         'running', 1, 'settings-deletion-integration', 1,
         ${`owner-${input.operationPublicId}`}, '2099-01-01T00:00:00.000Z', '{}'::jsonb
       )
+    `;
+  }
+
+  async function seedSemanticWork(input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    sourceFilePublicId: string;
+    sourceRevisionPublicId: string;
+  }) {
+    const configurationPublicId = `embedding-${input.knowledgeBaseId}`;
+    const revisionPublicId = `embedding-revision-${input.knowledgeBaseId}`;
+    const generationPublicId = `semantic-${input.knowledgeBaseId}`;
+    await sql`
+      INSERT INTO focowiki.embedding_configurations (
+        public_id, display_name, lifecycle_status, revision
+      ) VALUES (
+        ${configurationPublicId}, 'Deletion integration embedding', 'draft', 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.embedding_configuration_revisions (
+        public_id, configuration_public_id, revision_number,
+        authentication_mode, base_url, model_name, requested_dimension,
+        resolved_dimension, normalization, maximum_input_tokens, batch_size,
+        timeout_ms, retry_count, minimum_interval_ms, concurrency,
+        maximum_response_bytes, minimum_vector_relevance,
+        vector_producing_revision_public_id, validation_status,
+        validation_fingerprint_sha256, validated_at
+      ) VALUES (
+        ${revisionPublicId}, ${configurationPublicId}, 1, 'none',
+        'http://embedding.test/v1', 'embedding-test', 3, 3, 'l2',
+        8192, 16, 5000, 1, 0, 2, 1048576, 0.7, ${revisionPublicId}, 'valid',
+        ${"9".repeat(64)}, '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_generations (
+        public_id, knowledge_base_id, operation_public_id, generation_role,
+        state, generation_model_configuration_public_id,
+        generation_model_configuration_revision, extraction_contract_version,
+        graph_schema_version, prompt_contract_version,
+        contract_fingerprint_sha256, revision
+      ) VALUES (
+        ${generationPublicId}, ${input.knowledgeBaseId},
+        ${input.operationPublicId}, 'candidate', 'building', 'model-delete', 1,
+        'extract-v1', 'graph-v1', 'prompt-v1', ${"8".repeat(64)}, 1
+      )
+    `;
+    const completedOperationPublicId = `operation-completed-${input.knowledgeBaseId}`;
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state, completed_at
+      ) VALUES (
+        ${completedOperationPublicId}, ${input.knowledgeBaseId},
+        'source_processing', 'completed', '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_stage_work_items (
+        public_id, knowledge_base_id, operation_public_id,
+        semantic_generation_public_id, source_file_public_id,
+        source_revision_public_id, stage_kind, partition_key,
+        extraction_contract_version,
+        embedding_configuration_revision_public_id, settings_snapshot,
+        state, attempt_count, maximum_attempts, lease_owner,
+        lease_expires_at
+      ) VALUES
+        (
+          ${`semantic-stage-running-${input.knowledgeBaseId}`},
+          ${input.knowledgeBaseId}, ${input.operationPublicId},
+          ${generationPublicId}, ${input.sourceFilePublicId},
+          ${input.sourceRevisionPublicId}, 'extraction', 'source',
+          'extract-v1', ${revisionPublicId}, '{}'::jsonb,
+          'running', 1, 3, 'semantic-worker-delete',
+          '2099-01-01T00:00:00.000Z'
+        ),
+        (
+          ${`semantic-stage-queued-${input.knowledgeBaseId}`},
+          ${input.knowledgeBaseId}, ${input.operationPublicId},
+          ${generationPublicId}, ${input.sourceFilePublicId},
+          ${input.sourceRevisionPublicId}, 'reconciliation', 'source',
+          'extract-v1', ${revisionPublicId}, '{}'::jsonb,
+          'queued', 0, 3, NULL, NULL
+        ),
+        (
+          ${`semantic-stage-completed-operation-${input.knowledgeBaseId}`},
+          ${input.knowledgeBaseId}, ${completedOperationPublicId},
+          ${generationPublicId}, ${input.sourceFilePublicId},
+          ${input.sourceRevisionPublicId}, 'embedding', 'completed-operation',
+          'extract-v1', ${revisionPublicId}, '{}'::jsonb,
+          'running', 1, 3, 'semantic-worker-completed-operation',
+          '2099-01-01T00:00:00.000Z'
+        )
     `;
   }
 

@@ -10,6 +10,7 @@ import {
   updatePublicationSettings,
   updateRateLimitSettings,
   updateSearchSettings,
+  updateSemanticSettings,
   updateWorkerSettings
 } from "@/lib/admin-api";
 
@@ -119,6 +120,20 @@ vi.mock("@/lib/admin-api", () => ({
         stagingRetentionHours: 24,
         cropLength: 1200
       },
+      semantic: {
+        maximumChunkCharacters: 16000,
+        maximumChunks: 32,
+        maximumEvidenceTargets: 64,
+        maximumCommunityPartitions: 256,
+        maximumCommunityEntities: 10000,
+        maximumCommunityRelationships: 20000,
+        maximumCommunityBoundaryRelationships: 10000,
+        maximumCommunitySummaryCharacters: 8000,
+        communityAdapterTimeoutMs: 30000,
+        searchLaneCutoffMs: 1000,
+        queryEmbeddingConcurrency: 4,
+        queryEmbeddingCacheEntries: 1000
+      },
       activeModel: {
         id: "model-001"
       }
@@ -196,6 +211,10 @@ vi.mock("@/lib/admin-api", () => ({
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
     search: value
   } })),
+  updateSemanticSettings: vi.fn(async (value) => ({ settings: {
+    ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
+    semantic: value
+  } })),
   updateWorkerSettings: vi.fn(async (value) => ({ settings: {
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
     worker: value
@@ -247,6 +266,9 @@ describe("SettingsPanel", () => {
       "Graph",
       "Maintenance",
       "Search",
+      "Semantic",
+      "Embeddings",
+      "Rerankers",
       "Models"
     ]);
     expect(container.querySelector("section.flex.min-w-0.flex-col.gap-6")).toBeTruthy();
@@ -455,6 +477,42 @@ describe("SettingsPanel", () => {
         cropLength: 1500,
         indexBatchDocumentCount: 500,
         indexBatchCompressedBytes: 8_388_608
+      }));
+    });
+  });
+
+  it("shows and saves every bounded semantic setting", async () => {
+    render(<SettingsPanel />);
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Semantic" }));
+
+    for (const [field, value] of Object.entries({
+      maximumChunkCharacters: 16000,
+      maximumChunks: 32,
+      maximumEvidenceTargets: 64,
+      maximumCommunityPartitions: 256,
+      maximumCommunityEntities: 10000,
+      maximumCommunityRelationships: 20000,
+      maximumCommunityBoundaryRelationships: 10000,
+      maximumCommunitySummaryCharacters: 8000,
+      communityAdapterTimeoutMs: 30000,
+      searchLaneCutoffMs: 1000,
+      queryEmbeddingConcurrency: 4,
+      queryEmbeddingCacheEntries: 1000
+    })) {
+      expect((document.getElementById(`semantic-${field}`) as HTMLInputElement).value)
+        .toBe(String(value));
+    }
+
+    fireEvent.change(document.getElementById("semantic-queryEmbeddingConcurrency")!, {
+      target: { value: "5" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(updateSemanticSettings).toHaveBeenCalledWith(expect.objectContaining({
+        queryEmbeddingConcurrency: 5,
+        maximumChunkCharacters: 16000,
+        searchLaneCutoffMs: 1000
       }));
     });
   });

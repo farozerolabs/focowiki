@@ -34,6 +34,7 @@ export type StorageVnextSourceModelResult = {
   metadata: StorageVnextStructuredMetadata;
   node: StorageVnextGraphNodeFact;
   edges: readonly StorageVnextGraphEdgeFact[];
+  modelAssistanceUsed: boolean;
   modelWarningCount?: number;
 };
 
@@ -46,6 +47,7 @@ export type StorageVnextSourceModelPort = {
     attemptPublicId: string;
     body: AsyncIterable<Uint8Array>;
     signal: AbortSignal;
+    onModelAssistanceStart?: () => Promise<void>;
   }): Promise<StorageVnextSourceModelResult>;
 };
 
@@ -59,10 +61,38 @@ export type StorageVnextSourceReleaseHandoffPort = {
     node: StorageVnextGraphNodeFact;
     edges: readonly StorageVnextGraphEdgeFact[];
     completedAt: string;
+    publicationMode?: "immediate" | "semantic_final";
   }): Promise<{
-    outcome: "active" | "candidate";
-    candidatePublicId: string;
-    releaseOperationPublicId: string;
+    outcome: "active" | "candidate" | "deferred";
+    candidatePublicId: string | null;
+    releaseOperationPublicId: string | null;
+  }>;
+};
+
+export type StorageVnextSemanticSourceHandoffPort = {
+  enqueue(input: {
+    operationPublicId: string;
+    knowledgeBaseId: string;
+    settingsRevisionPublicId: string;
+    sourceFile: StorageVnextSourceFileFact;
+    sourceRevision: StorageVnextSourceRevisionFact;
+    skeletonGraphSignals?: {
+      acceptedEdgeCount: number;
+      inboundEdgeCount: number;
+      outboundEdgeCount: number;
+      distinctNeighborCount: number;
+      relationKindCount: number;
+      contentProfileHeadingCount?: number;
+      contentProfileDefinitionCount?: number;
+      contentProfileExplicitReferenceCount?: number;
+    };
+    enqueuedAt: string;
+    resumeFromStage?: "publication";
+  }): Promise<{
+    state: "disabled" | "blocked" | "queued";
+    semanticGenerationPublicId: string | null;
+    stageCount: number;
+    safeCode: string | null;
   }>;
 };
 
@@ -72,5 +102,6 @@ export type StorageVnextSourceProcessingPorts = {
   bodyStore: StorageVnextSourceBodyReadPort;
   model: StorageVnextSourceModelPort;
   handoff: StorageVnextSourceReleaseHandoffPort;
+  semanticHandoff?: StorageVnextSemanticSourceHandoffPort;
   events: StorageVnextSourceEventWritePort;
 };

@@ -65,8 +65,11 @@ describe("storage vNext incremental publication", () => {
         dependency("ancestor", "pages", "directory_ancestor"),
         dependency("ancestor", "pages/guides", "directory_ancestor"),
         dependency("graph", "source-setup", "graph_source"),
+        dependency("graph", "graph-semantic-0012", "semantic_graph_shard"),
+        dependency("graph", "edge-setup-reference", "graph_edge"),
         dependency("link", "edge-setup-reference", "graph_edge"),
         dependency("search", "source-setup", "search_document"),
+        dependency("search", "search-semantic-0012", "semantic_search_shard"),
         dependency("index", "index.md", "required_navigation"),
         dependency("schema", "schema.md", "required_schema"),
         dependency("log", "log.md", "bounded_update_log")

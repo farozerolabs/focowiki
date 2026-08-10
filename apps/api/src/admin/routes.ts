@@ -35,6 +35,14 @@ import type { StorageVnextAdminOpenApiKeyApplication } from "../storage-vnext/ap
 import type { StorageVnextAdminMutationApplication } from "../storage-vnext/api/admin-mutation-application.js";
 import type { StorageVnextAdminCoreApplication } from "../storage-vnext/api/admin-core-application.js";
 import type { StorageVnextAdminSecurityApplication } from "../storage-vnext/api/admin-security-application.js";
+import type { EmbeddingConfigurationService } from
+  "../semantic/embedding/service.js";
+import { registerAdminEmbeddingSettingsRoutes } from
+  "./embedding-settings-routes.js";
+import type { RerankerConfigurationService } from
+  "../semantic/reranker/service.js";
+import { registerAdminRerankerSettingsRoutes } from
+  "./reranker-settings-routes.js";
 
 export type AdminApiServices = {
   adminApplication: StorageVnextAdminReadApplication;
@@ -50,6 +58,8 @@ export type AdminApiServices = {
   config: RuntimeConfig;
   sessionManager: AdminSessionManager | null;
   runtimeSettings: RuntimeSettingsService | null;
+  embeddingConfigurations: EmbeddingConfigurationService | null;
+  rerankerConfigurations: RerankerConfigurationService | null;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
@@ -76,6 +86,22 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       requireAuth,
       requireWriteProtection
     }
+  );
+  registerAdminEmbeddingSettingsRoutes(
+    app,
+    {
+      embeddingConfigurations: services.embeddingConfigurations,
+      actorPublicId: config.admin.username
+    },
+    { requireAuth, requireWriteProtection }
+  );
+  registerAdminRerankerSettingsRoutes(
+    app,
+    {
+      rerankerConfigurations: services.rerankerConfigurations,
+      actorPublicId: config.admin.username
+    },
+    { requireAuth, requireWriteProtection }
   );
   registerAdminSourceFileRetryRoutes(
     app,

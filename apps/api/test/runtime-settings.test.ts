@@ -83,7 +83,55 @@ describe("runtime settings service", () => {
       stagingRetentionHours: 24,
       cropLength: 1_200
     });
+    expect(snapshot.semantic).toEqual({
+      maximumChunkCharacters: 8_000,
+      maximumChunks: 32,
+      maximumEvidenceTargets: 64,
+      maximumCommunityPartitions: 256,
+      maximumCommunityEntities: 10_000,
+      maximumCommunityRelationships: 20_000,
+      maximumCommunityBoundaryRelationships: 10_000,
+      maximumCommunitySummaryCharacters: 8_000,
+      communityAdapterTimeoutMs: 30_000,
+      searchLaneCutoffMs: 2_500,
+      queryEmbeddingConcurrency: 4,
+      queryEmbeddingCacheEntries: 1_000
+    });
     expect(snapshot.activeModel).toBeNull();
+  });
+
+  it("validates and hot-reloads every semantic settings field as one revision", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+    const updated = await service.updateSemantic({
+      actor: "admin",
+      value: {
+        ...initial.semantic,
+        maximumChunkCharacters: 12_000,
+        maximumCommunityEntities: 2_000,
+        queryEmbeddingConcurrency: 2,
+        searchLaneCutoffMs: 900
+      }
+    });
+    expect(updated.semantic).toMatchObject({
+      maximumChunkCharacters: 12_000,
+      maximumCommunityEntities: 2_000,
+      queryEmbeddingConcurrency: 2,
+      searchLaneCutoffMs: 900
+    });
+    await expect(service.updateSemantic({
+      actor: "admin",
+      value: { ...updated.semantic, maximumCommunityEntities: 10_001 }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
+    expect((await service.getSnapshot()).semantic).toEqual(updated.semantic);
   });
 
   it("validates and persists bounded search settings", async () => {
@@ -592,6 +640,46 @@ describe("runtime settings service", () => {
     });
   });
 
+  it("allows pausing but blocks deleting a generation model referenced by an active semantic contract", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
+    });
+    const model = await service.createModel({
+      displayName: "Pinned generation model",
+      apiMode: "chat_completions",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-pinned-test",
+      modelName: "generation-test",
+      contextWindowTokens: 128_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 0,
+      isActive: true
+    });
+    repository.activeSemanticGenerationReferenceCount = 1;
+
+    await expect(service.pauseModel({ id: model.id })).resolves.toMatchObject({
+      id: model.id,
+      status: "paused",
+      isActive: false
+    });
+    await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: [expect.objectContaining({ field: "model" })]
+    });
+    await expect(repository.getModel(model.id)).resolves.toMatchObject({
+      status: "paused",
+      isActive: false
+    });
+  });
+
   it("keeps saved model keys usable after service recreation", async () => {
     const runtimeSecretDirectory = join(
       tmpdir(),
@@ -780,6 +868,7 @@ describe("runtime settings service", () => {
     expect(restored.publication).toEqual(initial.settings.publication);
     expect(restored.graph).toEqual(initial.settings.graph);
     expect(restored.maintenance).toEqual(initial.settings.maintenance);
+    expect(restored.semantic).toEqual(initial.settings.semantic);
     expect(restored.search).toEqual(initial.settings.search);
   });
 
@@ -1049,7 +1138,7 @@ function createTestResourceCapacity() {
 type RuntimeSettingFieldCase = {
   id: string;
   section: Exclude<keyof RuntimeSettingsSnapshot, "activeModel">;
-  route: "rate-limits" | "worker" | "publication" | "graph" | "maintenance" | "search";
+  route: "rate-limits" | "worker" | "publication" | "graph" | "maintenance" | "semantic" | "search";
   path: readonly string[];
   value: string | number | boolean;
   prepare?: (section: Record<string, unknown>) => void;
@@ -1120,6 +1209,18 @@ const runtimeSettingFieldCases: readonly RuntimeSettingFieldCase[] = [
   { id: "maintenance.lexicalRebuildConcurrency", section: "maintenance", route: "maintenance", path: ["lexicalRebuildConcurrency"], value: 5 },
   { id: "maintenance.lexicalRebuildSourceReadConcurrency", section: "maintenance", route: "maintenance", path: ["lexicalRebuildSourceReadConcurrency"], value: 3 },
   { id: "maintenance.lexicalRebuildMaxInFlightSourceBytes", section: "maintenance", route: "maintenance", path: ["lexicalRebuildMaxInFlightSourceBytes"], value: 67_108_865 },
+  { id: "semantic.maximumChunkCharacters", section: "semantic", route: "semantic", path: ["maximumChunkCharacters"], value: 16_001 },
+  { id: "semantic.maximumChunks", section: "semantic", route: "semantic", path: ["maximumChunks"], value: 31 },
+  { id: "semantic.maximumEvidenceTargets", section: "semantic", route: "semantic", path: ["maximumEvidenceTargets"], value: 65 },
+  { id: "semantic.maximumCommunityPartitions", section: "semantic", route: "semantic", path: ["maximumCommunityPartitions"], value: 255 },
+  { id: "semantic.maximumCommunityEntities", section: "semantic", route: "semantic", path: ["maximumCommunityEntities"], value: 9_999 },
+  { id: "semantic.maximumCommunityRelationships", section: "semantic", route: "semantic", path: ["maximumCommunityRelationships"], value: 19_999 },
+  { id: "semantic.maximumCommunityBoundaryRelationships", section: "semantic", route: "semantic", path: ["maximumCommunityBoundaryRelationships"], value: 9_999 },
+  { id: "semantic.maximumCommunitySummaryCharacters", section: "semantic", route: "semantic", path: ["maximumCommunitySummaryCharacters"], value: 8_001 },
+  { id: "semantic.communityAdapterTimeoutMs", section: "semantic", route: "semantic", path: ["communityAdapterTimeoutMs"], value: 30_001 },
+  { id: "semantic.searchLaneCutoffMs", section: "semantic", route: "semantic", path: ["searchLaneCutoffMs"], value: 1_001 },
+  { id: "semantic.queryEmbeddingConcurrency", section: "semantic", route: "semantic", path: ["queryEmbeddingConcurrency"], value: 5 },
+  { id: "semantic.queryEmbeddingCacheEntries", section: "semantic", route: "semantic", path: ["queryEmbeddingCacheEntries"], value: 1_001 },
   { id: "search.requestTimeoutMs", section: "search", route: "search", path: ["requestTimeoutMs"], value: 4_000 },
   { id: "search.engineSearchCutoffMs", section: "search", route: "search", path: ["engineSearchCutoffMs"], value: 1_100 },
   { id: "search.overfetchFactor", section: "search", route: "search", path: ["overfetchFactor"], value: 4 },
@@ -1163,6 +1264,7 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
   public readonly models = new Map<string, RuntimeModelConfigPrivate>();
   public runningModelInvocationCount = 0;
   public runningSourceFileJobCount = 0;
+  public activeSemanticGenerationReferenceCount = 0;
   public readonly auditLogs: Array<{
     settingKey: string;
     action: string;
@@ -1319,5 +1421,9 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
 
   public async countRunningSourceFileJobs() {
     return this.runningSourceFileJobCount;
+  }
+
+  public async countActiveSemanticGenerationReferences() {
+    return this.activeSemanticGenerationReferenceCount;
   }
 }

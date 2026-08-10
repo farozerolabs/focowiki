@@ -22,6 +22,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   API_IMAGE: ghcr.io/farozerolabs/focowiki-api
+  SOURCE_WORKER_IMAGE: ghcr.io/farozerolabs/focowiki-source-worker
   ADMIN_IMAGE: ghcr.io/farozerolabs/focowiki-admin
   FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
   FOCOWIKI_TEST_MEILISEARCH_URL: http://127.0.0.1:57700
@@ -222,6 +223,21 @@ jobs:
             type=sha,prefix=${{ steps.release.outputs.sha_prefix }}
             type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}
 
+      - name: Source-worker image metadata
+        id: meta-source-worker
+        uses: docker/metadata-action@v6.1.0
+        with:
+          images: ${{ env.SOURCE_WORKER_IMAGE }}
+          labels: |
+            org.opencontainers.image.title=Focowiki Source Worker
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=${{ steps.release.outputs.major_minor }},enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+            type=raw,value=${{ steps.release.outputs.major }},enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+            type=sha,prefix=${{ steps.release.outputs.sha_prefix }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+
       - name: Build and push API image
         id: build-api
         uses: docker/build-push-action@v7.2.0
@@ -239,6 +255,36 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push source-worker image
+        id: build-source-worker
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          file: Dockerfile
+          target: source-worker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-source-worker.outputs.tags }}
+          labels: ${{ steps.meta-source-worker.outputs.labels }}
+          build-args: |
+            FOCOWIKI_RELEASE_VERSION=${{ steps.release.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=source-worker
+          cache-to: type=gha,mode=max,scope=source-worker
+
+      - name: Validate published source-worker image architectures
+        shell: bash
+        run: |
+          image="${SOURCE_WORKER_IMAGE}@${{ steps.build-source-worker.outputs.digest }}"
+          for platform in linux/amd64 linux/arm64; do
+            docker image rm --force "${image}" >/dev/null 2>&1 || true
+            docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" --entrypoint python "${image}" --version
+            docker run --rm --platform "${platform}" --entrypoint python "${image}" -m graphrag_adapter_check
+            docker run --rm --platform "${platform}" --entrypoint node "${image}" -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
+          done
 
       - name: Start S3 health fixture
         run: |
@@ -262,6 +308,7 @@ jobs:
         shell: bash
         run: |
           image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
+          source_worker_image="${SOURCE_WORKER_IMAGE}@${{ steps.build-source-worker.outputs.digest }}"
           runtime_secret_volume="focowiki-build-runtime-secrets-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           api_container=""
           docker volume create "${runtime_secret_volume}" >/dev/null
@@ -274,11 +321,13 @@ jobs:
           trap cleanup EXIT
           for platform in linux/amd64 linux/arm64; do
             docker image rm --force "${image}" >/dev/null 2>&1 || true
+            docker image rm --force "${source_worker_image}" >/dev/null 2>&1 || true
             docker pull --platform "${platform}" "${image}"
+            docker pull --platform "${platform}" "${source_worker_image}"
             docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --entrypoint node "${image}" -e "const fs=require('node:fs'); const secret=require('node:crypto').randomBytes(32).toString('base64url'); fs.writeFileSync('/app/runtime-secrets/deployment.key', secret + '\n', { mode: 0o600 });"
             docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migrate.mjs
             docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migration-preflight.mjs
-            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/source-worker.mjs --healthcheck
+            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${source_worker_image}" node apps/api/runtime/source-worker.mjs --healthcheck
             docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/publication-worker.mjs --healthcheck
             docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/maintenance-worker.mjs --healthcheck
             api_container="$(docker run -d --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/main.mjs)"
@@ -320,6 +369,13 @@ jobs:
         with:
           subject-name: ${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest source-worker image
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-name: ${{ env.SOURCE_WORKER_IMAGE }}
+          subject-digest: ${{ steps.build-source-worker.outputs.digest }}
           push-to-registry: true
 
       - name: Attest Admin image

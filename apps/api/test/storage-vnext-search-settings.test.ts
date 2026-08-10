@@ -20,6 +20,8 @@ describe("storage vNext unified search settings", () => {
     expect(settings.filterableAttributes).toEqual([
       "knowledgeBaseId",
       "documentKind",
+      "contentKind",
+      "fileKind",
       "schemaVersion",
       "sourceFilePublicId",
       "okfSignals.status",

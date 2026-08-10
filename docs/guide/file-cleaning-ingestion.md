@@ -30,7 +30,7 @@ Selecting the same folder again adds paths that are absent from the knowledge ba
 
 Every selected item must be a `.md` file. Keep path segments stable and avoid absolute paths, `.` or `..` segments, backslashes, control characters, and case-only path duplicates. Focowiki reserves generated navigation basenames matching `index.md`, `index-<number>.md`, `log.md`, and `log-<number>.md`. Rename source files that use these basenames before upload.
 
-Focowiki creates directory `index.md` files and bounded stable continuation pages when a direct listing exceeds its configured budgets. These generated navigation pages link to adjacent pages and remain available through the tree and content APIs. Agents use them to discover source-backed Markdown pages and read those pages as evidence.
+Focowiki creates directory `index.md` files and bounded stable continuation pages when a direct listing exceeds its configured budgets. These generated navigation pages link to adjacent pages and remain available through the tree and content APIs. Agents use them to discover Markdown pages created from uploaded files and read those pages as evidence.
 
 ## Cleaning Workflow
 
@@ -243,5 +243,5 @@ A cleaned Markdown corpus is ready for upload when these statements are true:
 ## Related Documentation
 
 - [Open Knowledge Format](./open-knowledge-format.md)
-- [File-first Graph](./file-first-graph.md)
+- [Source-file Evidence and Graph Relationships](./file-first-graph.md)
 - [Developer OpenAPI](../openapi/index.md)

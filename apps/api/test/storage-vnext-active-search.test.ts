@@ -55,9 +55,17 @@ describe("storage vNext active unified search", () => {
         snippet: "alpha snippet",
         score: 1,
         kind: "file",
-        metadata: { type: "Guide", tags: ["policy"] }
+        metadata: { type: "Guide", tags: ["policy"] },
+        evidenceFamilies: ["lexical"],
+        matchedFields: ["content"],
+        evidenceTypes: ["content"],
+        sourceExcerpt: "alpha snippet"
       }],
-      nextCursor: null
+      nextCursor: null,
+      evidenceStatus: {
+        completedFamilies: ["lexical", "file_graph"],
+        degradedFamilies: []
+      }
     });
 
     expect(transport.search).toHaveBeenCalledOnce();
@@ -67,6 +75,9 @@ describe("storage vNext active unified search", () => {
       attributesToSearchOn: ["title", "logicalPath", "searchText", "rankingTerms"],
       attributesToRetrieve: expect.arrayContaining(["documentKind"]),
       distinct: "sourceFilePublicId"
+    }));
+    expect(transport.search).toHaveBeenCalledWith(expect.objectContaining({
+      showMatchesPosition: true
     }));
     expect((transport.search as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].filter)
       .toMatch(/documentKind = "content".*documentKind = "graph_seed"/u);
@@ -93,7 +104,17 @@ describe("storage vNext active unified search", () => {
       limit: 10,
       cursor: null
     })).resolves.toMatchObject({
-      items: [{ kind: "graph", sourceFilePublicId: "file-a" }]
+      items: [{
+        kind: "graph",
+        sourceFilePublicId: "file-a",
+        evidenceFamilies: ["file_graph"],
+        matchedFields: ["file_relationship"],
+        evidenceTypes: ["file_relationship"]
+      }],
+      evidenceStatus: {
+        completedFamilies: ["file_graph"],
+        degradedFamilies: []
+      }
     });
   });
 
@@ -657,7 +678,10 @@ function hit(
     logicalPath,
     title,
     documentKind,
-    ...(snippet ? { _formatted: { searchText: snippet } } : {})
+    ...(snippet ? {
+      _formatted: { searchText: snippet },
+      _matchesPosition: { searchText: [{ start: 0, length: 5 }] }
+    } : {})
   };
 }
 

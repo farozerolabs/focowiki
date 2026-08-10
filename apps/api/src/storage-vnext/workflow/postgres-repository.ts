@@ -145,6 +145,22 @@ export function createPostgresStorageVnextWorkflowRepository(
       });
     },
 
+    async rescheduleQueued(input) {
+      assertStorageVnextIdentifier(input.publicId, 255);
+      assertStorageVnextTimestamp(input.nextAttemptAt);
+      const rows = await sql<Array<{ operation_public_id: string }>>`
+        UPDATE focowiki.operation_work_items
+        SET next_attempt_at = ${input.nextAttemptAt}, updated_at = now()
+        WHERE operation_public_id = ${input.publicId}
+          AND work_kind = 'publication'
+          AND state IN ('queued', 'retry')
+          AND lease_owner IS NULL
+          AND lease_expires_at IS NULL
+        RETURNING operation_public_id
+      `;
+      return rows.length === 1;
+    },
+
     async claim(input) {
       const kinds = input.kinds.filter((kind, index) => input.kinds.indexOf(kind) === index);
       if (kinds.length === 0 || kinds.some((kind) => !STORAGE_VNEXT_WORK_KINDS.includes(kind))) {
@@ -159,8 +175,15 @@ export function createPostgresStorageVnextWorkflowRepository(
         const rows = await transaction<StorageVnextLiveWorkRow[]>`
           WITH eligible AS (
             SELECT work.operation_public_id,
+                   work.knowledge_base_id,
                    work.next_attempt_at,
                    work.updated_at,
+                   row_number() OVER (
+                     PARTITION BY work.knowledge_base_id
+                     ORDER BY work.next_attempt_at NULLS FIRST,
+                              work.updated_at,
+                              work.operation_public_id
+                   ) AS knowledge_base_ordinal,
                    row_number() OVER (
                      PARTITION BY CASE
                        WHEN work.work_kind IN ('publication', 'mutation')
@@ -175,6 +198,28 @@ export function createPostgresStorageVnextWorkflowRepository(
             WHERE work.work_kind = ANY(${kinds})
               AND work.state IN ('queued', 'retry')
               AND (work.next_attempt_at IS NULL OR work.next_attempt_at <= now())
+              AND (
+                work.work_kind <> 'mutation'
+                OR work.checkpoint ->> 'semanticState' IS DISTINCT FROM 'ready'
+                OR EXISTS (
+                  SELECT 1
+                  FROM focowiki.semantic_stage_work_items semantic_stage
+                  WHERE semantic_stage.knowledge_base_id = work.knowledge_base_id
+                    AND semantic_stage.operation_public_id
+                      = work.operation_public_id
+                    AND semantic_stage.state IN (
+                      'failed', 'cancelled', 'superseded'
+                    )
+                )
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM focowiki.semantic_stage_work_items semantic_stage
+                  WHERE semantic_stage.knowledge_base_id = work.knowledge_base_id
+                    AND semantic_stage.operation_public_id
+                      = work.operation_public_id
+                    AND semantic_stage.state IN ('queued', 'running', 'retry')
+                )
+              )
               AND (
                 work.work_kind <> 'publication'
                 OR NOT EXISTS (
@@ -218,8 +263,10 @@ export function createPostgresStorageVnextWorkflowRepository(
             JOIN eligible
               ON eligible.operation_public_id = work.operation_public_id
             WHERE eligible.scope_ordinal = 1
-            ORDER BY eligible.next_attempt_at NULLS FIRST,
+            ORDER BY eligible.knowledge_base_ordinal,
+                     eligible.next_attempt_at NULLS FIRST,
                      eligible.updated_at,
+                     eligible.knowledge_base_id,
                      eligible.operation_public_id
             FOR UPDATE OF work SKIP LOCKED
             LIMIT ${limit}

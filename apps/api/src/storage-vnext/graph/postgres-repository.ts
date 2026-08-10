@@ -13,14 +13,7 @@ import { MAX_STORAGE_VNEXT_GRAPH_EVIDENCE_REFS } from "./ports.js";
 
 export type StorageVnextGraphRepository =
   & StorageVnextGraphReadPort
-  & StorageVnextGraphWritePort
-  & {
-    listNodesBySourceFiles(input: {
-      knowledgeBaseId: string;
-      sourceFilePublicIds: readonly string[];
-      limit: number;
-    }): Promise<readonly StorageVnextGraphNodeFact[]>;
-  };
+  & StorageVnextGraphWritePort;
 
 export type StorageVnextGraphRepositoryErrorCode =
   | "invalid_input"

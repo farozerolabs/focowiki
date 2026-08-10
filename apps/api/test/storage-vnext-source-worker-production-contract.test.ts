@@ -37,12 +37,23 @@ describe("storage vNext source worker production contract", () => {
       "createStorageVnextSourceModelAdapter",
       "createStorageVnextSourceReleaseHandoff",
       "createStorageVnextSourceProcessingWorker",
-      "createStorageVnextSourceRoleRuntime"
+      "createStorageVnextSourceRoleRuntime",
+      "createGraphRagSourceWorkerRuntime",
+      "createSemanticSourceHandoff",
+      "createPostgresSemanticGenerationRepository",
+      "createPostgresSemanticStageRepository",
+      "createPostgresEmbeddingConfigurationRepository",
+      "createSemanticSourceStageProductionRuntime"
     ]) expect(runtime, dependency).toContain(dependency);
     expect(runtime).toContain("createPostgresStorageVnextActiveSearchProjectionRepository");
     expect(runtime).toContain("createDynamicRuntimeSearchQueryProvider");
     expect(runtime).toContain("async resolveDeadlineMs()");
     expect(runtime).toContain("await searchProvider.close()");
+    expect(runtime).toContain("await graphRagRuntime.start()");
+    expect(runtime).toContain("await graphRagRuntime?.close()");
+    expect(runtime).toContain("poolSize: semanticPythonConcurrency");
+    expect(runtime).toContain("pythonConcurrency: semanticPythonConcurrency");
+    expect(runtime).toContain("semanticRole.run(abort.signal)");
     expect(runtime).not.toMatch(
       /PostgresSearchProjection|body-search-projection|graph-term-document|source_file_graph_term/u
     );

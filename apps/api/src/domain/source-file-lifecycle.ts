@@ -10,6 +10,12 @@ export type SourceFileFailureStage =
   | "metadata_resolution"
   | "llm_suggestion"
   | "graph_generation"
+  | "graphrag_processing"
+  | "semantic_reconciliation"
+  | "embedding_generation"
+  | "affected_projection"
+  | "search_publication"
+  | "semantic_maintenance_required"
   | "projection_generation"
   | "generation_validation"
   | "generation_activation";
@@ -61,7 +67,12 @@ export function deriveSourceFileLifecycle(input: {
   }
   if (input.generatedOutputStatus === "visible" && input.generatedPath) {
     return {
-      ...projection("visible", "generation_activation"),
+      ...projection(
+        "visible",
+        input.processingStage === "semantic_maintenance_required"
+          ? input.processingStage
+          : "generation_activation"
+      ),
       actions: ["open_generated_file"]
     };
   }

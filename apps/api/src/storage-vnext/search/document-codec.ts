@@ -30,6 +30,7 @@ export function parseStorageVnextSearchDocument(
     : documentKind === "graph_seed"
       ? createStorageVnextGraphSeedDocument({
           ...common,
+          fileKind: stringValue(value.fileKind),
           rankingTerms: stringArray(value.rankingTerms)
         })
       : invalidDocument();

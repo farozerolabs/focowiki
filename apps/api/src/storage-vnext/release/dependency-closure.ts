@@ -6,6 +6,7 @@ import { REQUIRED_GENERATED_NAVIGATION_PATHS } from
   "../../okf/generated-graph-resources.js";
 import {
   MAX_STORAGE_VNEXT_CANDIDATE_DEPENDENCIES,
+  type StorageVnextCandidateChangedFact,
   type StorageVnextCandidateDependency
 } from "./ports.js";
 
@@ -28,6 +29,132 @@ export type StorageVnextReleaseDependencyClosure = {
   affectedLogicalPaths: readonly string[];
   affectedDirectoryPaths: readonly string[];
 };
+
+export type StorageVnextSemanticImpact = {
+  sourceFilePublicIds: readonly string[];
+  sourceRevisionPublicIds: readonly string[];
+  entityPublicIds: readonly string[];
+  relationshipPublicIds: readonly string[];
+  evidencePublicIds: readonly string[];
+  reverseReferencePublicIds: readonly string[];
+  vectorOwnerPublicIds: readonly string[];
+  dirtyPartitionKeys: readonly string[];
+  affectedFileNeighborPublicIds: readonly string[];
+  generatedLogicalPaths: readonly string[];
+  graphShardPublicIds: readonly string[];
+  searchShardPublicIds: readonly string[];
+};
+
+export function includeStorageVnextSemanticDependencyClosure(input: {
+  base: StorageVnextReleaseDependencyClosure;
+  semantic: StorageVnextSemanticImpact;
+}): StorageVnextReleaseDependencyClosure {
+  const dependencies = new Map(input.base.dependencies.map((dependency) => [
+    `${dependency.kind}\u0000${dependency.publicId}`,
+    dependency
+  ]));
+  const add = (dependency: StorageVnextCandidateDependency) => {
+    if (!dependency.publicId) throw new Error("Semantic dependency identity is required");
+    const key = `${dependency.kind}\u0000${dependency.publicId}`;
+    const existing = dependencies.get(key);
+    if (existing && existing.reasonCode !== dependency.reasonCode) {
+      if (isSourceSemanticPageOverlap(existing, dependency)) {
+        dependencies.set(key, existing.reasonCode === "source_path" ? existing : dependency);
+        return;
+      }
+      throw new Error("Semantic dependency reason is inconsistent");
+    }
+    dependencies.set(key, dependency);
+  };
+  for (const publicId of stableUnique(input.semantic.entityPublicIds)) {
+    add({ kind: "semantic", publicId, reasonCode: "semantic_entity" });
+  }
+  for (const publicId of stableUnique(input.semantic.relationshipPublicIds)) {
+    add({ kind: "semantic", publicId, reasonCode: "semantic_relationship" });
+  }
+  for (const publicId of stableUnique(input.semantic.evidencePublicIds)) {
+    add({ kind: "semantic", publicId, reasonCode: "semantic_evidence" });
+  }
+  for (const publicId of stableUnique(input.semantic.reverseReferencePublicIds)) {
+    add({ kind: "semantic", publicId, reasonCode: "semantic_reverse_reference" });
+  }
+  for (const publicId of stableUnique(input.semantic.vectorOwnerPublicIds)) {
+    add({ kind: "vector", publicId, reasonCode: "semantic_vector_owner" });
+  }
+  for (const publicId of stableUnique(input.semantic.dirtyPartitionKeys)) {
+    add({ kind: "community", publicId, reasonCode: "semantic_dirty_partition" });
+  }
+  for (const publicId of stableUnique(input.semantic.graphShardPublicIds)) {
+    add({ kind: "graph", publicId, reasonCode: "semantic_graph_shard" });
+  }
+  for (const publicId of stableUnique(input.semantic.searchShardPublicIds)) {
+    add({ kind: "search", publicId, reasonCode: "semantic_search_shard" });
+  }
+  const semanticPaths = stableUnique(input.semantic.generatedLogicalPaths.map(
+    assertGeneratedLogicalPath
+  ));
+  for (const publicId of semanticPaths) {
+    add({ kind: "path", publicId, reasonCode: "semantic_generated_content" });
+  }
+  const orderedDependencies = [...dependencies.values()].sort(compareDependency);
+  if (orderedDependencies.length > MAX_STORAGE_VNEXT_CANDIDATE_DEPENDENCIES) {
+    throw new Error("Candidate dependency limit exceeded");
+  }
+  return {
+    ...input.base,
+    dependencies: orderedDependencies,
+    affectedSourceFilePublicIds: stableUnique([
+      ...input.base.affectedSourceFilePublicIds,
+      ...input.semantic.sourceFilePublicIds,
+      ...input.semantic.affectedFileNeighborPublicIds
+    ]),
+    affectedLogicalPaths: stableUnique([
+      ...input.base.affectedLogicalPaths,
+      ...semanticPaths
+    ]),
+    affectedDirectoryPaths: stableUnique([
+      ...input.base.affectedDirectoryPaths,
+      ...semanticPaths.flatMap(generatedPathAncestors)
+    ])
+  };
+}
+
+function isSourceSemanticPageOverlap(
+  left: StorageVnextCandidateDependency,
+  right: StorageVnextCandidateDependency
+): boolean {
+  if (left.kind !== "path" || right.kind !== "path") return false;
+  return new Set([left.reasonCode, right.reasonCode]).size === 2
+    && [left.reasonCode, right.reasonCode].includes("source_path")
+    && [left.reasonCode, right.reasonCode].includes("semantic_generated_content");
+}
+
+export function deriveStorageVnextSemanticChangedFacts(input: {
+  semantic: StorageVnextSemanticImpact;
+  change: StorageVnextCandidateChangedFact["change"];
+}): StorageVnextCandidateChangedFact[] {
+  const facts: StorageVnextCandidateChangedFact[] = [];
+  const append = (
+    kind: StorageVnextCandidateChangedFact["kind"],
+    values: readonly string[]
+  ) => {
+    for (const publicId of stableUnique(values)) {
+      facts.push({ kind, publicId, change: input.change });
+    }
+  };
+  append("source_file", input.semantic.sourceFilePublicIds);
+  append("source_revision", input.semantic.sourceRevisionPublicIds);
+  append("semantic_entity", input.semantic.entityPublicIds);
+  append("semantic_relationship", input.semantic.relationshipPublicIds);
+  append("semantic_evidence", input.semantic.evidencePublicIds);
+  append("semantic_reverse_reference", input.semantic.reverseReferencePublicIds);
+  append("semantic_vector", input.semantic.vectorOwnerPublicIds);
+  append("semantic_community", input.semantic.dirtyPartitionKeys);
+  return facts.sort((left, right) =>
+    left.kind.localeCompare(right.kind, "en")
+    || left.publicId.localeCompare(right.publicId, "en")
+  );
+}
 
 export function includeStorageVnextNavigationProfileUpgrade(input: {
   knowledgeBaseId: string;
@@ -193,6 +320,17 @@ function generatedDirectoryAncestors(path: string): string[] {
     directories.push(segments.slice(0, index).join("/"));
   }
   return directories;
+}
+
+function assertGeneratedLogicalPath(value: string): string {
+  if (
+    !value
+    || value.length > 4096
+    || value.startsWith("/")
+    || value.includes("\\")
+    || value.split("/").some((segment) => !segment || segment === "." || segment === "..")
+  ) throw new Error("Semantic generated path is invalid");
+  return value;
 }
 
 function compareDependency(

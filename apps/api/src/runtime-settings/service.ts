@@ -33,6 +33,7 @@ import {
   type RuntimeModelConfigPublic,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
+  type RuntimeSemanticSettings,
   type RuntimeSearchSettings,
   type RuntimeSettingKey,
   type RuntimeSettingsSnapshot
@@ -43,6 +44,7 @@ import {
   sanitizeMaintenanceSettings,
   sanitizePublicationSettings,
   sanitizeRateLimitSettings,
+  sanitizeSemanticSettings,
   sanitizeSearchSettings,
   sanitizeWorkerSettings,
   validateGraphSettings,
@@ -50,6 +52,7 @@ import {
   validateModelDraft,
   validatePublicationSettings,
   validateRateLimitSettings,
+  validateSemanticSettings,
   validateSearchSettings,
   validateWorkerSettings
 } from "./validation.js";
@@ -73,6 +76,7 @@ export type RuntimeSettingsService = {
     publication: RuntimePublicationSettings;
     graph: RuntimeGraphSettings;
     maintenance: RuntimeMaintenanceSettings;
+    semantic: RuntimeSemanticSettings;
     search: RuntimeSearchSettings;
     activeModel: RuntimeModelConfigPublic | null;
   }>;
@@ -98,6 +102,10 @@ export type RuntimeSettingsService = {
   }) => Promise<RuntimeSettingsSnapshot>;
   updateSearch: (input: {
     value: RuntimeSearchSettings;
+    actor?: string | null | undefined;
+  }) => Promise<RuntimeSettingsSnapshot>;
+  updateSemantic: (input: {
+    value: RuntimeSemanticSettings;
     actor?: string | null | undefined;
   }) => Promise<RuntimeSettingsSnapshot>;
   listModels: () => Promise<RuntimeModelConfigPublic[]>;
@@ -179,6 +187,13 @@ export function createRuntimeSettingsService(input: {
         source: "bootstrap"
       });
     }
+    if (!existingKeys.has("semantic")) {
+      await input.repository.upsertSetting({
+        key: "semantic",
+        value: defaults.semantic,
+        source: "bootstrap"
+      });
+    }
 
     const models = await input.repository.listModels();
     if (models.length === 0 && defaults.model) {
@@ -203,6 +218,7 @@ export function createRuntimeSettingsService(input: {
       publicationRecord,
       graphRecord,
       maintenanceRecord,
+      semanticRecord,
       searchRecord,
       model
     ] = await Promise.all([
@@ -211,6 +227,7 @@ export function createRuntimeSettingsService(input: {
       input.repository.getSetting("publication"),
       input.repository.getSetting("graph"),
       input.repository.getSetting("maintenance"),
+      input.repository.getSetting("semantic"),
       input.repository.getSetting("search"),
       input.repository.getActiveModel()
     ]);
@@ -241,6 +258,12 @@ export function createRuntimeSettingsService(input: {
           ...defaults.maintenance,
           ...(maintenanceRecord?.value ?? {})
         } as RuntimeMaintenanceSettings
+      ),
+      semantic: sanitizeSemanticSettings(
+        {
+          ...defaults.semantic,
+          ...(semanticRecord?.value ?? {})
+        } as RuntimeSemanticSettings
       ),
       search: sanitizeSearchSettings(
         {
@@ -402,6 +425,17 @@ export function createRuntimeSettingsService(input: {
     return serializePublicModel(model);
   }
 
+  async function assertModelCanBeDeleted(id: string) {
+    const referenceCount =
+      await input.repository.countActiveSemanticGenerationReferences(id);
+    if (referenceCount > 0) {
+      throw new RuntimeSettingsValidationError([{
+        field: "model",
+        message: "model is referenced by an active semantic contract"
+      }]);
+    }
+  }
+
   return {
     ensureBootstrapped,
     getSnapshot,
@@ -423,6 +457,7 @@ export function createRuntimeSettingsService(input: {
         publication: snapshot.publication,
         graph: snapshot.graph,
         maintenance: snapshot.maintenance,
+        semantic: snapshot.semantic,
         search: snapshot.search,
         activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
       };
@@ -484,6 +519,18 @@ export function createRuntimeSettingsService(input: {
       }
       return updateSetting("search", sanitizeSearchSettings(value), actor, value);
     },
+    async updateSemantic({ value, actor }) {
+      const issues = validateSemanticSettings(value);
+      if (issues.length > 0) {
+        throw new RuntimeSettingsValidationError(issues);
+      }
+      return updateSetting(
+        "semantic",
+        sanitizeSemanticSettings(value),
+        actor,
+        value
+      );
+    },
     async listModels() {
       await ensureBootstrapped();
       const models = await input.repository.listModels();
@@ -520,6 +567,9 @@ export function createRuntimeSettingsService(input: {
       return serializePublicModel(model);
     },
     async pauseModel({ id, actor }) {
+      await ensureBootstrapped();
+      const existing = await input.repository.getModel(id);
+      if (!existing) return null;
       return setModelStatus({ id, status: "paused", isActive: false, actor, action: "pause" });
     },
     async resumeModel({ id, actor }) {
@@ -532,6 +582,8 @@ export function createRuntimeSettingsService(input: {
       if (!existing) {
         return null;
       }
+
+      await assertModelCanBeDeleted(id);
 
       const runningCount = await input.repository.countRunningModelInvocations(id);
       const runningSourceFileJobCount = existing.isActive

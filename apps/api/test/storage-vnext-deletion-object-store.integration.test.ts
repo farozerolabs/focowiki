@@ -83,7 +83,7 @@ describeOwnedS3("storage vNext deletion against real versioned S3-compatible sto
     const deletion = createStorageVnextVersionAwareObjectDeletion({
       registrations: {
         getRegistration: async () => ({ objectId: "object-delete", storageKey, state }),
-        getClosure: async () => ({ ownerCount: 0 }),
+        getClosure: async () => ({ referenceCount: 0 }),
         markDeleting: async () => { state = "deleting"; },
         markDeleted: async () => { state = "deleted"; }
       },

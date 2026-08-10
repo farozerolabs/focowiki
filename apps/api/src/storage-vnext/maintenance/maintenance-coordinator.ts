@@ -276,7 +276,8 @@ function initialCheckpoint(
     throughputPerSecond: 0,
     estimatedCompletionAt: null,
     maxAttempts: request.maxAttempts,
-    resultExpiresAt: request.expiresAt
+    resultExpiresAt: request.expiresAt,
+    semanticAdoption: request.semanticAdoption ?? null
   };
 }
 

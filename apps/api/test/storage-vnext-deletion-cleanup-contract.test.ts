@@ -6,6 +6,7 @@ type ResourceKind =
   | "process_resource"
   | "coordination"
   | "unified_search_scope"
+  | "semantic_scope"
   | "object_body"
   | "object_owner"
   | "catalog_scope"
@@ -86,6 +87,7 @@ describe("storage vNext deletion cleanup contract", () => {
       "process_resource",
       "coordination",
       "unified_search_scope",
+      "semantic_scope",
       "graph_scope",
       "release_scope",
       "object_owner",
@@ -166,6 +168,7 @@ describe("storage vNext deletion cleanup contract", () => {
       "process_resource",
       "coordination",
       "unified_search_scope",
+      "semantic_scope",
       "graph_scope",
       "release_scope",
       "object_owner",
@@ -225,14 +228,14 @@ describe("storage vNext deletion cleanup contract", () => {
     expect(owners.size).toBe(0);
     expect(indexes.size).toBe(0);
     expect(work.size).toBe(0);
-    expect(clean).toHaveBeenCalledTimes(18);
+    expect(clean).toHaveBeenCalledTimes(20);
   });
 
   it("rejects an unbounded cleanup plan before touching any store", async () => {
     const clean = vi.fn(async () => completed());
     expect(factory).toBeTypeOf("function");
     if (!factory) throw new Error("Storage vNext deletion cleanup is unavailable");
-    const coordinator = factory({ clean, maximumTargets: 8 });
+    const coordinator = factory({ clean, maximumTargets: 9 });
 
     await expect(coordinator.runAttempt(context())).rejects.toThrow(
       "cleanup target limit"

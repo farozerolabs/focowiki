@@ -40,13 +40,17 @@ export function planStorageVnextPublicationBatch(input: {
         plan.directoryPaths.push(dependency.publicId);
         break;
       case "graph":
-        plan.graphPublicIds.push(dependency.publicId);
+        if (dependency.reasonCode === "graph_source") {
+          plan.graphPublicIds.push(dependency.publicId);
+        }
         break;
       case "link":
         plan.linkPublicIds.push(dependency.publicId);
         break;
       case "search":
-        plan.searchSourceFilePublicIds.push(dependency.publicId);
+        if (dependency.reasonCode === "search_document") {
+          plan.searchSourceFilePublicIds.push(dependency.publicId);
+        }
         break;
       case "index":
       case "schema":

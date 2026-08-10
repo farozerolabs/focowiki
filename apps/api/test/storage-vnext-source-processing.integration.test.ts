@@ -83,6 +83,7 @@ describeOwnedDatabase("storage vNext source processing PostgreSQL handoff", () =
       expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8"))
         .toBe("# Durable handoff\n");
       return {
+        modelAssistanceUsed: false,
         metadata: { headingCount: 1 },
         node: {
           publicId: "node-source-integration",
@@ -276,6 +277,7 @@ describeOwnedDatabase("storage vNext source processing PostgreSQL handoff", () =
           await gate;
         }
         return {
+          modelAssistanceUsed: false,
           metadata: { headingCount: 1 },
           node: {
             publicId: "node-" + input.sourceFile.publicId,

@@ -1,5 +1,8 @@
 {
-  "changeId": "align-google-okf-v0-2-trust-signals",
-  "contractSha256": "2ee728da10140b95b700cc26fd18194f710839dcefa828dd2368fb45d095da93",
-  "reviewedSurfaceSha256": "8e0731972f6fd7e2344c99cecc08fcf8b9a4d69dc42f4e04bcdaef6cb324c32c"
+  "reviewedChangeIds": [
+    "align-google-okf-v0-2-trust-signals",
+    "add-general-purpose-graphrag-search"
+  ],
+  "contractSha256": "58e2090b0d6371baa40c036a30c688562f6edc26d6236523f48fe6323134fdbc",
+  "reviewedSurfaceSha256": "147000f895d10aaa7a83dafc3fe2480251abe22d561f947d4a72ea361817636b"
 }

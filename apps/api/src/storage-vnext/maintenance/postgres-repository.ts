@@ -12,6 +12,13 @@ import {
 import { createStorageVnextMaintenanceStatusMapper } from "./status.js";
 import { isSearchProviderKind, type SearchProviderKind } from
   "../../application/ports/search-provider-runtime.js";
+import {
+  SEMANTIC_EXTRACTION_CONTRACT_VERSION,
+  SEMANTIC_GRAPH_SCHEMA_VERSION,
+  SEMANTIC_PROMPT_CONTRACT_VERSION,
+  SEMANTIC_VECTOR_ARTIFACT_SCHEMA_VERSION,
+  SEMANTIC_VECTOR_SCHEMA_VERSION
+} from "../../semantic/domain/contracts.js";
 
 type ReadSql = DatabaseClient | TransactionSql;
 
@@ -238,6 +245,18 @@ export function createPostgresStorageVnextMaintenanceRepository(
       assertId(input.leaseOwner);
       validateCheckpoint(input.checkpoint);
       await sql.begin(async (transaction) => {
+        const terminal = await transaction<Array<{ public_id: string }>>`
+          SELECT public_id FROM focowiki.operation_results
+          WHERE public_id = ${input.operationPublicId}
+        `;
+        if (terminal[0]) {
+          await transaction`
+            DELETE FROM focowiki.operation_work_items
+            WHERE operation_public_id = ${input.operationPublicId}
+              AND work_kind = 'maintenance'
+          `;
+          return;
+        }
         const rows = await transaction<Array<{ operation_public_id: string }>>`
           UPDATE focowiki.operation_work_items
           SET state = 'queued', lease_owner = NULL, lease_expires_at = NULL,
@@ -264,6 +283,18 @@ export function createPostgresStorageVnextMaintenanceRepository(
       assertId(input.leaseOwner);
       assertSafeCode(input.safeErrorCode);
       return sql.begin(async (transaction) => {
+        const terminal = await transaction<Array<{ public_id: string }>>`
+          SELECT public_id FROM focowiki.operation_results
+          WHERE public_id = ${input.operationPublicId}
+        `;
+        if (terminal[0]) {
+          await transaction`
+            DELETE FROM focowiki.operation_work_items
+            WHERE operation_public_id = ${input.operationPublicId}
+              AND work_kind = 'maintenance'
+          `;
+          return "exhausted" as const;
+        }
         const rows = await transaction<Array<{
           attempt_count: number | string;
           max_attempts: number | string;
@@ -320,7 +351,14 @@ export function createPostgresStorageVnextMaintenanceRepository(
           SELECT public_id FROM focowiki.operation_results
           WHERE public_id = ${input.operationPublicId}
         `;
-        if (existing[0]) return;
+        if (existing[0]) {
+          await transaction`
+            DELETE FROM focowiki.operation_work_items
+            WHERE operation_public_id = ${input.operationPublicId}
+              AND work_kind = 'maintenance'
+          `;
+          return;
+        }
         const rows = await transaction<Array<{
           knowledge_base_id: string;
           expires_at: Date | string;
@@ -411,6 +449,69 @@ export function createPostgresStorageVnextMaintenanceRepository(
       });
     },
 
+    async cancel(input) {
+      assertId(input.knowledgeBaseId);
+      assertId(input.operationPublicId);
+      assertTimestamp(input.canceledAt);
+      return sql.begin(async (transaction) => {
+        const rows = await transaction<Array<{
+          expires_at: Date | string;
+          work_state: "queued" | "running" | "retry";
+        }>>`
+          SELECT idempotency.expires_at, work.state AS work_state
+          FROM focowiki.operations operation
+          JOIN focowiki.operation_work_items work
+            ON work.knowledge_base_id = operation.knowledge_base_id
+           AND work.operation_public_id = operation.public_id
+           AND work.work_kind = 'maintenance'
+          JOIN focowiki.operation_idempotency idempotency
+            ON idempotency.knowledge_base_id = operation.knowledge_base_id
+           AND idempotency.operation_public_id = operation.public_id
+          WHERE operation.knowledge_base_id = ${input.knowledgeBaseId}
+            AND operation.public_id = ${input.operationPublicId}
+            AND operation.operation_kind = 'maintenance'
+            AND operation.state IN (
+              'accepted', 'validating', 'processing', 'publishing'
+            )
+          FOR UPDATE OF operation, work
+        `;
+        const row = rows[0];
+        if (!row) return "not_active" as const;
+        const expiresAt = timestamp(row.expires_at);
+        if (Date.parse(expiresAt) <= Date.parse(input.canceledAt)) {
+          throw repositoryError("operation_conflict");
+        }
+        await transaction`
+          UPDATE focowiki.operations
+          SET state = 'superseded', completed_at = ${input.canceledAt},
+              updated_at = ${input.canceledAt}
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND public_id = ${input.operationPublicId}
+        `;
+        await transaction`
+          INSERT INTO focowiki.operation_results (
+            public_id, knowledge_base_id, operation_kind, terminal_state,
+            result_code, safe_message, result_summary,
+            correlation_public_id, completed_at, expires_at
+          ) VALUES (
+            ${input.operationPublicId}, ${input.knowledgeBaseId},
+            'maintenance', 'superseded', 'MAINTENANCE_CANCELLED', NULL,
+            '{}'::jsonb, NULL, ${input.canceledAt}, ${expiresAt}
+          )
+          ON CONFLICT (public_id) DO NOTHING
+        `;
+        if (row.work_state !== "running") {
+          await transaction`
+            DELETE FROM focowiki.operation_work_items
+            WHERE operation_public_id = ${input.operationPublicId}
+              AND knowledge_base_id = ${input.knowledgeBaseId}
+              AND work_kind = 'maintenance'
+          `;
+        }
+        return "cancelled" as const;
+      });
+    },
+
     async getStatus(input) {
       assertId(input.knowledgeBaseId);
       const liveRows = await sql<LiveStatusRow[]>`
@@ -447,8 +548,37 @@ export function createPostgresStorageVnextMaintenanceRepository(
       const profileRows = await sql<Array<{
         navigation_profile_version: number | string;
         provider_kind: SearchProviderKind;
+        semantic_maintenance_required: boolean;
       }>>`
-        SELECT root.navigation_profile_version, search.provider_kind
+        SELECT root.navigation_profile_version, search.provider_kind,
+               (
+                 generation.public_id IS NULL
+                 OR semantic_contract.public_id IS NULL
+                 OR active_model.active_count <> 1
+                 OR active_embedding.active_count <> 1
+                 OR generation.generation_model_configuration_public_id
+                    IS DISTINCT FROM active_model.public_id
+                 OR generation.generation_model_configuration_revision
+                    IS DISTINCT FROM active_model.revision
+                 OR generation.extraction_contract_version
+                    IS DISTINCT FROM ${SEMANTIC_EXTRACTION_CONTRACT_VERSION}
+                 OR generation.graph_schema_version
+                    IS DISTINCT FROM ${SEMANTIC_GRAPH_SCHEMA_VERSION}
+                 OR generation.prompt_contract_version
+                    IS DISTINCT FROM ${SEMANTIC_PROMPT_CONTRACT_VERSION}
+                 OR semantic_contract.embedding_configuration_revision_public_id
+                    IS DISTINCT FROM active_embedding.revision_public_id
+                 OR semantic_contract.resolved_dimension
+                    IS DISTINCT FROM active_embedding.resolved_dimension
+                 OR semantic_contract.normalization
+                    IS DISTINCT FROM active_embedding.normalization
+                 OR semantic_contract.artifact_schema_version
+                    IS DISTINCT FROM ${SEMANTIC_VECTOR_ARTIFACT_SCHEMA_VERSION}
+                 OR semantic_contract.vector_schema_version
+                    IS DISTINCT FROM ${SEMANTIC_VECTOR_SCHEMA_VERSION}
+                 OR semantic_contract.search_provider_kind
+                    IS DISTINCT FROM ${options.selectedSearchProviderKind}
+               ) AS semantic_maintenance_required
         FROM focowiki.active_snapshots snapshot
         JOIN focowiki.release_roots root
           ON root.knowledge_base_id = snapshot.knowledge_base_id
@@ -456,6 +586,36 @@ export function createPostgresStorageVnextMaintenanceRepository(
         JOIN focowiki.search_projections search
           ON search.knowledge_base_id = snapshot.knowledge_base_id
          AND search.public_id = snapshot.search_projection_public_id
+        LEFT JOIN focowiki.semantic_generations generation
+          ON generation.knowledge_base_id = snapshot.knowledge_base_id
+         AND generation.generation_role = 'active'
+         AND generation.state = 'active'
+         AND generation.deleted_at IS NULL
+        LEFT JOIN focowiki.semantic_projection_contracts semantic_contract
+          ON semantic_contract.knowledge_base_id = generation.knowledge_base_id
+         AND semantic_contract.semantic_generation_public_id = generation.public_id
+        LEFT JOIN LATERAL (
+          SELECT count(*)::integer AS active_count,
+                 min(model.public_id) AS public_id,
+                 min(model.revision) AS revision
+          FROM focowiki.model_configs model
+          WHERE model.knowledge_base_id IS NULL
+            AND model.enabled = true
+            AND model.config ->> 'status' = 'active'
+        ) active_model ON true
+        LEFT JOIN LATERAL (
+          SELECT count(*)::integer AS active_count,
+                 min(configuration.active_revision_public_id) AS revision_public_id,
+                 min(revision.resolved_dimension) AS resolved_dimension,
+                 min(revision.normalization) AS normalization
+          FROM focowiki.embedding_configurations configuration
+          JOIN focowiki.embedding_configuration_revisions revision
+            ON revision.configuration_public_id = configuration.public_id
+           AND revision.public_id = configuration.active_revision_public_id
+          WHERE configuration.lifecycle_status = 'active'
+            AND configuration.deleted_at IS NULL
+            AND revision.validation_status = 'valid'
+        ) active_embedding ON true
         WHERE snapshot.knowledge_base_id = ${input.knowledgeBaseId}
         LIMIT 1
       `;
@@ -463,7 +623,10 @@ export function createPostgresStorageVnextMaintenanceRepository(
         profileRows[0]?.navigation_profile_version ?? 1
       ) < 1 || (
         profileRows[0] !== undefined
-        && profileRows[0].provider_kind !== options.selectedSearchProviderKind
+        && (
+          profileRows[0].provider_kind !== options.selectedSearchProviderKind
+          || profileRows[0].semantic_maintenance_required
+        )
       );
       const terminalRows = await sql<TerminalStatusRow[]>`
         SELECT result.public_id AS operation_public_id, result.terminal_state,
@@ -569,6 +732,13 @@ function validateAcceptanceInput(input: StorageVnextMaintenanceRequest & {
   assertTimestamp(input.requestedAt);
   assertTimestamp(input.expiresAt);
   assertSearchProviderKind(input.searchProviderKind);
+  if (input.semanticAdoption && input.trigger !== "manual") {
+    throw repositoryError("invalid_input");
+  }
+  if (input.semanticAdoption
+    && input.semanticAdoption.target.knowledgeBaseId !== input.knowledgeBaseId) {
+    throw repositoryError("invalid_input");
+  }
   const checkpoint = validateCheckpoint(input.initialCheckpoint);
   assertMatchingSearchProvider(input.searchProviderKind, checkpoint.searchProviderKind);
 }
@@ -612,7 +782,34 @@ function validateCheckpoint(value: unknown): StorageVnextMaintenanceCheckpoint {
   if (Buffer.byteLength(JSON.stringify(value)) > 32_768) {
     throw repositoryError("operation_conflict");
   }
+  validateSemanticAdoption(item.semanticAdoption, item.searchProviderKind);
   return value as StorageVnextMaintenanceCheckpoint;
+}
+
+function validateSemanticAdoption(
+  value: StorageVnextMaintenanceCheckpoint["semanticAdoption"],
+  searchProviderKind: SearchProviderKind
+): void {
+  if (value === undefined || value === null) return;
+  if (
+    typeof value !== "object"
+    || !["full", "provider_only", "query_policy_only"].includes(value.mode)
+    || !value.target
+    || value.target.searchProviderKind !== searchProviderKind
+    || value.target.knowledgeBaseId === ""
+    || typeof value.stageSettings !== "object"
+    || value.stageSettings === null
+    || !Number.isSafeInteger(value.expectedPredecessorRevision)
+    || value.expectedPredecessorRevision < 0
+    || !Number.isSafeInteger(value.sourcePageSize)
+    || value.sourcePageSize < 1
+    || value.sourcePageSize > 100
+    || value.expectedPredecessorPublicId !== null
+      && (
+        !value.expectedPredecessorPublicId
+        || Buffer.byteLength(value.expectedPredecessorPublicId) > 255
+      )
+  ) throw repositoryError("operation_conflict");
 }
 
 function assertSearchProviderKind(value: unknown): asserts value is SearchProviderKind {

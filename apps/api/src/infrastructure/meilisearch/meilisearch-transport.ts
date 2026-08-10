@@ -278,9 +278,15 @@ export function createMeilisearchTransport(
           attributesToRetrieve: input.attributesToRetrieve,
           attributesToCrop: input.attributesToCrop,
           cropLength: input.cropLength,
+          ...(input.showMatchesPosition === undefined
+            ? {} : { showMatchesPosition: input.showMatchesPosition }),
           matchingStrategy: input.matchingStrategy,
           ...(input.locales ? { locales: input.locales } : {}),
-          ...(input.distinct ? { distinct: input.distinct } : {})
+          ...(input.distinct ? { distinct: input.distinct } : {}),
+          ...(input.vector ? { vector: input.vector } : {}),
+          ...(input.hybrid ? { hybrid: input.hybrid } : {}),
+          ...(input.rankingScoreThreshold === undefined
+            ? {} : { rankingScoreThreshold: input.rankingScoreThreshold })
         })
       );
       return {
@@ -474,8 +480,26 @@ function normalizeSettings(settings: Record<string, unknown>): MeilisearchSettin
         (settings.typoTolerance as { disableOnAttributes?: unknown } | undefined)
           ?.disableOnAttributes
       )
-    }
+    },
+    ...normalizeEmbedders(settings.embedders)
   };
+}
+
+function normalizeEmbedders(value: unknown): Pick<MeilisearchSettings, "embedders"> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const embedders: NonNullable<MeilisearchSettings["embedders"]> = {};
+  for (const [name, raw] of Object.entries(value)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    if (item.source === "userProvided"
+      && Number.isSafeInteger(item.dimensions) && Number(item.dimensions) > 0) {
+      embedders[name] = {
+        source: "userProvided",
+        dimensions: Number(item.dimensions)
+      };
+    }
+  }
+  return Object.keys(embedders).length > 0 ? { embedders } : {};
 }
 
 function normalizeTaskStatus(status: string): MeilisearchTask["status"] {

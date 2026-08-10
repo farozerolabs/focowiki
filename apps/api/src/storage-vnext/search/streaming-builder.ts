@@ -229,6 +229,7 @@ async function* iterateCandidateDocuments(
         sourceFilePublicId: node.sourceFilePublicId,
         sourceRevisionPublicId: node.sourceRevisionPublicId,
         logicalPath: node.logicalPath,
+        fileKind: "page",
         title: node.label,
         searchText: profile.searchText,
         rankingTerms: profile.rankingTerms,

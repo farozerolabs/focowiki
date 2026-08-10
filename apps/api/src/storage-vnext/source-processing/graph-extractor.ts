@@ -44,6 +44,7 @@ type GraphFactRequest = {
 type GraphExtractionRequest = GraphFactRequest & {
   parsedMetadata: Parameters<typeof createGraphNode>[0]["metadata"];
   suggestions: Parameters<typeof createGraphNode>[0]["suggestions"];
+  modelAssistanceSelected: boolean;
 };
 
 type GraphReconciliationInput = {

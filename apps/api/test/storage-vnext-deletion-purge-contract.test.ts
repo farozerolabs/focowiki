@@ -46,6 +46,7 @@ describe("storage vNext deletion physical purge", () => {
       "coordination",
       "read-page",
       "search-source",
+      "semantic-source",
       "graph-source",
       "release-source",
       "owners-source",
@@ -61,6 +62,12 @@ describe("storage vNext deletion physical purge", () => {
         sourceFilePublicIds: ["source-a"]
       })
     );
+    expect(current.semantic.deleteSourceScope).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-purge",
+      operationPublicId: "operation-purge",
+      sourceFilePublicIds: ["source-a"],
+      cursor: null
+    });
     expect(current.postgres.releaseSourceOwners).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceFilePublicIds: ["source-a"],
@@ -79,6 +86,7 @@ describe("storage vNext deletion physical purge", () => {
     }))).resolves.toMatchObject({ status: "completed" });
 
     expect(current.search.deleteKnowledgeBaseScope).toHaveBeenCalledOnce();
+    expect(current.semantic.deleteKnowledgeBaseScope).toHaveBeenCalledOnce();
     expect(current.search.deleteSourceScope).not.toHaveBeenCalled();
     expect(current.postgres.purgeKnowledgeBaseGraph).toHaveBeenCalledOnce();
     expect(current.postgres.purgeKnowledgeBaseRelease).toHaveBeenCalledOnce();
@@ -183,6 +191,30 @@ describe("storage vNext deletion physical purge", () => {
     expect(second).toMatchObject({ status: "completed" });
     expect(current.postgres.verifyDeletionClosure).toHaveBeenCalledOnce();
     expect(current.search.deleteSourceScope).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues a bounded semantic page before touching graph state", async () => {
+    const current = fixture();
+    current.semantic.deleteSourceScope.mockResolvedValueOnce({
+      outcome: "continue",
+      nextCursor: "semantic-vector-page-a"
+    });
+    const coordinator = createCoordinator(current);
+
+    const first = await coordinator.runAttempt(context());
+    expect(first).toMatchObject({ status: "retry" });
+    expect(first.receipts.at(-1)).toMatchObject({
+      reasonCode: "DELETION_SEMANTIC_PAGE_REMAINING",
+      checkpoint: { semanticCursor: "semantic-vector-page-a" }
+    });
+    expect(current.postgres.purgeSourceGraph).not.toHaveBeenCalled();
+
+    await expect(coordinator.runAttempt(context({
+      semanticCursor: "semantic-vector-page-a"
+    }))).resolves.toMatchObject({ status: "completed" });
+    expect(current.semantic.deleteSourceScope).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: "semantic-vector-page-a" })
+    );
   });
 
   it("keeps provider failures retryable with an operator-safe reason", async () => {
@@ -322,6 +354,22 @@ function fixture(options: { knowledgeBase?: boolean; paged?: boolean } = {}) {
         };
       })
     },
+    semantic: {
+      deleteSourceScope: vi.fn(async (): Promise<{
+        outcome: "completed" | "continue";
+        nextCursor: string | null;
+      }> => {
+        calls.push("semantic-source");
+        return { outcome: "completed" as const, nextCursor: null };
+      }),
+      deleteKnowledgeBaseScope: vi.fn(async (): Promise<{
+        outcome: "completed" | "continue";
+        nextCursor: string | null;
+      }> => {
+        calls.push("semantic-kb");
+        return { outcome: "completed" as const, nextCursor: null };
+      })
+    },
     postgres,
     objects: {
       deleteZeroOwner: vi.fn(async (objectId: string) => {
@@ -340,6 +388,7 @@ function context(overrides: Partial<{
   cursor: string | null;
   activeSearchProviderKind: "meilisearch" | "opensearch" | null;
   candidateSearchProviderKind: "meilisearch" | "opensearch" | null;
+  semanticCursor: string | null;
 }> = {}) {
   return {
     workPublicId: "operation-purge",
@@ -358,6 +407,7 @@ function context(overrides: Partial<{
         overrides.candidateSearchProviderKind ?? "meilisearch",
       candidateSearchProviderIndexUid: "unified-kb-purge-candidate",
       finishedBefore: "2026-08-01T06:00:00.000Z",
+      semanticCursor: overrides.semanticCursor ?? null,
       taskFrom: null,
       cursor: overrides.cursor ?? null
     },

@@ -70,20 +70,19 @@ Keep this interface small. Agents work better when they can discover a file tree
 | Mode | Interface example |
 | --- | --- |
 | Own Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "limit=50"`, `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"` |
-| Third-party Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`, `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>"` |
+| Third-party Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`, `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<complete standalone user question>"` |
 
 ## Exploration Flow
 
-Agent reads should run as a small loop with broad discovery, deep file reading, lead extraction, and evidence checks before answering.
+Agent reads use one bounded source-first loop.
 
-1. Start with `index.md`, then read `schema.md` when file conventions or metadata are unclear.
-2. Inspect the file tree and `_index/*` when generated index, link, manifest, or directory hints can narrow the next read.
-3. Discover candidate files through search, tree entries, graph expansion, graph files, related files, or Markdown links.
-4. Read useful candidates by `fileId` or logical `path`.
-5. Extract new phrases, paths, links, titles, headings, metadata terms, graph relations, and remaining gaps from the files read.
-6. Repeat breadth and depth while new leads can add useful evidence.
-7. Track visited `fileId` and `path` values.
-8. Stop after the collected evidence covers the user's scope, no new relevant candidates remain for the remaining gap, or additional rounds repeat already-visited files.
+1. Send the complete standalone user question as one initial search and use default `hybrid` retrieval unless the task explicitly needs `file` or `graph` mode.
+2. Treat every search item as a discovery candidate. Read the top useful source Markdown files through their returned `readActions`.
+3. Track visited `fileId` and `path` values and never read the same source twice in one loop.
+4. If source evidence remains incomplete, optionally expand the graph and run at most two follow-up search rounds. Every follow-up query must be derived from terms, paths, links, headings, or gaps found in source Markdown already read.
+5. Use `index.md`, the tree, and `_index/*` when the first search is empty or the knowledge-base scope remains unclear.
+6. Stop when the source files cover the user's scope, no new relevant source remains, or the two follow-up rounds are complete.
+7. Build the answer only from source Markdown reads. Search snippets, entity or relationship descriptions, community reports, and reranker output are not answer evidence.
 
 This keeps requests predictable while reducing shallow answers from one-file reads.
 

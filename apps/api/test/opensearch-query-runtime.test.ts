@@ -194,6 +194,109 @@ describe("OpenSearch query runtime", () => {
       .not.toContain("fuzziness");
   });
 
+  it("requires corroborating terms when the portable last-word strategy is used", async () => {
+    const client = createClient();
+    const query = createOpenSearchQueryPort({
+      client,
+      tokenizer: createTokenizer(),
+      maximumResultWindow: 2_000,
+      engineSearchCutoffMs: 1_000
+    });
+
+    await query.query(request({ matchingStrategy: "last" }));
+
+    const sent = vi.mocked(client.search).mock.calls[0]![0] as {
+      body: { query: { bool: { should: Array<Record<string, unknown>> } } };
+    };
+    const multiMatches = sent.body.query.bool.should.flatMap((clause) =>
+      clause.multi_match ? [clause.multi_match] : []
+    );
+    expect(multiMatches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "best_fields",
+        operator: "or",
+        minimum_should_match: "2<-70%"
+      })
+    ]));
+  });
+
+  it("requires high Jieba term coverage for relaxed Han-language evidence", async () => {
+    const client = createClient();
+    const tokenizer = createTokenizer();
+    tokenizer.tokenizeQuery.mockReturnValue([
+      "存在", "火星", "海洋", "采矿", "许可", "如何", "续期"
+    ]);
+    const query = createOpenSearchQueryPort({
+      client,
+      tokenizer,
+      maximumResultWindow: 2_000,
+      engineSearchCutoffMs: 1_000
+    });
+
+    await query.query(request({
+      query: "不存在的火星海洋采矿许可如何续期？",
+      evidenceFamilies: ["text", "phrase", "typo"],
+      matchingStrategy: "last"
+    }));
+
+    const sent = vi.mocked(client.search).mock.calls[0]![0] as {
+      body: { query: { bool: { should: Array<Record<string, any>> } } };
+    };
+    expect(sent.body.query.bool.should).toEqual([
+      expect.objectContaining({
+        bool: expect.objectContaining({
+          must: [{
+            match: {
+              _focowikiJiebaText: {
+                query: "存在 火星 海洋 采矿 许可 续期",
+                operator: "or",
+                minimum_should_match: "2<-20%"
+              }
+            }
+          }]
+        })
+      })
+    ]);
+  });
+
+  it("bounds multilingual execution clauses below the managed OpenSearch limit", async () => {
+    const client = createClient();
+    const tokenizer: LexicalTokenizer = {
+      contractVersion: "lexical-tokenizer-v1-test",
+      tokenizeDocument: vi.fn(() => []),
+      tokenizeQuery: vi.fn(() => Array.from(
+        { length: 64 },
+        (_, index) => `法规术语${index}`
+      ))
+    };
+    const query = createOpenSearchQueryPort({
+      client,
+      tokenizer,
+      maximumResultWindow: 2_000,
+      engineSearchCutoffMs: 1_000
+    });
+    const original = "法规术语".repeat(300);
+
+    await query.query(request({ query: original }));
+
+    const sent = vi.mocked(client.search).mock.calls[0]![0] as {
+      body: { query: { bool: { should: Array<Record<string, unknown>> } } };
+    };
+    const executionQueries = sent.body.query.bool.should.flatMap((clause) => {
+      const multiMatch = clause.multi_match as { query?: unknown } | undefined;
+      const jieba = clause.match as {
+        _focowikiJiebaText?: { query?: unknown };
+      } | undefined;
+      return [multiMatch?.query, jieba?._focowikiJiebaText?.query]
+        .filter((value): value is string => typeof value === "string");
+    });
+    expect(executionQueries.length).toBeGreaterThan(0);
+    expect(executionQueries).not.toContain(original);
+    expect(executionQueries.every((value) =>
+      Array.from(value.replaceAll(" ", "")).length <= 64
+    )).toBe(true);
+  });
+
   it("rejects unknown fields and malformed responses safely", async () => {
     const client = createClient();
     const query = createOpenSearchQueryPort({

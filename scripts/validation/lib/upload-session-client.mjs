@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 
+const CONTENT_UPLOAD_MAX_ATTEMPTS = 3;
+const CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS = 25;
+
 export async function uploadMarkdownFilesWithSession(input) {
   const files = input.files.map(normalizeInputFile);
   const declaredByteCount = files.reduce((total, file) => total + file.bytes.byteLength, 0);
@@ -66,7 +69,7 @@ export async function uploadMarkdownFilesWithSession(input) {
       if (!file) {
         throw new Error(`Upload entry has no matching local file: ${entry.relativePath}`);
       }
-      await requestData(
+      await requestEntryContentWithRetry(
         input.request,
         `${input.routeBase}/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entry.id)}/content`,
         {
@@ -227,6 +230,21 @@ async function requestData(request, pathname, options) {
   return response && typeof response === "object" && "data" in response
     ? response.data
     : response;
+}
+
+async function requestEntryContentWithRetry(request, pathname, options) {
+  let lastFailure = null;
+  for (let attempt = 1; attempt <= CONTENT_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await requestData(request, pathname, options);
+    } catch (error) {
+      lastFailure = error;
+    }
+    if (attempt < CONTENT_UPLOAD_MAX_ATTEMPTS) {
+      await sleep(CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS * attempt);
+    }
+  }
+  throw lastFailure ?? new Error("Upload entry content failed");
 }
 
 function normalizeInputFile(file) {

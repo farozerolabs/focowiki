@@ -357,7 +357,7 @@ const generatedFile = {
 
 const fileSearchResultBase = {
   generationId,
-  nodeId: sourceFileId,
+  nodeId: null,
   edgeId: null,
   fileId,
   generatedFileId: fileId,
@@ -371,10 +371,12 @@ const fileSearchResultBase = {
   tags: ["guide", "policy"],
   frontmatter: okfFrontmatterExamples.nativeV02,
   okfSignals: nativeOkfSignals,
-  matchedFields: ["path", "title"],
+  matchedFields: ["content"],
+  evidenceTypes: ["content"],
+  sourceExcerpt: "Configure the deployment, then verify service health and search readiness.",
   score: 9,
   contentAvailable: true,
-  matchType: "hybrid",
+  matchType: "file_direct",
   readActions: {
     fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}`,
     fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/content`,
@@ -387,16 +389,19 @@ const fileSearchResultBase = {
 };
 
 const fileSearchQueryContext = {
-  query: "guide",
-  normalizedQuery: "guide",
+  query: "How do I configure and verify the knowledge base deployment?",
+  normalizedQuery: "How do I configure and verify the knowledge base deployment?",
   scope: "all",
   fileKind: "page",
   mode: "hybrid",
   graphDepth: 1,
   graphFanout: 10,
-  okfStatus: "stable",
-  okfTrustTier: "human-reviewed",
-  okfFreshness: "fresh",
+  okfStatus: null,
+  okfTrustTier: null,
+  okfFreshness: null,
+  rerank: false,
+  rerankTopK: null,
+  rerankScoreThreshold: null,
   limit: 10,
   cursorProvided: false
 };
@@ -412,7 +417,7 @@ const fileSearchGraphSummary = {
 const fileSearchResultSummary = {
   resultCount: 1,
   hasMore: false,
-  sort: ["score desc", "path asc", "fileId asc"],
+  sort: ["relevance_desc", "logical_path_asc", "source_file_id_asc"],
   meaning: "The query matched published files. Read the returned files and related files before using their content."
 };
 
@@ -438,6 +443,8 @@ const relatedFile = {
   title: "Reference",
   relationType: "same_specific_subject",
   direction: "outgoing",
+  fromFileId: fileId,
+  relationshipDepth: 1,
   weight: 0.72,
   reason: "Both files share body-derived subjects.",
   source: "deterministic",
@@ -677,15 +684,12 @@ export const requestExamples = {
   searchGeneratedFiles: {
     path: { knowledgeBaseId },
     query: {
-      query: "guide",
+      query: "How do I configure and verify the knowledge base deployment?",
       scope: "all",
       fileKind: "page",
       mode: "hybrid",
       graphDepth: 1,
       graphFanout: 10,
-      okfStatus: "stable",
-      okfTrustTier: "human-reviewed",
-      okfFreshness: "fresh",
       limit: 10
     }
   },
@@ -943,6 +947,22 @@ export function createDeveloperOpenApiResponseExamples() {
       nextCursor: null,
       searchStatus: "ok",
       searchMode: "hybrid",
+      semanticStatus: { state: "ready", safeCode: null },
+      evidenceStatus: {
+        completedFamilies: [
+          "exact_path",
+          "exact_title",
+          "lexical",
+          "jieba",
+          "content_vector",
+          "entity_vector",
+          "relationship_vector",
+          "community_vector",
+          "file_graph"
+        ],
+        degradedFamilies: []
+      },
+      rerankerStatus: { state: "skipped", safeCode: "RERANKER_DISABLED" },
       graphStatus: "available",
       graphSummary: fileSearchGraphSummary,
       resultSummary: fileSearchResultSummary,

@@ -7,6 +7,7 @@
       "disposition": "implemented",
       "focusedTests": [
         "apps/api/test/storage-vnext-meilisearch-sole-projection-contract.test.ts",
+        "apps/api/test/storage-vnext-semantic-search.test.ts",
         "apps/api/test/storage-vnext-search-streaming-builder.test.ts"
       ],
       "codeTrace": [{"path":"apps/api/src/storage-vnext/search/documents.ts","symbols":["createStorageVnextContentDocument","createStorageVnextGraphSeedDocument"],"action":"Meilisearch is the sole body and graph search projection; PostgreSQL stores only routing and hydration facts."}],
@@ -39,6 +40,7 @@
       "id": "PG-03",
       "disposition": "implemented",
       "focusedTests": [
+        "apps/api/test/storage-vnext-admin-processing-contract.test.ts",
         "apps/api/test/storage-vnext-admin-source-retry.test.ts",
         "apps/api/test/storage-vnext-cleanup-action-repository.integration.test.ts",
         "apps/api/test/storage-vnext-deletion-repository.integration.test.ts",
@@ -139,6 +141,7 @@
         "apps/api/test/storage-vnext-mutation-repository.integration.test.ts",
         "apps/api/test/storage-vnext-mutation-schema-contract.test.ts",
         "apps/api/test/storage-vnext-source-model-adapter.test.ts",
+        "apps/api/test/storage-vnext-source-model-assistance-selector.test.ts",
         "apps/api/test/storage-vnext-source-processing-contract.test.ts",
         "apps/api/test/storage-vnext-source-processing.integration.test.ts",
         "apps/api/test/storage-vnext-source-release-handoff.test.ts",
@@ -197,9 +200,9 @@
         "apps/api/test/storage-vnext-schema-constraints-contract.test.ts",
         "apps/api/test/storage-vnext-schema-constraints.integration.test.ts"
       ],
-      "codeTrace": [{"path":"apps/api/migrations/001_storage_vnext.sql","symbols":["focowiki.runtime_generation","storage-vnext-v1"],"action":"Provides the only absent-to-storage-vNext clean bootstrap and omits the legacy migration chain."},{"path":"apps/api/src/storage-vnext/bootstrap/command.ts","symbols":["runStorageVnextBootstrapCommand"],"action":"Requires explicit run ownership for reset/bootstrap planes."}],
+      "codeTrace": [{"path":"apps/api/src/db/migration-manifest.ts","symbols":["MIGRATION_MANIFEST","storage-vnext-v3-semantic","breaking_reset"],"action":"Allows only an absent-to-current clean bootstrap, rejects every pre-change generation, and omits any in-place compatibility path."},{"path":"apps/api/src/storage-vnext/bootstrap/command.ts","symbols":["runStorageVnextBootstrapCommand"],"action":"Requires explicit run ownership for reset/bootstrap planes."}],
       "executableEvidence": [{"command":"FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL=<owned> FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER=svnext-aug03audit pnpm --filter @focowiki/api exec vitest run test/storage-vnext-bootstrap-reset.integration.test.ts","result":"passed","evidence":"A uniquely named temporary PostgreSQL database was created, bootstrapped, verified free of legacy tables/columns/index families, and dropped."}],
-      "measuredResult": {"status":"passed","before":"Nineteen compatible migrations, 85 legacy tables, 328 indexes, and schema generation v19","after":"One deterministic 001 bootstrap with storage-vnext-v1 marker and no in-place compatibility path","target":"Destructive clean reset only, repeatable bootstrap, owned-scope refusal, and no mixed schema","evidence":"Bootstrap contract/integration, constraints, index, repeat, interruption, and owned-reset suites passed."}, "rejectionEvidence": []
+      "measuredResult": {"status":"passed","before":"Pre-change storage generations and data are unsupported by this release","after":"One deterministic absent-to-storage-vnext-v3-semantic bootstrap chain with a terminal breaking-reset boundary and no in-place compatibility path","target":"Destructive clean reset only, repeatable bootstrap, owned-scope refusal, same-generation restore, and no mixed schema","evidence":"Bootstrap contract/integration, constraints, index, repeat, interruption, owned-reset, and current-generation restore suites passed."}, "rejectionEvidence": []
     },
     {
       "id": "PG-12",

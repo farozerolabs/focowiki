@@ -1,4 +1,8 @@
-export const MIGRATION_SAFETY_CLASSES = ["clean_bootstrap", "compatible"] as const;
+export const MIGRATION_SAFETY_CLASSES = [
+  "clean_bootstrap",
+  "compatible",
+  "breaking_reset"
+] as const;
 
 export type MigrationSafety = (typeof MIGRATION_SAFETY_CLASSES)[number];
 
@@ -21,6 +25,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v1",
     targetGeneration: "storage-vnext-v2",
     safety: "compatible"
+  },
+  {
+    fileName: "003_general_purpose_semantic_search.sql",
+    sourceGeneration: "storage-vnext-v2",
+    targetGeneration: "storage-vnext-v3-semantic",
+    safety: "breaking_reset"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
@@ -88,12 +98,17 @@ export function validateMigrationManifest(
         `migration ${migration.fileName} has an unsupported safety class`
       );
     }
-    if (index > 0 && (
-      migration.sourceGeneration !== manifest[index - 1]!.targetGeneration
-      || migration.safety !== "compatible"
-    )) {
+    if (
+      index > 0
+      && migration.sourceGeneration !== manifest[index - 1]!.targetGeneration
+    ) {
       throw new MigrationManifestValidationError(
-        `migration ${migration.fileName} does not continue the compatible generation chain`
+        `migration ${migration.fileName} does not continue the generation chain`
+      );
+    }
+    if (migration.safety === "breaking_reset" && index !== manifest.length - 1) {
+      throw new MigrationManifestValidationError(
+        `migration ${migration.fileName} must terminate the generation chain`
       );
     }
   }
@@ -154,6 +169,9 @@ export function createBootstrapPlan(
     migration.sourceGeneration === currentState);
   if (nextMigrationIndex >= 0) {
     const pendingMigrations = MIGRATION_MANIFEST.slice(nextMigrationIndex);
+    if (pendingMigrations.some((migration) => migration.safety === "breaking_reset")) {
+      throw new UnsupportedMigrationGenerationError(currentState);
+    }
     return {
       pendingMigrations,
       pendingFiles: pendingMigrations.map((migration) => migration.fileName),

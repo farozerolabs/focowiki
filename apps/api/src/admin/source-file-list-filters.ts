@@ -79,6 +79,12 @@ export function readSourceFileListFilters(input: {
       "metadata_resolution",
       "llm_suggestion",
       "graph_generation",
+      "graphrag_processing",
+      "semantic_reconciliation",
+      "embedding_generation",
+      "affected_projection",
+      "search_publication",
+      "semantic_maintenance_required",
       "projection_generation",
       "generation_validation",
       "generation_activation"

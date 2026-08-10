@@ -35,6 +35,8 @@ describe("runtime Meilisearch transport", () => {
   it("keeps every runtime entrypoint behind the selected-provider factory", () => {
     const main = readFileSync(resolve(rootDir, "apps/api/src/main.ts"), "utf8");
     expect(main).toContain("createDynamicRuntimeSearchQueryProvider");
+    expect(main).toContain("const searchTokenizer = config.search");
+    expect(main).not.toContain('config.search?.provider === "opensearch"');
     const selectedProvider = readFileSync(resolve(
       rootDir,
       "apps/api/src/runtime/search-provider.ts"

@@ -3,6 +3,8 @@ import { createPostgresStorageVnextAdminSource } from
   "../src/storage-vnext/api/postgres-admin-source.js";
 import type { StorageVnextWorkflowOutcome } from
   "../src/storage-vnext/workflow/ports.js";
+import type { StorageVnextModelInvocationFact } from
+  "../src/storage-vnext/catalog/ports.js";
 
 describe("storage vNext source retry", () => {
   it("rejects a ready source before consulting historical idempotency", async () => {
@@ -49,7 +51,99 @@ describe("storage vNext source retry", () => {
     });
     expect(fixture.workflow.enqueue).not.toHaveBeenCalled();
   });
+
+  it("keys retry idempotency to the failed source resource revision", async () => {
+    const fixture = createFixture("failed");
+    const application = createPostgresStorageVnextAdminSource(fixture.input);
+
+    await application.retrySourceFile({
+      knowledgeBaseId: "knowledge-base-retry",
+      sourceFileId: "source-file-retry"
+    });
+
+    expect(fixture.workflow.findIdempotent).toHaveBeenCalledWith({
+      knowledgeBaseId: "knowledge-base-retry",
+      key: "source-retry:source-file-retry:source-revision-retry:2",
+      requestHash: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    expect(fixture.workflow.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      idempotency: expect.objectContaining({
+        key: "source-retry:source-file-retry:source-revision-retry:2"
+      })
+    }));
+  });
+
+  it("retries a publication failure without clearing the completed model invocation", async () => {
+    const fixture = createFixture("failed");
+    fixture.sourceFile.safeErrorCode = "PUBLICATION_FAILED";
+    fixture.sourceFile.modelInvocation = {
+      sourceRevisionPublicId: fixture.revision.publicId,
+      status: "completed",
+      modelName: "generation-model",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      endedAt: "2026-08-01T00:01:00.000Z",
+      warningCount: 0,
+      errorCode: null
+    };
+    const application = createPostgresStorageVnextAdminSource(fixture.input);
+
+    await expect(application.retrySourceFile({
+      knowledgeBaseId: "knowledge-base-retry",
+      sourceFileId: "source-file-retry"
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        retry: { kind: "publication", scope: "source_file", coalesced: false }
+      }
+    });
+
+    expect(fixture.workflow.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      checkpoint: expect.objectContaining({ semanticResumeStage: "publication" })
+    }));
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        modelInvocation: fixture.sourceFile.modelInvocation
+      })
+    );
+  });
+
+  it("does not treat a provider-adoption block as reusable publication work", async () => {
+    const fixture = createFixture("failed");
+    fixture.sourceFile.safeErrorCode = "semantic_search_provider_adoption_required";
+    fixture.sourceFile.modelInvocation = completedModelInvocation(fixture.revision.publicId);
+    const application = createPostgresStorageVnextAdminSource(fixture.input);
+
+    await expect(application.retrySourceFile({
+      knowledgeBaseId: "knowledge-base-retry",
+      sourceFileId: "source-file-retry"
+    })).resolves.toMatchObject({
+      ok: true,
+      value: { retry: { kind: "source_processing" } }
+    });
+
+    expect(fixture.workflow.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      checkpoint: {
+        sourceFilePublicId: fixture.sourceFile.publicId,
+        sourceRevisionPublicId: fixture.revision.publicId
+      }
+    }));
+  });
 });
+
+function completedModelInvocation(
+  sourceRevisionPublicId: string
+): StorageVnextModelInvocationFact {
+  return {
+    sourceRevisionPublicId,
+    status: "completed",
+    modelName: "generation-model",
+    startedAt: "2026-08-01T00:00:00.000Z",
+    endedAt: "2026-08-01T00:01:00.000Z",
+    warningCount: 0,
+    errorCode: null
+  };
+}
 
 function createFixture(status: "ready" | "failed") {
   const sourceFile = {
@@ -64,6 +158,7 @@ function createFixture(status: "ready" | "failed") {
     revision: 2,
     safeErrorCode: status === "failed" ? "SOURCE_MODEL_FAILED" : null,
     safeErrorMessage: null,
+    modelInvocation: null as StorageVnextModelInvocationFact | null,
     currentRevisionPublicId: "source-revision-retry",
     visibility: "visible" as const,
     createdAt: "2026-08-01T00:00:00.000Z",
@@ -100,6 +195,8 @@ function createFixture(status: "ready" | "failed") {
     enqueue: vi.fn(async () => ({ type: "live" as const, work: {} }))
   };
   return {
+    sourceFile,
+    revision,
     catalog,
     workflow,
     input: {

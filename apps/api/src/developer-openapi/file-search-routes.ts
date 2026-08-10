@@ -4,7 +4,7 @@ import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import { validationError } from "./errors.js";
 import { readDeveloperFileSearchFilters } from "./file-search-filters.js";
-import { readLimit, safe } from "./route-helpers.js";
+import { safe } from "./route-helpers.js";
 import type { createDeveloperOpenApiService } from "./services.js";
 
 type DeveloperOpenApiServiceApi = ReturnType<typeof createDeveloperOpenApiService>;
@@ -32,6 +32,10 @@ export function registerDeveloperOpenApiFileSearchRoutes(
         okfTrustTier: context.req.query("okfTrustTier"),
         okfFreshness: context.req.query("okfFreshness"),
         requestDate: new Date().toISOString().slice(0, 10),
+        limit: context.req.query("limit"),
+        rerank: context.req.query("rerank"),
+        rerankTopK: context.req.query("rerankTopK"),
+        rerankScoreThreshold: context.req.query("rerankScoreThreshold"),
         graphSettings
       });
 
@@ -50,7 +54,10 @@ export function registerDeveloperOpenApiFileSearchRoutes(
         graphDepth: filters.graphDepth,
         graphFanout: filters.graphFanout,
         okfFilters: filters.okfFilters,
-        limit: readLimit(context.req.query("limit"), services.config),
+        limit: filters.limit,
+        rerank: filters.rerank,
+        rerankTopK: filters.rerankTopK,
+        rerankScoreThreshold: filters.rerankScoreThreshold,
         cursor: context.req.query("cursor") ?? null
       });
     });

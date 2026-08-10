@@ -127,6 +127,14 @@ jobs:
           docker build --target api --build-arg FOCOWIKI_RELEASE_VERSION=0.0.0-ci -t focowiki-api:ci .
           docker image inspect focowiki-api:ci --format '{{json .Config.Env}}' | grep 'FOCOWIKI_RELEASE_VERSION=0.0.0-ci'
 
+      - name: Build source-worker Docker image
+        run: |
+          docker build --target source-worker --build-arg FOCOWIKI_RELEASE_VERSION=0.0.0-ci -t focowiki-source-worker:ci .
+          docker image inspect focowiki-source-worker:ci --format '{{json .Config.Env}}' | grep 'FOCOWIKI_RELEASE_VERSION=0.0.0-ci'
+          docker run --rm --entrypoint python focowiki-source-worker:ci --version
+          docker run --rm --entrypoint python focowiki-source-worker:ci -m graphrag_adapter_check
+          docker run --rm --entrypoint python focowiki-source-worker:ci -m unittest discover -s apps/api/python/tests -v
+
       - name: Migrate CI database with API image
         run: >-
           docker run --rm --network host --env-file .env.dev.example
@@ -217,6 +225,7 @@ jobs:
           docker run --rm --entrypoint sh focowiki-api:ci -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
           docker run --rm --entrypoint node focowiki-api:ci -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
           docker run --rm --entrypoint sh focowiki-api:ci -lc 'grep -q nodejieba apps/api/runtime/publication-worker.mjs'
+          docker run --rm --entrypoint node focowiki-source-worker:ci -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
 
       - name: Validate API image role health
         run: |
@@ -224,7 +233,7 @@ jobs:
           docker volume create "${runtime_secret_volume}" >/dev/null
           trap 'docker volume rm -f "${runtime_secret_volume}" >/dev/null 2>&1 || true' EXIT
           docker run --rm --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); const secret=require('node:crypto').randomBytes(32).toString('base64url'); fs.writeFileSync('/app/runtime-secrets/deployment.key', secret + '\n', { mode: 0o600 });"
-          docker run --rm --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/source-worker.mjs --healthcheck
+          docker run --rm --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-source-worker:ci node apps/api/runtime/source-worker.mjs --healthcheck
           docker run --rm --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/publication-worker.mjs --healthcheck
           docker run --rm --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/maintenance-worker.mjs --healthcheck
           docker volume rm "${runtime_secret_volume}" >/dev/null

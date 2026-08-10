@@ -7,6 +7,7 @@ import {
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
+  type RuntimeSemanticSettings,
   type RuntimeSearchSettings,
   type RuntimeSettingsSnapshot
 } from "../runtime-settings/types.js";
@@ -114,6 +115,19 @@ export function registerAdminRuntimeSettingsRoutes(
       writeSettingsResponse(context, async (service, body) =>
         service.updateSearch({
           value: body as RuntimeSearchSettings,
+          actor: "admin"
+        })
+      )
+  );
+
+  app.put(
+    "/admin/api/settings/semantic",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) =>
+      writeSettingsResponse(context, async (service, body) =>
+        service.updateSemantic({
+          value: body as RuntimeSemanticSettings,
           actor: "admin"
         })
       )
@@ -228,6 +242,7 @@ export function registerAdminRuntimeSettingsRoutes(
           publication: snapshot.publication,
           graph: snapshot.graph,
           maintenance: snapshot.maintenance,
+          semantic: snapshot.semantic,
           search: snapshot.search,
           activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
         }

@@ -1065,6 +1065,12 @@
                   "metadata_resolution",
                   "llm_suggestion",
                   "graph_generation",
+                  "graphrag_processing",
+                  "semantic_reconciliation",
+                  "embedding_generation",
+                  "affected_projection",
+                  "search_publication",
+                  "semantic_maintenance_required",
                   "projection_generation",
                   "generation_validation",
                   "generation_activation"
@@ -2701,10 +2707,39 @@
                 "path",
                 "title",
                 "description",
-                "metadata"
+                "metadata",
+                "content",
+                "file_relationship"
               ]
             },
             "description": "Fields that caused this search result to match."
+          },
+          "evidenceTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "path",
+                "title",
+                "content",
+                "file_relationship",
+                "entity",
+                "relationship",
+                "community"
+              ]
+            },
+            "description": "Safe evidence categories that supported this source-file candidate."
+          },
+          "sourceExcerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Short excerpt from the active source Markdown when source-grounded text evidence is available. Read the source file before using it as answer evidence."
           },
           "score": {
             "type": "number",
@@ -2810,7 +2845,7 @@
               "graph_neighbor",
               "hybrid"
             ],
-            "description": "Reason this result matched, such as file content, a relationship node, or a related file."
+            "description": "Dominant actual evidence class for this source-file result after duplicate collapse. `hybrid` means both file and relationship evidence supported it."
           },
           "graphContext": {
             "type": "object",
@@ -2891,6 +2926,8 @@
           "frontmatter",
           "okfSignals",
           "matchedFields",
+          "evidenceTypes",
+          "sourceExcerpt",
           "score",
           "contentAvailable",
           "matchType",
@@ -2903,7 +2940,7 @@
         "properties": {
           "query": {
             "type": "string",
-            "description": "Original search phrase received by the endpoint."
+            "description": "Normalized search text accepted by the endpoint."
           },
           "normalizedQuery": {
             "type": "string",
@@ -2938,7 +2975,7 @@
               1,
               2
             ],
-            "description": "Number of relationship levels included in this search."
+            "description": "Requested relationship context depth. Zero returns no relationship entries; one returns direct entries; two may include second-level entries within fanout."
           },
           "graphFanout": {
             "type": "integer",
@@ -2978,6 +3015,36 @@
             ],
             "description": "Normalized OKF freshness filter applied to this response."
           },
+          "rerank": {
+            "type": "boolean",
+            "description": "Whether optional source-grounded reranking was requested."
+          },
+          "rerankTopK": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Non-exact candidate window used only when reranking is enabled."
+          },
+          "rerankScoreThreshold": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Minimum valid reranker score for non-exact candidates, or null when disabled."
+          },
           "limit": {
             "type": "integer",
             "minimum": 1,
@@ -2999,6 +3066,9 @@
           "okfStatus",
           "okfTrustTier",
           "okfFreshness",
+          "rerank",
+          "rerankTopK",
+          "rerankScoreThreshold",
           "limit",
           "cursorProvided"
         ]
@@ -3134,10 +3204,9 @@
             "type": "string",
             "enum": [
               "ok",
-              "no_candidates",
-              "index_unavailable"
+              "no_candidates"
             ],
-            "description": "`ok` means results are returned. `no_candidates` means the current query matched no files. `index_unavailable` means file search is not available for this knowledge base yet."
+            "description": "`ok` means results are returned. `no_candidates` means the current query matched no files. Dependency failures use the documented 503 or 504 error envelope."
           },
           "searchMode": {
             "type": "string",
@@ -3147,6 +3216,133 @@
               "hybrid"
             ],
             "description": "Search mode applied to this response."
+          },
+          "semanticStatus": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "degraded",
+                  "unavailable"
+                ],
+                "description": "Availability of optional semantic search lanes for this response."
+              },
+              "safeCode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "SEMANTIC_ADOPTION_REQUIRED",
+                      "SEMANTIC_LEXICAL_PROJECTION_UNAVAILABLE",
+                      "SEMANTIC_PROVIDER_ADOPTION_REQUIRED",
+                      "SEMANTIC_SEARCH_UNAVAILABLE",
+                      "SEMANTIC_LANE_PARTIAL_FAILURE"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Stable non-sensitive reason code when semantic search is degraded or unavailable."
+              }
+            },
+            "required": [
+              "state",
+              "safeCode"
+            ]
+          },
+          "evidenceStatus": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "completedFamilies": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "exact_path",
+                    "exact_title",
+                    "lexical",
+                    "jieba",
+                    "file_graph",
+                    "content_vector",
+                    "entity_vector",
+                    "relationship_vector",
+                    "community_vector"
+                  ]
+                },
+                "description": "Retrieval evidence families that completed for this response."
+              },
+              "degradedFamilies": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "exact_path",
+                    "exact_title",
+                    "lexical",
+                    "jieba",
+                    "file_graph",
+                    "content_vector",
+                    "entity_vector",
+                    "relationship_vector",
+                    "community_vector"
+                  ]
+                },
+                "description": "Retrieval evidence families that did not complete."
+              }
+            },
+            "required": [
+              "completedFamilies",
+              "degradedFamilies"
+            ],
+            "description": "Retrieval evidence families that completed or degraded for this response."
+          },
+          "rerankerStatus": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "not_configured",
+                  "skipped",
+                  "applied",
+                  "degraded"
+                ],
+                "description": "Current processing status."
+              },
+              "safeCode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "RERANKER_DISABLED",
+                      "RERANKER_RETRIEVAL_UNAVAILABLE",
+                      "RERANKER_INVALID_REQUEST",
+                      "RERANKER_CONFIGURATION_UNAVAILABLE",
+                      "RERANKER_NOT_CONFIGURED",
+                      "RERANKER_NOT_ACTIVE",
+                      "RERANKER_NO_CANDIDATES",
+                      "RERANKER_PAYLOAD_TOO_LARGE",
+                      "RERANKER_UNAVAILABLE"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Stable non-sensitive reason code when reranking was not applied."
+              }
+            },
+            "required": [
+              "state",
+              "safeCode"
+            ],
+            "description": "Whether optional reranking was applied, skipped, unavailable, or degraded without exposing model scores."
           },
           "graphStatus": {
             "type": "string",
@@ -3168,12 +3364,12 @@
               "indexedDocumentCount": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Number of published files available to relationship search."
+                "description": "Total published file-graph nodes available to relationship search, not the current result-page count."
               },
               "indexedRelationshipCount": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Number of file relationships available to relationship search."
+                "description": "Total published file relationships available to relationship search, not the current result-page count."
               },
               "depth": {
                 "type": "integer",
@@ -3233,6 +3429,9 @@
           "nextCursor",
           "searchStatus",
           "searchMode",
+          "semanticStatus",
+          "evidenceStatus",
+          "rerankerStatus",
           "graphStatus",
           "graphSummary",
           "resultSummary",
@@ -3308,7 +3507,17 @@
               "outgoing",
               "incoming"
             ],
-            "description": "Relationship direction relative to the requested file."
+            "description": "Relationship direction relative to `fromFileId` for this traversal step."
+          },
+          "fromFileId": {
+            "type": "string",
+            "description": "Published source-file identifier from which this traversal step starts."
+          },
+          "relationshipDepth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2,
+            "description": "Relationship level of this traversal step from the requested seed file."
           },
           "weight": {
             "type": "number",
@@ -3429,6 +3638,8 @@
           "title",
           "relationType",
           "direction",
+          "fromFileId",
+          "relationshipDepth",
           "weight",
           "reason",
           "source",
@@ -7473,6 +7684,12 @@
                 "metadata_resolution",
                 "llm_suggestion",
                 "graph_generation",
+                "graphrag_processing",
+                "semantic_reconciliation",
+                "embedding_generation",
+                "affected_projection",
+                "search_publication",
+                "semantic_maintenance_required",
                 "projection_generation",
                 "generation_validation",
                 "generation_activation"
@@ -10952,7 +11169,7 @@
         ],
         "operationId": "searchGeneratedFiles",
         "summary": "Search knowledge-base files",
-        "description": "Search currently published Markdown files by content, metadata, and optional file relationships. Each result includes a file ID and path for reading the complete file. An empty result means the query found no matching files; it does not mean the knowledge base is empty.",
+        "description": "Search active source Markdown files with one standalone natural-language question. Omitted mode uses hybrid retrieval. Optional request-scoped reranking refines authorized candidates and safely falls back when unavailable. Every result remains a source-file candidate with read actions; read the Markdown before using its content as evidence.",
         "security": [
           {
             "bearerAuth": []
@@ -10963,15 +11180,12 @@
             "knowledgeBaseId": "kb-11111111-1111-4111-8111-111111111111"
           },
           "query": {
-            "query": "guide",
+            "query": "How do I configure and verify the knowledge base deployment?",
             "scope": "all",
             "fileKind": "page",
             "mode": "hybrid",
             "graphDepth": 1,
             "graphFanout": 10,
-            "okfStatus": "stable",
-            "okfTrustTier": "human-reviewed",
-            "okfFreshness": "fresh",
             "limit": 10
           }
         },
@@ -10990,18 +11204,18 @@
             "name": "query",
             "in": "query",
             "required": true,
-            "description": "Search text. Titles, headings, file paths, Markdown content, metadata, punctuation variants, and multi-term CJK, Latin, or mixed-script queries are supported.",
+            "description": "One standalone natural-language question or search text. After Unicode and whitespace normalization it must contain 2 through 512 grapheme clusters, use at most 2048 UTF-8 bytes, and contain no unsafe control characters. Results are source files that must be read before their content is used as evidence.",
             "schema": {
               "type": "string",
               "minLength": 2,
-              "maxLength": 160
+              "maxLength": 512
             }
           },
           {
             "name": "scope",
             "in": "query",
             "required": false,
-            "description": "Fields to search. The default searches file paths, titles, headings, Markdown content, and metadata.",
+            "description": "Eligible evidence fields. `path` runs exact-path and grounded-title families, `metadata` runs the lexical metadata family, and `all` uses every family enabled by the selected mode.",
             "schema": {
               "type": "string",
               "enum": [
@@ -11016,28 +11230,12 @@
             "name": "fileKind",
             "in": "query",
             "required": false,
-            "description": "Published file type filter. The default searches page files.",
+            "description": "Published-file type filter. Search returns active Markdown pages created from uploaded files. `all` removes the explicit type predicate but currently returns the same page set.",
             "schema": {
               "type": "string",
               "enum": [
                 "all",
-                "page",
-                "index",
-                "log",
-                "schema",
-                "manifest_index",
-                "manifest_index_shard",
-                "search_index",
-                "search_index_shard",
-                "link_index",
-                "link_index_shard",
-                "change_index",
-                "change_index_shard",
-                "graph_index",
-                "graph_node_index",
-                "graph_edge_shard",
-                "graph_file",
-                "history_page"
+                "page"
               ],
               "default": "page"
             }
@@ -11046,7 +11244,7 @@
             "name": "mode",
             "in": "query",
             "required": false,
-            "description": "Search mode. `file` searches file content and metadata, `graph` searches file relationships, and `hybrid` combines both. Every result includes a file ID and path that can be read with the file APIs.",
+            "description": "Evidence plan. With `scope=all`, `file` runs exact path, grounded title, lexical, Jieba, and content vector retrieval; `graph` runs exact path, grounded title, file relationships, and entity, relationship, and community vector retrieval; `hybrid` runs both plans. `scope=path` or `scope=metadata` narrows these families as documented. Every result remains a readable source file.",
             "schema": {
               "type": "string",
               "enum": [
@@ -11054,14 +11252,14 @@
                 "graph",
                 "hybrid"
               ],
-              "default": "file"
+              "default": "hybrid"
             }
           },
           {
             "name": "graphDepth",
             "in": "query",
             "required": false,
-            "description": "Number of relationship levels included by graph and hybrid search.",
+            "description": "Relationship context depth returned for graph and hybrid results. `0` returns the seed graph reference without relationships, `1` includes direct relationships, and `2` may include second-level relationships within `graphFanout`. Values above the deployment maximum return 422.",
             "schema": {
               "type": "integer",
               "enum": [
@@ -11075,7 +11273,7 @@
             "name": "graphFanout",
             "in": "query",
             "required": false,
-            "description": "Maximum relationship records returned per graph search item. When omitted, the deployment setting is used.",
+            "description": "Maximum relationship records returned per graph search result across the requested depth. When omitted, the deployment setting is used; values above the deployment maximum return 422.",
             "schema": {
               "type": "integer",
               "minimum": 0
@@ -11123,20 +11321,55 @@
             }
           },
           {
+            "name": "rerank",
+            "in": "query",
+            "required": false,
+            "description": "Optionally rerank the authorized fused source-file candidates with the active Admin-configured reranker. The default keeps deterministic fused ranking.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "rerankTopK",
+            "in": "query",
+            "required": false,
+            "description": "Candidate count sent to the optional reranker. It is valid only with `rerank=true`, must be at least `limit`, and defaults to the greater of 30 and `limit`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "rerankScoreThreshold",
+            "in": "query",
+            "required": false,
+            "description": "Minimum normalized reranker score for non-exact candidates. It is valid only with `rerank=true` and defaults to 0.35.",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "example": 0.35
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
-            "description": "Maximum number of records to return. The deployment can enforce a lower limit.",
+            "description": "Final source-file result count for this search request.",
             "schema": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 50,
+              "default": 10
             }
           },
           {
             "name": "cursor",
             "in": "query",
             "required": false,
-            "description": "Pagination token returned by the same endpoint for reading the next page.",
+            "description": "Pagination token returned by the same search query, filters, active generation, and effective ranking settings.",
             "schema": {
               "type": "string"
             }
@@ -11153,23 +11386,26 @@
                 "example": {
                   "generationId": "generation-11111111-1111-4111-8111-111111111111",
                   "query": {
-                    "query": "guide",
-                    "normalizedQuery": "guide",
+                    "query": "How do I configure and verify the knowledge base deployment?",
+                    "normalizedQuery": "How do I configure and verify the knowledge base deployment?",
                     "scope": "all",
                     "fileKind": "page",
                     "mode": "hybrid",
                     "graphDepth": 1,
                     "graphFanout": 10,
-                    "okfStatus": "stable",
-                    "okfTrustTier": "human-reviewed",
-                    "okfFreshness": "fresh",
+                    "okfStatus": null,
+                    "okfTrustTier": null,
+                    "okfFreshness": null,
+                    "rerank": false,
+                    "rerankTopK": null,
+                    "rerankScoreThreshold": null,
                     "limit": 10,
                     "cursorProvided": false
                   },
                   "items": [
                     {
                       "generationId": "generation-11111111-1111-4111-8111-111111111111",
-                      "nodeId": "source-file-11111111-1111-4111-8111-111111111111",
+                      "nodeId": null,
                       "edgeId": null,
                       "fileId": "source-file-11111111-1111-4111-8111-111111111111",
                       "generatedFileId": "source-file-11111111-1111-4111-8111-111111111111",
@@ -11222,12 +11458,15 @@
                         "sourceCount": 1
                       },
                       "matchedFields": [
-                        "path",
-                        "title"
+                        "content"
                       ],
+                      "evidenceTypes": [
+                        "content"
+                      ],
+                      "sourceExcerpt": "Configure the deployment, then verify service health and search readiness.",
                       "score": 9,
                       "contentAvailable": true,
-                      "matchType": "hybrid",
+                      "matchType": "file_direct",
                       "readActions": {
                         "fileDetailById": "/openapi/v2/knowledge-bases/kb-11111111-1111-4111-8111-111111111111/files/source-file-11111111-1111-4111-8111-111111111111",
                         "fileContentById": "/openapi/v2/knowledge-bases/kb-11111111-1111-4111-8111-111111111111/files/source-file-11111111-1111-4111-8111-111111111111/content",
@@ -11253,6 +11492,8 @@
                             "title": "Reference",
                             "relationType": "same_specific_subject",
                             "direction": "outgoing",
+                            "fromFileId": "source-file-11111111-1111-4111-8111-111111111111",
+                            "relationshipDepth": 1,
                             "weight": 0.72,
                             "reason": "Both files share body-derived subjects.",
                             "source": "deterministic",
@@ -11284,6 +11525,28 @@
                   "nextCursor": null,
                   "searchStatus": "ok",
                   "searchMode": "hybrid",
+                  "semanticStatus": {
+                    "state": "ready",
+                    "safeCode": null
+                  },
+                  "evidenceStatus": {
+                    "completedFamilies": [
+                      "exact_path",
+                      "exact_title",
+                      "lexical",
+                      "jieba",
+                      "content_vector",
+                      "entity_vector",
+                      "relationship_vector",
+                      "community_vector",
+                      "file_graph"
+                    ],
+                    "degradedFamilies": []
+                  },
+                  "rerankerStatus": {
+                    "state": "skipped",
+                    "safeCode": "RERANKER_DISABLED"
+                  },
                   "graphStatus": "available",
                   "graphSummary": {
                     "available": true,
@@ -11296,9 +11559,9 @@
                     "resultCount": 1,
                     "hasMore": false,
                     "sort": [
-                      "score desc",
-                      "path asc",
-                      "fileId asc"
+                      "relevance_desc",
+                      "logical_path_asc",
+                      "source_file_id_asc"
                     ],
                     "meaning": "The query matched published files. Read the returned files and related files before using their content."
                   },
@@ -11454,7 +11717,23 @@
               }
             }
           }
-        }
+        },
+        "x-validation-detail-codes": [
+          "FILE_SEARCH_QUERY_REQUIRED",
+          "FILE_SEARCH_QUERY_TOO_SHORT",
+          "FILE_SEARCH_QUERY_TOO_LONG",
+          "INVALID_FILE_SEARCH_QUERY",
+          "INVALID_FILE_SEARCH_SCOPE",
+          "INVALID_FILE_SEARCH_KIND",
+          "INVALID_FILE_SEARCH_MODE",
+          "INVALID_FILE_SEARCH_GRAPH_DEPTH",
+          "INVALID_FILE_SEARCH_GRAPH_FANOUT",
+          "INVALID_FILE_SEARCH_OKF_STATUS",
+          "INVALID_FILE_SEARCH_OKF_TRUST_TIER",
+          "INVALID_FILE_SEARCH_OKF_FRESHNESS",
+          "INVALID_FILE_SEARCH_LIMIT",
+          "INVALID_FILE_SEARCH_RERANK_CONTROLS"
+        ]
       }
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/expand": {
@@ -11523,11 +11802,11 @@
             "name": "query",
             "in": "query",
             "required": false,
-            "description": "Short query used to find a starting file. Provide only one starting-point parameter.",
+            "description": "Standalone natural-language question or search text used to find a starting file. The same 2-through-512-grapheme, 2048-UTF-8-byte, and control-character contract as file search applies. Provide only one starting-point parameter.",
             "schema": {
               "type": "string",
               "minLength": 2,
-              "maxLength": 160
+              "maxLength": 512
             }
           },
           {
@@ -11671,6 +11950,8 @@
                       "title": "Reference",
                       "relationType": "same_specific_subject",
                       "direction": "outgoing",
+                      "fromFileId": "source-file-11111111-1111-4111-8111-111111111111",
+                      "relationshipDepth": 1,
                       "weight": 0.72,
                       "reason": "Both files share body-derived subjects.",
                       "source": "deterministic",
@@ -11828,6 +12109,15 @@
           "nodeId",
           "edgeId",
           "query"
+        ],
+        "x-validation-detail-codes": [
+          "GRAPH_EXPANSION_SEED_REQUIRED",
+          "GRAPH_EXPANSION_SEED_CONFLICT",
+          "GRAPH_EXPANSION_QUERY_TOO_SHORT",
+          "GRAPH_EXPANSION_QUERY_TOO_LONG",
+          "INVALID_GRAPH_EXPANSION_QUERY",
+          "INVALID_GRAPH_EXPANSION_DEPTH",
+          "INVALID_GRAPH_EXPANSION_FANOUT"
         ]
       }
     },
@@ -12542,6 +12832,8 @@
                       "title": "Reference",
                       "relationType": "same_specific_subject",
                       "direction": "outgoing",
+                      "fromFileId": "source-file-11111111-1111-4111-8111-111111111111",
+                      "relationshipDepth": 1,
                       "weight": 0.72,
                       "reason": "Both files share body-derived subjects.",
                       "source": "deterministic",

@@ -110,12 +110,12 @@ The root `log.md` contains no frontmatter. It starts with `# Directory Update Lo
 
 ## 2026-07-13
 
-* **Publication**: Published 12 source-backed Markdown files.
+* **Publication**: Published 12 Markdown files created from uploaded sources.
 ```
 
 ## Links And Sources
 
-Focowiki-generated internal links use bundle-relative paths beginning with `/`. A generated relationship must resolve to a source-backed Markdown file or to a typed navigation concept that leads to source-backed evidence.
+Focowiki-generated internal links use bundle-relative paths beginning with `/`. A generated relationship must resolve to a Markdown file created from an uploaded source or to a typed navigation concept that leads to source-file evidence.
 
 Focowiki does not synthesize numbered `# Citations` sections. Structured `sources` are emitted only from explicit evidence. Source-authored links, footnotes, and citation sections remain unchanged instead of being restyled, renumbered, or inferred from unrelated fields.
 
@@ -154,15 +154,15 @@ _graph/
     <source-file-id>.json
 ```
 
-Source-backed concepts under `pages/` remain the final reading and citation evidence. `schema.md`, directory continuation pages, `_index/`, and `_graph/` are Focowiki producer extensions. The active publication format keeps the update summary in the exact root `log.md` file and does not emit numbered history pages.
+Concepts under `pages/` that come from uploaded files remain the final reading and citation evidence. `schema.md`, directory continuation pages, `_index/`, and `_graph/` are Focowiki producer extensions. The active publication format keeps the update summary in the exact root `log.md` file and does not emit numbered history pages.
 
 Generated Markdown concepts outside exact `index.md` and `log.md` use normal concept frontmatter and a descriptive `type`, such as `Schema Reference` or `Directory Index Page`. Exact directory indexes, including `_index/index.md` and `_graph/index.md`, remain reserved navigation files and contain no frontmatter.
 
 ## Large Directories And Update Log
 
-An exact directory `index.md` remains bounded. When a direct listing exceeds the configured entry or byte budget, it links to stable `index-<stable-id>.md` continuation concepts. Each continuation exposes directory, previous, and next navigation and lists a deterministic range of direct entries. Focowiki does not create artificial domain folders or omit source concepts. Each source-backed concept appears exactly once in its directory navigation sequence.
+An exact directory `index.md` remains bounded. When a direct listing exceeds the configured entry or byte budget, it links to stable `index-<stable-id>.md` continuation concepts. Each continuation exposes directory, previous, and next navigation and lists a deterministic range of direct entries. Focowiki does not create artificial domain folders or omit source concepts. Each concept created from an uploaded file appears exactly once in its directory navigation sequence.
 
-Root, document-directory, machine-index, and graph navigation pages link back to the same bounded global destinations. Typed projection JSON and per-file relationship JSON are discoverable through their extension directory chains. A per-file relationship entry also links to its current source-backed Markdown evidence page; `_index/catalog.json` remains bounded and does not enumerate every per-file resource.
+Root, document-directory, machine-index, and graph navigation pages link back to the same bounded global destinations. Typed projection JSON and per-file relationship JSON are discoverable through their extension directory chains. A per-file relationship entry also links to its current source Markdown evidence page; `_index/catalog.json` remains bounded and does not enumerate every per-file resource.
 
 The root `log.md` contains the bounded summary for the active publication. The current publication format does not generate `log-000001.md` or other numbered history pages.
 

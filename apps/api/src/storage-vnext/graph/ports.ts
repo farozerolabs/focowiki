@@ -91,6 +91,11 @@ export type StorageVnextGraphReadPort = {
     limit: number;
     cursor: StorageVnextOpaqueCursor | null;
   }): Promise<StorageVnextPage<StorageVnextGraphNodeFact>>;
+  listNodesBySourceFiles(input: {
+    knowledgeBaseId: StorageVnextKnowledgeBaseId;
+    sourceFilePublicIds: readonly StorageVnextPublicId[];
+    limit: number;
+  }): Promise<readonly StorageVnextGraphNodeFact[]>;
 };
 
 export type StorageVnextGraphWritePort = {

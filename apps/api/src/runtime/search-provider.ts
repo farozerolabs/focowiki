@@ -2,7 +2,8 @@ import type { LexicalTokenizer } from
   "../application/ports/lexical-tokenizer.js";
 import type {
   SearchProviderIndexDefinition,
-  SearchProviderRuntime
+  SearchProviderRuntime,
+  SearchProviderVectorPort
 } from "../application/ports/search-provider-runtime.js";
 import { createMeilisearchProviderRuntime } from
   "../infrastructure/meilisearch/meilisearch-provider-runtime.js";
@@ -30,6 +31,7 @@ type ProviderInput = {
 type SelectedProviderFactories = {
   meilisearch(input: ProviderInput & {
     config: Extract<SearchStartupConfig, { provider: "meilisearch" }>;
+    tokenizer: LexicalTokenizer;
   }): SearchProviderRuntime;
   opensearch(input: ProviderInput & {
     config: Extract<SearchStartupConfig, { provider: "opensearch" }>;
@@ -39,14 +41,14 @@ type SelectedProviderFactories = {
 
 const DEFAULT_FACTORIES: SelectedProviderFactories = {
   meilisearch(input) {
-    return createMeilisearchProviderRuntime(createRuntimeMeilisearchTransport(
-      input.config,
-      {
+    return createMeilisearchProviderRuntime(
+      createRuntimeMeilisearchTransport(input.config, {
         timeoutMs: input.settings.requestTimeoutMs,
         maxAttempts: input.settings.maxAttempts,
         retryDelayMs: input.settings.retryDelayMs
-      }
-    ));
+      }),
+      input.tokenizer
+    );
   },
   opensearch(input) {
     const client = createOpenSearchClient({
@@ -84,11 +86,15 @@ export function createRuntimeSearchProvider(
   input: ProviderInput,
   factories: SelectedProviderFactories = DEFAULT_FACTORIES
 ): SearchProviderRuntime {
-  if (input.config.provider === "meilisearch") {
-    return factories.meilisearch({ ...input, config: input.config });
-  }
   if (!input.tokenizer?.contractVersion) {
-    throw new Error("OpenSearch requires the shared lexical tokenizer");
+    throw new Error("Search providers require the shared lexical tokenizer");
+  }
+  if (input.config.provider === "meilisearch") {
+    return factories.meilisearch({
+      ...input,
+      config: input.config,
+      tokenizer: input.tokenizer
+    });
   }
   return factories.opensearch({
     ...input,
@@ -105,14 +111,17 @@ export function createDynamicRuntimeSearchQueryProvider(
     resolveSettings: () => Promise<RuntimeSearchSettings>;
   },
   factories: SelectedProviderFactories = DEFAULT_FACTORIES
-): Pick<SearchProviderRuntime, "kind" | "query" | "close"> {
-  if (input.config.provider === "opensearch" && !input.tokenizer?.contractVersion) {
-    throw new Error("OpenSearch requires the shared lexical tokenizer");
+): Pick<SearchProviderRuntime, "kind" | "query" | "close"> & {
+  vector: SearchProviderVectorPort;
+} {
+  if (!input.tokenizer?.contractVersion) {
+    throw new Error("Search providers require the shared lexical tokenizer");
   }
+  const tokenizer = input.tokenizer;
   type ProviderSlot = {
     key: string;
     provider: SearchProviderRuntime;
-    activeQueries: number;
+    activeOperations: number;
     retired: boolean;
     closePromise: Promise<void> | null;
     closeWaiters: Array<{
@@ -121,52 +130,44 @@ export function createDynamicRuntimeSearchQueryProvider(
     }>;
   };
   let current: ProviderSlot | null = null;
+  const vector: SearchProviderVectorPort = {
+    createIndex: (request) => withProvider((provider) =>
+      requireVector(provider).createIndex(request)),
+    deleteIndex: (request) => withProvider((provider) =>
+      requireVector(provider).deleteIndex(request)),
+    getIndexDefinition: (request) => withProvider((provider) =>
+      requireVector(provider).getIndexDefinition(request)),
+    writeDocuments: (request) => withProvider((provider) =>
+      requireVector(provider).writeDocuments(request)),
+    deleteDocuments: (request) => withProvider((provider) =>
+      requireVector(provider).deleteDocuments(request)),
+    query: (request) => withProvider((provider) =>
+      requireVector(provider).query(request)),
+    count: (request) => withProvider((provider) =>
+      requireVector(provider).count(request)),
+    scan: (request) => withProvider((provider) =>
+      requireVector(provider).scan(request)),
+    validate: (request) => withProvider((provider) =>
+      requireVector(provider).validate(request)),
+    activateCandidate: (request) => withProvider((provider) =>
+      requireVector(provider).activateCandidate(request)),
+    getOperation: (request) => withProvider((provider) =>
+      requireVector(provider).getOperation(request)),
+    findOperationByCorrelation: (request) => withProvider((provider) =>
+      requireVector(provider).findOperationByCorrelation(request))
+  };
   return Object.freeze({
     kind: input.config.provider,
     query: {
-      async query(request) {
-        const settings = await input.resolveSettings();
-        const nextKey = JSON.stringify(settings);
-        let retiredWithoutQueries: ProviderSlot | null = null;
-        if (!current || current.key !== nextKey) {
-          const previous = current;
-          current = {
-            key: nextKey,
-            provider: createRuntimeSearchProvider({
-              config: input.config,
-              settings,
-              indexDefinition: input.indexDefinition,
-              ...(input.tokenizer ? { tokenizer: input.tokenizer } : {})
-            }, factories),
-            activeQueries: 0,
-            retired: false,
-            closePromise: null,
-            closeWaiters: []
-          };
-          if (previous) {
-            previous.retired = true;
-            if (previous.activeQueries === 0) retiredWithoutQueries = previous;
-          }
-        }
-        const selected = current;
-        selected.activeQueries += 1;
-        try {
-          if (retiredWithoutQueries) await closeSlot(retiredWithoutQueries);
-          return await selected.provider.query.query(request);
-        } finally {
-          selected.activeQueries -= 1;
-          if (selected.retired && selected.activeQueries === 0) {
-            await closeSlot(selected);
-          }
-        }
-      }
+      query: (request) => withProvider((provider) => provider.query.query(request))
     },
+    vector,
     async close() {
       const selected = current;
       current = null;
       if (!selected) return;
       selected.retired = true;
-      if (selected.activeQueries === 0) {
+      if (selected.activeOperations === 0) {
         await closeSlot(selected);
         return;
       }
@@ -175,6 +176,45 @@ export function createDynamicRuntimeSearchQueryProvider(
       });
     }
   });
+
+  async function withProvider<TResult>(
+    operation: (provider: SearchProviderRuntime) => Promise<TResult>
+  ): Promise<TResult> {
+    const settings = await input.resolveSettings();
+    const nextKey = JSON.stringify(settings);
+    let retiredWithoutOperations: ProviderSlot | null = null;
+    if (!current || current.key !== nextKey) {
+      const previous = current;
+      current = {
+        key: nextKey,
+        provider: createRuntimeSearchProvider({
+          config: input.config,
+          settings,
+          indexDefinition: input.indexDefinition,
+          tokenizer
+        }, factories),
+        activeOperations: 0,
+        retired: false,
+        closePromise: null,
+        closeWaiters: []
+      };
+      if (previous) {
+        previous.retired = true;
+        if (previous.activeOperations === 0) retiredWithoutOperations = previous;
+      }
+    }
+    const selected = current;
+    selected.activeOperations += 1;
+    try {
+      if (retiredWithoutOperations) await closeSlot(retiredWithoutOperations);
+      return await operation(selected.provider);
+    } finally {
+      selected.activeOperations -= 1;
+      if (selected.retired && selected.activeOperations === 0) {
+        await closeSlot(selected);
+      }
+    }
+  }
 
   function closeSlot(slot: ProviderSlot): Promise<void> {
     if (!slot.closePromise) {
@@ -194,4 +234,9 @@ export function createDynamicRuntimeSearchQueryProvider(
       else waiter.reject(error);
     }
   }
+}
+
+function requireVector(provider: SearchProviderRuntime): SearchProviderVectorPort {
+  if (!provider.vector) throw new Error("Search provider vector capability is unavailable");
+  return provider.vector;
 }

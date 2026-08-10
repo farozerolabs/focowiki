@@ -19,6 +19,9 @@ import {
   okfMarkdownExamples,
   requestExamples
 } from "./openapi-examples.js";
+import { DEVELOPER_FILE_SEARCH_ERROR_CODES } from "./file-search-filters.js";
+import { DEVELOPER_GRAPH_EXPANSION_ERROR_CODES } from
+  "./graph-expansion-filters.js";
 
 export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
   const responseExamples = createDeveloperOpenApiResponseExamples();
@@ -599,37 +602,40 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/search": {
-      get: operation({
-        tag: "Files",
-        operationId: "searchGeneratedFiles",
-        summary: "Search knowledge-base files",
-        description: "Search currently published Markdown files by content, metadata, and optional file relationships. Each result includes a file ID and path for reading the complete file. An empty result means the query found no matching files; it does not mean the knowledge base is empty.",
-        parameters: [knowledgeBaseIdParameter(), ...fileSearchParameters()],
-        requestExample: requestExamples.searchGeneratedFiles,
-        successStatus: 200,
-        successSchema: ref("FileSearchResponse"),
-        successExample: responseExamples.searchGeneratedFiles,
-        additionalErrorStatuses: [404, 422],
-        extraResponses: {
-          "503": {
-            ...errorResponse(
-              "The required data or search service is temporarily unavailable or overloaded. Retry after the service recovers.",
-              "SEARCH_UNAVAILABLE",
-              503
-            ),
-            "x-error-codes": [
-              "DATABASE_REPOSITORY_UNAVAILABLE",
-              "SEARCH_UNAVAILABLE",
-              "SEARCH_OVERLOADED"
-            ]
-          },
-          "504": errorResponse(
-            "Search exceeded the configured response deadline.",
-            "SEARCH_TIMEOUT",
-            504
-          )
-        }
-      })
+      get: {
+        ...operation({
+          tag: "Files",
+          operationId: "searchGeneratedFiles",
+          summary: "Search knowledge-base files",
+          description: "Search active source Markdown files with one standalone natural-language question. Omitted mode uses hybrid retrieval. Optional request-scoped reranking refines authorized candidates and safely falls back when unavailable. Every result remains a source-file candidate with read actions; read the Markdown before using its content as evidence.",
+          parameters: [knowledgeBaseIdParameter(), ...fileSearchParameters()],
+          requestExample: requestExamples.searchGeneratedFiles,
+          successStatus: 200,
+          successSchema: ref("FileSearchResponse"),
+          successExample: responseExamples.searchGeneratedFiles,
+          additionalErrorStatuses: [404, 422],
+          extraResponses: {
+            "503": {
+              ...errorResponse(
+                "The required data or search service is temporarily unavailable or overloaded. Retry after the service recovers.",
+                "SEARCH_UNAVAILABLE",
+                503
+              ),
+              "x-error-codes": [
+                "DATABASE_REPOSITORY_UNAVAILABLE",
+                "SEARCH_UNAVAILABLE",
+                "SEARCH_OVERLOADED"
+              ]
+            },
+            "504": errorResponse(
+              "Search exceeded the configured response deadline.",
+              "SEARCH_TIMEOUT",
+              504
+            )
+          }
+        }),
+        "x-validation-detail-codes": [...DEVELOPER_FILE_SEARCH_ERROR_CODES]
+      }
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/expand": {
       get: {
@@ -666,8 +672,8 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             name: "query",
             in: "query",
             required: false,
-            description: "Short query used to find a starting file. Provide only one starting-point parameter.",
-            schema: { type: "string", minLength: 2, maxLength: 160 }
+            description: "Standalone natural-language question or search text used to find a starting file. The same 2-through-512-grapheme, 2048-UTF-8-byte, and control-character contract as file search applies. Provide only one starting-point parameter.",
+            schema: { type: "string", minLength: 2, maxLength: 512 }
           },
           {
             name: "depth",
@@ -691,7 +697,8 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
           successExample: responseExamples.expandGraph,
           additionalErrorStatuses: [404, 422]
         }),
-        "x-exactly-one-query-parameter": ["fileId", "nodeId", "edgeId", "query"]
+        "x-exactly-one-query-parameter": ["fileId", "nodeId", "edgeId", "query"],
+        "x-validation-detail-codes": [...DEVELOPER_GRAPH_EXPANSION_ERROR_CODES]
       }
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/overview": {
