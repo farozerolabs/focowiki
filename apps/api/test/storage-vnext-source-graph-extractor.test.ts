@@ -55,6 +55,7 @@ describe("storage vNext source graph extractor", () => {
         related_links: [],
         keywords: []
       },
+      modelAssistanceSelected: true,
       body,
       sourceBody,
       signal: new AbortController().signal
@@ -128,6 +129,7 @@ describe("storage vNext source graph extractor", () => {
       revision: 1,
       parsedMetadata: { title: "支付配置指南", type: "guide", tags: [] },
       suggestions: null,
+      modelAssistanceSelected: false,
       body,
       sourceBody: body,
       signal: new AbortController().signal
@@ -187,6 +189,7 @@ describe("storage vNext source graph extractor", () => {
       revision: 1,
       parsedMetadata: { title: "长期治理流程", type: "guide", tags: [] },
       suggestions: null,
+      modelAssistanceSelected: false,
       body,
       sourceBody: body,
       signal: new AbortController().signal

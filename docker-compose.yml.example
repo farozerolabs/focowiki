@@ -69,7 +69,7 @@ services:
     restart: unless-stopped
 
   source-worker:
-    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
+    image: ${FOCOWIKI_SOURCE_WORKER_IMAGE:-ghcr.io/farozerolabs/focowiki-source-worker:latest}
     command: ["node", "--max-old-space-size=256", "apps/api/runtime/source-worker.mjs"]
     env_file:
       - .env
@@ -90,6 +90,9 @@ services:
       timeout: 15s
       retries: 8
       start_period: 20s
+    cpus: ${SOURCE_WORKER_CPUS:-2.0}
+    mem_limit: ${SOURCE_WORKER_MEMORY_LIMIT:-2g}
+    pids_limit: ${SOURCE_WORKER_PIDS_LIMIT:-128}
     stop_grace_period: 30s
     logging: *docker-logging
     restart: unless-stopped

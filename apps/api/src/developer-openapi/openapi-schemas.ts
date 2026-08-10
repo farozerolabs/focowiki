@@ -23,6 +23,38 @@ const SOURCE_FILE_CURRENT_STAGE_DESCRIPTION =
 const GENERATED_OUTPUT_STATUS_DESCRIPTION =
   "`pending` means the published file is not readable yet. `visible` means it can be read through the file APIs. `unavailable` means no published file is currently available. A file is ready when `state` is `visible`.";
 
+const SEARCH_EVIDENCE_FAMILIES = [
+  "exact_path",
+  "exact_title",
+  "lexical",
+  "jieba",
+  "file_graph",
+  "content_vector",
+  "entity_vector",
+  "relationship_vector",
+  "community_vector"
+] as const;
+
+const SEMANTIC_SEARCH_SAFE_CODES = [
+  "SEMANTIC_ADOPTION_REQUIRED",
+  "SEMANTIC_LEXICAL_PROJECTION_UNAVAILABLE",
+  "SEMANTIC_PROVIDER_ADOPTION_REQUIRED",
+  "SEMANTIC_SEARCH_UNAVAILABLE",
+  "SEMANTIC_LANE_PARTIAL_FAILURE"
+] as const;
+
+const RERANKER_SEARCH_SAFE_CODES = [
+  "RERANKER_DISABLED",
+  "RERANKER_RETRIEVAL_UNAVAILABLE",
+  "RERANKER_INVALID_REQUEST",
+  "RERANKER_CONFIGURATION_UNAVAILABLE",
+  "RERANKER_NOT_CONFIGURED",
+  "RERANKER_NOT_ACTIVE",
+  "RERANKER_NO_CANDIDATES",
+  "RERANKER_PAYLOAD_TOO_LARGE",
+  "RERANKER_UNAVAILABLE"
+] as const;
+
 const SCHEMA_FIELD_DESCRIPTIONS: Record<string, string> = {
   actions: "Actions currently available for this resource.",
   affectedDirectoryCount: "Number of uploaded directories covered by the deletion request.",
@@ -55,7 +87,7 @@ const SCHEMA_FIELD_DESCRIPTIONS: Record<string, string> = {
   descendantFileCount: "Number of uploaded Markdown files below this directory or tree entry.",
   directDirectoryCount: "Number of direct child directories.",
   directFileCount: "Number of uploaded Markdown files directly inside this directory.",
-  direction: "Relationship direction relative to the requested file.",
+  direction: "Relationship direction relative to `fromFileId` for this traversal step.",
   directory: "Uploaded directory returned by the request.",
   directoryPath: "Parent directory path within the uploaded folder structure.",
   disposition: "Server decision describing whether this entry must upload content.",
@@ -711,6 +743,15 @@ function relatedFileSchema(): SchemaObject {
       title: { type: "string" },
       relationType: { type: "string" },
       direction: { type: "string", enum: ["outgoing", "incoming"] },
+      fromFileId: idSchema(
+        "Published source-file identifier from which this traversal step starts."
+      ),
+      relationshipDepth: {
+        type: "integer",
+        minimum: 1,
+        maximum: 2,
+        description: "Relationship level of this traversal step from the requested seed file."
+      },
       weight: { type: "number", minimum: 0, maximum: 1 },
       reason: { type: "string" },
       source: { type: "string" },
@@ -727,6 +768,8 @@ function relatedFileSchema(): SchemaObject {
       "title",
       "relationType",
       "direction",
+      "fromFileId",
+      "relationshipDepth",
       "weight",
       "reason",
       "source",
@@ -855,6 +898,12 @@ function sourceFileFailureSchema(): SchemaObject {
           "metadata_resolution",
           "llm_suggestion",
           "graph_generation",
+          "graphrag_processing",
+          "semantic_reconciliation",
+          "embedding_generation",
+          "affected_projection",
+          "search_publication",
+          "semantic_maintenance_required",
           "projection_generation",
           "generation_validation",
           "generation_activation"
@@ -1207,8 +1256,22 @@ function fileSearchResultSchema(): SchemaObject {
       okfSignals: ref("OkfSignals"),
       matchedFields: {
         type: "array",
-        items: { type: "string", enum: ["path", "title", "description", "metadata"] }
+        items: {
+          type: "string",
+          enum: ["path", "title", "description", "metadata", "content", "file_relationship"]
+        }
       },
+      evidenceTypes: {
+        type: "array",
+        items: {
+          type: "string",
+          enum: ["path", "title", "content", "file_relationship", "entity", "relationship", "community"]
+        },
+        description: "Safe evidence categories that supported this source-file candidate."
+      },
+      sourceExcerpt: nullableString(
+        "Short excerpt from the active source Markdown when source-grounded text evidence is available. Read the source file before using it as answer evidence."
+      ),
       score: {
         type: "number",
         minimum: 0,
@@ -1219,7 +1282,7 @@ function fileSearchResultSchema(): SchemaObject {
       matchType: {
         type: "string",
         enum: ["file_direct", "graph_node", "graph_edge", "graph_neighbor", "hybrid"],
-        description: "Reason this result matched, such as file content, a relationship node, or a related file."
+        description: "Dominant actual evidence class for this source-file result after duplicate collapse. `hybrid` means both file and relationship evidence supported it."
       },
       graphContext: graphSearchContextSchema()
     },
@@ -1240,6 +1303,8 @@ function fileSearchResultSchema(): SchemaObject {
       "frontmatter",
       "okfSignals",
       "matchedFields",
+      "evidenceTypes",
+      "sourceExcerpt",
       "score",
       "contentAvailable",
       "matchType",
@@ -1285,14 +1350,62 @@ function fileSearchResponseSchema(): SchemaObject {
       ),
       searchStatus: {
         type: "string",
-        enum: ["ok", "no_candidates", "index_unavailable"],
+        enum: ["ok", "no_candidates"],
         description:
-          "`ok` means results are returned. `no_candidates` means the current query matched no files. `index_unavailable` means file search is not available for this knowledge base yet."
+          "`ok` means results are returned. `no_candidates` means the current query matched no files. Dependency failures use the documented 503 or 504 error envelope."
       },
       searchMode: {
         type: "string",
         enum: ["file", "graph", "hybrid"],
         description: "Search mode applied to this response."
+      },
+      semanticStatus: objectSchema(
+        {
+          state: {
+            type: "string",
+            enum: ["ready", "degraded", "unavailable"],
+            description: "Availability of optional semantic search lanes for this response."
+          },
+          safeCode: nullableEnumString(
+            "Stable non-sensitive reason code when semantic search is degraded or unavailable.",
+            SEMANTIC_SEARCH_SAFE_CODES
+          )
+        },
+        ["state", "safeCode"]
+      ),
+      evidenceStatus: {
+        ...objectSchema(
+        {
+          completedFamilies: {
+            type: "array",
+            items: { type: "string", enum: [...SEARCH_EVIDENCE_FAMILIES] },
+            description: "Retrieval evidence families that completed for this response."
+          },
+          degradedFamilies: {
+            type: "array",
+            items: { type: "string", enum: [...SEARCH_EVIDENCE_FAMILIES] },
+            description: "Retrieval evidence families that did not complete."
+          }
+        },
+        ["completedFamilies", "degradedFamilies"]
+        ),
+        description: "Retrieval evidence families that completed or degraded for this response."
+      },
+      rerankerStatus: {
+        ...objectSchema(
+        {
+          state: {
+            type: "string",
+            enum: ["not_configured", "skipped", "applied", "degraded"]
+          },
+          safeCode: nullableEnumString(
+            "Stable non-sensitive reason code when reranking was not applied.",
+            RERANKER_SEARCH_SAFE_CODES
+          )
+        },
+        ["state", "safeCode"]
+        ),
+        description: "Whether optional reranking was applied, skipped, unavailable, or degraded without exposing model scores."
       },
       graphStatus: {
         type: "string",
@@ -1316,6 +1429,9 @@ function fileSearchResponseSchema(): SchemaObject {
       "nextCursor",
       "searchStatus",
       "searchMode",
+      "semanticStatus",
+      "evidenceStatus",
+      "rerankerStatus",
       "graphStatus",
       "graphSummary",
       "resultSummary",
@@ -1327,7 +1443,7 @@ function fileSearchResponseSchema(): SchemaObject {
 function fileSearchQueryContextSchema(): SchemaObject {
   return objectSchema(
     {
-      query: { type: "string", description: "Original search phrase received by the endpoint." },
+      query: { type: "string", description: "Normalized search text accepted by the endpoint." },
       normalizedQuery: {
         type: "string",
         description: "Search text after standard character and spacing normalization."
@@ -1349,7 +1465,7 @@ function fileSearchQueryContextSchema(): SchemaObject {
       graphDepth: {
         type: "integer",
         enum: [0, 1, 2],
-        description: "Number of relationship levels included in this search."
+        description: "Requested relationship context depth. Zero returns no relationship entries; one returns direct entries; two may include second-level entries within fanout."
       },
       graphFanout: {
         type: "integer",
@@ -1365,6 +1481,24 @@ function fileSearchQueryContextSchema(): SchemaObject {
       okfFreshness: nullableString(
         "Normalized OKF freshness filter applied to this response."
       ),
+      rerank: {
+        type: "boolean",
+        description: "Whether optional source-grounded reranking was requested."
+      },
+      rerankTopK: {
+        anyOf: [
+          { type: "integer", minimum: 1, maximum: 50 },
+          { type: "null" }
+        ],
+        description: "Non-exact candidate window used only when reranking is enabled."
+      },
+      rerankScoreThreshold: {
+        anyOf: [
+          { type: "number", minimum: 0, maximum: 1 },
+          { type: "null" }
+        ],
+        description: "Minimum valid reranker score for non-exact candidates, or null when disabled."
+      },
       limit: { type: "integer", minimum: 1, description: "Maximum number of results applied to this request." },
       cursorProvided: {
         type: "boolean",
@@ -1382,6 +1516,9 @@ function fileSearchQueryContextSchema(): SchemaObject {
       "okfStatus",
       "okfTrustTier",
       "okfFreshness",
+      "rerank",
+      "rerankTopK",
+      "rerankScoreThreshold",
       "limit",
       "cursorProvided"
     ]
@@ -1392,13 +1529,31 @@ function graphSearchSummarySchema(): SchemaObject {
   return objectSchema(
     {
       available: { type: "boolean" },
-      indexedDocumentCount: { type: "integer", minimum: 0 },
-      indexedRelationshipCount: { type: "integer", minimum: 0 },
+      indexedDocumentCount: {
+        type: "integer",
+        minimum: 0,
+        description: "Total published file-graph nodes available to relationship search, not the current result-page count."
+      },
+      indexedRelationshipCount: {
+        type: "integer",
+        minimum: 0,
+        description: "Total published file relationships available to relationship search, not the current result-page count."
+      },
       depth: { type: "integer", enum: [0, 1, 2] },
       fanout: { type: "integer", minimum: 0 }
     },
     ["available", "indexedDocumentCount", "indexedRelationshipCount", "depth", "fanout"]
   );
+}
+
+function nullableEnumString(
+  description: string,
+  values: readonly string[]
+): SchemaObject {
+  return {
+    anyOf: [{ type: "string", enum: [...values] }, { type: "null" }],
+    description
+  };
 }
 
 function graphSearchContextSchema(): SchemaObject {

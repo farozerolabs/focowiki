@@ -1110,7 +1110,6 @@ CREATE TABLE focowiki.search_projections (
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT search_projections_scope_key UNIQUE (knowledge_base_id, public_id),
-  CONSTRAINT search_projections_role_key UNIQUE (knowledge_base_id, projection_role),
   CONSTRAINT search_projections_provider_key UNIQUE (provider_kind, provider_index_uid),
   CONSTRAINT search_projections_knowledge_base_fkey FOREIGN KEY (knowledge_base_id)
     REFERENCES focowiki.knowledge_bases (public_id) ON DELETE CASCADE,
@@ -1164,6 +1163,15 @@ CREATE TABLE focowiki.search_projections (
     OR (state <> 'failed' AND safe_error_code IS NULL)
   )
 );
+
+CREATE UNIQUE INDEX search_projections_active_role_uniq_idx
+  ON focowiki.search_projections (knowledge_base_id)
+  WHERE projection_role = 'active';
+
+CREATE UNIQUE INDEX search_projections_live_candidate_uniq_idx
+  ON focowiki.search_projections (knowledge_base_id)
+  WHERE projection_role = 'candidate'
+    AND state IN ('preparing', 'indexing', 'validating', 'ready');
 
 CREATE TABLE focowiki.meilisearch_projection_maintenance (
   projection_public_id text PRIMARY KEY,

@@ -25,6 +25,8 @@ export type StorageVnextOpenApiRelationship = {
   weight: number | string;
   reason: string | null;
   direction: "incoming" | "outgoing";
+  from_source_file_public_id?: string;
+  relationship_depth?: number | string;
 };
 
 export function presentOpenApiKnowledgeBase(
@@ -133,6 +135,8 @@ export function presentOpenApiRelationship(
     title: row.title,
     relationType: row.relation,
     direction: row.direction,
+    fromFileId: row.from_source_file_public_id ?? row.source_file_public_id,
+    relationshipDepth: Number(row.relationship_depth ?? 1),
     weight: Number(row.weight),
     reason: row.reason ?? "Related Markdown file",
     source: "graph",
@@ -156,6 +160,12 @@ export function presentOpenApiSearchResult(input: {
   item: StorageVnextSearchResult;
   relationships: StorageVnextOpenApiRelationship[];
 }) {
+  const semanticMatchedFields = input.item.evidenceFamilies?.flatMap(
+    searchMatchedFields
+  );
+  const semanticEvidenceTypes = input.item.evidenceFamilies?.map(
+    searchEvidenceType
+  );
   const relationships = input.relationships.map((row) => presentOpenApiRelationship(
     input.knowledgeBaseId,
     input.generationId,
@@ -172,7 +182,10 @@ export function presentOpenApiSearchResult(input: {
     relationships,
     graphPaths: [...new Set([
       input.item.sourceFilePublicId,
-      ...input.relationships.map((row) => row.source_file_public_id)
+      ...input.relationships.flatMap((row) => [
+        row.from_source_file_public_id ?? input.item.sourceFilePublicId,
+        row.source_file_public_id
+      ])
     ])].map(graphRefForFile)
   };
   const frontmatter = input.item.metadata;
@@ -192,12 +205,21 @@ export function presentOpenApiSearchResult(input: {
     tags: readStringArray(frontmatter.tags) ?? [],
     frontmatter,
     okfSignals: presentOkfSignals(frontmatter),
-    matchedFields: input.item.snippet ? ["description"] : ["title"],
+    matchedFields: input.item.matchedFields
+      ? [...input.item.matchedFields]
+      : semanticMatchedFields?.length
+        ? uniqueStrings(semanticMatchedFields)
+      : input.item.snippet ? ["description"] : ["title"],
+    evidenceTypes: input.item.evidenceTypes
+      ? [...input.item.evidenceTypes]
+      : semanticEvidenceTypes?.length
+        ? uniqueStrings(semanticEvidenceTypes)
+      : [input.item.kind === "graph" ? "file_relationship" : "content"],
+    sourceExcerpt: input.item.sourceExcerpt
+      ?? (input.item.kind === "file" ? input.item.snippet : null),
     score: input.item.score,
     contentAvailable: true,
-    matchType: input.mode === "file" ? "file_direct"
-      : input.mode === "hybrid" ? "hybrid"
-        : "graph_node",
+    matchType: searchMatchType(input.item),
     ...(graphContext ? { graphContext } : {}),
     readActions: openApiReadActions(
       input.knowledgeBaseId,
@@ -206,6 +228,43 @@ export function presentOpenApiSearchResult(input: {
       input.item.sourceFilePublicId
     )
   };
+}
+
+function searchMatchType(item: StorageVnextSearchResult) {
+  const families = new Set(item.evidenceFamilies ?? []);
+  const hasFileEvidence = [
+    "exact_path", "exact_title", "lexical", "jieba", "content_vector"
+  ].some((family) => families.has(family));
+  const hasGraphEvidence = [
+    "file_graph", "entity_vector", "relationship_vector", "community_vector"
+  ].some((family) => families.has(family));
+  if (hasFileEvidence && hasGraphEvidence) return "hybrid";
+  if (families.has("relationship_vector")) return "graph_edge";
+  if (families.has("file_graph")) return "graph_neighbor";
+  if (hasGraphEvidence || item.kind === "graph") return "graph_node";
+  return "file_direct";
+}
+
+function searchMatchedFields(family: string): string[] {
+  if (family === "exact_path") return ["path"];
+  if (family === "exact_title") return ["title"];
+  if (family === "file_graph") return ["file_relationship"];
+  return ["content"];
+}
+
+function searchEvidenceType(family: string): string {
+  if (family === "exact_path") return "path";
+  if (family === "exact_title") return "title";
+  if (family === "file_graph") return "file_relationship";
+  if (family === "entity_vector") return "entity";
+  if (family === "relationship_vector") return "relationship";
+  if (family === "community_vector") return "community";
+  return "content";
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)].sort((left, right) =>
+    left.localeCompare(right, "en"));
 }
 
 export function presentOpenApiSourceEvent(
@@ -308,6 +367,9 @@ export function openApiSearchQuery(
     okfTrustTier: input.okfFilters?.trustTier ?? null,
     okfFreshness: input.okfFilters?.freshness ?? null,
     limit: input.limit,
+    rerank: input.rerank,
+    rerankTopK: input.rerankTopK,
+    rerankScoreThreshold: input.rerankScoreThreshold,
     cursorProvided: Boolean(input.cursor)
   };
 }
@@ -321,6 +383,20 @@ export function emptyOpenApiSearchResponse(
     query: openApiSearchQuery(input, input.query.trim()),
     items: [],
     nextCursor: null,
+    semanticStatus: {
+      state: "unavailable" as const,
+      safeCode: "SEMANTIC_ADOPTION_REQUIRED"
+    },
+    evidenceStatus: {
+      completedFamilies: [],
+      degradedFamilies: []
+    },
+    rerankerStatus: input.rerank
+      ? {
+          state: "skipped" as const,
+          safeCode: "RERANKER_RETRIEVAL_UNAVAILABLE"
+        }
+      : { state: "skipped" as const, safeCode: "RERANKER_DISABLED" },
     searchStatus: "no_candidates",
     searchMode: input.mode,
     graphStatus: input.mode === "file" ? "disabled_for_file_mode" : "index_unavailable",

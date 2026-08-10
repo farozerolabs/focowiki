@@ -10,6 +10,8 @@ export function isSearchProviderKind(value: unknown): value is SearchProviderKin
 export type SearchFilterField =
   | "knowledgeBaseId"
   | "documentKind"
+  | "contentKind"
+  | "fileKind"
   | "schemaVersion"
   | "sourceFilePublicId"
   | "sourceRevisionPublicId"
@@ -77,6 +79,7 @@ export type SearchProviderHit = {
   title: string;
   normalizedScore: number;
   snippets: readonly string[];
+  matchedFields?: readonly string[];
   sortKey: readonly (string | number)[];
   continuationAfter: string;
   document: Readonly<Record<string, unknown>>;
@@ -112,6 +115,87 @@ export type SearchProviderQueryResult = {
 
 export type SearchProviderDocumentScanPage = {
   documents: readonly Readonly<Record<string, unknown>>[];
+  continuation: string | null;
+};
+
+export type SearchProviderVectorFamily =
+  | "content" | "entity" | "relationship" | "community";
+
+export const SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE = 0.7;
+
+export type SearchProviderVectorIndexDefinition = {
+  schemaVersion: string;
+  dimension: number;
+  similarity: "cosine";
+  families: readonly SearchProviderVectorFamily[];
+  mappingFingerprintSha256: string;
+};
+
+export function sameSearchProviderVectorIndexDefinition(
+  left: SearchProviderVectorIndexDefinition,
+  right: SearchProviderVectorIndexDefinition
+): boolean {
+  return left.schemaVersion === right.schemaVersion
+    && left.dimension === right.dimension
+    && left.similarity === right.similarity
+    && left.mappingFingerprintSha256 === right.mappingFingerprintSha256
+    && left.families.length === right.families.length
+    && left.families.every((family, index) => family === right.families[index]);
+}
+
+export type SearchProviderVectorDocument = {
+  id: string;
+  knowledgeBaseId: string;
+  semanticGenerationPublicId: string;
+  ownerPublicId: string;
+  family: SearchProviderVectorFamily;
+  sourceFilePublicId: string;
+  sourceRevisionPublicId: string;
+  embeddingConfigurationRevisionPublicId: string;
+  evidenceTargetPath: string;
+  sourceExcerpt?: string;
+  fileKind?: string;
+  okfStatus?: "draft" | "stable" | "deprecated" | null;
+  okfTrustTier?: "unverified" | "machine-confirmed" | "human-reviewed" | null;
+  okfStaleAfterEpochDay?: number | null;
+  vector: readonly number[];
+};
+
+export type SearchProviderVectorOkfFilters = {
+  status: "draft" | "stable" | "deprecated" | null;
+  trustTier: "unverified" | "machine-confirmed" | "human-reviewed" | null;
+  freshness: "fresh" | "stale" | null;
+  requestEpochDay: number | null;
+};
+
+export type SearchProviderVectorQueryRequest = {
+  indexUid: string;
+  knowledgeBaseId: string;
+  semanticGenerationPublicId: string;
+  embeddingConfigurationRevisionPublicId: string;
+  family: SearchProviderVectorFamily;
+  fileKind?: string | null;
+  okfFilters?: SearchProviderVectorOkfFilters;
+  minimumRelevance?: number;
+  dimension: number;
+  vector: readonly number[];
+  limit: number;
+  deadlineMs: number;
+};
+
+export type SearchProviderVectorHit = {
+  documentId: string;
+  sourceFilePublicId: string;
+  sourceRevisionPublicId: string;
+  ownerPublicId: string;
+  family: SearchProviderVectorFamily;
+  evidenceTargetPath: string;
+  sourceExcerpt: string;
+  rank: number;
+};
+
+export type SearchProviderVectorScanPage = {
+  documents: readonly Omit<SearchProviderVectorDocument, "vector">[];
   continuation: string | null;
 };
 
@@ -242,6 +326,68 @@ export interface SearchProviderMaintenancePort {
   }): Promise<SearchProviderOperationReceipt>;
 }
 
+export interface SearchProviderVectorPort {
+  createIndex(input: {
+    indexUid: string;
+    definition: SearchProviderVectorIndexDefinition;
+  }): Promise<SearchProviderOperationReceipt>;
+  deleteIndex(input: {
+    indexUid: string;
+    correlation: string;
+  }): Promise<SearchProviderOperationReceipt>;
+  getIndexDefinition(input: {
+    indexUid: string;
+  }): Promise<SearchProviderVectorIndexDefinition | null>;
+  writeDocuments(input: {
+    indexUid: string;
+    definition: SearchProviderVectorIndexDefinition;
+    documents: readonly SearchProviderVectorDocument[];
+    correlation: string;
+  }): Promise<SearchProviderOperationReceipt>;
+  deleteDocuments(input: {
+    indexUid: string;
+    knowledgeBaseId: string;
+    semanticGenerationPublicId: string;
+    documentIds: readonly string[];
+    correlation: string;
+  }): Promise<SearchProviderOperationReceipt>;
+  query(input: SearchProviderVectorQueryRequest): Promise<{
+    hits: readonly SearchProviderVectorHit[];
+    processingTimeMs: number;
+  }>;
+  count(input: {
+    indexUid: string;
+    knowledgeBaseId: string;
+    semanticGenerationPublicId: string;
+    family?: SearchProviderVectorFamily;
+  }): Promise<number>;
+  scan(input: {
+    indexUid: string;
+    knowledgeBaseId: string;
+    semanticGenerationPublicId: string;
+    continuation: string | null;
+    limit: number;
+  }): Promise<SearchProviderVectorScanPage>;
+  validate(input: {
+    indexUid: string;
+    definition: SearchProviderVectorIndexDefinition;
+    expectedDocumentCount: number;
+  }): Promise<{ valid: boolean; documentCount: number }>;
+  activateCandidate(input: {
+    knowledgeBaseId: string;
+    candidateIndexUid: string;
+    expectedActiveIndexUid: string | null;
+    correlation: string;
+  }): Promise<SearchProviderOperationReceipt>;
+  getOperation(input: {
+    operationRef: string;
+  }): Promise<SearchProviderOperationStatus>;
+  findOperationByCorrelation(input: {
+    indexUid: string;
+    correlation: string;
+  }): Promise<SearchProviderOperationReceipt | null>;
+}
+
 export interface SearchProviderRuntime {
   readonly kind: SearchProviderKind;
   readonly admin: SearchProviderAdminPort;
@@ -250,5 +396,6 @@ export interface SearchProviderRuntime {
   readonly validation: SearchProviderValidationPort;
   readonly operations: SearchProviderOperationPort;
   readonly maintenance?: SearchProviderMaintenancePort;
+  readonly vector?: SearchProviderVectorPort;
   close(): Promise<void>;
 }

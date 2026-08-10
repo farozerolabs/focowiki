@@ -10,6 +10,7 @@ import {
   createPostgresStorageVnextActiveSearchProjectionRepository
 } from "../src/storage-vnext/search/postgres-active-projection.js";
 import {
+  evaluateStorageVnextObjectFanoutBudget,
   measureStorageVnextObjectFanout
 } from "../src/storage-vnext/ownership/object-fanout-budget.js";
 import { applyStorageVnextTestMigrations } from
@@ -256,8 +257,29 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     `;
     expect(summaryRows[0]?.count).toBe("1");
 
+    const staleCandidate = await releases.getLiveCandidate("kb-release");
+    expect(staleCandidate).not.toBeNull();
+    await releases.addCandidateFacts({
+      candidatePublicId: "candidate-release-1",
+      changedFacts: [{
+        kind: "semantic_entity",
+        publicId: "entity-release-late",
+        change: "created"
+      }],
+      dependencies: []
+    });
     await expect(releases.markCandidateValidating({
-      candidatePublicId: "candidate-release-1"
+      candidatePublicId: "candidate-release-1",
+      expectedFactRevision: staleCandidate!.factRevision
+    })).resolves.toBe(false);
+    await expect(releases.getLiveCandidate("kb-release")).resolves.toMatchObject({
+      state: "building"
+    });
+    const currentCandidate = await releases.getLiveCandidate("kb-release");
+    expect(currentCandidate).not.toBeNull();
+    await expect(releases.markCandidateValidating({
+      candidatePublicId: "candidate-release-1",
+      expectedFactRevision: currentCandidate!.factRevision
     })).resolves.toBe(true);
     await createSearchCandidate("kb-release", "search-release-1", 1);
     const validation = {
@@ -523,6 +545,13 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       old_owners: "0",
       new_owners: "1"
     });
+    const retiredDescriptors = await sql<Array<{ total: number | string }>>`
+      SELECT count(*) AS total
+      FROM focowiki.release_shards
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND public_id = ${oldShard.publicId}
+    `;
+    expect(retiredDescriptors).toEqual([{ total: "0" }]);
     const cleanupActions = await sql<Array<{
       operation_public_id: string;
       knowledge_base_id: string;
@@ -789,7 +818,12 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       idempotency: { key: "fanout-key", requestHash: "7".repeat(64) },
       createdAt: "2026-08-01T03:00:00.000Z"
     });
-    const overBudgetObjectCount = 468;
+    const overBudgetObjectCount = evaluateStorageVnextObjectFanoutBudget({
+      sourceFileCount: 1,
+      activeGeneratedObjectCount: 0,
+      candidateGeneratedObjectCount: 0,
+      candidateOnlyObjectCount: 0
+    }).maximumActiveObjects + 1;
     const shards = [];
     for (let index = 0; index < overBudgetObjectCount; index += 1) {
       const checksum = index.toString(16).padStart(64, "0");

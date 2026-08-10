@@ -107,11 +107,14 @@ async function processWork(
   }
 
   const acceptedAt = input.clock();
-  let modelInvocation = createInitialModelInvocation(
-    input.modelInvocation,
-    sourceRevisionPublicId,
-    acceptedAt
-  );
+  const resumeFromStage = semanticResumeStage(work);
+  let modelInvocation = resumeFromStage === "publication"
+    ? reusableModelInvocation(current.sourceFile, sourceRevisionPublicId)
+    : createInitialModelInvocation(
+        input.modelInvocation,
+        sourceRevisionPublicId,
+        acceptedAt
+      );
   await recordSourceEvent(input, {
     kind: "accepted",
     work,
@@ -142,20 +145,25 @@ async function processWork(
   });
   const progressAt = input.clock();
   await recordSourceEvent(input, {
-    kind: "progress",
+    kind: resumeFromStage === "publication" ? "publication_progress" : "progress",
     work,
     sourceFile: current.sourceFile,
     sourceRevisionPublicId,
     createdAt: progressAt
   });
   await dispatchSourceWebhook(input, {
-    eventId: sourceEventIdentity("progress", `${work.publicId}:model_assistance`),
+    eventId: sourceEventIdentity(
+      resumeFromStage === "publication" ? "publication_progress" : "progress",
+      `${work.publicId}:${resumeFromStage ?? "model_assistance"}`
+    ),
     eventType: "source_file.progress",
     payload: {
       knowledgeBaseId: work.knowledgeBaseId,
       sourceFileId: current.sourceFile.publicId,
       sourceRevisionId: sourceRevisionPublicId,
-      stage: "model_assistance",
+      stage: resumeFromStage === "publication"
+        ? "search_publication"
+        : "model_assistance",
       status: "running"
     },
     createdAt: progressAt
@@ -178,6 +186,54 @@ async function processWork(
   resources.trackTimer(`${modelAttemptPublicId}:deadline`, deadline);
 
   try {
+    if (resumeFromStage === "publication") {
+      if (!modelInvocation) throw workerError("invalid_checkpoint");
+      if (!input.semanticHandoff) {
+        throw semanticBlockedError("semantic_contract_not_adopted");
+      }
+      const semanticHandoff = await input.semanticHandoff.enqueue({
+        operationPublicId: work.publicId,
+        knowledgeBaseId: work.knowledgeBaseId,
+        settingsRevisionPublicId: work.settingsRevisionPublicId,
+        sourceFile: current.sourceFile,
+        sourceRevision: current.sourceRevision,
+        enqueuedAt: input.clock(),
+        resumeFromStage
+      });
+      if (semanticHandoff.state !== "queued") {
+        throw semanticBlockedError(semanticHandoff.safeCode);
+      }
+      await input.workflow.saveCheckpoint({
+        publicId: work.publicId,
+        owner,
+        checkpoint: {
+          phase: "semantic_publication_resume_enqueued",
+          sourceRevisionPublicId,
+          semanticGenerationPublicId: semanticHandoff.semanticGenerationPublicId,
+          semanticStageCount: semanticHandoff.stageCount,
+          ...modelInvocationSummary(modelInvocation)
+        }
+      });
+      await input.workflow.complete({
+        publicId: work.publicId,
+        owner,
+        result: result(input, work, {
+          state: "completed",
+          resultCode: "SOURCE_PUBLICATION_RETRY_QUEUED",
+          correlationPublicId: sourceRevisionPublicId,
+          summary: {
+            sourceFilePublicId: current.sourceFile.publicId,
+            sourceRevisionPublicId,
+            semanticState: semanticHandoff.state,
+            semanticGenerationPublicId: semanticHandoff.semanticGenerationPublicId,
+            semanticStageCount: semanticHandoff.stageCount,
+            semanticSafeCode: semanticHandoff.safeCode,
+            ...modelInvocationSummary(modelInvocation)
+          }
+        })
+      });
+      return "completed";
+    }
     const body = await input.bodyStore.readVerifiedStream({
       objectId: current.sourceRevision.objectId,
       checksum: current.sourceRevision.checksum,
@@ -192,24 +248,6 @@ async function processWork(
       kind: "stream",
       close: trackedBody.close
     });
-    if (modelInvocation === null) {
-      if (!input.modelInvocation) throw workerError("invalid_model_invocation");
-      modelInvocation = createRunningModelInvocation(
-        input.modelInvocation,
-        sourceRevisionPublicId,
-        input.clock()
-      );
-      processingFile = await input.catalog.updateSourceFileState({
-        knowledgeBaseId: work.knowledgeBaseId,
-        publicId: current.sourceFile.publicId,
-        metadata: current.sourceFile.metadata,
-        status: "processing",
-        safeErrorCode: null,
-        safeErrorMessage: null,
-        modelInvocation,
-        revisionCheck: { expectedRevision: processingFile.revision }
-      });
-    }
     const model = await input.model.extract({
       knowledgeBaseId: work.knowledgeBaseId,
       sourceFile: current.sourceFile,
@@ -217,15 +255,55 @@ async function processWork(
       sourceRevisionPublicId,
       attemptPublicId: modelAttemptPublicId,
       body: trackedBody.body,
-      signal: controller.signal
+      signal: controller.signal,
+      ...(input.modelInvocation
+        ? {
+            async onModelAssistanceStart() {
+              if (modelInvocation !== null) {
+                throw workerError("invalid_model_invocation");
+              }
+              modelInvocation = createRunningModelInvocation(
+                input.modelInvocation!,
+                sourceRevisionPublicId,
+                input.clock()
+              );
+              processingFile = await input.catalog.updateSourceFileState({
+                knowledgeBaseId: work.knowledgeBaseId,
+                publicId: current.sourceFile.publicId,
+                metadata: current.sourceFile.metadata,
+                status: "processing",
+                safeErrorCode: null,
+                safeErrorMessage: null,
+                modelInvocation,
+                revisionCheck: { expectedRevision: processingFile.revision }
+              });
+            }
+          }
+        : {})
     });
     if (!trackedBody.completed) throw workerError("incomplete_source_stream");
     assertModelIdentity(current.sourceFile, sourceRevisionPublicId, model);
-    modelInvocation = completeModelInvocation(
-      modelInvocation,
-      input.clock(),
-      model.modelWarningCount ?? 0
-    );
+    if (model.modelAssistanceUsed) {
+      if (modelInvocation === null || modelInvocation.status !== "running") {
+        throw workerError("invalid_model_invocation");
+      }
+      modelInvocation = completeModelInvocation(
+        modelInvocation,
+        input.clock(),
+        model.modelWarningCount ?? 0
+      );
+    } else {
+      if (modelInvocation?.status === "running") {
+        throw workerError("invalid_model_invocation");
+      }
+      modelInvocation = createInitialModelInvocation(
+        null,
+        sourceRevisionPublicId,
+        input.clock()
+      );
+    }
+    if (modelInvocation === null) throw workerError("invalid_model_invocation");
+    const completedModelInvocation = modelInvocation;
     await input.workflow.saveCheckpoint({
       publicId: work.publicId,
       owner,
@@ -233,9 +311,26 @@ async function processWork(
         phase: "model_completed",
         sourceRevisionPublicId,
         modelAttemptPublicId,
-        ...modelInvocationSummary(modelInvocation)
+        ...modelInvocationSummary(completedModelInvocation)
       }
     });
+    const semanticHandoff = input.semanticHandoff
+      ? await input.semanticHandoff.enqueue({
+          operationPublicId: work.publicId,
+          knowledgeBaseId: work.knowledgeBaseId,
+          settingsRevisionPublicId: work.settingsRevisionPublicId,
+          sourceFile: current.sourceFile,
+          sourceRevision: current.sourceRevision,
+          skeletonGraphSignals: summarizeSkeletonGraphSignals(
+            model.node,
+            model.edges
+          ),
+          enqueuedAt: input.clock()
+        })
+      : null;
+    if (semanticHandoff?.state === "blocked") {
+      throw semanticBlockedError(semanticHandoff.safeCode);
+    }
     const handoff = await input.handoff.apply({
       operationPublicId: work.publicId,
       knowledgeBaseId: work.knowledgeBaseId,
@@ -244,7 +339,10 @@ async function processWork(
       sourceRevisionPublicId,
       node: model.node,
       edges: model.edges,
-      completedAt: input.clock()
+      completedAt: input.clock(),
+      publicationMode: semanticHandoff?.state === "queued"
+        ? "semantic_final"
+        : "immediate"
     });
     await input.workflow.saveCheckpoint({
       publicId: work.publicId,
@@ -253,22 +351,31 @@ async function processWork(
         phase: "release_handoff_completed",
         sourceRevisionPublicId,
         candidatePublicId: handoff.candidatePublicId,
-        releaseOperationPublicId: handoff.releaseOperationPublicId
+        releaseOperationPublicId: handoff.releaseOperationPublicId,
+        ...(semanticHandoff ? {
+          semanticState: semanticHandoff.state,
+          semanticGenerationPublicId: semanticHandoff.semanticGenerationPublicId,
+          semanticStageCount: semanticHandoff.stageCount,
+          semanticSafeCode: semanticHandoff.safeCode
+        } : {})
       }
     });
     await input.catalog.updateSourceFileState({
       knowledgeBaseId: work.knowledgeBaseId,
       publicId: current.sourceFile.publicId,
       metadata: model.metadata,
-      status: "ready",
+      status: "processing",
       safeErrorCode: null,
       safeErrorMessage: null,
-      modelInvocation,
+      modelInvocation: completedModelInvocation,
       revisionCheck: { expectedRevision: processingFile.revision }
     });
     const completedAt = input.clock();
+    const pendingStage = semanticHandoff?.state === "queued"
+      ? "semantic_progress"
+      : "publication_progress";
     await recordSourceEvent(input, {
-      kind: "completed",
+      kind: pendingStage,
       work,
       sourceFile: current.sourceFile,
       sourceRevisionPublicId,
@@ -286,17 +393,27 @@ async function processWork(
           sourceRevisionPublicId,
           candidatePublicId: handoff.candidatePublicId,
           releaseOperationPublicId: handoff.releaseOperationPublicId,
-          ...modelInvocationSummary(modelInvocation)
+          ...(semanticHandoff ? {
+            semanticState: semanticHandoff.state,
+            semanticGenerationPublicId: semanticHandoff.semanticGenerationPublicId,
+            semanticStageCount: semanticHandoff.stageCount,
+            semanticSafeCode: semanticHandoff.safeCode
+          } : {}),
+          ...modelInvocationSummary(completedModelInvocation)
         }
       })
     });
     await dispatchSourceWebhook(input, {
-      eventId: sourceEventIdentity("completed", sourceRevisionPublicId),
-      eventType: "source_file.completed",
+      eventId: sourceEventIdentity(pendingStage, sourceRevisionPublicId),
+      eventType: "source_file.progress",
       payload: {
         knowledgeBaseId: work.knowledgeBaseId,
         sourceFileId: current.sourceFile.publicId,
-        sourceRevisionId: sourceRevisionPublicId
+        sourceRevisionId: sourceRevisionPublicId,
+        stage: pendingStage === "semantic_progress"
+          ? "graphrag_processing"
+          : "search_publication",
+        status: "running"
       },
       createdAt: completedAt
     });
@@ -318,7 +435,7 @@ async function processWork(
       });
       return "terminal";
     }
-    if (work.attempt < input.limits.maximumAttempts) {
+    if (work.attempt < input.limits.maximumAttempts && isRetryableFailure(error)) {
       await input.workflow.releaseForRetry({
         publicId: work.publicId,
         owner,
@@ -340,7 +457,7 @@ async function processWork(
     });
     const failedAt = input.clock();
     await recordSourceEvent(input, {
-      kind: "failed",
+      kind: resumeFromStage === "publication" ? "publication_failed" : "failed",
       work,
       sourceFile: current.sourceFile,
       sourceRevisionPublicId,
@@ -359,7 +476,9 @@ async function processWork(
         knowledgeBaseId: work.knowledgeBaseId,
         sourceFileId: current.sourceFile.publicId,
         sourceRevisionId: sourceRevisionPublicId,
-        stage: "model_assistance",
+        stage: resumeFromStage === "publication"
+          ? "search_publication"
+          : "model_assistance",
         errorCode: code
       },
       createdAt: failedAt
@@ -370,6 +489,64 @@ async function processWork(
     await resources.closeAll();
     resources.assertIdle();
   }
+}
+
+function summarizeSkeletonGraphSignals(
+  sourceNode: {
+    publicId: string;
+    metadata: Readonly<Record<string, unknown>>;
+  },
+  edges: readonly {
+    fromNodePublicId: string;
+    toNodePublicId: string;
+    relation: string;
+  }[]
+) {
+  const bounded = edges.slice(0, 64);
+  const neighbors = new Set<string>();
+  const relations = new Set<string>();
+  let inboundEdgeCount = 0;
+  let outboundEdgeCount = 0;
+  for (const edge of bounded) {
+    if (edge.fromNodePublicId === sourceNode.publicId) {
+      outboundEdgeCount += 1;
+      neighbors.add(edge.toNodePublicId);
+    }
+    if (edge.toNodePublicId === sourceNode.publicId) {
+      inboundEdgeCount += 1;
+      neighbors.add(edge.fromNodePublicId);
+    }
+    relations.add(edge.relation);
+  }
+  const contentProfile = readObject(sourceNode.metadata.contentProfile);
+  return {
+    acceptedEdgeCount: bounded.length,
+    inboundEdgeCount,
+    outboundEdgeCount,
+    distinctNeighborCount: neighbors.size,
+    relationKindCount: relations.size,
+    contentProfileHeadingCount: boundedStringArrayLength(
+      contentProfile?.headingOutline
+    ),
+    contentProfileDefinitionCount: boundedStringArrayLength(
+      contentProfile?.definitions
+    ),
+    contentProfileExplicitReferenceCount: boundedStringArrayLength(
+      contentProfile?.explicitReferences
+    )
+  };
+}
+
+function readObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function boundedStringArrayLength(value: unknown): number {
+  return Array.isArray(value)
+    ? Math.min(64, value.filter((item) => typeof item === "string").length)
+    : 0;
 }
 
 async function dispatchSourceWebhook(
@@ -390,7 +567,13 @@ function sourceEventIdentity(kind: string, identity: string): string {
   return `event-source-${kind}-${createHash("sha256").update(identity).digest("hex")}`;
 }
 
-type SourceEventKind = "accepted" | "progress" | "completed" | "failed";
+type SourceEventKind =
+  | "accepted"
+  | "progress"
+  | "semantic_progress"
+  | "publication_progress"
+  | "publication_failed"
+  | "failed";
 
 const SOURCE_EVENT_PRESENTATION = {
   accepted: {
@@ -407,11 +590,25 @@ const SOURCE_EVENT_PRESENTATION = {
     severity: "info",
     terminal: false
   },
-  completed: {
+  semantic_progress: {
     sequence: 30,
-    stageKey: "generation_activation",
-    messageKey: "sourceFiles.phase.generationActivation",
+    stageKey: "graphrag_processing",
+    messageKey: "sourceFiles.phase.graphragProcessing",
     severity: "info",
+    terminal: false
+  },
+  publication_progress: {
+    sequence: 30,
+    stageKey: "search_publication",
+    messageKey: "sourceFiles.phase.searchPublication",
+    severity: "info",
+    terminal: false
+  },
+  publication_failed: {
+    sequence: 30,
+    stageKey: "search_publication",
+    messageKey: "sourceFiles.phase.searchPublication",
+    severity: "error",
     terminal: true
   },
   failed: {
@@ -651,12 +848,14 @@ function assertModelIdentity(
   model: {
     node: { knowledgeBaseId: string; sourceFilePublicId: string; sourceRevisionPublicId: string };
     edges: readonly unknown[];
+    modelAssistanceUsed: boolean;
   }
 ): void {
   if (
     model.node.knowledgeBaseId !== sourceFile.knowledgeBaseId
     || model.node.sourceFilePublicId !== sourceFile.publicId
     || model.node.sourceRevisionPublicId !== sourceRevisionPublicId
+    || typeof model.modelAssistanceUsed !== "boolean"
     || model.edges.length > 1_000
   ) throw workerError("invalid_model_result");
 }
@@ -667,6 +866,25 @@ function checkpointRevision(work: StorageVnextLiveWork): string {
     throw workerError("invalid_checkpoint");
   }
   return value;
+}
+
+function semanticResumeStage(work: StorageVnextLiveWork): "publication" | null {
+  const value = work.checkpoint.semanticResumeStage;
+  if (value === undefined) return null;
+  if (value !== "publication") throw workerError("invalid_checkpoint");
+  return value;
+}
+
+function reusableModelInvocation(
+  sourceFile: StorageVnextSourceFileFact,
+  sourceRevisionPublicId: string
+): StorageVnextModelInvocationFact {
+  const invocation = sourceFile.modelInvocation;
+  if (
+    invocation?.sourceRevisionPublicId !== sourceRevisionPublicId
+    || !["completed", "skipped"].includes(invocation.status)
+  ) throw workerError("invalid_checkpoint");
+  return invocation;
 }
 
 function createAttemptPublicId(work: StorageVnextLiveWork, revisionPublicId: string): string {
@@ -686,7 +904,19 @@ function safeFailureCode(error: unknown, signal: AbortSignal): string {
   if (reason instanceof Error && ["AbortError", "TimeoutError"].includes(reason.name)) {
     return "SOURCE_MODEL_TIMEOUT";
   }
+  if (reason instanceof Error && "code" in reason) {
+    const code = String(reason.code);
+    if (/^semantic_[a-z0-9_]+$/u.test(code) && code.length <= 128) {
+      return code;
+    }
+  }
   return "SOURCE_MODEL_FAILED";
+}
+
+function isRetryableFailure(error: unknown): boolean {
+  return !(error instanceof Error
+    && "retryable" in error
+    && error.retryable === false);
 }
 
 function isStaleFailure(error: unknown): boolean {
@@ -727,4 +957,14 @@ function validateLimits(limits: WorkerLimits): void {
 
 function workerError(code: string): Error & { code: string } {
   return Object.assign(new Error(`Storage vNext source processing error: ${code}`), { code });
+}
+
+function semanticBlockedError(code: string | null): Error & {
+  code: string;
+  retryable: false;
+} {
+  return Object.assign(
+    new Error(`Storage vNext semantic source processing blocked: ${code ?? "unknown"}`),
+    { code: code ?? "semantic_processing_blocked", retryable: false as const }
+  );
 }

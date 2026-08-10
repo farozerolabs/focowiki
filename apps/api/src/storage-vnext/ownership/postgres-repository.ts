@@ -100,11 +100,13 @@ export function createPostgresStorageVnextOwnershipRepository(
       const registration = await readRegistration(sql, objectId);
       const rows = await readOwners(sql, objectId);
       const owners = rows.map(mapStorageVnextOwner);
+      const referenceCount = await readDurableReferenceCount(sql, objectId);
       return {
         objectId,
         owners,
         ownerCount: owners.length,
-        graceExpiresAt: owners.length === 0 && registration?.zeroOwnerSince
+        referenceCount,
+        graceExpiresAt: referenceCount === 0 && registration?.zeroOwnerSince
           ? new Date(
             new Date(registration.zeroOwnerSince).getTime()
             + resolveZeroOwnerGraceMilliseconds(options.zeroOwnerGraceMilliseconds)
@@ -127,6 +129,26 @@ export function createPostgresStorageVnextOwnershipRepository(
             SELECT 1
             FROM focowiki.object_owners owner
             WHERE owner.object_id = registration.object_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM focowiki.source_revisions revision
+            WHERE revision.object_id = registration.object_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM focowiki.release_catalog_entries entry
+            WHERE entry.object_id = registration.object_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM focowiki.release_shards shard
+            WHERE shard.object_id = registration.object_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM focowiki.upload_entries entry
+            WHERE entry.object_id = registration.object_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM focowiki.embedding_artifacts artifact
+            WHERE artifact.object_id = registration.object_id
           )
           ${cursor
             ? sql`AND (registration.zero_owner_since, registration.object_id)
@@ -244,11 +266,13 @@ export function createPostgresStorageVnextOwnershipRepository(
           INSERT INTO focowiki.object_owners (
             public_id, knowledge_base_id, object_id, owner_kind,
             source_revision_public_id, release_root_public_id,
-            release_shard_public_id, operation_public_id, created_at
+            release_shard_public_id, operation_public_id,
+            embedding_artifact_public_id, created_at
           ) VALUES (
             ${owner.publicId}, ${owner.knowledgeBaseId}, ${owner.objectId}, ${owner.kind},
             ${columns.sourceRevisionPublicId}, ${columns.releaseRootPublicId},
-            ${columns.releaseShardPublicId}, ${columns.operationPublicId}, ${owner.createdAt}
+            ${columns.releaseShardPublicId}, ${columns.operationPublicId},
+            ${columns.embeddingArtifactPublicId}, ${owner.createdAt}
           )
           ON CONFLICT (object_id, owner_kind, owner_public_id) DO NOTHING
           RETURNING public_id
@@ -304,8 +328,10 @@ export function createPostgresStorageVnextOwnershipRepository(
       await sql.begin(async (transaction) => {
         const registration = await lockRegistration(transaction, objectId);
         if (!registration) throw new StorageVnextOwnershipRepositoryError("object_not_found");
-        const owners = await readOwners(transaction, objectId);
-        if (owners.length > 0) throw new StorageVnextOwnershipRepositoryError("owners_present");
+        const referenceCount = await readDurableReferenceCount(transaction, objectId);
+        if (referenceCount > 0) {
+          throw new StorageVnextOwnershipRepositoryError("owners_present");
+        }
         if (registration.state === "deleting") return;
         if (registration.state !== "verified") {
           throw new StorageVnextOwnershipRepositoryError("state_conflict");
@@ -323,8 +349,10 @@ export function createPostgresStorageVnextOwnershipRepository(
       await sql.begin(async (transaction) => {
         const registration = await lockRegistration(transaction, objectId);
         if (!registration) throw new StorageVnextOwnershipRepositoryError("object_not_found");
-        const owners = await readOwners(transaction, objectId);
-        if (owners.length > 0) throw new StorageVnextOwnershipRepositoryError("owners_present");
+        const referenceCount = await readDurableReferenceCount(transaction, objectId);
+        if (referenceCount > 0) {
+          throw new StorageVnextOwnershipRepositoryError("owners_present");
+        }
         if (registration.state === "deleted") return;
         if (registration.state !== "deleting") {
           throw new StorageVnextOwnershipRepositoryError("state_conflict");
@@ -377,41 +405,26 @@ export async function purgePostgresStorageVnextDeletedRegistrations(
   input: { limit: number }
 ): Promise<number> {
   const limit = assertStorageVnextOwnershipPageLimit(input.limit);
-  const rows = await sql<Array<{ object_id: string }>>`
-    WITH candidates AS (
+  return sql.begin(async (transaction) => {
+    const candidates = await transaction<Array<{ object_id: string }>>`
       SELECT registration.object_id
       FROM focowiki.object_registrations registration
       WHERE registration.state = 'deleted'
-        AND NOT EXISTS (
-          SELECT 1 FROM focowiki.object_owners owner
-          WHERE owner.object_id = registration.object_id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM focowiki.source_revisions revision
-          WHERE revision.object_id = registration.object_id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM focowiki.release_catalog_entries entry
-          WHERE entry.object_id = registration.object_id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM focowiki.release_shards shard
-          WHERE shard.object_id = registration.object_id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM focowiki.upload_entries entry
-          WHERE entry.object_id = registration.object_id
-        )
+        AND ${hasNoDurableReferences(transaction, "registration")}
       ORDER BY registration.object_id
       FOR UPDATE OF registration SKIP LOCKED
       LIMIT ${limit}
-    )
-    DELETE FROM focowiki.object_registrations registration
-    USING candidates
-    WHERE registration.object_id = candidates.object_id
-    RETURNING registration.object_id
-  `;
-  return rows.length;
+    `;
+    if (candidates.length === 0) return 0;
+    const rows = await transaction<Array<{ object_id: string }>>`
+      DELETE FROM focowiki.object_registrations registration
+      WHERE registration.object_id = ANY(${candidates.map((item) => item.object_id)}::text[])
+        AND registration.state = 'deleted'
+        AND ${hasNoDurableReferences(transaction, "registration")}
+      RETURNING registration.object_id
+    `;
+    return rows.length;
+  });
 }
 
 const REGISTRATION_COLUMNS = `
@@ -447,6 +460,29 @@ async function reserveRegistration(
         throw new StorageVnextOwnershipRepositoryError("write_in_progress");
       }
       return { outcome: "reserved", registration: mapStorageVnextRegistration(existing) };
+    }
+    if (existing.state === "deleted") {
+      const rows = await transaction<StorageVnextRegistrationRow[]>`
+        UPDATE focowiki.object_registrations registration
+        SET state = 'reserved',
+            write_attempt_public_id = ${input.writeAttemptPublicId},
+            verified_at = NULL,
+            zero_owner_since = NULL,
+            created_at = ${input.createdAt}
+        WHERE registration.object_id = ${input.objectId}
+          AND registration.state = 'deleted'
+          AND NOT EXISTS (
+            SELECT 1 FROM focowiki.object_owners owner
+            WHERE owner.object_id = registration.object_id
+          )
+        RETURNING ${transaction.unsafe(REGISTRATION_COLUMNS)}
+      `;
+      if (rows[0]) {
+        return {
+          outcome: "reserved",
+          registration: mapStorageVnextRegistration(rows[0])
+        };
+      }
     }
     throw new StorageVnextOwnershipRepositoryError("state_conflict");
   }
@@ -532,6 +568,59 @@ async function readOwners(sql: ReadSql, objectId: string): Promise<StorageVnextO
   `;
 }
 
+async function readDurableReferenceCount(
+  sql: ReadSql,
+  objectId: string
+): Promise<number> {
+  const rows = await sql<Array<{ reference_count: number | string }>>`
+    SELECT (
+      (SELECT count(*) FROM focowiki.object_owners owner
+       WHERE owner.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.source_revisions revision
+         WHERE revision.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.release_catalog_entries entry
+         WHERE entry.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.release_shards shard
+         WHERE shard.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.upload_entries entry
+         WHERE entry.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.embedding_artifacts artifact
+         WHERE artifact.object_id = ${objectId})
+    ) AS reference_count
+  `;
+  return Number(rows[0]?.reference_count ?? 0);
+}
+
+function hasNoDurableReferences(sql: ReadSql, alias: string) {
+  const registration = sql.unsafe(alias);
+  return sql`
+    NOT EXISTS (
+      SELECT 1 FROM focowiki.object_owners owner
+      WHERE owner.object_id = ${registration}.object_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM focowiki.source_revisions revision
+      WHERE revision.object_id = ${registration}.object_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM focowiki.release_catalog_entries entry
+      WHERE entry.object_id = ${registration}.object_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM focowiki.release_shards shard
+      WHERE shard.object_id = ${registration}.object_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM focowiki.upload_entries entry
+      WHERE entry.object_id = ${registration}.object_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM focowiki.embedding_artifacts artifact
+      WHERE artifact.object_id = ${registration}.object_id
+    )
+  `;
+}
+
 async function assertOwnerTarget(
   sql: TransactionSql,
   owner: StorageVnextObjectOwner
@@ -584,12 +673,20 @@ async function assertOwnerTarget(
         AND object_id = ${owner.objectId}
       FOR UPDATE
     `;
-  } else {
+  } else if (owner.kind === "live_reservation") {
     rows = await sql`
       SELECT 1 FROM focowiki.operations
       WHERE knowledge_base_id = ${owner.knowledgeBaseId}
         AND public_id = ${owner.ownerPublicId}
         AND state IN ('accepted', 'running')
+      FOR UPDATE
+    `;
+  } else {
+    rows = await sql`
+      SELECT 1 FROM focowiki.embedding_artifacts
+      WHERE knowledge_base_id = ${owner.knowledgeBaseId}
+        AND public_id = ${owner.ownerPublicId}
+        AND object_id = ${owner.objectId}
       FOR UPDATE
     `;
   }

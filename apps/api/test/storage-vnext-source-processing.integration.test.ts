@@ -83,6 +83,7 @@ describeOwnedDatabase("storage vNext source processing PostgreSQL handoff", () =
       expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8"))
         .toBe("# Durable handoff\n");
       return {
+        modelAssistanceUsed: false,
         metadata: { headingCount: 1 },
         node: {
           publicId: "node-source-integration",
@@ -223,7 +224,7 @@ describeOwnedDatabase("storage vNext source processing PostgreSQL handoff", () =
       + "(SELECT count(*) FROM focowiki.object_registrations) AS object_count"
     ) as unknown as Array<Record<string, string>>;
     expect(facts[0]).toEqual({
-      source_status: "ready",
+      source_status: "processing",
       source_revision_count: "1",
       source_work_count: "0",
       source_result_count: "1",
@@ -276,6 +277,7 @@ describeOwnedDatabase("storage vNext source processing PostgreSQL handoff", () =
           await gate;
         }
         return {
+          modelAssistanceUsed: false,
           metadata: { headingCount: 1 },
           node: {
             publicId: "node-" + input.sourceFile.publicId,

@@ -38,6 +38,10 @@ export type MeilisearchSettings = {
     locales: string[];
   }>;
   typoTolerance: { disableOnAttributes: string[] };
+  embedders?: Record<string, {
+    source: "userProvided";
+    dimensions: number;
+  }>;
 };
 
 export type MeilisearchDocument = Record<string, unknown> & { id: string };
@@ -82,10 +86,14 @@ export type MeilisearchSearchRequest = {
   attributesToSearchOn?: string[];
   attributesToRetrieve: string[];
   attributesToCrop: string[];
+  showMatchesPosition?: boolean;
   cropLength: number;
   matchingStrategy: "all" | "last";
   locales?: string[];
   distinct?: string;
+  vector?: number[];
+  hybrid?: { embedder: string; semanticRatio: number };
+  rankingScoreThreshold?: number;
 };
 
 export type MeilisearchSearchResult = {

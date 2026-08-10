@@ -21,11 +21,17 @@ const EXPECTED_BOOTSTRAP = [
     "storage-vnext-v1",
     "storage-vnext-v2",
     "compatible"
+  ],
+  [
+    "003_general_purpose_semantic_search.sql",
+    "storage-vnext-v2",
+    "storage-vnext-v3-semantic",
+    "breaking_reset"
   ]
 ] as const;
 
 describe("storage vNext bootstrap manifest", () => {
-  it("declares one absent bootstrap followed by one compatible upgrade", () => {
+  it("declares an absent bootstrap followed by navigation and reset-only semantic schemas", () => {
     expect(MIGRATION_MANIFEST.map((migration) => [
       migration.fileName,
       migration.sourceGeneration,
@@ -34,9 +40,10 @@ describe("storage vNext bootstrap manifest", () => {
     ])).toEqual(EXPECTED_BOOTSTRAP);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
-      "002_extension_navigation_profile.sql"
+      "002_extension_navigation_profile.sql",
+      "003_general_purpose_semantic_search.sql"
     ]);
-    expect(RUNTIME_SCHEMA_GENERATION).toBe("storage-vnext-v2");
+    expect(RUNTIME_SCHEMA_GENERATION).toBe("storage-vnext-v3-semantic");
   });
 
   it("covers the migration directory exactly once", () => {
@@ -77,11 +84,10 @@ describe("storage vNext bootstrap manifest", () => {
       pendingFiles: [],
       targetGeneration: RUNTIME_SCHEMA_GENERATION
     });
-    expect(createBootstrapPlan("storage-vnext-v1")).toEqual({
-      pendingMigrations: [MIGRATION_MANIFEST[1]],
-      pendingFiles: ["002_extension_navigation_profile.sql"],
-      targetGeneration: RUNTIME_SCHEMA_GENERATION
-    });
+    expect(() => createBootstrapPlan("storage-vnext-v1"))
+      .toThrow(UnsupportedMigrationGenerationError);
+    expect(() => createBootstrapPlan("storage-vnext-v2"))
+      .toThrow(UnsupportedMigrationGenerationError);
   });
 
   it("rejects every historical or unknown schema generation", () => {

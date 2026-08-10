@@ -204,7 +204,7 @@ Use this tool after a promising file, search result, related-file entry, graph f
 
 This tool is optional. Implement `search_files` when the Agent needs candidate lookup. A backend can call Focowiki Developer OpenAPI `searchGeneratedFiles`, read generated index files, or use its own read layer.
 
-The Agent owns query planning. It should derive short phrases from the user question, the knowledge-base overview, schema hints, already-read files, and remaining evidence gaps. The tool should return candidates for one phrase at a time.
+The first request should contain the complete standalone user question and use default `hybrid` retrieval. The Agent may run at most two later searches, each derived from source Markdown already read. The tool returns source-file candidates, not answer evidence.
 
 Input:
 
@@ -227,7 +227,12 @@ Output:
       "title": "Example",
       "description": "Short summary.",
       "score": 12,
-      "matchedFields": ["title", "description"]
+      "matchedFields": ["content"],
+      "evidenceTypes": ["content", "entity"],
+      "sourceExcerpt": "Bounded source-grounded excerpt.",
+      "readActions": {
+        "fileContentById": "/openapi/v2/knowledge-bases/kb/files/file_123/content"
+      }
     }
   ],
   "searchStatus": "ok",
@@ -237,7 +242,7 @@ Output:
 }
 ```
 
-For direct questions, the Agent derives concise phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, it can derive new phrases and continue with `search_files`, `nextActions`, `list_tree`, links, graph files, `expand_graph`, and related files.
+Read the selected Markdown files before answering. Track `fileId` and `path` to avoid duplicate reads. Search snippets, entity or relationship descriptions, community reports, and reranker output are discovery hints only.
 
 ## Error Shape
 

@@ -12,6 +12,41 @@ import type {
 } from "../src/storage-vnext/graph/ports.js";
 
 describe("storage vNext source model adapter", () => {
+  it("skips every generation-model path for a non-skeleton source", async () => {
+    const suggest = vi.fn(async () => ({ suggestions: null, warningCount: 0 }));
+    const onModelAssistanceStart = vi.fn(async () => undefined);
+    const extractGraph = vi.fn(async () => ({ node: graphNode(), edges: [] }));
+    const adapter = createStorageVnextSourceModelAdapter({
+      selectModelAssistance: vi.fn(async () => false),
+      suggest,
+      extractGraph
+    });
+
+    const result = await adapter.extract({
+      knowledgeBaseId: "kb-1",
+      sourceFile: sourceFile(),
+      sourceRevision: sourceRevision(),
+      sourceRevisionPublicId: "revision-1",
+      attemptPublicId: "attempt-1",
+      body: chunks("# Ordinary source\n\nComplete deterministic retrieval remains available."),
+      signal: new AbortController().signal,
+      onModelAssistanceStart
+    });
+
+    expect(suggest).not.toHaveBeenCalled();
+    expect(onModelAssistanceStart).not.toHaveBeenCalled();
+    expect(extractGraph).toHaveBeenCalledWith(expect.objectContaining({
+      modelAssistanceSelected: false,
+      suggestions: null,
+      body: "# Ordinary source\n\nComplete deterministic retrieval remains available."
+    }));
+    expect(result).toMatchObject({
+      modelAssistanceUsed: false,
+      node: graphNode(),
+      edges: []
+    });
+  });
+
   it("preserves released Markdown metadata and graph extraction inputs", async () => {
     const body = [
       "---",
@@ -83,6 +118,7 @@ describe("storage vNext source model adapter", () => {
         owner: { team: "docs" },
         milestones: ["2026-08-01"]
       },
+      modelAssistanceUsed: true,
       modelWarningCount: 3,
       node,
       edges

@@ -496,7 +496,10 @@ export function createPostgresStorageVnextPublicationSnapshot(
                    AND tombstone.logical_path COLLATE "C" < '_index0' COLLATE "C")
                 )
             ) scoped
-            WHERE scoped.logical_path ~ '^_graph/by-file/[^/]+[.]json$'
+            WHERE (
+                 ${input.includeByFileResources !== false}
+                 AND scoped.logical_path ~ '^_graph/by-file/[^/]+[.]json$'
+               )
                OR (
                  scoped.logical_path ~ '^_(index|graph)/.+[.]md$'
                  AND scoped.logical_path NOT LIKE '%/%/%/%/%'
@@ -549,7 +552,10 @@ export function createPostgresStorageVnextPublicationSnapshot(
             AND candidate.operation_public_id = ${input.operationPublicId}
             AND candidate.state = 'building'
         ), generated AS MATERIALIZED (
-          SELECT count(*) AS generated_entry_count,
+          SELECT count(*) FILTER (
+                   WHERE entry.entry_kind = 'source'
+                 ) AS source_file_count,
+                 count(*) AS generated_entry_count,
                  coalesce(sum(entry.byte_count), 0) AS generated_byte_count
           FROM candidate_scope scope
           CROSS JOIN LATERAL focowiki.resolve_release_catalog(
@@ -562,19 +568,12 @@ export function createPostgresStorageVnextPublicationSnapshot(
               AND source.deleted_at IS NULL
           )
         )
-        SELECT counts.source_file_count, counts.directory_count,
+        SELECT generated.source_file_count, counts.directory_count,
                counts.graph_node_count, counts.graph_edge_count,
                generated.generated_entry_count, generated.generated_byte_count
         FROM candidate_scope
         CROSS JOIN LATERAL (
           SELECT
-            (SELECT count(*) FROM focowiki.source_files source
-             JOIN focowiki.source_file_current_revisions current_revision
-               ON current_revision.knowledge_base_id = source.knowledge_base_id
-              AND current_revision.source_file_public_id = source.public_id
-             WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
-               AND source.deleted_at IS NULL
-               AND source.status = 'ready') AS source_file_count,
             1 + (SELECT count(*) FROM focowiki.source_directories directory
                  WHERE directory.knowledge_base_id = ${input.knowledgeBaseId}
                    AND directory.deleted_at IS NULL) AS directory_count,

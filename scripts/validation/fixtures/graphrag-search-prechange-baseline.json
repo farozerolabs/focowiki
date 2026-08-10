@@ -1,0 +1,286 @@
+{
+  "format": "focowiki-graphrag-search-prechange-baseline-v1",
+  "capturedAt": "2026-08-08",
+  "capturedFromRevision": "87007d0cb1ddc0a8cc71c13bd5f128ffc91f0f69",
+  "publicStructure": {
+    "generatedGraphFixture": {
+      "path": "scripts/validation/fixtures/okf-v02-prechange-structure.json",
+      "sha256": "c3b144331e89118e8cb7ebd7c35770b1dd17e59caedb6652233a31396d858266"
+    },
+    "requiredNavigationPaths": [
+      "index.md",
+      "pages/index.md",
+      "schema.md",
+      "log.md",
+      "_index/index.md",
+      "_graph/index.md",
+      "_index/catalog.json"
+    ],
+    "extensionDirectories": [
+      "_index/manifest/v1",
+      "_index/search/v1",
+      "_index/links/v1",
+      "_index/tree/v1",
+      "_graph/graph_node/v1",
+      "_graph/graph_edge/v1",
+      "_graph/by-file"
+    ],
+    "stableLeafPattern": "index-<stable-leaf-id>.md",
+    "deprecatedLeafPattern": "index-map-<number>.md",
+    "sourceBodiesRemainUnchanged": true,
+    "graphFamilies": [
+      "graph_node",
+      "graph_edge",
+      "by-file"
+    ]
+  },
+  "developerOpenApi": {
+    "rawSnapshotSha256": "883788d3c826a4d0b3ff3e581aea22fd92f5fee5093792c2d028cd3306cef647",
+    "contractSha256": "2ee728da10140b95b700cc26fd18194f710839dcefa828dd2368fb45d095da93",
+    "reviewedSurfaceSha256": "8e0731972f6fd7e2344c99cecc08fcf8b9a4d69dc42f4e04bcdaef6cb324c32c"
+  },
+  "retrieval": {
+    "naturalLanguageContract": {
+      "fileSearchCharacterBounds": [
+        2,
+        160
+      ],
+      "fileSearchDownstreamByteLimit": 512,
+      "graphExpansionCharacterBounds": [
+        2,
+        160
+      ],
+      "graphExpansionByteLimit": null,
+      "omittedMode": "file",
+      "sharedPaginationDefault": 50,
+      "sharedPaginationMaximum": 200,
+      "normalization": "trim_only_at_openapi_boundary",
+      "unsafeControlsRejected": true
+    },
+    "semanticFilterContract": {
+      "okfFiltersDisableSemanticSearch": true,
+      "safeCode": "SEMANTIC_FILTERED_SEARCH_UNAVAILABLE",
+      "fileKindIsNotCarriedBySemanticVectorDocuments": true,
+      "scopeIsNotCarriedIntoSemanticLanePlanning": true
+    },
+    "presentationContract": {
+      "matchedFieldsWithSnippet": [
+        "description"
+      ],
+      "matchedFieldsWithoutSnippet": [
+        "title"
+      ],
+      "evidenceFamiliesAreNotPublic": true,
+      "sourceExcerptUsesFirstSemanticExplanation": true,
+      "semanticStatusStates": [
+        "ready",
+        "degraded",
+        "unavailable"
+      ]
+    },
+    "vectorThresholdContract": {
+      "minimumRelevanceScore": 0.7,
+      "configurationOwner": "search_provider_constant",
+      "queryPolicyRevisionSeparated": false
+    },
+    "fusionContract": {
+      "rrfConstant": 60,
+      "weights": {
+        "exact_path": 16,
+        "exact_title": 12,
+        "lexical": 5,
+        "jieba": 4,
+        "file_graph": 3,
+        "content_vector": 5,
+        "entity_vector": 4,
+        "relationship_vector": 4,
+        "community_vector": 2
+      },
+      "stableTieBreaker": "source_file_public_id",
+      "communityDiversity": false
+    },
+    "rerankerContract": {
+      "configuredModelRole": false,
+      "requestControls": [],
+      "publicStatus": false,
+      "runtimeStage": false
+    },
+    "quantitativeCases": [
+      "exact",
+      "title",
+      "content",
+      "ranking"
+    ],
+    "minimumRecall": 1,
+    "minimumNdcg": 1,
+    "duplicateTitle": {
+      "query": "Knowledge Base",
+      "relevantSourceFilePublicIds": [
+        "file-shared-a",
+        "file-shared-b"
+      ],
+      "requiredCases": [
+        "exact",
+        "title",
+        "ranking"
+      ]
+    }
+  },
+  "performance": {
+    "uploadAcceptanceContract": {
+      "testDurationMs": 124,
+      "vitestTotalMs": 206,
+      "wallClockMs": 580,
+      "userCpuMs": 570,
+      "systemCpuMs": 120
+    },
+    "idleRuntimeSample": {
+      "sampleWindowSeconds": 33,
+      "api": {
+        "rssKib": 455920,
+        "cpuPercent": 0
+      },
+      "sourceWorker": {
+        "rssKib": 474080,
+        "cpuPercent": 0.1,
+        "reportedRssBytes": 475578368
+      },
+      "searchProvider": "opensearch",
+      "generationModelConfigured": false,
+      "embeddingModelConfigured": false
+    },
+    "fullPerChunkIndexingSample": {
+      "evidenceKind": "bounded_live_partial_run",
+      "elapsedMs": 990000,
+      "generationRequests": 18,
+      "generationRequestsPerMinute": 1.0909090909090908,
+      "averageChunksPerSource": 1.33,
+      "projectedFileCount": 20000,
+      "projectedGenerationRequests": 26600,
+      "mandatorySourceGenerationRequestsPerFile": 1,
+      "projectedMandatorySourceGenerationRequests": 20000,
+      "projectedTotalGenerationRequestLowerBound": 46600,
+      "projectedCompletionMs": 1463000000,
+      "projectedCompletionDays": 16.93287037037037,
+      "observedBottlenecks": [
+        "generation_per_source_base_enrichment",
+        "generation_per_chunk",
+        "embedding_one_input_per_request",
+        "same_knowledge_base_extraction_parallelism_two",
+        "whole_stage_scarce_permit_retention",
+        "publication_rebuild_per_interval"
+      ],
+      "notCaptured": [
+        "complete_per_stage_wall_time",
+        "source_enrichment_generation_service_time",
+        "embedding_request_and_input_counts",
+        "publication_root_and_build_counts",
+        "retry_counts",
+        "indexing_peak_cpu",
+        "indexing_peak_rss",
+        "source_coverage",
+        "retrieval_quality"
+      ]
+    },
+    "sparseSkeletonPilot": {
+      "evidenceKind": "bounded_live_database_snapshot",
+      "capturedAt": "2026-08-10",
+      "comparableToFullPerChunkBaseline": false,
+      "incomparabilityReasons": [
+        "different_extraction_contract",
+        "dirty_worktree_revision",
+        "embedding_provider_request_count_not_durable",
+        "indexing_cpu_and_rss_not_sampled_during_run",
+        "frozen_retrieval_run_not_executed"
+      ],
+      "sampleFileCount": 250,
+      "sourceCoverage": {
+        "readySources": 250,
+        "contentVectorSources": 250,
+        "contentEmbeddingInputs": 327,
+        "selectedSources": 13,
+        "selectedSourceRatio": 0.052,
+        "selectedChunks": 13
+      },
+      "stageTiming": {
+        "extraction": {
+          "workItems": 253,
+          "queueToTerminalWallMs": 1628164,
+          "serviceTimeMs": 6880147
+        },
+        "reconciliation": {
+          "workItems": 253,
+          "queueToTerminalWallMs": 1629219,
+          "serviceTimeMs": 4653
+        },
+        "community": {
+          "workItems": 253,
+          "queueToTerminalWallMs": 1630271,
+          "serviceTimeMs": 37764
+        },
+        "embedding": {
+          "workItems": 253,
+          "queueToTerminalWallMs": 1631384,
+          "serviceTimeMs": 429340
+        },
+        "vector": {
+          "workItems": 253,
+          "queueToTerminalWallMs": 1631433,
+          "serviceTimeMs": 25172
+        },
+        "publication": {
+          "workItems": 253,
+          "queueToTerminalWallMs": 1631458,
+          "serviceTimeMs": 8104
+        },
+        "validation": {
+          "workItems": 253,
+          "queueToTerminalWallMs": 1974521,
+          "serviceTimeMs": 0
+        }
+      },
+      "generation": {
+        "preSemanticSourceSuggestionRequests": null,
+        "preSemanticGraphReviewRequests": null,
+        "graphRagRequests": 13,
+        "graphRagInputChunks": 13,
+        "graphRagServiceTimeMs": null
+      },
+      "embedding": {
+        "providerRequests": null,
+        "inputs": 1208,
+        "verifiedArtifacts": {
+          "content": 327,
+          "entity": 297,
+          "relationship": 300,
+          "community": 284
+        }
+      },
+      "publication": {
+        "publicationOperations": 4,
+        "completedBuilds": 1,
+        "failedBuilds": 3,
+        "survivingActiveRoots": 1
+      },
+      "retries": {
+        "stageRetryStateCount": 0,
+        "manualSourceRetries": 3,
+        "failedVectorWorkItems": 3
+      },
+      "resources": {
+        "peakCpuPercent": null,
+        "peakRssBytes": null
+      },
+      "retrievalMetrics": null,
+      "fileCountOnlyProjection": {
+        "projectedFileCount": 20000,
+        "extractionCompletionMs": 130253120,
+        "extractionCompletionHours": 36.181422222222224,
+        "fullPipelineCompletionMs": 157961680,
+        "fullPipelineCompletionHours": 43.87824444444445,
+        "speedupOverFullPerChunkBaseline": 11.23197663134672,
+        "acceptedForRelease": false
+      }
+    }
+  }
+}

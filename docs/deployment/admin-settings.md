@@ -91,7 +91,9 @@ Default depth and fanout must not exceed their maximum values. Model review is o
 | Search rebuild source-read concurrency | Source Markdown files read at the same time during rebuild. | `2`; maximum `32`. |
 | Search rebuild memory limit bytes | Maximum source Markdown bytes held during active rebuild reads. | `67108864`; range 1 MiB to 512 MiB. |
 
-Use **Maintain index** on a knowledge-base page to repair navigation, search, relationships, and generated content for that knowledge base. It is also the required action for adopting an existing knowledge base after `SEARCH_PROVIDER` changes; automatic maintenance does not adopt a different provider. Existing readable files remain available while maintenance runs. The status panel shows progress, retries, recent activity, and any failure that needs attention.
+Use **Maintain index** only to establish the first semantic contract for an existing knowledge base, adopt a changed model, prompt, schema, vector dimension, or search provider, or run an explicit repair, recovery, or full rebuild. Automatic maintenance does not adopt those changes. Once a knowledge base has a current semantic contract, ordinary uploads and body replacements run GraphRAG, semantic reconciliation, embedding generation, affected graph and generated-content updates, and final search publication as part of normal file processing. Rename, move, metadata update, and delete operations update only their affected scope and do not require **Maintain index**. Existing readable files remain available while maintenance runs. The status panel shows progress, retries, recent activity, and any failure that needs attention, and a running maintenance operation can be cancelled from the same panel.
+
+The current semantic extraction contract ships only in the clean breaking storage baseline described in [Docker Compose Deployment](./docker-compose.md#update-an-existing-deployment). Knowledge bases and content from an earlier release are not migrated or available for index maintenance in this release; import the source Markdown again into the empty target deployment. **Maintain index** applies only to knowledge bases created inside the current baseline without a semantic contract and to later current-baseline model, contract, dimension, provider, repair, recovery, or full-rebuild operations.
 
 ## Search
 
@@ -115,9 +117,65 @@ The same settings remain visible for both providers; changing `SEARCH_PROVIDER` 
 
 Keep the search-service timeout below the total request timeout. Reduce update size or in-flight tasks when the selected provider's memory or disk latency rises.
 
+## Semantic Search
+
+Semantic settings are shared by OpenSearch and Meilisearch. They bound optional entity, relationship, community, and vector enrichment without changing the generated file tree or source Markdown.
+
+| Setting | Purpose | Default |
+| --- | --- | --- |
+| Maximum chunk characters | Maximum characters in one extraction chunk. | `8000` |
+| Maximum chunks | Maximum extraction chunks from one source revision. | `32` |
+| Maximum evidence targets | Maximum source evidence targets retained for one semantic unit. | `64` |
+| Maximum community partitions | Maximum community partitions handled for one operation. | `256` |
+| Maximum community entities | Maximum entities assembled for one community partition. | `10000` |
+| Maximum community relationships | Maximum internal relationships assembled for one community partition. | `20000` |
+| Maximum community boundary relationships | Maximum boundary relationships assembled for one community partition. | `10000` |
+| Maximum community summary characters | Maximum characters retained in one community summary. | `8000` |
+| Community adapter timeout milliseconds | Maximum time for one community-analysis request. | `30000` |
+| Semantic search lane cutoff milliseconds | Independent cutoff for optional semantic search lanes. Must not exceed the total search request timeout. | `2500` |
+| Query embedding concurrency | Maximum concurrent query-embedding requests per process. | `4` |
+| Query embedding cache entries | Maximum query-embedding cache entries per process. | `1000` |
+
+Start with the defaults. Lower chunk, community, or query-embedding limits when source-worker CPU or memory, model latency, or search latency rises. A failed optional semantic lane reports a safe semantic status while completed exact and lexical lanes can still return results.
+
+For a contracted knowledge base, the existing file-processing list reports GraphRAG processing, semantic reconciliation, embedding generation, affected graph and generated-content updates, and search publication. Search publication is the final required indexing gate: the file is not reported ready or visible until that stage succeeds. A knowledge base without a semantic contract remains usable for the base file-first workflow and reports that semantic maintenance is required instead of indexing only later uploads into a partial semantic corpus.
+
+## Embeddings
+
+Embedding configurations are managed in their own Settings tab and apply to both supported search providers. Use authenticated HTTPS endpoints for cloud services. Authentication mode `none` is limited to trusted local or private-network endpoints.
+
+| Setting | Purpose | Default or starting value |
+| --- | --- | --- |
+| Display name | Name shown in Admin UI. | Include provider and purpose. |
+| Authentication mode | `api_key` sends a server-side key; `none` uses no credential. | `api_key` |
+| Base URL | OpenAI-compatible embedding API base URL. | `https://api.openai.com/v1` |
+| API key | Server-side provider credential for `api_key` mode. | Required for `api_key`; never shown in full after save. |
+| Model name | Provider embedding-model identifier. | Match provider documentation exactly. |
+| Requested dimension | Optional output dimension requested from a compatible provider. | Empty to use the model's resolved dimension. |
+| Normalization | Vector normalization applied by Focowiki. | `l2`; `none` is also supported. |
+| Maximum input tokens | Maximum input budget declared for one embedding input. | `8192` |
+| Batch size | Maximum embedding inputs sent in one request. | `32` |
+| Timeout milliseconds | Maximum time for one embedding request. | `30000` |
+| Retry count | Maximum retries after a temporary provider failure. | `2` |
+| Minimum interval milliseconds | Minimum interval between provider requests. | `0` |
+| Concurrency | Maximum concurrent embedding requests. | `4` |
+| Maximum response bytes | Maximum accepted provider response size. | `8388608` |
+
+Create a configuration, use **Test** to validate the endpoint and resolved vector dimension, then use **Activate**. One exact active configuration revision is pinned to new semantic work. Editing a saved configuration creates a new revision; existing knowledge bases adopt that revision only after **Maintain index** completes. Compatible immutable embedding artifacts can be reused during provider-only maintenance without making the same model calls again.
+
+The table shows the resolved dimension, validation state, and lifecycle state as read-only status. Pause prevents new work from selecting the configuration. Resume makes a paused revision selectable again. Delete is blocked while a configuration revision is still referenced by active or in-progress work. Secrets remain redacted in lists, status, errors, logs, and API responses.
+
+## Reranker Models
+
+Reranking is optional and query-time only. The Reranker Settings tab stores the model connection, credential, identity, validation, lifecycle, timeout, retry, minimum interval, and concurrency. Create a configuration, use **Test**, then **Activate** it. Pausing, replacing, or deleting a Reranker does not rebuild a knowledge base or change its semantic generation. Missing, paused, or failed reranking leaves search available through deterministic hybrid ranking.
+
+Enter the provider base URL, such as `https://provider.example/v1`. Focowiki appends `/rerank` and sends the standard rerank request to `https://provider.example/v1/rerank`. Do not enter `/rerank` or `/v1/chat/completions` in this field; Chat Completions is not a supported Reranker protocol.
+
+The final result `limit`, `rerankTopK`, and `rerankScoreThreshold` are Developer OpenAPI request fields. They are intentionally absent from Admin Settings. `rerank` defaults to `false`; when enabled, the API sends only title, path, and limited source-grounded excerpts from already authorized candidates. The embedding cosine relevance threshold remains part of the active embedding query policy and is independent of the Reranker score threshold.
+
 ## Models
 
-Model assistance is optional. File processing, navigation, search, and relationships continue without an active model. Only one model can be active at a time.
+Generation-model assistance is optional for the base file-first workflow. File upload, navigation, exact and lexical search, and deterministic relationships continue without an active model. Semantic enrichment requires both an active generation model and an active, validated embedding configuration. Only one generation model can be active at a time.
 
 | Setting | Purpose | Recommended value |
 | --- | --- | --- |

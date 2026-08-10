@@ -92,6 +92,29 @@ describe("Admin knowledge-base index maintenance route", () => {
     });
   });
 
+  it("returns a safe conflict when semantic model configuration is incomplete", async () => {
+    const app = createRouteApp({
+      request: vi.fn(async () => ({
+        available: true as const,
+        result: {
+          outcome: "configuration_required" as const,
+          safeCode: "semantic_embedding_model_required"
+        }
+      }))
+    });
+
+    const response = await requestMaintenance(app, "request-semantic");
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "SEMANTIC_CONFIGURATION_REQUIRED",
+        messageKey: "errors.semanticConfigurationRequired",
+        safeCode: "semantic_embedding_model_required"
+      }
+    });
+  });
+
   it("returns the server-authoritative active request for a duplicate submission", async () => {
     const app = createRouteApp({
       request: vi.fn(async () => acceptedResult({
@@ -157,10 +180,28 @@ describe("Admin knowledge-base index maintenance route", () => {
       }
     });
   });
+
+  it("cancels active maintenance through authenticated write protection", async () => {
+    const cancel = vi.fn(async () => ({
+      available: true as const,
+      outcome: "cancelled" as const
+    }));
+    const app = createRouteApp({ cancel });
+
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-1/index-maintenance/cancel",
+      { method: "POST" }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ result: "cancelled" });
+    expect(cancel).toHaveBeenCalledWith({ knowledgeBaseId: "kb-1" });
+  });
 });
 
 function createRouteApp(options: {
   request?: StorageVnextAdminMaintenanceApplication["requestMaintenance"];
+  cancel?: StorageVnextAdminMaintenanceApplication["cancelMaintenance"];
   requireAuth?: Parameters<
     typeof registerAdminKnowledgeBaseIndexMaintenanceRoutes
   >[2]["requireAuth"];
@@ -170,7 +211,11 @@ function createRouteApp(options: {
     app,
     {
       application: {
-        requestMaintenance: options.request ?? (async () => acceptedResult())
+        requestMaintenance: options.request ?? (async () => acceptedResult()),
+        cancelMaintenance: options.cancel ?? (async () => ({
+          available: true as const,
+          outcome: "cancelled" as const
+        }))
       },
       audit: { record: vi.fn(async () => undefined) }
     },

@@ -108,12 +108,49 @@ async function main() {
   await validateGeneratedOperationTables();
   await validatePublicOpenApiCopy();
   await validateDocumentedRuntimeFacts();
+  await validateAgentSearchGuidance();
   await validateMarkdownLinks(markdownFiles);
   await validateLanguageStyle(markdownFiles);
   await validateCurrentArchitectureLanguage(markdownFiles);
   await validateSensitiveContent(markdownFiles);
   validateSafeContent("Developer OpenAPI contract", JSON.stringify(openApiDocument));
   console.log("Documentation validation passed.");
+}
+
+async function validateAgentSearchGuidance() {
+  for (const locale of locales) {
+    const adminSettingsPage = locale.name === "Simplified Chinese"
+      ? path.join(docsRoot, "zh-CN", "deployment", "admin-settings.md")
+      : path.join(docsRoot, "deployment", "admin-settings.md");
+    const content = (await Promise.all([
+      locale.openApiPage,
+      adminSettingsPage,
+      ...locale.agentIntegrationPages
+    ].map((file) => fs.readFile(file, "utf8")))).join("\n");
+    const required = locale.name === "Simplified Chinese"
+      ? ["完整独立问题", "最多执行两轮", "来源 Markdown", "rerankTopK",
+          "rerankScoreThreshold", "cosine"]
+      : ["standalone natural-language question", "at most two", "source Markdown",
+          "rerankTopK", "rerankScoreThreshold", "cosine"];
+    for (const phrase of required) {
+      if (!content.includes(phrase)) {
+        throw new Error(
+          `${locale.name} Agent search guidance is missing ${phrase}.`
+        );
+      }
+    }
+    for (const stale of [
+      "Do not send the full user question",
+      "one phrase at a time",
+      "Repeat breadth and depth while new evidence"
+    ]) {
+      if (content.includes(stale)) {
+        throw new Error(
+          `${locale.name} Agent search guidance retains stale phrase ${stale}.`
+        );
+      }
+    }
+  }
 }
 
 async function validateCurrentArchitectureLanguage(markdownFiles: string[]) {
@@ -538,12 +575,12 @@ async function validateGuideNavigation() {
   const config = await fs.readFile(vitePressConfigPath, "utf8");
   assertOrderedSnippets(config, [
     'text: "Open Knowledge Format", link: "/guide/open-knowledge-format"',
-    'text: "File-first Graph", link: "/guide/file-first-graph"',
+    'text: "Source Evidence and Graph", link: "/guide/file-first-graph"',
     'text: "File Cleaning and Ingestion Guide", link: "/guide/file-cleaning-ingestion"'
   ], "English guide sidebar");
   assertOrderedSnippets(config, [
     'text: "Google OKF 规范", link: "/zh-CN/guide/open-knowledge-format"',
-    'text: "文件优先图关系", link: "/zh-CN/guide/file-first-graph"',
+    'text: "来源证据与图关系", link: "/zh-CN/guide/file-first-graph"',
     'text: "文件清洗入库指南", link: "/zh-CN/guide/file-cleaning-ingestion"'
   ], "Simplified Chinese guide sidebar");
 }
@@ -580,6 +617,8 @@ async function validateDeploymentDocumentation() {
         Graph: 8,
         Maintenance: 15,
         Search: 13,
+        "Semantic Search": 12,
+        Embeddings: 14,
         Models: 11
       }
     },
@@ -596,6 +635,8 @@ async function validateDeploymentDocumentation() {
         图关系: 8,
         维护: 15,
         搜索: 13,
+        语义搜索: 12,
+        向量模型: 14,
         模型: 11
       }
     }

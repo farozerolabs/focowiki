@@ -149,8 +149,10 @@ export async function assembleStorageVnextExtensionNavigation(input: {
 
   const artifacts: StorageVnextPublicationArtifact[] = [];
   const internalShards: StorageVnextInternalShard[] = [];
+  const existingMarkdownPaths = new Set(input.navigation.existingMarkdownPaths);
   for (const rootPath of ["_index", "_graph"] as const) {
     if (!input.navigation.completeProfile
+      && existingMarkdownPaths.has(`${rootPath}/index.md`)
       && !familyMembershipChanged(rootPath, previousPresentDirectories, presentFamilies)) {
       continue;
     }
@@ -200,7 +202,7 @@ export async function assembleStorageVnextExtensionNavigation(input: {
         const familyIndexPath = `${familyDescriptor.familyPath}/index.md`;
         desiredAffectedPaths.add(familyIndexPath);
         if (input.navigation.completeProfile
-          || !previousPresentDirectories.has(directoryPath)) {
+          || !existingMarkdownPaths.has(familyIndexPath)) {
           addArtifact(
             artifacts,
             familyIndexPath,
@@ -215,6 +217,7 @@ export async function assembleStorageVnextExtensionNavigation(input: {
       const resourceIndexPath = `${directoryPath}/index.md`;
       desiredAffectedPaths.add(resourceIndexPath);
       if (input.navigation.completeProfile
+        || !existingMarkdownPaths.has(resourceIndexPath)
         || !sameResourceRoot(previousLeaves, leaves)) {
         addArtifact(artifacts, resourceIndexPath, kind,
           renderExtensionResourceRootMarkdown({
@@ -228,6 +231,7 @@ export async function assembleStorageVnextExtensionNavigation(input: {
         const leafPath = extensionLeafPath(directoryPath, leaf.id);
         desiredAffectedPaths.add(leafPath);
         if (input.navigation.completeProfile
+          || !existingMarkdownPaths.has(leafPath)
           || previousById.get(leaf.id)?.revision !== leaf.revision) {
           addArtifact(artifacts, leafPath, kind,
             renderExtensionLeafMarkdown({ directoryPath, leaf }));

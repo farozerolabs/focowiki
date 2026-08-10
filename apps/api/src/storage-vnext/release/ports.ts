@@ -15,12 +15,9 @@ export const MAX_STORAGE_VNEXT_CANDIDATE_DEPENDENCIES = 250_000;
 export const MAX_STORAGE_VNEXT_CANDIDATE_SHARDS = 50_000;
 export const MAX_STORAGE_VNEXT_RELEASE_WRITE_BATCH = 1_000;
 export const MAX_STORAGE_VNEXT_RELEASE_PAGE_SIZE = 1_000;
-
 export type StorageVnextReleaseRootRole = "active" | "candidate" | "rollback";
 export type StorageVnextCandidateState = "building" | "validating" | "ready";
-export type StorageVnextCandidateTerminalOutcome =
-  | "failed" | "cancelled" | "superseded" | "timed_out";
-
+export type StorageVnextCandidateTerminalOutcome = "failed" | "cancelled" | "superseded" | "timed_out";
 export type StorageVnextReleaseRoot = {
   publicId: StorageVnextPublicId;
   knowledgeBaseId: StorageVnextKnowledgeBaseId;
@@ -31,15 +28,14 @@ export type StorageVnextReleaseRoot = {
   createdAt: StorageVnextTimestamp;
   expiresAt: StorageVnextTimestamp | null;
 };
-
 export type StorageVnextCandidateChangedFact = {
-  kind: "knowledge_base" | "directory" | "source_file" | "source_revision" | "graph_node" | "graph_edge";
+  kind: "knowledge_base" | "directory" | "source_file" | "source_revision" | "graph_node" | "graph_edge" | "semantic_entity" | "semantic_relationship" | "semantic_evidence" | "semantic_reverse_reference" | "semantic_vector" | "semantic_community";
   publicId: StorageVnextPublicId;
   change: "created" | "updated" | "deleted";
 };
 
 export type StorageVnextCandidateDependency = {
-  kind: "path" | "ancestor" | "link" | "search" | "graph" | "index" | "schema" | "log" | "scope";
+  kind: "path" | "ancestor" | "link" | "search" | "graph" | "index" | "schema" | "log" | "scope" | "semantic" | "vector" | "community";
   publicId: StorageVnextPublicId;
   reasonCode: string;
 };
@@ -52,6 +48,7 @@ export type StorageVnextCandidateDelta = {
   expectedActiveRootPublicId: StorageVnextPublicId | null;
   expectedActiveRevision: StorageVnextRevision;
   state: StorageVnextCandidateState;
+  factRevision: StorageVnextRevision;
   changedFactCount: number;
   affectedDependencyCount: number;
   manifestChecksum: StorageVnextChecksum | null;
@@ -210,7 +207,10 @@ export type StorageVnextReleaseWritePort = {
   addCandidateCatalogEntries(input: { candidatePublicId: StorageVnextPublicId; entries: readonly StorageVnextReleaseCatalogEntry[] }): Promise<void>;
   addCandidateCatalogTombstones(input: { candidatePublicId: StorageVnextPublicId; logicalPaths: readonly string[] }): Promise<void>;
   replaceCandidateSummaries(input: { candidatePublicId: StorageVnextPublicId; directories: readonly StorageVnextDirectorySummary[]; knowledgeBase: StorageVnextKnowledgeBaseSummary }): Promise<void>;
-  markCandidateValidating(input: { candidatePublicId: StorageVnextPublicId }): Promise<boolean>;
+  markCandidateValidating(input: {
+    candidatePublicId: StorageVnextPublicId;
+    expectedFactRevision?: StorageVnextRevision;
+  }): Promise<boolean>;
   recordCandidateValidation(input: StorageVnextCandidateValidationReceipt): Promise<boolean>;
   markCandidateReady(input: { candidatePublicId: StorageVnextPublicId; manifestChecksum: StorageVnextChecksum }): Promise<boolean>;
   activateCandidate(input: {

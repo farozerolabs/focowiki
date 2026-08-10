@@ -172,19 +172,23 @@ curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
   --data-urlencode "path=pages/handbook/onboarding/guide.md"
 ```
 
-文件树接口支持按父路径浏览、模糊查找、类型筛选和分页。搜索接口返回带有 `fileId`、`path`、匹配信息和读取链接的文件。关系探索接口可以从文件或查询词继续查找相关文件，并返回可以通过文件正文接口读取的路径。
+文件树接口支持按父路径浏览、模糊查找、类型筛选和分页。搜索接口接受一个完整独立的自然语言问题；规范化后长度为 2 到 512 个字素簇，最多 2048 个 UTF-8 字节，并且不能包含不安全控制字符。省略 `mode` 时使用推荐的 `hybrid`。使用 `scope=all` 时，`file` 使用精确路径、有正文依据的标题、词法、Jieba 和正文向量证据；`graph` 使用精确路径、有正文依据的标题、文件关系以及实体、关系和社区向量；`hybrid` 同时使用两套计划。`scope=path` 只保留精确路径和标题证据，`scope=metadata` 只保留词法元数据证据。
+
+搜索只返回由上传文件生成且当前生效的 Markdown page 文件。`fileKind=page` 是默认值；`fileKind=all` 会移除显式类型条件，但当前返回相同的 page 文件集合。OKF 筛选是可选项，并且会排除没有相应有效 OKF 信号的文件；不需要限制结果时应省略这些筛选。`graphDepth=0` 只返回起点图引用，`1` 包含直接关系，`2` 可以在请求的 `graphFanout` 范围内包含第二层关系。搜索结果包含 `fileId`、`path`、实际匹配字段、安全证据类型、可用时的短来源摘要、状态和读取链接。
 
 搜索和关系结果用于导航。应用在输出答案前应继续读取返回的 Markdown 文件。
 
 ```bash
 curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/search" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "query=installation" \
+  --data-urlencode "query=如何安装、配置并验证这个知识库？" \
   --data-urlencode "mode=hybrid" \
   --data-urlencode "limit=10"
 ```
 
-搜索状态包括 `ok`、`no_candidates` 和 `index_unavailable`。`no_candidates` 只表示当前查询没有匹配结果，不能据此判断知识库中不存在相关内容。客户端可以缩短查询词、读取 `index.md`、浏览文件树或继续探索文件关系。
+搜索只返回 `searchStatus=ok` 或 `searchStatus=no_candidates`。`no_candidates` 只表示当前查询没有匹配结果，不能据此判断知识库中不存在相关内容；依赖服务失败时使用文档中的 503 或 504 错误结构。响应会返回稳定的语义检索和 Reranker 原因码，以及已完成、已降级证据类型的枚举。422 响应的顶层错误码为 `VALIDATION_ERROR`，`details.code` 来自该操作机器可读的 `x-validation-detail-codes`，例如 `FILE_SEARCH_QUERY_TOO_LONG`、`INVALID_FILE_SEARCH_KIND` 或 `INVALID_FILE_SEARCH_RERANK_CONTROLS`。
+
+重排默认关闭。单次请求设置 `rerank=true` 后使用 Admin 中当前生效的 Reranker；`rerankTopK` 只控制非精确候选窗口，`rerankScoreThreshold` 只筛选有效的非精确重排分数。这些字段不会修改由向量模型配置管理的 cosine 相关性阈值。Reranker 缺失或失败时会回退到确定性的混合排序，并返回安全的 `rerankerStatus`。搜索摘要、实体或关系标签、社区摘要和 Reranker 输出都只是发现线索；回答前必须通过 `readActions` 读取返回的来源 Markdown 正文。
 
 ## 管理已上传内容
 

@@ -80,7 +80,11 @@ export function createPostgresStorageVnextAdminProcessing(input: {
           input.maintenance.getStatus(request)
         ]);
       const sourceQueue = queueSummary(queues, ["source", "graph"], now);
-      const publicationQueue = queueSummary(queues, ["publication", "search"], now);
+      const publicationQueue = queueSummary(
+        queues,
+        ["publication", "search", "mutation"],
+        now
+      );
       const pending = pendingRows[0];
       const dirty = dirtyRows[0];
       const publication = publicationRows[0];

@@ -14,6 +14,13 @@ import type {
 } from "../../application/ports/search-provider-runtime.js";
 import { SearchProviderError } from
   "../../application/ports/search-provider-runtime.js";
+import { createMeilisearchVectorPort } from "./meilisearch-vector-port.js";
+import { createValidatedSearchProviderVectorPort } from
+  "../../semantic/vector/provider-contract.js";
+import type { LexicalTokenizer } from
+  "../../application/ports/lexical-tokenizer.js";
+import { normalizeMeilisearchQuery } from
+  "./meilisearch-query-normalization.js";
 
 const OPERATION_PREFIX = "meilisearch:";
 const CONTINUATION_PREFIX = "meilisearch-offset:";
@@ -21,7 +28,8 @@ const INDEX_CONTINUATION_PREFIX = "meilisearch-index-offset:";
 const TASK_CONTINUATION_PREFIX = "meilisearch-task-from:";
 
 export function createMeilisearchProviderRuntime(
-  transport: MeilisearchClientPort
+  transport: MeilisearchClientPort,
+  tokenizer?: LexicalTokenizer
 ): SearchProviderRuntime {
   const runtime: SearchProviderRuntime = {
     kind: "meilisearch" as const,
@@ -91,9 +99,18 @@ export function createMeilisearchProviderRuntime(
     query: {
       async query(input) {
         const offset = decodeContinuation(input.continuation);
+        let execution: ReturnType<typeof normalizeMeilisearchQuery>;
+        try {
+          execution = normalizeMeilisearchQuery({
+            request: input,
+            ...(tokenizer ? { tokenizer } : {})
+          });
+        } catch {
+          throw requestError();
+        }
         const result = await execute(() => transport.search({
           indexUid: input.indexUid,
-          query: input.query,
+          query: execution.query,
           filter: renderFilter(input.filters),
           limit: input.limit,
           offset,
@@ -101,7 +118,11 @@ export function createMeilisearchProviderRuntime(
           attributesToRetrieve: [...input.returnFields],
           attributesToCrop: input.cropLength > 0 ? ["searchText"] : [],
           cropLength: input.cropLength,
-          matchingStrategy: input.matchingStrategy,
+          showMatchesPosition: true,
+          matchingStrategy: execution.matchingStrategy,
+          ...(execution.matchingStrategy === "last"
+            ? { rankingScoreThreshold: 0.05 }
+            : {}),
           ...(input.distinctBy ? { distinct: input.distinctBy } : {})
         }));
         const hits = result.hits.map((hit, index) => normalizeHit(hit, offset + index));
@@ -162,6 +183,9 @@ export function createMeilisearchProviderRuntime(
             };
       }
     },
+    vector: createValidatedSearchProviderVectorPort(createMeilisearchVectorPort({
+      transport
+    })),
     maintenance: {
       async getPressure() {
         const pressure = await execute(() => transport.getPressure());
@@ -329,10 +353,19 @@ function normalizeHit(hit: Record<string, unknown>, ordinal: number): SearchProv
     title: stringValue(hit.title),
     normalizedScore: numberValue(hit._rankingScore) ?? 1 / (ordinal + 1),
     snippets: formattedSnippets(hit),
+    matchedFields: matchedFields(hit._matchesPosition),
     sortKey: [ordinal, documentId],
     continuationAfter: encodeContinuation(ordinal + 1),
     document
   };
+}
+
+function matchedFields(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([, positions]) => Array.isArray(positions) && positions.length > 0)
+    .map(([field]) => field)
+    .sort((left, right) => left.localeCompare(right, "en"));
 }
 
 function formattedSnippets(hit: Record<string, unknown>): string[] {

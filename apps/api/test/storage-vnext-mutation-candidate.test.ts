@@ -244,6 +244,7 @@ function candidate(publicId: string) {
     expectedActiveRootPublicId: null,
     expectedActiveRevision: 0,
     state: "building" as const,
+    factRevision: 1,
     changedFactCount: 0,
     affectedDependencyCount: 0,
     manifestChecksum: null,

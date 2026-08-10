@@ -42,6 +42,10 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { showAdminToast } from "@/hooks/use-admin-toast";
+import { EmbeddingSettingsPanel } from
+  "@/components/embedding-settings-panel";
+import { RerankerSettingsPanel } from
+  "@/components/reranker-settings-panel";
 import {
   activateRuntimeModel,
   createRuntimeModel,
@@ -54,6 +58,7 @@ import {
   updatePublicationSettings,
   updateRateLimitSettings,
   updateSearchSettings,
+  updateSemanticSettings,
   updateWorkerSettings,
   type ApiFailure,
   type GraphSettings,
@@ -62,6 +67,7 @@ import {
   type RateLimitSettings,
   type RuntimeModelConfig,
   type RuntimeSettingsResponse,
+  type SemanticSettings,
   type SearchSettings,
   type WorkerSettings
 } from "@/lib/admin-api";
@@ -152,6 +158,21 @@ const searchNumberFields = [
   "cropLength"
 ] as const satisfies readonly (keyof SearchSettings)[];
 
+const semanticNumberFields = [
+  "maximumChunkCharacters",
+  "maximumChunks",
+  "maximumEvidenceTargets",
+  "maximumCommunityPartitions",
+  "maximumCommunityEntities",
+  "maximumCommunityRelationships",
+  "maximumCommunityBoundaryRelationships",
+  "maximumCommunitySummaryCharacters",
+  "communityAdapterTimeoutMs",
+  "searchLaneCutoffMs",
+  "queryEmbeddingConcurrency",
+  "queryEmbeddingCacheEntries"
+] as const satisfies readonly (keyof SemanticSettings)[];
+
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
 
 const modelNumberFields = [
@@ -209,6 +230,11 @@ const searchTipItems = searchNumberFields.map((field) => ({
   descriptionKey: `settings.tips.search.${field}`
 }));
 
+const semanticTipItems = semanticNumberFields.map((field) => ({
+  labelKey: `settings.fields.${field}`,
+  descriptionKey: `settings.tips.semantic.${field}`
+}));
+
 const modelTipItems = [
   "displayName",
   "apiMode",
@@ -228,6 +254,7 @@ type PublicationField = (typeof publicationFields)[number];
 type GraphNumberField = (typeof graphNumberFields)[number];
 type MaintenanceNumberField = (typeof maintenanceNumberFields)[number];
 type SearchNumberField = (typeof searchNumberFields)[number];
+type SemanticNumberField = (typeof semanticNumberFields)[number];
 type ModelApiMode = (typeof modelApiModes)[number];
 type ModelNumberField = (typeof modelNumberFields)[number];
 
@@ -250,6 +277,7 @@ type EditableMaintenanceSettings = Record<MaintenanceNumberField, EditableNumber
     "reconciliationEnabled" | "knowledgeBaseMaintenanceMode"
   >;
 type EditableSearchSettings = Record<SearchNumberField, EditableNumber>;
+type EditableSemanticSettings = Record<SemanticNumberField, EditableNumber>;
 type EditableModelForm = {
   displayName: string;
   apiMode: ModelApiMode;
@@ -268,6 +296,7 @@ export function SettingsPanel() {
   const [graph, setGraph] = useState<EditableGraphSettings | null>(null);
   const [maintenance, setMaintenance] = useState<EditableMaintenanceSettings | null>(null);
   const [search, setSearch] = useState<EditableSearchSettings | null>(null);
+  const [semantic, setSemantic] = useState<EditableSemanticSettings | null>(null);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState("");
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
@@ -379,6 +408,17 @@ export function SettingsPanel() {
     await saveSettings("search", () => updateSearchSettings(payload));
   }
 
+  async function handleSemanticSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!semantic) return;
+    const payload = buildSemanticSettings(semantic, search);
+    if (!payload) {
+      showNumberValidationError();
+      return;
+    }
+    await saveSettings("semantic", () => updateSemanticSettings(payload));
+  }
+
   async function saveSettings(
     key: string,
     submit: () => Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure>
@@ -400,6 +440,7 @@ export function SettingsPanel() {
     setGraph(toEditableGraphSettings(result.settings.graph));
     setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
     setSearch(toEditableSearchSettings(result.settings.search));
+    setSemantic(toEditableSemanticSettings(result.settings.semantic));
     showAdminToast({ title: t("settings.toast.saveSuccess") });
   }
 
@@ -447,6 +488,7 @@ export function SettingsPanel() {
     setGraph(toEditableGraphSettings(result.settings.graph));
     setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
     setSearch(toEditableSearchSettings(result.settings.search));
+    setSemantic(toEditableSemanticSettings(result.settings.semantic));
   }
 
   function showNumberValidationError() {
@@ -526,6 +568,9 @@ export function SettingsPanel() {
                 <TabsTrigger value="graph">{t("settings.tabs.graph")}</TabsTrigger>
                 <TabsTrigger value="maintenance">{t("settings.tabs.maintenance")}</TabsTrigger>
                 <TabsTrigger value="search">{t("settings.tabs.search")}</TabsTrigger>
+                <TabsTrigger value="semantic">{t("settings.tabs.semantic")}</TabsTrigger>
+                <TabsTrigger value="embeddings">{t("settings.tabs.embeddings")}</TabsTrigger>
+                <TabsTrigger value="rerankers">{t("settings.tabs.rerankers")}</TabsTrigger>
                 <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
               </TabsList>
             </div>
@@ -743,6 +788,39 @@ export function SettingsPanel() {
                     </form>
                   </SettingsCard>
                   <PlainTips items={searchTipItems} />
+                </div>
+              ) : null}
+            </TabsContent>
+            <TabsContent value="semantic">
+              {semantic ? (
+                <div className="space-y-3">
+                  <SettingsCard
+                    title={t("settings.semantic.title")}
+                    description={t("settings.semantic.description")}
+                  >
+                    <form noValidate onSubmit={handleSemanticSave}>
+                      <FieldGroup>
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          {semanticNumberFields.map((field) => (
+                            <NumberField
+                              key={field}
+                              id={`semantic-${field}`}
+                              label={t(`settings.fields.${field}`)}
+                              min={semanticMinimum(field)}
+                              max={semanticMaximum(field)}
+                              value={semantic[field]}
+                              required
+                              onChange={(value) =>
+                                setSemantic({ ...semantic, [field]: value })
+                              }
+                            />
+                          ))}
+                        </div>
+                        <SaveButton isSaving={isSaving === "semantic"} />
+                      </FieldGroup>
+                    </form>
+                  </SettingsCard>
+                  <PlainTips items={semanticTipItems} />
                 </div>
               ) : null}
             </TabsContent>
@@ -1126,6 +1204,12 @@ export function SettingsPanel() {
                 <PlainTips items={modelTipItems} />
               </div>
             </TabsContent>
+            <TabsContent value="embeddings">
+              <EmbeddingSettingsPanel />
+            </TabsContent>
+            <TabsContent value="rerankers">
+              <RerankerSettingsPanel />
+            </TabsContent>
           </Tabs>
         )}
       </section>
@@ -1464,6 +1548,12 @@ function toEditableSearchSettings(settings: SearchSettings): EditableSearchSetti
   return { ...settings };
 }
 
+function toEditableSemanticSettings(
+  settings: SemanticSettings
+): EditableSemanticSettings {
+  return { ...settings };
+}
+
 function buildRateLimitSettings(input: EditableRateLimitSettings): RateLimitSettings | null {
   const adminLogin = buildRateLimitGroup(input.adminLogin);
   const adminApi = buildRateLimitGroup(input.adminApi);
@@ -1603,6 +1693,52 @@ function buildSearchSettings(input: EditableSearchSettings): SearchSettings | nu
   return settings as SearchSettings;
 }
 
+function buildSemanticSettings(
+  input: EditableSemanticSettings,
+  search: EditableSearchSettings | null
+): SemanticSettings | null {
+  const settings = buildNumberRecord(input, semanticNumberFields, 0);
+  if (!settings || !search) return null;
+  for (const field of semanticNumberFields) {
+    if (
+      settings[field] < semanticMinimum(field)
+      || settings[field] > semanticMaximum(field)
+    ) return null;
+  }
+  const requestTimeoutMs = readRequiredInteger(search.requestTimeoutMs);
+  if (requestTimeoutMs === null || settings.searchLaneCutoffMs > requestTimeoutMs) {
+    return null;
+  }
+  return settings as SemanticSettings;
+}
+
+function semanticMinimum(field: SemanticNumberField): number {
+  if (field === "maximumCommunityRelationships"
+    || field === "maximumCommunityBoundaryRelationships") return 0;
+  if (field === "maximumCommunitySummaryCharacters") return 256;
+  if (field === "communityAdapterTimeoutMs") return 100;
+  if (field === "searchLaneCutoffMs") return 50;
+  return 1;
+}
+
+function semanticMaximum(field: SemanticNumberField): number {
+  const values: Record<SemanticNumberField, number> = {
+    maximumChunkCharacters: 64_000,
+    maximumChunks: 32,
+    maximumEvidenceTargets: 256,
+    maximumCommunityPartitions: 256,
+    maximumCommunityEntities: 10_000,
+    maximumCommunityRelationships: 20_000,
+    maximumCommunityBoundaryRelationships: 10_000,
+    maximumCommunitySummaryCharacters: 65_536,
+    communityAdapterTimeoutMs: 300_000,
+    searchLaneCutoffMs: 3_000,
+    queryEmbeddingConcurrency: 32,
+    queryEmbeddingCacheEntries: 10_000
+  };
+  return values[field];
+}
+
 function isGraphDepth(value: number): value is GraphSettings["searchDefaultDepth"] {
   return value === 0 || value === 1 || value === 2;
 }
@@ -1654,12 +1790,13 @@ function buildModelPayload(
 
 function buildNumberRecord<TField extends string>(
   input: Record<TField, EditableNumber>,
-  fields: readonly TField[]
+  fields: readonly TField[],
+  minimum = 1
 ): Record<TField, number> | null {
   const output = {} as Record<TField, number>;
 
   for (const field of fields) {
-    const value = readRequiredInteger(input[field]);
+    const value = readRequiredInteger(input[field], minimum);
     if (value === null) {
       return null;
     }

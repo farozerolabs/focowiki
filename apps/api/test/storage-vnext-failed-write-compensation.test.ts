@@ -271,7 +271,13 @@ function registrationRepository(input: {
       return { items: registration ? [registration] : [], nextCursor: null };
     },
     async getClosure() {
-      return { objectId: descriptor.objectId, owners: [], ownerCount: 0, graceExpiresAt: null };
+      return {
+        objectId: descriptor.objectId,
+        owners: [],
+        ownerCount: 0,
+        referenceCount: 0,
+        graceExpiresAt: null
+      };
     },
     async listZeroOwnerObjects() { return { items: [], nextCursor: null }; },
     async listStaleReservations() {

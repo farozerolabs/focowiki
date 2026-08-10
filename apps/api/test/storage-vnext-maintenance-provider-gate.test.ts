@@ -6,6 +6,31 @@ import { createStorageVnextMaintenanceRequestService } from
   "../src/storage-vnext/maintenance/maintenance-coordinator.js";
 
 describe("storage vNext maintenance provider gate", () => {
+  it("reports maintenance required when the active semantic contract differs from the adoption target", async () => {
+    const sql = sqlFixture((source) => {
+      if (source.includes("operation_work_items AS work")) return [];
+      if (source.includes("root.navigation_profile_version")) {
+        return [{
+          navigation_profile_version: 1,
+          provider_kind: "opensearch",
+          semantic_maintenance_required: true
+        }];
+      }
+      if (source.includes("operation_results AS result")) return [];
+      return [];
+    });
+    const repository = createPostgresStorageVnextMaintenanceRepository(
+      sql as unknown as DatabaseClient,
+      { selectedSearchProviderKind: "opensearch" }
+    );
+
+    await expect(repository.getStatus({ knowledgeBaseId: "kb-semantic-gate" }))
+      .resolves.toMatchObject({
+        state: "idle",
+        maintenanceRequired: true
+      });
+  });
+
   it("reports maintenance required when the active projection uses another provider", async () => {
     const sql = sqlFixture((source) => {
       if (source.includes("operation_work_items AS work")) return [];

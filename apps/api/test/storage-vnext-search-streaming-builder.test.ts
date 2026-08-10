@@ -269,7 +269,7 @@ describe("storage vNext streamed search candidate builder", () => {
     });
     expect(casesByKind.get("graph_seed")).toMatchObject({
       minimumRecall: 1,
-      minimumNdcg: 1
+      minimumNdcg: 0
     });
   });
 
@@ -435,6 +435,140 @@ describe("storage vNext streamed search candidate builder", () => {
     expect(matrix.finish().find((item) => item.kind === "multi_term"))
       .toMatchObject({
         query: "source 非常明确的最长验证词语",
+        minimumRecall: 1,
+        minimumNdcg: 1
+      });
+  });
+
+  it("keeps every source containing the selected multi-term probe relevant", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-alpha",
+        sourceRevisionPublicId: "revision-alpha",
+        logicalPath: "pages/alpha.md",
+        fileKind: "page",
+        title: "Alpha",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "Alpha stableTerm"
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-beta",
+        sourceRevisionPublicId: "revision-beta",
+        logicalPath: "pages/beta.md",
+        fileKind: "page",
+        title: "Beta",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "Beta Alpha stableTerm"
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().find((item) => item.kind === "multi_term"))
+      .toMatchObject({
+        query: "Alpha stableTerm",
+        relevantSources: [
+          { sourceFilePublicId: "file-alpha", relevance: 3 },
+          { sourceFilePublicId: "file-beta", relevance: 3 }
+        ],
+        minimumRecall: 1,
+        minimumNdcg: 1
+      });
+  });
+
+  it("does not join multi-term relevance across separate source segments", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-alpha",
+        sourceRevisionPublicId: "revision-alpha",
+        logicalPath: "pages/alpha.md",
+        fileKind: "page",
+        title: "Alpha",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "Alpha stableTerm"
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-beta",
+        sourceRevisionPublicId: "revision-beta",
+        logicalPath: "pages/beta.md",
+        fileKind: "page",
+        title: "Beta",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "Alpha"
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-beta",
+        sourceRevisionPublicId: "revision-beta",
+        logicalPath: "pages/beta.md",
+        fileKind: "page",
+        title: "Beta",
+        contentKind: "segment",
+        segmentOrdinal: 1,
+        headingAncestors: [],
+        searchText: "stableTerm"
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().find((item) => item.kind === "multi_term"))
+      .toMatchObject({
+        query: "Alpha stableTerm",
+        relevantSources: [
+          { sourceFilePublicId: "file-alpha", relevance: 3 }
+        ],
+        minimumRecall: 1,
+        minimumNdcg: 1
+      });
+  });
+
+  it("keeps every same-segment mixed-script match relevant", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-alpha",
+        sourceRevisionPublicId: "revision-alpha",
+        logicalPath: "pages/alpha.md",
+        fileKind: "page",
+        title: "Alpha",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "Alpha 通用验证词"
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-beta",
+        sourceRevisionPublicId: "revision-beta",
+        logicalPath: "pages/beta.md",
+        fileKind: "page",
+        title: "BetaLong",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "BetaLong Alpha 通用验证词"
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().find((item) => item.kind === "mixed_script"))
+      .toMatchObject({
+        query: "通用验证词 Alpha",
+        relevantSources: [
+          { sourceFilePublicId: "file-alpha", relevance: 3 },
+          { sourceFilePublicId: "file-beta", relevance: 3 }
+        ],
         minimumRecall: 1,
         minimumNdcg: 1
       });
@@ -636,7 +770,7 @@ describe("storage vNext streamed search candidate builder", () => {
         query: "z-graph-evidence-a",
         relevantSources: [{ sourceFilePublicId: "file-shared-a", relevance: 3 }],
         minimumRecall: 1,
-        minimumNdcg: 1
+        minimumNdcg: 0
       });
   });
 
@@ -666,6 +800,30 @@ describe("storage vNext streamed search candidate builder", () => {
     expect(matrix.finish().find((item) => item.kind === "graph_seed"))
       .toMatchObject({
         query: "shared-relationship",
+        minimumRecall: 0,
+        minimumNdcg: 0
+      });
+  });
+
+  it("keeps shared content probes non-quantitative when no source-unique term exists", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const sourceFilePublicId of ["file-shared-a", "file-shared-b"]) {
+      matrix.observe(createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId,
+        sourceRevisionPublicId: `revision-${sourceFilePublicId}`,
+        logicalPath: `pages/shared/${sourceFilePublicId}.md`,
+        fileKind: "page",
+        title: "Shared architecture",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "shared architecture guidance"
+      }));
+    }
+
+    expect(matrix.finish().find((item) => item.kind === "content"))
+      .toMatchObject({
         minimumRecall: 0,
         minimumNdcg: 0
       });

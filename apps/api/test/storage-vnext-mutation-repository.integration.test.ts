@@ -10,6 +10,12 @@ import {
   createStorageVnextMutationReleaseHandoff,
   planStorageVnextMutationCandidate
 } from "../src/storage-vnext/mutation/candidate-planning.js";
+import { createPostgresStorageVnextMutationCandidatePreparer } from
+  "../src/storage-vnext/mutation/postgres-candidate-preparer.js";
+import type { SemanticSourceStageTarget } from
+  "../src/semantic/application/source-handoff.js";
+import { createPostgresSemanticFactRepository } from
+  "../src/semantic/infrastructure/postgres-fact-repository.js";
 import { createStorageVnextMutationCoordinator } from
   "../src/storage-vnext/mutation/mutation-coordinator.js";
 import { createStorageVnextMutationTerminalCoordinator } from
@@ -62,6 +68,24 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     lifecycleHooks: createPostgresStorageVnextMutationReleaseHooks()
   });
   const workflow = createPostgresStorageVnextWorkflowRepository(database);
+  const semanticFactRepository = createPostgresSemanticFactRepository(database);
+  const semanticFacts = {
+    ...semanticFactRepository,
+    replaceSourceFacts(
+      input: Parameters<typeof semanticFactRepository.replaceSourceFacts>[0]
+    ) {
+      return semanticFactRepository.replaceSourceFacts(input, {
+        extractionContractVersion: "extract-v1",
+        canonicalInputSha256: "e".repeat(64),
+        skeletonPolicyVersion: "semantic-skeleton-policy-v2",
+        skeletonSelected: true,
+        sourceChunkCount: 1,
+        selectedChunkCount: 1,
+        selectionReasons: ["stable_sample"],
+        selectionDecisionSha256: "f".repeat(64)
+      });
+    }
+  };
   const terminal = createStorageVnextMutationTerminalCoordinator({
     repository: mutations,
     releases,
@@ -108,6 +132,13 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       checksum: "7".repeat(64),
       byteCount: 9
     });
+    await seedActiveSemanticProjection({
+      knowledgeBaseId: "kb-mutation-move",
+      operationPublicId: "operation-semantic-move-active",
+      semanticGenerationPublicId: "semantic-move-active",
+      projectionContractPublicId: "projection-move-active",
+      embeddingRevisionPublicId: "embedding-revision-move-active"
+    });
     await sql`
       INSERT INTO focowiki.graph_nodes (
         public_id, knowledge_base_id, source_file_public_id,
@@ -145,23 +176,29 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       "kb-mutation-move"
     )).toBe(1);
 
-    const candidatePublicId = await prepareReadyCandidate({
+    const movePlan = planStorageVnextMutationCandidate({
       knowledgeBaseId: "kb-mutation-move",
       operationPublicId: request.operationPublicId,
-      plan: planStorageVnextMutationCandidate({
-        knowledgeBaseId: "kb-mutation-move",
-        operationPublicId: request.operationPublicId,
-        mutationKind: "rename",
-        targetKind: "source_file",
-        targetPublicId: "file-mutation-move",
-        sourceFilePublicIds: ["file-mutation-move"],
-        sourceLogicalPaths: ["Renamed.md"],
-        previousSourceLogicalPaths: ["Current.md"],
-        directoryLogicalPaths: [],
-        graphSourceFilePublicIds: ["file-mutation-move"],
-        graphEdgePublicIds: [],
-        maximumChangedFacts: 20,
-        maximumDependencies: 100
+      mutationKind: "rename",
+      targetKind: "source_file",
+      targetPublicId: "file-mutation-move",
+      sourceFilePublicIds: ["file-mutation-move"],
+      sourceLogicalPaths: ["Renamed.md"],
+      previousSourceLogicalPaths: ["Current.md"],
+      directoryLogicalPaths: [],
+      graphSourceFilePublicIds: ["file-mutation-move"],
+      graphEdgePublicIds: [],
+      maximumChangedFacts: 20,
+      maximumDependencies: 100
+    });
+    const candidatePublicId = await prepareReadyCandidateWithSemanticTarget({
+      knowledgeBaseId: "kb-mutation-move",
+      operationPublicId: request.operationPublicId,
+      plan: movePlan,
+      target: semanticTarget({
+        semanticGenerationPublicId: "semantic-move-active",
+        projectionContractPublicId: "projection-move-active",
+        embeddingRevisionPublicId: "embedding-revision-move-active"
       })
     });
 
@@ -202,6 +239,14 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       public_id: candidatePublicId,
       projection_role: "active"
     }]);
+    const semanticStageKinds = await sql<Array<{ stage_kind: string }>>`
+      SELECT stage_kind
+      FROM focowiki.semantic_stage_work_items
+      WHERE knowledge_base_id = 'kb-mutation-move'
+        AND operation_public_id = ${request.operationPublicId}
+      ORDER BY stage_kind COLLATE "C"
+    `;
+    expect(semanticStageKinds).toEqual([]);
   });
 
   it("moves one directory subtree atomically without rewriting unrelated files", async () => {
@@ -578,6 +623,103 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     });
   });
 
+  it("claims a mutation for terminal handling when a semantic stage failed", async () => {
+    const knowledgeBaseId = "kb-mutation-semantic-failure";
+    const sourceFilePublicId = "file-mutation-semantic-failure";
+    const sourceRevisionPublicId = "revision-mutation-semantic-failure";
+    const operationPublicId = "operation-mutation-semantic-failure";
+    const semanticGenerationPublicId = "semantic-mutation-semantic-failure";
+    const embeddingRevisionPublicId = "embedding-mutation-semantic-failure";
+    await seedKnowledgeBase(knowledgeBaseId);
+    await seedVerifiedObject(
+      "object-mutation-semantic-failure",
+      "6".repeat(64),
+      16
+    );
+    await seedSourceFile({
+      knowledgeBaseId,
+      sourceFilePublicId,
+      logicalPath: "Failure.md",
+      revision: 1,
+      sourceRevision: {
+        publicId: sourceRevisionPublicId,
+        objectId: "object-mutation-semantic-failure",
+        checksum: "6".repeat(64),
+        byteCount: 16
+      }
+    });
+    await seedActiveSemanticProjection({
+      knowledgeBaseId,
+      operationPublicId: "operation-semantic-failure-active",
+      semanticGenerationPublicId,
+      projectionContractPublicId: "projection-semantic-failure-active",
+      embeddingRevisionPublicId
+    });
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state
+      ) VALUES (
+        ${operationPublicId}, ${knowledgeBaseId}, 'source_replace', 'processing'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.operation_work_items (
+        operation_public_id, knowledge_base_id, work_kind, state,
+        operation_revision, settings_revision_public_id, attempt_count,
+        checkpoint
+      ) VALUES (
+        ${operationPublicId}, ${knowledgeBaseId}, 'mutation', 'queued',
+        0, 'settings-mutation-integration', 0,
+        ${sql.json({ semanticState: "ready" })}
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.operation_idempotency (
+        public_id, knowledge_base_id, idempotency_key, request_hash,
+        operation_public_id, expires_at, created_at
+      ) VALUES (
+        'idempotency-mutation-semantic-failure', ${knowledgeBaseId},
+        'mutation-semantic-failure', ${"5".repeat(64)},
+        ${operationPublicId}, '2027-08-02T00:00:00.000Z',
+        '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_stage_work_items (
+        public_id, knowledge_base_id, operation_public_id,
+        semantic_generation_public_id, source_file_public_id,
+        source_revision_public_id, stage_kind, partition_key,
+        extraction_contract_version,
+        embedding_configuration_revision_public_id, settings_snapshot,
+        state, attempt_count, maximum_attempts, safe_error_code,
+        completed_at
+      ) VALUES
+        (
+          'stage-mutation-semantic-failure-embedding', ${knowledgeBaseId},
+          ${operationPublicId}, ${semanticGenerationPublicId},
+          ${sourceFilePublicId}, ${sourceRevisionPublicId}, 'embedding',
+          'source', 'extract-v1', ${embeddingRevisionPublicId}, '{}'::jsonb,
+          'failed', 3, 3, 'semantic_stage_dependency_failed', now()
+        ),
+        (
+          'stage-mutation-semantic-failure-community', ${knowledgeBaseId},
+          ${operationPublicId}, ${semanticGenerationPublicId},
+          ${sourceFilePublicId}, ${sourceRevisionPublicId}, 'community',
+          'source', 'extract-v1', ${embeddingRevisionPublicId}, '{}'::jsonb,
+          'queued', 0, 3, NULL, NULL
+        )
+    `;
+
+    const claimed = await workflow.claim({
+      kinds: ["mutation"],
+      owner: "worker-semantic-failure",
+      limit: 1,
+      leaseExpiresAt: "2027-08-01T02:00:00.000Z"
+    });
+
+    expect(claimed.map((work) => work.publicId)).toEqual([operationPublicId]);
+  });
+
   it("activates one immutable replacement and releases the superseded source owner", async () => {
     await seedKnowledgeBase("kb-mutation-replace");
     await seedVerifiedObject("object-replace-current", "b".repeat(64), 12);
@@ -617,6 +759,89 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
         ${"b".repeat(64)}
       )
     `;
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state, completed_at
+      ) VALUES (
+        'operation-semantic-replace-active', 'kb-mutation-replace',
+        'maintenance', 'completed', '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_generations (
+        public_id, knowledge_base_id, operation_public_id, generation_role,
+        state, generation_model_configuration_public_id,
+        generation_model_configuration_revision,
+        extraction_contract_version, graph_schema_version,
+        prompt_contract_version, contract_fingerprint_sha256,
+        revision, activated_at
+      ) VALUES (
+        'semantic-replace-active', 'kb-mutation-replace',
+        'operation-semantic-replace-active', 'active', 'active',
+        'model-replace', 1, 'extract-v1', 'graph-v1', 'prompt-v1',
+        ${"d".repeat(64)}, 1, '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.model_configs (
+        public_id, provider, model, secret_reference, config,
+        enabled, revision, created_at, updated_at
+      ) VALUES (
+        'model-replace', 'openai-compatible', 'deepseek-v4-flash',
+        'runtime/model-replace', '{}'::jsonb, true, 1,
+        '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await seedSemanticProjectionContract({
+      knowledgeBaseId: "kb-mutation-replace",
+      semanticGenerationPublicId: "semantic-replace-active",
+      projectionContractPublicId: "projection-replace-active",
+      embeddingRevisionPublicId: "embedding-revision-replace-active"
+    });
+    await sql`
+      INSERT INTO focowiki.semantic_entities (
+        knowledge_base_id, semantic_generation_public_id, public_id,
+        canonical_key, entity_kind, label, description,
+        extraction_contract_version, confidence, provenance_kind, revision
+      ) VALUES (
+        'kb-mutation-replace', 'semantic-replace-active',
+        'entity-replace-active', 'concept:replace', 'concept', 'Replace',
+        NULL, 'extract-v1', 1, 'deterministic', 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_entity_observations (
+        knowledge_base_id, semantic_generation_public_id, entity_public_id,
+        source_file_public_id, source_revision_public_id, label, description,
+        aliases, extraction_contract_version, confidence, provenance_kind
+      ) VALUES (
+        'kb-mutation-replace', 'semantic-replace-active',
+        'entity-replace-active', 'file-mutation-replace',
+        'revision-replace-current', 'Replace', NULL, '[]'::jsonb,
+        'extract-v1', 1, 'deterministic'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_entity_partitions (
+        knowledge_base_id, semantic_generation_public_id,
+        entity_public_id, partition_key, input_version
+      ) VALUES (
+        'kb-mutation-replace', 'semantic-replace-active',
+        'entity-replace-active', 'partition-replace-active', 'input-old'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_dirty_partitions (
+        knowledge_base_id, semantic_generation_public_id, public_id,
+        partition_key, reason_kind, input_version, state, attempt_count,
+        lease_owner, lease_expires_at, revision
+      ) VALUES (
+        'kb-mutation-replace', 'semantic-replace-active',
+        'dirty-replace-active', 'partition-replace-active',
+        'entity_changed', 'input-old', 'processing', 1,
+        'community-old-worker', '2026-08-02T00:00:00.000Z', 1
+      )
+    `;
     const request = replaceRequest("replace", "kb-mutation-replace");
 
     await expect(coordinator.acceptMutation(request)).resolves.toMatchObject({
@@ -629,26 +854,47 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       { public_id: "revision-replace-next", revision_role: "candidate" }
     ]);
 
-    const candidatePublicId = await prepareReadyCandidate({
+    const replacementPlan = planStorageVnextMutationCandidate({
       knowledgeBaseId: "kb-mutation-replace",
       operationPublicId: request.operationPublicId,
-      plan: planStorageVnextMutationCandidate({
-        knowledgeBaseId: "kb-mutation-replace",
-        operationPublicId: request.operationPublicId,
-        mutationKind: "replacement",
-        targetKind: "source_file",
-        targetPublicId: "file-mutation-replace",
-        candidateRevisionPublicId: "revision-replace-next",
-        sourceFilePublicIds: ["file-mutation-replace"],
-        sourceLogicalPaths: ["Replace.md"],
-        previousSourceLogicalPaths: ["Replace.md"],
-        directoryLogicalPaths: [],
-        graphSourceFilePublicIds: ["file-mutation-replace"],
-        graphEdgePublicIds: [],
-        maximumChangedFacts: 20,
-        maximumDependencies: 100
+      mutationKind: "replacement",
+      targetKind: "source_file",
+      targetPublicId: "file-mutation-replace",
+      candidateRevisionPublicId: "revision-replace-next",
+      sourceFilePublicIds: ["file-mutation-replace"],
+      sourceLogicalPaths: ["Replace.md"],
+      previousSourceLogicalPaths: ["Replace.md"],
+      directoryLogicalPaths: [],
+      graphSourceFilePublicIds: ["file-mutation-replace"],
+      graphEdgePublicIds: [],
+      maximumChangedFacts: 20,
+      maximumDependencies: 100
+    });
+    const candidatePublicId = await prepareReadyCandidateWithSemanticTarget({
+      knowledgeBaseId: "kb-mutation-replace",
+      operationPublicId: request.operationPublicId,
+      plan: replacementPlan,
+      target: semanticTarget({
+        semanticGenerationPublicId: "semantic-replace-active",
+        projectionContractPublicId: "projection-replace-active",
+        embeddingRevisionPublicId: "embedding-revision-replace-active"
       })
     });
+    await semanticFacts.replaceSourceFacts(replacementSemanticFacts(
+      "revision-replace-next",
+      "Replacement"
+    ));
+    await expect(sql<Array<{ label: string }>>`
+      SELECT label FROM focowiki.semantic_entities
+      WHERE semantic_generation_public_id = 'semantic-replace-active'
+        AND public_id = 'entity-replace-active'
+    `).resolves.toEqual([{ label: "Replace" }]);
+    await expect(sql<Array<{ count: string }>>`
+      SELECT count(*) AS count
+      FROM focowiki.semantic_entity_observations
+      WHERE semantic_generation_public_id = 'semantic-replace-active'
+        AND entity_public_id = 'entity-replace-active'
+    `).resolves.toEqual([{ count: "2" }]);
     const mutation = await readPostgresStorageVnextMutationCandidateOverlay(
       database,
       {
@@ -725,29 +971,106 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       sourceRevisionPublicId: "revision-replace-next",
       evidence: [expect.objectContaining({ checksum: "c".repeat(64) })]
     });
+    await expect(releases.activateCandidate(activationRequest({
+      knowledgeBaseId: "kb-mutation-replace",
+      candidatePublicId,
+      operationPublicId: request.operationPublicId
+    }))).rejects.toMatchObject({
+      code: "semantic_publication_barrier_incomplete"
+    });
+    expect(await currentRevision("kb-mutation-replace", "file-mutation-replace"))
+      .toBe("revision-replace-current");
+    await completeSemanticStages(request.operationPublicId);
     await releases.activateCandidate(activationRequest({
       knowledgeBaseId: "kb-mutation-replace",
       candidatePublicId,
       operationPublicId: request.operationPublicId
     }));
+    await expect(sql<Array<{ label: string }>>`
+      SELECT label FROM focowiki.semantic_entities
+      WHERE semantic_generation_public_id = 'semantic-replace-active'
+        AND public_id = 'entity-replace-active'
+    `).resolves.toEqual([{ label: "Replacement" }]);
+    await expect(sql<Array<{ source_revision_public_id: string }>>`
+      SELECT source_revision_public_id
+      FROM focowiki.semantic_entity_observations
+      WHERE semantic_generation_public_id = 'semantic-replace-active'
+        AND entity_public_id = 'entity-replace-active'
+    `).resolves.toEqual([{
+      source_revision_public_id: "revision-replace-next"
+    }]);
+
+    const semanticStages = await sql<Array<{
+      stage_kind: string;
+      source_revision_public_id: string;
+      embedding_configuration_revision_public_id: string;
+      settings_snapshot: Record<string, unknown>;
+    }>>`
+      SELECT stage_kind, source_revision_public_id,
+             embedding_configuration_revision_public_id, settings_snapshot
+      FROM focowiki.semantic_stage_work_items
+      WHERE knowledge_base_id = 'kb-mutation-replace'
+        AND operation_public_id = ${request.operationPublicId}
+      ORDER BY CASE stage_kind
+        WHEN 'extraction' THEN 1 WHEN 'reconciliation' THEN 2
+        WHEN 'community' THEN 3 WHEN 'embedding' THEN 4
+        WHEN 'vector' THEN 5 WHEN 'publication' THEN 6 ELSE 100 END
+    `;
+    expect(semanticStages.map((stage) => stage.stage_kind)).toEqual([
+      "extraction", "reconciliation", "community", "embedding",
+      "vector", "publication"
+    ]);
+    expect(semanticStages.every((stage) =>
+      stage.source_revision_public_id === "revision-replace-next"
+      && stage.embedding_configuration_revision_public_id
+        === "embedding-revision-replace-active"
+      && stage.settings_snapshot.projectionContractPublicId
+        === "projection-replace-active"
+    )).toBe(true);
 
     expect(await currentRevision("kb-mutation-replace", "file-mutation-replace"))
       .toBe("revision-replace-next");
     expect(await revisionRoles("kb-mutation-replace")).toEqual([
+      { public_id: "revision-replace-current", revision_role: "rollback" },
       { public_id: "revision-replace-next", revision_role: "current" }
     ]);
+    await expect(sql<Array<{
+      state: string;
+      lease_owner: string | null;
+      safe_error_code: string | null;
+    }>>`
+      SELECT state, lease_owner, safe_error_code
+      FROM focowiki.semantic_dirty_partitions
+      WHERE public_id = 'dirty-replace-active'
+    `).resolves.toEqual([{
+      state: "superseded",
+      lease_owner: null,
+      safe_error_code: "semantic_partition_superseded"
+    }]);
     const activatedSource = await sql<Array<{
       title: string;
       metadata: Record<string, unknown>;
+      model_invocation_source_revision_public_id: string | null;
+      model_invocation_status: string | null;
+      model_invocation_model_name: string | null;
+      model_invocation_started_at: Date | null;
+      model_invocation_ended_at: Date | null;
     }>>`
-      SELECT title, metadata
+      SELECT title, metadata, model_invocation_source_revision_public_id,
+             model_invocation_status, model_invocation_model_name,
+             model_invocation_started_at, model_invocation_ended_at
       FROM focowiki.source_files
       WHERE knowledge_base_id = 'kb-mutation-replace'
         AND public_id = 'file-mutation-replace'
     `;
     expect(activatedSource).toEqual([{
       title: "Replacement guide",
-      metadata: { okf_version: "0.2", status: "draft" }
+      metadata: { okf_version: "0.2", status: "draft" },
+      model_invocation_source_revision_public_id: "revision-replace-next",
+      model_invocation_status: "completed",
+      model_invocation_model_name: "deepseek-v4-flash",
+      model_invocation_started_at: new Date("2026-08-01T02:00:00.000Z"),
+      model_invocation_ended_at: new Date("2026-08-01T02:00:30.000Z")
     }]);
     const activatedGraph = await sql<Array<{
       source_revision_public_id: string;
@@ -782,10 +1105,16 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
         AND owner_kind = 'source_revision'
       ORDER BY object_id
     `;
-    expect(owners).toEqual([{
-      object_id: "object-replace-next",
-      source_revision_public_id: "revision-replace-next"
-    }]);
+    expect(owners).toEqual([
+      {
+        object_id: "object-replace-current",
+        source_revision_public_id: "revision-replace-current"
+      },
+      {
+        object_id: "object-replace-next",
+        source_revision_public_id: "revision-replace-next"
+      }
+    ]);
     const replacementObjects = await sql<Array<{ count: string }>>`
       SELECT count(*)::text AS count
       FROM focowiki.object_registrations
@@ -796,7 +1125,7 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       SELECT zero_owner_since FROM focowiki.object_registrations
       WHERE object_id = 'object-replace-current'
     `;
-    expect(oldObject[0]?.zero_owner_since).toBeInstanceOf(Date);
+    expect(oldObject[0]?.zero_owner_since).toBeNull();
     await expect(coordinator.acceptMutation({
       ...replaceRequest("unchanged-replace", "kb-mutation-replace"),
       expectedResourceRevision: 8,
@@ -927,10 +1256,82 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       idempotency,
       createdAt: "2026-08-01T02:00:00.000Z"
     });
-    const candidate = await releases.getLiveCandidate(input.knowledgeBaseId);
-    expect(candidate?.publicId).toBe(result.candidatePublicId);
-    await releases.replaceCandidateSummaries({
+    await markCandidateReady({
+      knowledgeBaseId: input.knowledgeBaseId,
       candidatePublicId: result.candidatePublicId,
+      plan: input.plan
+    });
+    return result.candidatePublicId;
+  }
+
+  async function completeSemanticStages(operationPublicId: string): Promise<void> {
+    await sql`
+      UPDATE focowiki.semantic_stage_work_items
+      SET state = 'completed', completed_at = '2026-08-01T02:00:30.000Z',
+          updated_at = '2026-08-01T02:00:30.000Z',
+          checkpoint = CASE WHEN stage_kind = 'extraction'
+            THEN checkpoint || '{"reconciliationState":"created"}'::jsonb
+            ELSE checkpoint END
+      WHERE operation_public_id = ${operationPublicId}
+        AND state IN ('queued', 'retry')
+    `;
+  }
+
+  async function prepareReadyCandidateWithSemanticTarget(input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    plan: ReturnType<typeof planStorageVnextMutationCandidate>;
+    target: SemanticSourceStageTarget;
+  }): Promise<string> {
+    const owner = `mutation-preparer-${input.operationPublicId}`;
+    const claimed = await workflow.claim({
+      kinds: ["mutation"],
+      owner,
+      limit: 1,
+      leaseExpiresAt: "2027-08-01T02:00:00.000Z"
+    });
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.publicId).toBe(input.operationPublicId);
+    const preparer = createPostgresStorageVnextMutationCandidatePreparer({
+      sql: database,
+      releases,
+      clock: () => "2026-08-01T02:00:00.000Z",
+      semanticTargets: {
+        resolve: async () => ({ state: "ready", target: input.target, safeCode: null })
+      }
+    });
+    const prepared = await preparer.prepare({ work: claimed[0]! });
+    expect(prepared.checkpoint).toMatchObject({
+      phase: "planning",
+      semanticState: "ready",
+      semanticGenerationPublicId: input.target.semanticGenerationPublicId
+    });
+    await workflow.saveCheckpoint({
+      publicId: input.operationPublicId,
+      owner,
+      checkpoint: prepared.checkpoint
+    });
+    await preparer.ensureSemanticStages({
+      work: { ...claimed[0]!, checkpoint: prepared.checkpoint }
+    });
+    const candidatePublicId = String(prepared.checkpoint.candidatePublicId);
+    await markCandidateReady({
+      knowledgeBaseId: input.knowledgeBaseId,
+      candidatePublicId,
+      plan: input.plan
+    });
+    return candidatePublicId;
+  }
+
+  async function markCandidateReady(input: {
+    knowledgeBaseId: string;
+    candidatePublicId: string;
+    plan: ReturnType<typeof planStorageVnextMutationCandidate>;
+  }): Promise<void> {
+    const candidate = await releases.getLiveCandidate(input.knowledgeBaseId);
+    expect(candidate?.publicId).toBe(input.candidatePublicId);
+    await releases.replaceCandidateSummaries({
+      candidatePublicId: input.candidatePublicId,
       directories: [],
       knowledgeBase: {
         sourceFileCount: input.plan.affectedSourceFilePublicIds.length,
@@ -949,21 +1350,21 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
         document_checksum_sha256, revision, document_count,
         next_batch_ordinal, state, created_at, updated_at
       ) VALUES (
-        ${result.candidatePublicId}, ${input.knowledgeBaseId}, 'candidate',
+        ${input.candidatePublicId}, ${input.knowledgeBaseId}, 'candidate',
         'meilisearch',
-        ${`svnext_mutation_${result.candidatePublicId}`}, ${"d".repeat(64)},
+        ${`svnext_mutation_${input.candidatePublicId}`}, ${"d".repeat(64)},
         ${"e".repeat(64)}, ${"f".repeat(64)}, 1, 0, 0, 'ready',
         '2026-08-01T02:00:00.000Z', '2026-08-01T02:00:00.000Z'
       )
     `;
     expect(await releases.markCandidateValidating({
-      candidatePublicId: result.candidatePublicId
+      candidatePublicId: input.candidatePublicId
     })).toBe(true);
     const linkCount = input.plan.dependencies.filter((item) => item.kind === "link").length;
     expect(await releases.recordCandidateValidation({
-      candidatePublicId: result.candidatePublicId,
+      candidatePublicId: input.candidatePublicId,
       manifestChecksum: "1".repeat(64),
-      searchProjectionPublicId: result.candidatePublicId,
+      searchProjectionPublicId: input.candidatePublicId,
       objectOwnerCount: 0,
       searchDocumentCount: 0,
       graphNodeCount: 0,
@@ -980,10 +1381,9 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       validatedAt: "2026-08-01T02:01:00.000Z"
     })).toBe(true);
     expect(await releases.markCandidateReady({
-      candidatePublicId: result.candidatePublicId,
+      candidatePublicId: input.candidatePublicId,
       manifestChecksum: "1".repeat(64)
     })).toBe(true);
-    return result.candidatePublicId;
   }
 
   async function seedKnowledgeBase(knowledgeBaseId: string) {
@@ -1152,6 +1552,90 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     return rows[0];
   }
 
+  async function seedSemanticProjectionContract(input: {
+    knowledgeBaseId: string;
+    semanticGenerationPublicId: string;
+    projectionContractPublicId: string;
+    embeddingRevisionPublicId: string;
+  }): Promise<void> {
+    const embeddingPublicId = `embedding-${input.semanticGenerationPublicId}`;
+    await sql`
+      INSERT INTO focowiki.embedding_configurations (
+        public_id, display_name, lifecycle_status,
+        active_revision_public_id, revision
+      ) VALUES (
+        ${embeddingPublicId}, 'Mutation integration embedding',
+        'draft', NULL, 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.embedding_configuration_revisions (
+        public_id, configuration_public_id, revision_number,
+        authentication_mode, base_url, encrypted_api_key, model_name,
+        requested_dimension, resolved_dimension, normalization,
+        maximum_input_tokens, batch_size, timeout_ms, retry_count,
+        minimum_interval_ms, concurrency, maximum_response_bytes,
+        minimum_vector_relevance, vector_producing_revision_public_id,
+        validation_status, validation_fingerprint_sha256,
+        safe_validation_error_code, validated_at
+      ) VALUES (
+        ${input.embeddingRevisionPublicId}, ${embeddingPublicId}, 1,
+        'none', 'http://embedding.test/v1', NULL, 'embedding-test',
+        3, 3, 'l2', 8192, 16, 5000, 1, 0, 2, 1048576,
+        0.7, ${input.embeddingRevisionPublicId},
+        'valid', ${"9".repeat(64)}, NULL, '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_projection_contracts (
+        public_id, knowledge_base_id, semantic_generation_public_id,
+        embedding_configuration_revision_public_id,
+        embedding_query_policy_revision_public_id, minimum_vector_relevance,
+        search_provider_kind,
+        resolved_dimension, normalization, artifact_schema_version,
+        vector_schema_version, mapping_fingerprint_sha256
+      ) VALUES (
+        ${input.projectionContractPublicId}, ${input.knowledgeBaseId},
+        ${input.semanticGenerationPublicId}, ${input.embeddingRevisionPublicId},
+        ${input.embeddingRevisionPublicId}, 0.7, 'opensearch', 3, 'l2',
+        'artifact-v1', 'vector-v1', ${"8".repeat(64)}
+      )
+    `;
+  }
+
+  async function seedActiveSemanticProjection(input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    semanticGenerationPublicId: string;
+    projectionContractPublicId: string;
+    embeddingRevisionPublicId: string;
+  }): Promise<void> {
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state, completed_at
+      ) VALUES (
+        ${input.operationPublicId}, ${input.knowledgeBaseId},
+        'maintenance', 'completed', '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_generations (
+        public_id, knowledge_base_id, operation_public_id, generation_role,
+        state, generation_model_configuration_public_id,
+        generation_model_configuration_revision,
+        extraction_contract_version, graph_schema_version,
+        prompt_contract_version, contract_fingerprint_sha256,
+        revision, activated_at
+      ) VALUES (
+        ${input.semanticGenerationPublicId}, ${input.knowledgeBaseId},
+        ${input.operationPublicId}, 'active', 'active', 'model-replace', 1,
+        'extract-v1', 'graph-v1', 'prompt-v1', ${"7".repeat(64)},
+        1, '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await seedSemanticProjectionContract(input);
+  }
+
   async function currentRevision(knowledgeBaseId: string, sourceFilePublicId: string) {
     const rows = await sql<Array<{ source_revision_public_id: string }>>`
       SELECT source_revision_public_id
@@ -1285,6 +1769,93 @@ function activationRequest(input: {
     eventPublicId: `event-${input.operationPublicId}`,
     eventExpiresAt: "2026-09-01T02:00:00.000Z",
     activatedAt: "2026-08-01T02:02:00.000Z"
+  };
+}
+
+function semanticTarget(input: {
+  semanticGenerationPublicId: string;
+  projectionContractPublicId: string;
+  embeddingRevisionPublicId: string;
+}): SemanticSourceStageTarget {
+  return {
+    semanticGenerationPublicId: input.semanticGenerationPublicId,
+    extractionContractVersion: "extract-v1",
+    embeddingConfigurationRevisionPublicId: input.embeddingRevisionPublicId,
+    settingsSnapshot: {
+      runtimeSettingsRevisionPublicId: "settings-mutation-integration",
+      generationModelConfigurationPublicId: "model-replace",
+      generationModelConfigurationRevision: 1,
+      embeddingConfigurationRevisionPublicId: input.embeddingRevisionPublicId,
+      projectionContractPublicId: input.projectionContractPublicId,
+      semanticGenerationRole: "active",
+      searchProviderKind: "opensearch",
+      resolvedDimension: 3,
+      normalization: "l2",
+      graphSchemaVersion: "graph-v1",
+      promptContractVersion: "prompt-v1",
+      mappingFingerprintSha256: "8".repeat(64),
+      maximumChunkCharacters: 16_000,
+      maximumChunks: 32,
+      maximumEmbeddingCharacters: 32_000,
+      maximumEvidenceTargets: 64,
+      maximumCommunityPartitions: 256,
+      maximumCommunityEntities: 10_000,
+      maximumCommunityRelationships: 20_000,
+      maximumCommunityBoundaryRelationships: 10_000,
+      maximumCommunitySummaryCharacters: 8_000,
+      communityAdapterTimeoutMs: 30_000,
+    publicationDelayMilliseconds: 0,
+    publicationMaximumDelayMilliseconds: 0,
+      maximumSourceBytes: 16_777_216,
+      vectorBatchDocumentCount: 100
+    },
+    maximumAttempts: 3
+  };
+}
+
+function replacementSemanticFacts(
+  sourceRevisionPublicId: string,
+  label: string
+): any {
+  return {
+    knowledgeBaseId: "kb-mutation-replace",
+    semanticGenerationPublicId: "semantic-replace-active",
+    sourceFilePublicId: "file-mutation-replace",
+    sourceRevisionPublicId,
+    entities: [{
+      publicId: "entity-replace-active",
+      canonicalKey: "concept:replace",
+      kind: "concept",
+      label,
+      description: `${label} description`,
+      aliases: [label],
+      extractionContractVersion: "extract-v1",
+      confidence: 1,
+      provenance: "deterministic",
+      revision: 1
+    }],
+    evidence: [{
+      publicId: `semantic-evidence-${sourceRevisionPublicId}`,
+      sourceFilePublicId: "file-mutation-replace",
+      sourceRevisionPublicId,
+      logicalPath: "pages/Replace.md",
+      startOffset: 0,
+      endOffset: 11,
+      excerptChecksumSha256: "e".repeat(64),
+      extractionContractVersion: "extract-v1"
+    }],
+    mentions: [{
+      publicId: `semantic-mention-${sourceRevisionPublicId}`,
+      entityPublicId: "entity-replace-active",
+      evidencePublicId: `semantic-evidence-${sourceRevisionPublicId}`,
+      sourceFilePublicId: "file-mutation-replace",
+      sourceRevisionPublicId,
+      text: label,
+      confidence: 1
+    }],
+    relationships: [],
+    communities: [],
+    communityReports: []
   };
 }
 

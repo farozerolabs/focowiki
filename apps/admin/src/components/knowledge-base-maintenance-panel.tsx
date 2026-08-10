@@ -19,6 +19,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { showAdminToast } from "@/hooks/use-admin-toast";
 import {
+  cancelKnowledgeBaseIndexMaintenance,
   requestKnowledgeBaseIndexMaintenance,
   type ProcessingSummary
 } from "@/lib/admin-api";
@@ -34,6 +35,7 @@ export function KnowledgeBaseMaintenancePanel({
 }) {
   const { t, i18n } = useTranslation();
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [confirmationAction, setConfirmationAction] = useState<"start" | "cancel">("start");
   const [submitting, setSubmitting] = useState(false);
   const maintenance = summary?.indexMaintenance ?? null;
   const active = maintenance?.active ?? false;
@@ -66,6 +68,27 @@ export function KnowledgeBaseMaintenancePanel({
     await onRefresh();
   }
 
+  async function cancel() {
+    setSubmitting(true);
+    const result = await cancelKnowledgeBaseIndexMaintenance({ knowledgeBaseId });
+    setSubmitting(false);
+    setConfirmationOpen(false);
+    if ("messageKey" in result) {
+      showAdminToast({
+        title: t("indexMaintenance.toast.cancelFailed"),
+        description: t(result.messageKey),
+        variant: "destructive"
+      });
+    } else {
+      showAdminToast({
+        title: result.result === "cancelled"
+          ? t("indexMaintenance.toast.cancelled")
+          : t("indexMaintenance.toast.notActive")
+      });
+    }
+    await onRefresh();
+  }
+
   return (
     <>
       <div className="h-full overflow-y-auto">
@@ -89,11 +112,14 @@ export function KnowledgeBaseMaintenancePanel({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  disabled={active || submitting || !summary}
-                  onClick={() => setConfirmationOpen(true)}
+                  disabled={submitting || !summary}
+                  onClick={() => {
+                    setConfirmationAction(active ? "cancel" : "start");
+                    setConfirmationOpen(true);
+                  }}
                 >
                   <RefreshCwIcon data-icon="inline-start" />
-                  {active ? t("indexMaintenance.running") : t("indexMaintenance.action")}
+                  {active ? t("indexMaintenance.cancelAction") : t("indexMaintenance.action")}
                 </Button>
               </div>
               <Separator />
@@ -160,17 +186,32 @@ export function KnowledgeBaseMaintenancePanel({
       <AlertDialog open={confirmationOpen} onOpenChange={setConfirmationOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t("indexMaintenance.confirmTitle")}</AlertDialogTitle>
+            <AlertDialogTitle>{t(
+              confirmationAction === "cancel"
+                ? "indexMaintenance.cancelConfirmTitle"
+                : "indexMaintenance.confirmTitle"
+            )}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t("indexMaintenance.confirmDescription")}
+              {t(
+                confirmationAction === "cancel"
+                  ? "indexMaintenance.cancelConfirmDescription"
+                  : "indexMaintenance.confirmDescription"
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction disabled={submitting} onClick={() => void submit()}>
+            <AlertDialogAction
+              disabled={submitting}
+              onClick={() => void (confirmationAction === "cancel" ? cancel() : submit())}
+            >
               {submitting
-                ? t("indexMaintenance.submitting")
-                : t("indexMaintenance.confirmAction")}
+                ? t(confirmationAction === "cancel"
+                    ? "indexMaintenance.cancelling"
+                    : "indexMaintenance.submitting")
+                : t(confirmationAction === "cancel"
+                    ? "indexMaintenance.cancelConfirmAction"
+                    : "indexMaintenance.confirmAction")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -199,6 +240,14 @@ function maintenanceStageLabel(
   if (stage === "compaction") return translate("indexMaintenance.stages.compaction");
   if (stage === "validating") return translate("indexMaintenance.stages.validating");
   if (stage === "retrying") return translate("indexMaintenance.stages.retrying");
+  if (stage === "search_rebuild") return translate("indexMaintenance.stages.search");
+  if (stage === "projection_repair" || stage === "object_reconciliation") {
+    return translate("indexMaintenance.stages.projection");
+  }
+  if (stage === "catch_up") return translate("indexMaintenance.stages.catchUp");
+  if (stage === "validation") return translate("indexMaintenance.stages.validating");
+  if (stage === "activation") return translate("indexMaintenance.stages.activating");
+  if (stage === "cleanup") return translate("indexMaintenance.stages.cleanup");
   return translate("indexMaintenance.stages.preparing");
 }
 

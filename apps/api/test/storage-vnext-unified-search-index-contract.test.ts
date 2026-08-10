@@ -12,12 +12,15 @@ function read(path: string): string {
 }
 
 describe("storage vNext unified search index contract", () => {
-  it("keeps one active and one candidate identity per knowledge base", () => {
+  it("keeps one active and one live candidate while retaining failed cleanup owners", () => {
     const migration = read("apps/api/migrations/001_storage_vnext.sql").toLowerCase();
 
     expect(migration).not.toContain("search_kind");
     expect(migration).toContain(
-      "search_projections_role_key unique (knowledge_base_id, projection_role)"
+      "create unique index search_projections_active_role_uniq_idx on focowiki.search_projections (knowledge_base_id) where projection_role = 'active'"
+    );
+    expect(migration).toContain(
+      "create unique index search_projections_live_candidate_uniq_idx on focowiki.search_projections (knowledge_base_id) where projection_role = 'candidate' and state in ('preparing', 'indexing', 'validating', 'ready')"
     );
   });
 

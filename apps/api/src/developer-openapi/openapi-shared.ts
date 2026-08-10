@@ -1,3 +1,11 @@
+import {
+  SEARCH_QUERY_MAX_CHARACTERS,
+  SEARCH_QUERY_MAX_BYTES,
+  SEARCH_RESULT_DEFAULT_LIMIT,
+  SEARCH_RESULT_MAX_LIMIT,
+  SEARCH_RERANK_MAX_TOP_K
+} from "./search-query-contract.js";
+
 export type SchemaObject = Record<string, unknown>;
 export type ParameterObject = Record<string, unknown>;
 export type ResponseObject = Record<string, unknown>;
@@ -289,6 +297,12 @@ export function sourceFileListFilterParameters(): ParameterObject[] {
         "metadata_resolution",
         "llm_suggestion",
         "graph_generation",
+        "graphrag_processing",
+        "semantic_reconciliation",
+        "embedding_generation",
+        "affected_projection",
+        "search_publication",
+        "semantic_maintenance_required",
         "projection_generation",
         "generation_validation",
         "generation_activation"
@@ -336,52 +350,33 @@ export function filePathQueryParameter(required: boolean): ParameterObject {
 export function fileSearchParameters(): ParameterObject[] {
   return [
     {
-      ...queryParameter("query", "Search text. Titles, headings, file paths, Markdown content, metadata, punctuation variants, and multi-term CJK, Latin, or mixed-script queries are supported.", {
+      ...queryParameter("query", `One standalone natural-language question or search text. After Unicode and whitespace normalization it must contain 2 through ${SEARCH_QUERY_MAX_CHARACTERS} grapheme clusters, use at most ${SEARCH_QUERY_MAX_BYTES} UTF-8 bytes, and contain no unsafe control characters. Results are source files that must be read before their content is used as evidence.`, {
         type: "string",
         minLength: 2,
-        maxLength: 160
+        maxLength: SEARCH_QUERY_MAX_CHARACTERS
       }),
       required: true
     },
-    queryParameter("scope", "Fields to search. The default searches file paths, titles, headings, Markdown content, and metadata.", {
+    queryParameter("scope", "Eligible evidence fields. `path` runs exact-path and grounded-title families, `metadata` runs the lexical metadata family, and `all` uses every family enabled by the selected mode.", {
       type: "string",
       enum: ["all", "path", "metadata"],
       default: "all"
     }),
-    queryParameter("fileKind", "Published file type filter. The default searches page files.", {
+    queryParameter("fileKind", "Published-file type filter. Search returns active Markdown pages created from uploaded files. `all` removes the explicit type predicate but currently returns the same page set.", {
       type: "string",
-      enum: [
-        "all",
-        "page",
-        "index",
-        "log",
-        "schema",
-        "manifest_index",
-        "manifest_index_shard",
-        "search_index",
-        "search_index_shard",
-        "link_index",
-        "link_index_shard",
-        "change_index",
-        "change_index_shard",
-        "graph_index",
-        "graph_node_index",
-        "graph_edge_shard",
-        "graph_file",
-        "history_page"
-      ],
+      enum: ["all", "page"],
       default: "page"
     }),
-    queryParameter("mode", "Search mode. `file` searches file content and metadata, `graph` searches file relationships, and `hybrid` combines both. Every result includes a file ID and path that can be read with the file APIs.", {
+    queryParameter("mode", "Evidence plan. With `scope=all`, `file` runs exact path, grounded title, lexical, Jieba, and content vector retrieval; `graph` runs exact path, grounded title, file relationships, and entity, relationship, and community vector retrieval; `hybrid` runs both plans. `scope=path` or `scope=metadata` narrows these families as documented. Every result remains a readable source file.", {
       type: "string",
       enum: ["file", "graph", "hybrid"],
-      default: "file"
+      default: "hybrid"
     }),
-    queryParameter("graphDepth", "Number of relationship levels included by graph and hybrid search.", {
+    queryParameter("graphDepth", "Relationship context depth returned for graph and hybrid results. `0` returns the seed graph reference without relationships, `1` includes direct relationships, and `2` may include second-level relationships within `graphFanout`. Values above the deployment maximum return 422.", {
       type: "integer",
       enum: [0, 1, 2]
     }),
-    queryParameter("graphFanout", "Maximum relationship records returned per graph search item. When omitted, the deployment setting is used.", {
+    queryParameter("graphFanout", "Maximum relationship records returned per graph search result across the requested depth. When omitted, the deployment setting is used; values above the deployment maximum return 422.", {
       type: "integer",
       minimum: 0
     }),
@@ -397,7 +392,30 @@ export function fileSearchParameters(): ParameterObject[] {
       type: "string",
       enum: ["fresh", "stale"]
     }),
-    ...paginationParameters()
+    queryParameter("rerank", "Optionally rerank the authorized fused source-file candidates with the active Admin-configured reranker. The default keeps deterministic fused ranking.", {
+      type: "boolean",
+      default: false
+    }),
+    queryParameter("rerankTopK", "Candidate count sent to the optional reranker. It is valid only with `rerank=true`, must be at least `limit`, and defaults to the greater of 30 and `limit`.", {
+      type: "integer",
+      minimum: 1,
+      maximum: SEARCH_RERANK_MAX_TOP_K
+    }),
+    queryParameter("rerankScoreThreshold", "Minimum normalized reranker score for non-exact candidates. It is valid only with `rerank=true` and defaults to 0.35.", {
+      type: "number",
+      minimum: 0,
+      maximum: 1,
+      example: 0.35
+    }),
+    queryParameter("limit", "Final source-file result count for this search request.", {
+      type: "integer",
+      minimum: 1,
+      maximum: SEARCH_RESULT_MAX_LIMIT,
+      default: SEARCH_RESULT_DEFAULT_LIMIT
+    }),
+    queryParameter("cursor", "Pagination token returned by the same search query, filters, active generation, and effective ranking settings.", {
+      type: "string"
+    })
   ];
 }
 

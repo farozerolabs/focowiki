@@ -29,6 +29,21 @@ import {
   resolveResourceBudgetLimits
 } from "../../runtime-settings/resource-budget-settings.js";
 import { createRuntimeSettingsService } from "../../runtime-settings/service.js";
+import {
+  createGraphRagSourceWorkerRuntime,
+  resolveGraphRagPoolSize,
+  type GraphRagSourceWorkerRuntime
+} from "../../semantic/graphrag/source-worker-runtime.js";
+import { createSemanticSourceHandoff } from
+  "../../semantic/application/source-handoff.js";
+import { createPostgresSemanticGenerationRepository } from
+  "../../semantic/infrastructure/postgres-generation-repository.js";
+import { createPostgresSemanticStageRepository } from
+  "../../semantic/infrastructure/postgres-stage-repository.js";
+import { createPostgresEmbeddingConfigurationRepository } from
+  "../../semantic/infrastructure/postgres-embedding-configuration-repository.js";
+import { createSemanticSourceStageProductionRuntime } from
+  "../../semantic/infrastructure/source-stage-production-runtime.js";
 import { createS3ClientConfig } from "../../storage/s3.js";
 import {
   createPostgresStorageVnextCatalogRepository
@@ -59,6 +74,8 @@ import { createPostgresStorageVnextWebhookRepository } from
   "../webhook/postgres-repository.js";
 import { createStorageVnextSourceGraphExtractor } from "./graph-extractor.js";
 import { createStorageVnextSourceModelAdapter } from "./model-adapter.js";
+import { createStorageVnextSourceModelAssistanceSelector } from
+  "./model-assistance-selector.js";
 import { createStorageVnextSourceReleaseHandoff } from "./release-handoff.js";
 import { createStorageVnextSourceRoleRuntime } from "./role-runtime.js";
 import { createStorageVnextSourceProcessingWorker } from "./worker.js";
@@ -76,6 +93,7 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
   const abort = new AbortController();
   const stop = () => abort.abort(new DOMException("Source worker shutting down", "AbortError"));
   let redisConnected = false;
+  let graphRagRuntime: GraphRagSourceWorkerRuntime | null = null;
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, stop);
   registerWorkerRedisRuntimeEvents({ client: redisClient, logger, role: "source" });
 
@@ -93,13 +111,22 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
       }),
       sessionWrites: "best_effort"
     });
+    const runtimeSettingsRepository = createRuntimeSettingsRepository(sql);
     const runtimeSettings = createRuntimeSettingsService({
       config,
-      repository: createRuntimeSettingsRepository(sql),
+      repository: runtimeSettingsRepository,
       redis
     });
     await runtimeSettings.ensureBootstrapped();
     const initialSnapshot = await runtimeSettings.getSnapshot();
+    const semanticPythonConcurrency = resolveGraphRagPoolSize(
+      initialSnapshot.worker.sourceFileConcurrency
+    );
+    graphRagRuntime = createGraphRagSourceWorkerRuntime({
+      poolSize: semanticPythonConcurrency
+    });
+    await graphRagRuntime.start();
+    logger.info("graphrag_adapter.ready", graphRagRuntime.pool.stats());
     const resourceBudgets = createProcessResourceBudgets(
       resolveResourceBudgetLimits(initialSnapshot)
     );
@@ -111,6 +138,10 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
     const graph = createPostgresStorageVnextGraphRepository(sql);
     const releases = createPostgresStorageVnextReleaseRepository(sql);
     const sourceEvents = createPostgresStorageVnextSourceEventRepository(sql);
+    const semanticGenerations = createPostgresSemanticGenerationRepository(sql);
+    const semanticStages = createPostgresSemanticStageRepository(sql);
+    const embeddingConfigurations =
+      createPostgresEmbeddingConfigurationRepository(sql);
     const bodyStore = createS3StorageVnextSourceBodyStore({
       client: s3,
       bucket: config.storage.bucket,
@@ -136,14 +167,66 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
       },
       graph
     });
+    const semanticRole = createSemanticSourceStageProductionRuntime({
+      sql,
+      s3,
+      bucket: config.storage.bucket,
+      storagePrefix: config.storage.prefix,
+      searchIndexPrefix: config.search.indexPrefix,
+      searchVector: searchProvider.vector,
+      catalog,
+      bodyStore,
+      releases,
+      workflow,
+      graphRagPool: graphRagRuntime.pool,
+      runtimeSettings,
+      generationModels: runtimeSettingsRepository,
+      modelGateway,
+      owner: `semantic-source-worker-${randomUUID()}`,
+      sourceConcurrency: initialSnapshot.worker.sourceFileConcurrency,
+      pythonConcurrency: semanticPythonConcurrency,
+      claimBatchSize: initialSnapshot.worker.claimBatchSize,
+      pollIntervalMs: initialSnapshot.worker.pollIntervalMs,
+      leaseDurationMs: initialSnapshot.worker.lockTtlSeconds * 1_000,
+      retryDelayMs: initialSnapshot.worker.jobRetryDelayMs,
+      resultRetentionMilliseconds:
+        initialSnapshot.worker.completedJobRetentionDays * MILLISECONDS_PER_DAY,
+      onFailure({ error, stagePublicId }) {
+        logger.error("semantic_stage.failed", {
+          stagePublicId,
+          errorClass: error instanceof Error ? error.name : "UnknownError",
+          errorMessage: error instanceof Error ? error.message : String(error)
+        });
+      }
+    });
+    const reportProcessingMetrics = (options: { force?: boolean } = {}) => {
+      if (!resourceBudgetReporter.report(resourceBudgets, options)) return;
+      logger.info(
+        "semantic.stage_metrics",
+        semanticRole.stageDiagnosticFields()
+      );
+      logger.info(
+        "semantic.embedding_batch_metrics",
+        semanticRole.embeddingBatchDiagnosticFields()
+      );
+    };
     const role = createStorageVnextSourceRoleRuntime({
       owner: `source-worker-${randomUUID()}`,
       clock: now,
       async getSettings() {
         const snapshot = await runtimeSettings.getSnapshot();
         resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
-        resourceBudgetReporter.report(resourceBudgets);
+        reportProcessingMetrics();
         return { ...snapshot.worker, snapshot };
+      },
+      recoverStale(request) {
+        return workflow.recoverStale({
+          kinds: ["source"],
+          expiredBefore: request.expiredBefore,
+          retryAt: request.retryAt,
+          reasonCode: "STALE_LEASE",
+          limit: request.limit
+        });
       },
       createWorker({ snapshot, ...settings }) {
         const modelAssistance = modelGateway.resolve(snapshot);
@@ -157,18 +240,22 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
           },
           ...(snapshot.graph.modelReviewEnabled && modelAssistance
             ? {
-                modelConfirmation: () => ({
-                  client: modelAssistance.client,
-                  modelName: modelAssistance.modelName,
-                  contextWindowTokens: modelAssistance.contextWindowTokens,
-                  receiveTimeouts: modelAssistance.receiveTimeouts
-                })
+                modelConfirmation: (request) => request.modelAssistanceSelected
+                  ? {
+                      client: modelAssistance.client,
+                      modelName: modelAssistance.modelName,
+                      contextWindowTokens: modelAssistance.contextWindowTokens,
+                      receiveTimeouts: modelAssistance.receiveTimeouts
+                    }
+                  : null
               }
             : {})
         });
         const model = createStorageVnextSourceModelAdapter({
           ...(modelAssistance
             ? {
+                selectModelAssistance:
+                  createStorageVnextSourceModelAssistanceSelector(),
                 async suggest(request) {
                   throwIfAborted(request.signal);
                   const result = await readModelSuggestions({
@@ -204,6 +291,16 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
           publicationDelayMilliseconds,
           resultRetentionMilliseconds
         });
+        const semanticHandoff = createSemanticSourceHandoff({
+          generations: semanticGenerations,
+          generationModels: runtimeSettingsRepository,
+          stages: semanticStages,
+          embeddingConfigurations,
+          resolveRuntimeSettings: async () => snapshot,
+          searchProviderKind: config.search!.provider,
+          maximumAttempts: settings.jobMaxAttempts,
+          maximumSourceBytes: config.pagination.generatedContentMaxBytes
+        });
         return createStorageVnextSourceProcessingWorker({
           workflow,
           catalog,
@@ -213,6 +310,7 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
             ? { modelName: modelAssistance.modelName }
             : null,
           handoff,
+          semanticHandoff,
           events: sourceEvents,
           webhooks: createStorageVnextWebhookOutbox({
             repository: webhookRepository,
@@ -251,11 +349,14 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
       }
     });
     logger.info("source_worker.started");
+    const roleRuns = [role.run(abort.signal), semanticRole.run(abort.signal)];
     try {
-      await role.run(abort.signal);
+      await Promise.all(roleRuns);
     } finally {
+      stop();
+      await Promise.allSettled(roleRuns);
       await searchProvider.close();
-      resourceBudgetReporter.report(resourceBudgets, { force: true });
+      reportProcessingMetrics({ force: true });
       logger.info("source_worker.stopped");
     }
   } finally {
@@ -264,6 +365,7 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
       process.removeListener(signal, stop);
     }
     if (redisConnected) await redisClient.close();
+    await graphRagRuntime?.close();
     s3.destroy();
     await closeDatabaseClient(sql);
   }

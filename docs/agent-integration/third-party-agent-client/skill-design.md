@@ -42,11 +42,11 @@ Recommended terminal commands:
 | Read graph by path | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path={graphRef}"` |
 | Read related files | `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/related?limit=20"` |
 | Expand graph | `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "fileId={fileId}" --data-urlencode "depth=1" --data-urlencode "fanout=10"` |
-| Search candidates | `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>" --data-urlencode "limit=10"` |
+| Search candidates | `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<standalone natural-language question>" --data-urlencode "limit=10"` |
 
 These URLs are the developer-provided read interface for the Agent.
 
-The `/search` endpoint returns ranked file-level candidates for short phrases chosen by the Agent. Query planning stays inside the Agent loop. The endpoint can return `searchStatus`, `message`, and `nextActions` when the generated search index has no useful candidate or is unavailable.
+The `/search` endpoint returns ranked source-file candidates for one standalone question. Omitted mode should use `hybrid`. Results and reranker output are discovery hints; the Agent reads source Markdown before answering.
 
 ## File Design
 
@@ -98,27 +98,24 @@ Use them for request shapes, exploration rounds, stop conditions, citation style
 - Read graph by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path={graphRef}"`
 - Read related files: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/related?limit=20"`
 - Expand graph: `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "fileId={fileId}" --data-urlencode "depth=1" --data-urlencode "fanout=10"`
-- Search candidates: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>" --data-urlencode "limit=10"`
+- Search candidates: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<complete standalone user question>" --data-urlencode "limit=10"`
 
 ## Process
 
 Use an exploration loop before answering:
 
 1. Read all files listed in Required Reading in full.
-2. Request `/files/content?path=index.md` for broad context.
-3. Request `/files/content?path=schema.md` when metadata fields are unclear.
-4. Inspect `_index/*` or the file tree when the question needs generated index, link, or directory context.
-5. Derive an initial set of concise search phrases from the user question and visible knowledge-base context.
-6. Keep a short evidence plan with the evidence target, initial search phrases, known paths, expansion strategy, and stop condition.
-7. Alternate breadth and depth: discover candidates, read useful files, extract new terms or paths from what was read, then discover again.
-8. Use `/search`, `/tree`, Markdown links, `/files/{fileId}/related`, `/graph/expand`, or a returned `graphRef` as the next discovery action.
-9. Read useful candidates that can close the current evidence gap.
-10. Track visited `fileId` and `path` values to avoid repeated reads.
-11. After each file read, record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap`.
-12. When `/search` returns `no_candidates`, `index_unavailable`, or an empty candidate list, follow `nextActions`, shorten or broaden the phrase, inspect `index.md`, list the tree, or read graph context.
-13. Continue while new leads or remaining gaps can expand scope, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify context.
-14. Stop only when the stop conditions in `references/exploration-workflow.md` are met.
-15. Cite file titles or paths in the final answer.
+2. Restate the user's request as one standalone natural-language question.
+3. Run one initial `/search` request with that complete question and default `hybrid` retrieval unless an explicit mode is required.
+4. Treat results as candidates and read the top useful source Markdown files through returned file IDs, paths, or read actions.
+5. Track visited `fileId` and `path` values and deduplicate every later file read.
+6. If the source evidence remains incomplete, optionally use related files, `/graph/expand`, Markdown links, or a returned `graphRef`.
+7. Run at most two follow-up search rounds, using only questions derived from terms, paths, links, headings, comparisons, or gaps found in source Markdown already read.
+8. If initial retrieval is empty or scope remains unclear, read `index.md`, inspect the tree, or use `_index/*` before a bounded follow-up.
+9. Record the source files read and the remaining evidence gap after each round.
+10. Stop when source reads cover the requested scope, no new relevant source remains, or two follow-up rounds are complete.
+11. Never use search snippets, entity or relationship descriptions, community reports, or reranker output as answer evidence.
+12. Cite the source Markdown titles or paths used in the final answer.
 
 ## Identifier Rules
 
@@ -168,7 +165,7 @@ Response: related file records with `path`, `title`, `relationType`, `direction`
 
 Command by file: `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "fileId={fileId}" --data-urlencode "depth=1" --data-urlencode "fanout=10"`
 
-Command by query: `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "query=<agent-generated phrase>" --data-urlencode "depth=1" --data-urlencode "fanout=10"`
+Command by query: `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "query=<source-derived follow-up question>" --data-urlencode "depth=1" --data-urlencode "fanout=10"`
 
 Response: seed details, bounded relationship records, file paths, read actions, and `nextCursor`.
 
@@ -182,11 +179,11 @@ Response: bounded related file entries and `nextCursor`
 
 ## Search
 
-Command: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>" --data-urlencode "limit=10"`
+Command: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<complete standalone user question>" --data-urlencode "limit=10"`
 
 Response: `items`, `nextCursor`, `searchStatus`, optional `message`, optional `nextActions`
 
-Candidate entries can include `score`, `matchedFields`, `fileId`, and `path`. The Agent creates the search phrase from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, the Agent updates its phrase list, path list, related candidates, and remaining gap. When `searchStatus` is `no_candidates` or `index_unavailable`, follow `nextActions`, read `index.md`, list the tree, try another phrase, or inspect graph context.
+Candidate entries can include `score`, `matchedFields`, `fileId`, and `path`. The Agent sends the complete standalone user question first. After reading useful source files, it may derive at most two bounded follow-up questions from those files and the remaining evidence gap. When `searchStatus` is `no_candidates`, follow `nextActions`, read `index.md`, list the tree, try one source-derived follow-up, or inspect graph context. Handle 503 and 504 through the documented error envelope instead of treating them as empty search results.
 ```
 
 ## `references/exploration-workflow.md`
@@ -196,23 +193,21 @@ Candidate entries can include `score`, `matchedFields`, `fileId`, and `path`. Th
 
 ## Query Planning
 
-The Agent owns query planning. Before using `/search`, derive an initial set of concise phrases from the user question and visible knowledge-base context. Prefer terms that are explicit in the user request or already visible in the knowledge base.
+Use the complete standalone user question for the first `/search` request. Reserve at most two later searches for questions derived from source Markdown already read.
 
-Search one phrase at a time. Treat results as candidates, then read files to confirm evidence. After reading, extract new phrases, paths, links, titles, headings, metadata terms, graph relations, and remaining gaps from the content. Use those leads to continue exploration.
-
-Do not send the full user question as the only search query. When search returns no candidates or an unavailable index, continue with index, tree, shorter phrases, graph, or related-file exploration.
+Send the complete standalone user question as the initial `hybrid` search. Treat results as candidates, read source Markdown to confirm evidence, and derive no more than two follow-up searches from those source reads. When search returns no candidates or an unavailable index, continue with `index.md`, the tree, graph exploration, or one bounded source-derived follow-up. Deduplicate every file read, and never use snippets or model-generated semantic text as final evidence.
 
 ## Exploration Plan
 
 Before starting the loop, create a short plan in working notes:
 
 - `evidence target`: what the answer must prove or summarize.
-- `initial search phrases`: Agent-derived phrases to try one at a time.
+- `initial question`: the complete standalone natural-language question for the first hybrid search.
 - `known paths`: paths discovered from `index.md`, `schema.md`, links, or previous reads.
 - `expansion strategy`: how to alternate broad discovery and deep reading when new leads or gaps appear.
 - `stop condition`: what evidence is enough to answer.
 
-Record the initial search phrases before the first search request. Update the phrase list and path list after each useful read.
+Record the initial question before the first search request. Track the source-derived follow-up questions and paths after each useful read.
 
 ## Evidence Loop
 
@@ -220,14 +215,14 @@ Use this loop before answering any substantive question.
 
 1. Restate the user question as a short evidence target.
 2. Start with `index.md` when the knowledge base scope is unclear.
-3. Derive initial search phrases when the question contains a concrete concept, title, product, date, status, version, owner, or named entity.
+3. Run the complete standalone question as the one initial hybrid search.
 4. Write the exploration plan.
 5. Start with a broad discovery action unless an exact path is already known.
 6. Use a discovery action to build a candidate set from search, tree, `_index/*`, links, related files, graph expansion, or graph records.
 7. Read useful candidates that can close the current gap, using logical `path` when present or `fileId` when no path is available.
 8. Extract new leads from the content, including titles, headings, terms, paths, links, graph records, and unresolved gaps.
 9. Record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap` for the round.
-10. Continue when new leads or remaining gaps can expand breadth, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify scope.
+10. Continue only when a source-derived lead can close a remaining gap and fewer than two follow-up rounds have run.
 11. Keep a visited list of `fileId` and `path` values.
 12. Answer after the stop conditions are satisfied.
 
@@ -238,7 +233,7 @@ Use explicit breadth-depth rounds. Continue or stop based on evidence quality, n
 - Breadth: use search, tree, graph, related files, or links to find candidate files.
 - Depth: read selected files and extract useful evidence.
 - Expansion: turn the read content into new search phrases, paths, related files, or comparison targets.
-- Repeat breadth and depth while new evidence changes the answer, adds missing scope, reveals important exceptions, or points to related files.
+- Repeat breadth and depth for no more than two source-derived follow-up rounds.
 
 Simple definition or title lookup questions can stop after one file when the file directly answers it.
 

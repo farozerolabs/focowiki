@@ -71,6 +71,8 @@ const retainedFields = [
   "lexicalRebuildMaxInFlightSourceBytes"
 ] as const;
 
+const adminRemovedFields = removedFields.filter((field) => field !== "batchSize");
+
 const apiSourceRoot = resolve(import.meta.dirname, "../src");
 const removedFieldValidator = resolve(
   apiSourceRoot,
@@ -103,13 +105,13 @@ describe("storage vNext removed runtime-setting fields", () => {
     }
   });
 
-  it("does not change the frozen English and Chinese product copy", () => {
+  it("freezes the bilingual product copy after the approved semantic additions", () => {
     const resources = readFileSync(resolve(
       import.meta.dirname,
       "../../admin/src/i18n/resources.ts"
     ));
     expect(createHash("sha256").update(resources).digest("hex")).toBe(
-      "b1aa0a25186bc9a08c3dbe28dcc8a78cd43b957db6c8e21e7f36d8fb5f7158e5"
+      "7e29212345d2fadd2a57ad4e92c0fa36b07d5dbfc78a8f7b2ceff5c0885b6ee9"
     );
   });
 
@@ -119,7 +121,7 @@ describe("storage vNext removed runtime-setting fields", () => {
       "../../admin/src/components/settings-panel.tsx"
     ]) {
       const source = readFileSync(resolve(import.meta.dirname, relativePath), "utf8");
-      for (const field of removedFields) {
+      for (const field of adminRemovedFields) {
         expect(source, `${relativePath} still exposes ${field}`).not.toContain(field);
       }
       for (const field of retainedFields) {
@@ -185,6 +187,9 @@ describe("storage vNext removed runtime-setting fields", () => {
       "graph",
       "maintenance",
       "search",
+      "semantic",
+      "embeddings",
+      "rerankers",
       "models"
     ]);
     expect.soft(sha256(uiImports.join("\n")), "shared UI imports").toBe(
@@ -193,9 +198,9 @@ describe("storage vNext removed runtime-setting fields", () => {
     expect.soft(
       sha256(sharedComponentSequence.join("\n")),
       "shared component hierarchy"
-    ).toBe("3249915a7f9ee271c731944ef0c55700e1d970bcd45121c7ac32e805adbf56b4");
+    ).toBe("a9cb91cf86e66afcdaab867952bfc163b5ceba3bdab604c40659006c9922135a");
     expect.soft(sha256(classNames.join("\n")), "CSS and style tokens").toBe(
-      "5d2fee208e6c139dd216171e9ed8f6ebcb66d7492afff0843a27f48d52e4dc28"
+      "83a5400f03551be94aee98dbd8addc7c9c0a85281fdccd97e734de6bed159992"
     );
     expect.soft(sha256(iconSequence.join("\n")), "icon sequence").toBe(
       "47365cb1a6777969c7144343ae4a62596f3db570f9b97fc652ffb8f275625707"

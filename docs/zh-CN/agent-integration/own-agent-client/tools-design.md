@@ -204,7 +204,7 @@ Agent 需要先查看文件元数据，再决定是否读取全文时使用这�
 
 这个工具是可选项。Agent 需要候选查找时实现 `search_files`。后端可以调用 Focowiki Developer OpenAPI `searchGeneratedFiles`，读取生成索引文件，或接入自己的读取层。
 
-查询规划由 Agent 完成。Agent 应从用户问题、知识库概览、schema 线索、已读取文件和剩余证据缺口中拆解短查询短语。工具每次只返回一个短语对应的候选文件。
+第一次请求发送用户的完整独立问题，并使用默认 `hybrid` 检索。Agent 最多再执行两轮后续搜索，每轮问题都必须从已读取的来源 Markdown 中派生。工具只返回来源文件候选，不返回回答证据。
 
 输入：
 
@@ -227,7 +227,12 @@ Agent 需要先查看文件元数据，再决定是否读取全文时使用这�
       "title": "Example",
       "description": "Short summary.",
       "score": 12,
-      "matchedFields": ["title", "description"]
+      "matchedFields": ["content"],
+      "evidenceTypes": ["content", "entity"],
+      "sourceExcerpt": "Bounded source-grounded excerpt.",
+      "readActions": {
+        "fileContentById": "/openapi/v2/knowledge-bases/kb/files/file_123/content"
+      }
     }
   ],
   "searchStatus": "ok",
@@ -237,7 +242,7 @@ Agent 需要先查看文件元数据，再决定是否读取全文时使用这�
 }
 ```
 
-直接问题可以由 Agent 根据用户问题、可见知识库上下文、已读文件和剩余证据缺口生成短查询短语。读取有价值的文件后，Agent 可以继续生成新的查询短语，并使用 `search_files`、`nextActions`、`list_tree`、links、graph files、`expand_graph` 和 related files 继续探索。
+回答前必须读取选中的 Markdown 文件，并记录 `fileId` 和 `path` 以避免重复读取。搜索摘要、实体或关系描述、社区报告和 Reranker 输出都只是发现线索。
 
 ## 错误结构
 

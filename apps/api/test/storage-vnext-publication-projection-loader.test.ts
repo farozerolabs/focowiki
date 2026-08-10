@@ -23,12 +23,19 @@ const checksum = "a".repeat(64);
 describe("storage vNext publication projection loader", () => {
   it("loads only affected pages, directory ancestors, and obsolete navigation paths", async () => {
     const directory = directoryFact();
-    const source = sourceFile();
+    const pendingSiblingDirectory = {
+      ...directoryFact(),
+      publicId: "directory-research",
+      logicalPath: "research",
+      normalizedPath: "research",
+      title: "research"
+    };
+    const source = { ...sourceFile(), status: "processing" as const };
     const revision = sourceRevision();
     const node = graphNode();
     const listDirectories = vi.fn(async (request: { parentPublicId: string | null | undefined }) => ({
       items: request.parentPublicId === undefined || request.parentPublicId === null
-        ? [directory]
+        ? [directory, pendingSiblingDirectory]
         : [],
       nextCursor: null
     }));
@@ -65,8 +72,14 @@ describe("storage vNext publication projection loader", () => {
       ordinal: 0
     })));
     const listExtensionCatalogPaths = vi.fn(async (request: {
+      includeByFileResources?: boolean;
       cursor: string | null;
-    }) => request.cursor === null ? {
+    }) => request.includeByFileResources === false ? {
+      byFileLogicalPaths: [],
+      markdownLogicalPaths: [],
+      scannedCount: 0,
+      nextCursor: null
+    } : request.cursor === null ? {
       byFileLogicalPaths: ["_graph/by-file/source-setup.json"],
       markdownLogicalPaths: [],
       scannedCount: 1,
@@ -77,6 +90,15 @@ describe("storage vNext publication projection loader", () => {
       scannedCount: 1,
       nextCursor: null
     });
+    const getSourceContext = vi.fn(async () => ({
+      entities: [{
+        label: "Runtime service",
+        kind: "component",
+        description: "Processes source revisions.",
+        confidence: 0.94,
+        evidencePaths: ["pages/guides/setup.md"]
+      }]
+    }));
     const loader = createStorageVnextPublicationProjectionLoader({
       catalog: {
         getKnowledgeBase: vi.fn(async () => ({
@@ -102,17 +124,18 @@ describe("storage vNext publication projection loader", () => {
       sourceBodies: {
         readVerifiedStream: vi.fn(async () => bytes("# Setup\n\nSource body."))
       },
+      semanticPresentation: { getSourceContext },
       snapshot: {
         readBaseNavigationProfile: vi.fn(async () => 1),
         readKnowledgeBaseCounts: vi.fn(async () => ({
-          sourceFileCount: 1,
+          sourceFileCount: 0,
           directoryCount: 2,
           graphNodeCount: 1,
           graphEdgeCount: 0
         })),
         readDirectoryDescendantFileCounts: vi.fn(async () => new Map([
-          ["pages", 1],
-          ["pages/guides", 1]
+          ["pages", 0],
+          ["pages/guides", 0]
         ])),
         readDirectoryLeaves: vi.fn(async ({ directoryPath }: { directoryPath: string }) =>
           directoryPath === "pages/guides" ? [{
@@ -135,7 +158,12 @@ describe("storage vNext publication projection loader", () => {
             ? [{ id: "source-existing", path: "pages/existing.md" }]
             : []),
         listAffectedObsoletePaths,
-        listProjectionShards: vi.fn(async () => []),
+        listProjectionShards: vi.fn(async () => [{
+          projectionKind: "manifest",
+          shardKey: "manifest/v1/0000",
+          logicalPath: "_index/manifest/v1/0000.json",
+          recordCount: 1
+        }]),
         listExtensionNavigationShards,
         listExtensionCatalogPaths,
         summarizeCandidate
@@ -185,8 +213,19 @@ describe("storage vNext publication projection loader", () => {
     const deletedLogicalPaths = batches.flatMap((batch) => batch.deletedLogicalPaths);
     const machineArtifacts = batches.flatMap((batch) => batch.machineArtifacts);
 
+    expect(projection.knowledgeBase.sourceFileCount).toBe(1);
     expect(pages).toHaveLength(1);
     expect(pages[0]?.sourceBody).toContain("Source body.");
+    expect(pages[0]?.semanticContext).toMatchObject({
+      entities: [{ label: "Runtime service", kind: "component" }]
+    });
+    expect(getSourceContext).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-one",
+      operationPublicId: "operation-one",
+      sourceFilePublicId: "source-setup",
+      sourceRevisionPublicId: "revision-setup",
+      entityLimit: 100
+    });
     expect(projection.removedSourceLogicalPaths).toEqual(["pages/old.md"]);
     expect(projection.directories.map((item) => item.directoryPath)).toEqual([
       "pages",
@@ -221,9 +260,13 @@ describe("storage vNext publication projection loader", () => {
     expect(projection.internalShards).toHaveLength(2);
     expect(projection.extensionNavigation).toMatchObject({
       byFileLogicalPaths: [],
-      existingMarkdownPaths: []
+      existingMarkdownPaths: [],
+      previousPresentDirectoryPaths: []
     });
-    expect(listExtensionCatalogPaths).not.toHaveBeenCalled();
+    expect(listExtensionCatalogPaths).toHaveBeenCalledWith(expect.objectContaining({
+      includeByFileResources: false,
+      cursor: null
+    }));
     expect(readExtensionNavigationLeaves.mock.calls.map(([request]) =>
       request.directoryPath)).toEqual([
       "_index/manifest/v1",
@@ -267,6 +310,28 @@ describe("storage vNext publication projection loader", () => {
       "source-existing",
       "source-setup"
     ]);
+    const graphNodeArtifact = machineArtifacts.find((artifact) =>
+      artifact.logicalPath.includes("/graph_node/"))!;
+    const graphNodeRecords = JSON.parse(Buffer.from(
+      graphNodeArtifact.bytes
+    ).toString("utf8")).records;
+    expect(graphNodeRecords).toEqual([
+      expect.objectContaining({
+        id: "source-setup",
+        semanticContext: {
+          entities: [{
+            label: "Runtime service",
+            kind: "component",
+            description: "Processes source revisions.",
+            confidence: 0.94,
+            evidencePaths: ["pages/guides/setup.md"]
+          }]
+        }
+      })
+    ]);
+    expect(JSON.stringify(graphNodeRecords)).not.toMatch(
+      /semanticGenerationPublicId|entityPublicId|vector|prompt/iu
+    );
     expect(listAffectedObsoletePaths).toHaveBeenCalledWith(expect.objectContaining({
       sourcePaths: ["pages/guides/setup.md", "pages/old.md"],
       currentDirectoryPaths: ["pages", "pages/guides"],

@@ -110,7 +110,7 @@ okf_version: "0.2"
 
 ## 2026-07-13
 
-* **Publication**: Published 12 source-backed Markdown files.
+* **Publication**: Published 12 Markdown files created from uploaded sources.
 ```
 
 ## 链接与来源

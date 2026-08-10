@@ -15,7 +15,8 @@ export type StorageVnextOwnerKind =
   | "candidate_root"
   | "rollback_root"
   | "shared_segment"
-  | "live_reservation";
+  | "live_reservation"
+  | "embedding_artifact";
 
 export type StorageVnextObjectRegistration = {
   objectId: string;
@@ -54,6 +55,7 @@ export type StorageVnextOwnershipClosure = {
   objectId: string;
   owners: readonly StorageVnextObjectOwner[];
   ownerCount: number;
+  referenceCount: number;
   graceExpiresAt: StorageVnextTimestamp | null;
 };
 

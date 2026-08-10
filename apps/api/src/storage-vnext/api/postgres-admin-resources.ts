@@ -5,6 +5,8 @@ import type {
   SourceResourceFileFilters,
   SourceResourceFileRecord
 } from "../../domain/source-resource.js";
+import type { SourceFileFailureStage } from
+  "../../domain/source-file-lifecycle.js";
 
 type DirectoryRow = {
   public_id: string;
@@ -40,6 +42,8 @@ type SourceRow = {
   model_invocation_ended_at: Date | null;
   model_invocation_warning_count: number | string | null;
   model_invocation_error_code: string | null;
+  current_stage: SourceFileFailureStage;
+  semantic_stage_safe_error_code: string | null;
 };
 
 type ResourceCursor = {
@@ -186,7 +190,6 @@ async function readSourceFiles(
   const generatedStatus = input.filters.generatedOutputStatus ?? generatedFromState(
     input.filters.state ?? null
   );
-  const stageStatuses = statusesFromStage(input.filters.currentStage ?? null);
   return sql<SourceRow[]>`
     SELECT source.public_id, source.knowledge_base_id,
            source.directory_public_id, source.logical_path, source.status,
@@ -202,7 +205,9 @@ async function readSourceFiles(
            END AS model_invocation_status,
            source.model_invocation_model_name,
            source.model_invocation_started_at, source.model_invocation_ended_at,
-           source.model_invocation_warning_count, source.model_invocation_error_code
+           source.model_invocation_warning_count, source.model_invocation_error_code,
+           lifecycle.current_stage,
+           semantic_stage.safe_error_code AS semantic_stage_safe_error_code
     FROM focowiki.source_files source
     JOIN focowiki.knowledge_bases knowledge_base
       ON knowledge_base.public_id = source.knowledge_base_id
@@ -222,6 +227,55 @@ async function readSourceFiles(
     ) generated
       ON generated.source_file_public_id = source.public_id
      AND generated.entry_kind = 'source'
+    LEFT JOIN focowiki.semantic_generations active_semantic
+      ON active_semantic.knowledge_base_id = source.knowledge_base_id
+     AND active_semantic.generation_role = 'active'
+     AND active_semantic.state = 'active'
+     AND active_semantic.deleted_at IS NULL
+    LEFT JOIN LATERAL (
+      SELECT stage.stage_kind, stage.state, stage.safe_error_code
+      FROM focowiki.semantic_stage_work_items stage
+      JOIN focowiki.operations semantic_operation
+        ON semantic_operation.knowledge_base_id = stage.knowledge_base_id
+       AND semantic_operation.public_id = stage.operation_public_id
+      WHERE stage.knowledge_base_id = source.knowledge_base_id
+        AND stage.semantic_generation_public_id = active_semantic.public_id
+        AND stage.source_file_public_id = source.public_id
+        AND stage.source_revision_public_id = revision.public_id
+        AND stage.state <> 'completed'
+      ORDER BY
+        semantic_operation.created_at DESC,
+        semantic_operation.public_id DESC,
+        CASE WHEN stage.state = 'failed' THEN 0 ELSE 1 END,
+        CASE stage.stage_kind
+          WHEN 'extraction' THEN 1
+          WHEN 'reconciliation' THEN 2
+          WHEN 'community' THEN 3
+          WHEN 'embedding' THEN 4
+          WHEN 'vector' THEN 5
+          WHEN 'publication' THEN 6
+          WHEN 'validation' THEN 7
+          ELSE 100
+        END,
+        stage.public_id COLLATE "C"
+      LIMIT 1
+    ) semantic_stage ON true
+    CROSS JOIN LATERAL (
+      SELECT CASE
+        WHEN source.status = 'ready' AND active_semantic.public_id IS NULL
+          THEN 'semantic_maintenance_required'
+        WHEN source.status = 'ready' THEN 'generation_activation'
+        WHEN semantic_stage.stage_kind = 'extraction' THEN 'graphrag_processing'
+        WHEN semantic_stage.stage_kind = 'reconciliation'
+          THEN 'semantic_reconciliation'
+        WHEN semantic_stage.stage_kind = 'embedding' THEN 'embedding_generation'
+        WHEN semantic_stage.stage_kind IN ('community', 'vector')
+          THEN 'affected_projection'
+        WHEN semantic_stage.stage_kind IN ('publication', 'validation')
+          THEN 'search_publication'
+        ELSE 'metadata_resolution'
+      END::text AS current_stage
+    ) lifecycle
     WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
       AND source.deleted_at IS NULL
       AND (${input.sourceFileId}::text IS NULL OR source.public_id = ${input.sourceFileId})
@@ -246,7 +300,8 @@ async function readSourceFiles(
       AND (${input.filters.sourceFileIdPrefix ?? null}::text IS NULL OR
         source.public_id LIKE ${`${input.filters.sourceFileIdPrefix ?? ""}%`})
       AND (${lifecycleStatuses}::text[] IS NULL OR source.status = ANY(${lifecycleStatuses}))
-      AND (${stageStatuses}::text[] IS NULL OR source.status = ANY(${stageStatuses}))
+      AND (${input.filters.currentStage ?? null}::text IS NULL
+        OR lifecycle.current_stage = ${input.filters.currentStage ?? null})
       AND (${input.filters.modelInvocationStatus ?? null}::text IS NULL
         OR (${input.filters.modelInvocationStatus ?? null} = 'not_recorded'
           AND (
@@ -318,11 +373,15 @@ function mapDirectory(row: DirectoryRow): SourceDirectoryRecord {
 function mapSourceFile(row: SourceRow): SourceResourceFileRecord {
   const modelInvocationCurrent = row.model_invocation_status !== null;
   const failure = row.status === "failed" ? {
-    stage: "metadata_resolution" as const,
-    code: row.safe_error_code ?? "SOURCE_PROCESSING_FAILED",
+    stage: row.current_stage,
+    code: row.semantic_stage_safe_error_code
+      ?? row.safe_error_code
+      ?? "SOURCE_PROCESSING_FAILED",
     message: row.safe_error_message ?? "Source processing failed.",
     occurredAt: row.updated_at.toISOString(),
-    retryKind: "source_processing" as const,
+    retryKind: row.current_stage === "search_publication"
+      ? "publication" as const
+      : "source_processing" as const,
     correlationId: row.public_id
   } : null;
   return {
@@ -338,7 +397,7 @@ function mapSourceFile(row: SourceRow): SourceResourceFileRecord {
     contentRevision: count(row.revision),
     activeRevisionId: row.source_revision_public_id ?? "",
     processingStatus: processingStatus(row.status),
-    currentStage: row.status === "ready" ? "generation_activation" : "metadata_resolution",
+    currentStage: row.current_stage,
     terminalFailure: failure,
     generatedOutputStatus: row.generated_path
       ? "visible"
@@ -379,13 +438,6 @@ function generatedFromState(state: SourceResourceFileFilters["state"]) {
   if (state === "visible") return "visible" as const;
   if (state === "pending_publication") return "pending" as const;
   return null;
-}
-
-function statusesFromStage(stage: SourceResourceFileFilters["currentStage"]): string[] | null {
-  if (!stage) return null;
-  if (stage === "generation_activation") return ["ready"];
-  if (stage === "metadata_resolution") return ["pending", "processing", "failed"];
-  return [];
 }
 
 function emptyFilters(): SourceResourceFileFilters {

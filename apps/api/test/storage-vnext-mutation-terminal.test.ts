@@ -133,6 +133,7 @@ function candidate(operationPublicId: string) {
     expectedActiveRootPublicId: null,
     expectedActiveRevision: 0,
     state: "building" as const,
+    factRevision: 1,
     changedFactCount: 1,
     affectedDependencyCount: 1,
     manifestChecksum: null,

@@ -40,9 +40,9 @@ export function createOkfV02OpenApiDiff(document, baseline) {
   const examplesUpdated = Boolean(
     directExample?.file?.okfSignals
     && searchExample?.items?.[0]?.okfSignals
-    && searchExample?.query?.okfStatus
-    && searchExample?.query?.okfTrustTier
-    && searchExample?.query?.okfFreshness
+    && searchExample?.query?.okfStatus === null
+    && searchExample?.query?.okfTrustTier === null
+    && searchExample?.query?.okfFreshness === null
   );
   const expectedSignals = [
     "effectiveStatus",
@@ -90,10 +90,24 @@ export function reviewedOpenApiSurface(document) {
     operations: operations.map((item) =>
       `${item.method} ${item.path} ${item.operationId}`
     ),
-    searchParameters: (search?.parameters ?? []).map((item) => item.name),
+    searchParameterNames: (search?.parameters ?? []).map((item) => item.name),
+    searchParameters: search?.parameters ?? [],
     generatedFileKeys: propertyKeys(document, "GeneratedFile"),
     searchResultKeys: propertyKeys(document, "FileSearchResult"),
+    fileSearchResponseKeys: propertyKeys(document, "FileSearchResponse"),
     okfSignalSchema: document.components?.schemas?.OkfSignals ?? null,
+    fileSearchResultSchema:
+      document.components?.schemas?.FileSearchResult ?? null,
+    fileSearchQueryContextSchema:
+      document.components?.schemas?.FileSearchQueryContext ?? null,
+    semanticStatusSchema:
+      document.components?.schemas?.FileSearchResponse?.properties?.semanticStatus ?? null,
+    evidenceStatusSchema:
+      document.components?.schemas?.FileSearchResponse?.properties?.evidenceStatus ?? null,
+    rerankerStatusSchema:
+      document.components?.schemas?.FileSearchResponse?.properties?.rerankerStatus ?? null,
+    fileSearchResponseSchema:
+      document.components?.schemas?.FileSearchResponse ?? null,
     errorCodes: document.components?.schemas?.Error?.properties?.error
       ?.properties?.code?.enum ?? [],
     searchExample: successExample(search)
@@ -102,7 +116,11 @@ export function reviewedOpenApiSurface(document) {
 
 export function validateReviewedOkfV02OpenApi(document, manifest) {
   const failures = [];
-  if (manifest?.changeId !== "align-google-okf-v0-2-trust-signals") {
+  const reviewedChangeIds = [
+    "align-google-okf-v0-2-trust-signals",
+    "add-general-purpose-graphrag-search"
+  ];
+  if (JSON.stringify(manifest?.reviewedChangeIds) !== JSON.stringify(reviewedChangeIds)) {
     failures.push("The reviewed OpenAPI continuity change ID is invalid.");
   }
   if (sha256(document) !== manifest?.contractSha256) {

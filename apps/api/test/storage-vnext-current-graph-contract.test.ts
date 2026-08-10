@@ -95,5 +95,8 @@ describe("storage vNext one-current-graph contract", () => {
     expect(graphContextRead).toContain("related.logical_path");
     expect(graphContextRead).not.toContain("resolve_release_catalog(");
     expect(graphContextRead).not.toContain("release_roots");
+    expect(graphContextRead).toContain("WITH RECURSIVE");
+    expect(graphContextRead).toContain("relationship_depth");
+    expect(graphContextRead).toContain("from_source_file_public_id");
   });
 });

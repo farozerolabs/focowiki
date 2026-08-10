@@ -14,6 +14,19 @@ describe("storage vNext runtime schema guard", () => {
 
     await expect(assertRuntimeSchemaGeneration(database.sql)).resolves.toBeUndefined();
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.schemaSignatureSql).toEqual(expect.arrayContaining([
+      expect.stringContaining("source_event_summaries_stage_check"),
+      expect.stringContaining("graphrag_processing"),
+      expect.stringContaining("semantic_reconciliation"),
+      expect.stringContaining("embedding_generation"),
+      expect.stringContaining("affected_projection"),
+      expect.stringContaining("search_publication"),
+      expect.stringContaining("semantic_maintenance_required"),
+      expect.stringContaining("semantic_source_reconciliations_pkey"),
+      expect.stringContaining(
+        "primarykey(semantic_generation_public_id,source_file_public_id,source_revision_public_id)"
+      )
+    ]));
     expect(database.unsafeCalls).toBe(0);
     expect(database.beginCalls).toBe(0);
   });
@@ -41,6 +54,8 @@ describe("storage vNext runtime schema guard", () => {
   it("rejects unmarked, historical, and unknown schemas without writing", async () => {
     for (const generation of [
       null,
+      "storage-vnext-v1",
+      "storage-vnext-v2",
       "incremental-sharded-publication-v1",
       "durable-search-projection-planning-v19",
       "unknown-v99"
@@ -83,6 +98,7 @@ function createGenerationDatabase(
   let generation = initialGeneration;
   let unsafeCalls = 0;
   let beginCalls = 0;
+  const schemaSignatureSql: string[] = [];
   const tagged = async (segments: TemplateStringsArray) => {
     const statement = segments.join(" ");
     if (statement.includes("to_regnamespace")) {
@@ -95,6 +111,7 @@ function createGenerationDatabase(
       return generation && generation !== "absent" ? [{ generation }] : [];
     }
     if (statement.includes("provider_schema_compatible")) {
+      schemaSignatureSql.push(statement);
       return [{
         provider_schema_compatible: options.providerSchemaCompatible ?? true
       }];
@@ -121,6 +138,9 @@ function createGenerationDatabase(
     },
     get beginCalls() {
       return beginCalls;
+    },
+    get schemaSignatureSql() {
+      return schemaSignatureSql;
     }
   };
 }

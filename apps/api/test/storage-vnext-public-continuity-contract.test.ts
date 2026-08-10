@@ -173,14 +173,14 @@ describe("storage vNext public continuity Red contract", () => {
     });
   });
 
-  it("freezes Admin screens outside the approved settings field boundary", () => {
+  it("freezes Admin screens outside the approved settings and maintenance copy boundary", () => {
     const files = {
       "apps/admin/src/App.tsx": "8573d8d5ac8d809a6387e7003dbe96fe324df5a8a215866baef3e57acf227593",
       "apps/admin/src/pages/AdminHomePage.tsx": "6e589c48a663a9a9e1681ebc9b9dd0f5d05e2fbc46e2736b38fa85b3d65676fd",
       "apps/admin/src/pages/KnowledgeBaseDetailPage.tsx": "94820031bb0680ae8885c007a9ed4be2faed66287cc2d68c7453da30fddd47a4",
       "apps/admin/src/styles.css": "2661326c543de78343817b10c532812824851806cc05d0048c3aac9418d5b532",
       "apps/admin/src/lib/admin-navigation.ts": "a1643343d72d675e929adb13f16c8a45d59c7d8141d0d345a2040814638f1587",
-      "apps/admin/src/i18n/resources.ts": "b1aa0a25186bc9a08c3dbe28dcc8a78cd43b957db6c8e21e7f36d8fb5f7158e5"
+      "apps/admin/src/i18n/resources.ts": "7e29212345d2fadd2a57ad4e92c0fa36b07d5dbfc78a8f7b2ceff5c0885b6ee9"
     } as const;
 
     for (const [path, expectedHash] of Object.entries(files)) {
@@ -205,8 +205,30 @@ describe("storage vNext public continuity Red contract", () => {
     expect(Object.keys(document.paths)).toHaveLength(33);
     expect(operations).toHaveLength(43);
     expect(Object.keys(document.components.schemas)).toHaveLength(58);
+    const fileSearchResponse = document.components.schemas.FileSearchResponse;
+    expect(fileSearchResponse).toBeDefined();
+    expect(fileSearchResponse).toMatchObject({
+      type: "object",
+      properties: {
+        semanticStatus: {
+          type: "object",
+          properties: {
+            state: { enum: ["ready", "degraded", "unavailable"] },
+            safeCode: {
+              anyOf: [{ type: "string" }, { type: "null" }]
+            }
+          },
+          required: ["state", "safeCode"]
+        }
+      }
+    });
+    expect(fileSearchResponse?.required).toEqual(expect.arrayContaining([
+      "semanticStatus",
+      "evidenceStatus",
+      "rerankerStatus"
+    ]));
     expect(sha256(JSON.stringify(normalized))).toBe(
-      "599e24350cb2fd84b7d7a32507a6bbc439423e9476a6364485141cea6f4ea0c5"
+      "eaa43fe061079a953afd4872bb29901ea40ac5c46c6eb26e69fc9e57ef237b54"
     );
     expect(document.security).toEqual([{ bearerAuth: [] }]);
 

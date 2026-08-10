@@ -92,6 +92,16 @@ import {
   createStorageVnextPublicationRoleRuntime
 } from "./role-runtime.js";
 import { createStorageVnextPublicationWorker } from "./worker.js";
+import { createSemanticSourceStageTargetResolver } from
+  "../../semantic/application/source-handoff.js";
+import { createPostgresSemanticGenerationRepository } from
+  "../../semantic/infrastructure/postgres-generation-repository.js";
+import { createPostgresSemanticPublicationReadinessHooks } from
+  "../../semantic/infrastructure/postgres-publication-readiness.js";
+import { createPostgresSemanticPublicationCoalescingReadiness } from
+  "../../semantic/infrastructure/postgres-publication-coalescing-readiness.js";
+import { createPostgresEmbeddingConfigurationRepository } from
+  "../../semantic/infrastructure/postgres-embedding-configuration-repository.js";
 
 const MILLISECONDS_PER_DAY = 86_400_000;
 
@@ -126,16 +136,16 @@ export async function runStorageVnextPublicationWorker(
       }),
       sessionWrites: "best_effort"
     });
+    const runtimeSettingsRepository = createRuntimeSettingsRepository(sql);
     const runtimeSettings = createRuntimeSettingsService({
       config,
-      repository: createRuntimeSettingsRepository(sql),
+      repository: runtimeSettingsRepository,
       redis
     });
     await runtimeSettings.ensureBootstrapped();
     const initialSnapshot = await runtimeSettings.getSnapshot();
-    const tokenizer = searchConfig.provider === "opensearch"
-      ? (assertNodeJiebaRuntimeAvailable(), createNodeJiebaTokenizer())
-      : undefined;
+    assertNodeJiebaRuntimeAvailable();
+    const tokenizer = createNodeJiebaTokenizer();
     let searchProvider: SearchProviderRuntime | null = null;
     let searchProviderSettingsKey = "";
     const resourceBudgets = createProcessResourceBudgets(
@@ -144,8 +154,25 @@ export async function runStorageVnextPublicationWorker(
     const resourceBudgetReporter = createResourceBudgetReporter({ logger });
     const catalog = createPostgresStorageVnextCatalogRepository(sql);
     const graph = createPostgresStorageVnextGraphRepository(sql);
+    const semanticGenerations = createPostgresSemanticGenerationRepository(sql);
+    const embeddingConfigurations =
+      createPostgresEmbeddingConfigurationRepository(sql);
+    const mutationReleaseHooks = createPostgresStorageVnextMutationReleaseHooks();
+    const semanticReadinessHooks =
+      createPostgresSemanticPublicationReadinessHooks();
+    const semanticPublicationReadiness =
+      createPostgresSemanticPublicationCoalescingReadiness(sql);
     const releases = createPostgresStorageVnextReleaseRepository(sql, {
-      lifecycleHooks: createPostgresStorageVnextMutationReleaseHooks()
+      lifecycleHooks: {
+        async beforeActivate(input) {
+          await mutationReleaseHooks.beforeActivate?.(input);
+          await semanticReadinessHooks.beforeActivate?.(input);
+        },
+        async beforeTerminate(input) {
+          await mutationReleaseHooks.beforeTerminate?.(input);
+          await semanticReadinessHooks.beforeTerminate?.(input);
+        }
+      }
     });
     const workflow = createPostgresStorageVnextWorkflowRepository(sql);
     const webhookRepository = createPostgresStorageVnextWebhookRepository(sql);
@@ -196,7 +223,21 @@ export async function runStorageVnextPublicationWorker(
     const mutationPreparer = createPostgresStorageVnextMutationCandidatePreparer({
       sql,
       releases,
-      clock: now
+      clock: now,
+      semanticTargets: {
+        async resolve(request) {
+          const snapshot = await runtimeSettings.getSnapshot();
+          return createSemanticSourceStageTargetResolver({
+            generations: semanticGenerations,
+            generationModels: runtimeSettingsRepository,
+            embeddingConfigurations,
+            resolveRuntimeSettings: async () => snapshot,
+            searchProviderKind: searchConfig.provider,
+            maximumAttempts: snapshot.worker.jobMaxAttempts,
+            maximumSourceBytes: config.pagination.generatedContentMaxBytes
+          }).resolve(request);
+        }
+      }
     });
     const mutationTerminal = createStorageVnextMutationTerminalCoordinator({
       repository: mutationRepository,
@@ -234,7 +275,7 @@ export async function runStorageVnextPublicationWorker(
             indexDefinition: createStorageVnextSearchSettings({
               searchCutoffMs: snapshot.search.engineSearchCutoffMs
             }),
-            ...(tokenizer ? { tokenizer } : {})
+            tokenizer
           });
           searchProviderSettingsKey = nextSearchProviderSettingsKey;
           await closeSearchProvider(previousSearchProvider);
@@ -262,6 +303,7 @@ export async function runStorageVnextPublicationWorker(
           workflow,
           releases,
           processor,
+          readiness: semanticPublicationReadiness,
           webhooks: createStorageVnextWebhookOutbox({
             repository: webhookRepository,
             resultRetentionMilliseconds:
@@ -275,6 +317,8 @@ export async function runStorageVnextPublicationWorker(
           },
           mutations: {
             prepare: mutationPreparer.prepare,
+            ensureSemanticStages: mutationPreparer.ensureSemanticStages,
+            inspectSemanticStages: mutationPreparer.inspectSemanticStages,
             async terminate(request) {
               if (request.outcome === "timed_out") {
                 await mutationTerminal.timeoutMutation({

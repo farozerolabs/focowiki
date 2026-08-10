@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 import {
   createPostgresStorageVnextOwnershipRepository,
   purgePostgresStorageVnextDeletedRegistrations
@@ -22,11 +22,6 @@ const hasOwnedTarget = Boolean(
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner)
 );
 const describeOwnedDatabase = hasOwnedTarget ? describe : describe.skip;
-const bootstrap = readFileSync(
-  resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-  "utf8"
-);
-
 describeOwnedDatabase("storage vNext PostgreSQL object ownership", () => {
   const connectionUrl = databaseUrl
     ?? "postgres://unused:unused@127.0.0.1:5432/unused";
@@ -43,7 +38,7 @@ describeOwnedDatabase("storage vNext PostgreSQL object ownership", () => {
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
     await sql`
       INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
       VALUES ('kb-ownership', 'Ownership', 1)
@@ -254,7 +249,57 @@ describeOwnedDatabase("storage vNext PostgreSQL object ownership", () => {
       .resolves.toBeNull();
   });
 
-  it("retains a deleted registration while a durable source revision still references it", async () => {
+  it("reclaims a deleted content-addressed registration for an identical object", async () => {
+    const checksum = "7".repeat(64);
+    const descriptor = {
+      objectId: "object-republish-deleted",
+      storageKey: "owned/generated/republish-deleted.md",
+      checksum,
+      byteCount: 19,
+      contentType: "text/markdown; charset=utf-8",
+      format: "okf-generated-markdown-v1"
+    };
+    const reservation = await repository.reserve({
+      ...descriptor,
+      writeAttemptPublicId: "write-republish-deleted-a",
+      createdAt: "2026-08-01T00:00:00.000Z"
+    });
+    await repository.markVerified({
+      ...descriptor,
+      writeAttemptPublicId: reservation.registration.writeAttemptPublicId,
+      verifiedAt: "2026-08-01T00:01:00.000Z"
+    });
+    const deletion = createStorageVnextVersionAwareObjectDeletion({
+      registrations: repository,
+      provider: {
+        purge: vi.fn(async () => ({
+          deletedVersions: 1,
+          deletedMarkers: 0,
+          abortedMultipartUploads: 0
+        }))
+      }
+    });
+    await deletion.deleteZeroOwner(descriptor.objectId);
+    await expect(repository.getRegistration(descriptor.objectId)).resolves.toMatchObject({
+      state: "deleted"
+    });
+
+    await expect(repository.reserve({
+      ...descriptor,
+      writeAttemptPublicId: "write-republish-deleted-b",
+      createdAt: "2026-08-01T00:02:00.000Z"
+    })).resolves.toMatchObject({
+      outcome: "reserved",
+      registration: {
+        state: "reserved",
+        writeAttemptPublicId: "write-republish-deleted-b",
+        verifiedAt: null,
+        zeroOwnerSince: null
+      }
+    });
+  });
+
+  it("blocks physical deletion while a durable source revision still references it", async () => {
     const checksum = "8".repeat(64);
     const reservation = await repository.reserve({
       objectId: "object-purge-source-reference",
@@ -294,27 +339,30 @@ describeOwnedDatabase("storage vNext PostgreSQL object ownership", () => {
         ${checksum}, 21, 'text/markdown; charset=utf-8', 'current'
       )
     `;
+    const purge = vi.fn(async () => ({
+      deletedVersions: 1,
+      deletedMarkers: 0,
+      abortedMultipartUploads: 0
+    }));
     const deletion = createStorageVnextVersionAwareObjectDeletion({
       registrations: repository,
-      provider: {
-        purge: vi.fn(async () => ({
-          deletedVersions: 1,
-          deletedMarkers: 0,
-          abortedMultipartUploads: 0
-        }))
-      }
+      provider: { purge }
     });
 
-    await deletion.deleteZeroOwner(reservation.registration.objectId);
+    await expect(deletion.deleteZeroOwner(reservation.registration.objectId))
+      .rejects.toMatchObject({ code: "owners_present" });
+    expect(purge).not.toHaveBeenCalled();
     await expect(purgePostgresStorageVnextDeletedRegistrations(sql, { limit: 10 }))
       .resolves.toBeGreaterThanOrEqual(0);
     await expect(repository.getRegistration(reservation.registration.objectId))
-      .resolves.toMatchObject({ state: "deleted" });
+      .resolves.toMatchObject({ state: "verified" });
 
     await sql`
       DELETE FROM focowiki.source_files
       WHERE public_id = 'file-purge-source-reference'
     `;
+    await expect(deletion.deleteZeroOwner(reservation.registration.objectId))
+      .resolves.toMatchObject({ deletedVersions: 1 });
     await expect(purgePostgresStorageVnextDeletedRegistrations(sql, { limit: 10 }))
       .resolves.toBeGreaterThanOrEqual(1);
     await expect(repository.getRegistration(reservation.registration.objectId))
@@ -411,6 +459,7 @@ describeOwnedDatabase("storage vNext PostgreSQL object ownership", () => {
       });
       await expect(repository.getClosure(objectId)).resolves.toMatchObject({
         ownerCount: 1,
+        referenceCount: 2,
         owners: [{ kind, ownerPublicId }],
         graceExpiresAt: null
       });
@@ -452,8 +501,9 @@ describeOwnedDatabase("storage vNext PostgreSQL object ownership", () => {
       await repository.release({ objectId, kind, ownerPublicId });
       await expect(repository.getClosure(objectId)).resolves.toMatchObject({
         ownerCount: 0,
+        referenceCount: 1,
         owners: [],
-        graceExpiresAt: expect.any(String)
+        graceExpiresAt: null
       });
     }
     await repository.release({
@@ -613,6 +663,15 @@ describeOwnedDatabase("storage vNext PostgreSQL object ownership", () => {
       kind: "active_root",
       ownerPublicId: "root-active"
     });
+    await expect(deletion.deleteZeroOwner(reserved.registration.objectId))
+      .rejects.toMatchObject({ code: "owners_present" });
+    expect(purge).not.toHaveBeenCalled();
+    await sql`
+      DELETE FROM focowiki.release_catalog_entries
+      WHERE knowledge_base_id = 'kb-ownership'
+        AND release_root_public_id = 'root-active'
+        AND logical_path = 'delete-guard.md'
+    `;
     await expect(deletion.deleteZeroOwner(reserved.registration.objectId)).resolves.toMatchObject({
       deletedVersions: 1
     });

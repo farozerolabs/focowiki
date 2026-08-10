@@ -1,5 +1,7 @@
-import type { SearchProviderRuntime } from
-  "../../application/ports/search-provider-runtime.js";
+import {
+  SearchProviderError,
+  type SearchProviderRuntime
+} from "../../application/ports/search-provider-runtime.js";
 import type { StorageVnextGraphNodeFact } from "../graph/ports.js";
 import {
   STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
@@ -32,6 +34,14 @@ type CandidateSearchDeadline =
   | { deadlineMs: number; resolveDeadlineMs?: never }
   | { deadlineMs?: never; resolveDeadlineMs(): Promise<number> };
 
+type CandidateSearchRetry = {
+  retry?: {
+    maximumAttempts: number;
+    delayMs: number;
+    sleep?(delayMs: number): Promise<void>;
+  };
+};
+
 export function createStorageVnextGraphCandidateSearch(input: {
   projections: StorageVnextActiveSearchProjectionRepository;
   provider: Pick<SearchProviderRuntime, "kind" | "query">;
@@ -42,11 +52,12 @@ export function createStorageVnextGraphCandidateSearch(input: {
       limit: number;
     }): Promise<readonly StorageVnextGraphNodeFact[]>;
   };
-} & CandidateSearchDeadline): StorageVnextGraphCandidateSearchPort {
+} & CandidateSearchDeadline & CandidateSearchRetry): StorageVnextGraphCandidateSearchPort {
   return createGraphCandidateSearch({
     provider: input.provider,
     resolveDeadlineMs: deadlineResolver(input),
     graph: input.graph,
+    retry: normalizeRetry(input.retry),
     resolveProjection: (knowledgeBaseId) =>
       input.projections.getActiveProjection(knowledgeBaseId)
   });
@@ -64,12 +75,13 @@ export function createStorageVnextGraphCandidateSearchForProjection(input: {
       limit: number;
     }): Promise<readonly StorageVnextGraphNodeFact[]>;
   };
-}): StorageVnextGraphCandidateSearchPort {
+} & CandidateSearchRetry): StorageVnextGraphCandidateSearchPort {
   if (!input.searchProjectionPublicId) throw candidateSearchError("invalid_input");
   return createGraphCandidateSearch({
     provider: input.provider,
     resolveDeadlineMs: async () => input.deadlineMs,
     graph: input.graph,
+    retry: normalizeRetry(input.retry),
     async resolveProjection(knowledgeBaseId) {
       const projection = await input.projections.getCandidate(
         input.searchProjectionPublicId
@@ -100,6 +112,7 @@ function createGraphCandidateSearch(input: {
       limit: number;
     }): Promise<readonly StorageVnextGraphNodeFact[]>;
   };
+  retry: Required<NonNullable<CandidateSearchRetry["retry"]>>;
 }): StorageVnextGraphCandidateSearchPort {
   return {
     async findCandidates(request) {
@@ -113,35 +126,35 @@ function createGraphCandidateSearch(input: {
       if (projection.providerKind !== input.provider.kind) {
         throw candidateSearchError("projection_provider_conflict");
       }
-      const result = await input.provider.query.query({
-        indexUid: projection.providerIndexUid,
-        query,
-        evidenceFamilies: ["graph", "text", "jieba"],
-        filters: {
-          kind: "and",
-          operands: [{
-            kind: "equals",
-            field: "knowledgeBaseId",
-            value: request.knowledgeBaseId
-          }, {
-            kind: "equals",
-            field: "documentKind",
-            value: "graph_seed"
-          }, {
-            kind: "equals",
-            field: "schemaVersion",
-            value: STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
-          }]
-        },
-        limit: Math.min(1_000, request.limit + 1),
-        searchFields: SEARCH_ATTRIBUTES,
-        returnFields: RESULT_ATTRIBUTES,
-        continuation: null,
-        cropLength: 0,
-        deadlineMs: await input.resolveDeadlineMs(),
-        matchingStrategy: "last",
-        distinctBy: "sourceFilePublicId"
-      });
+      const result = await withRetry(async () => input.provider.query.query({
+          indexUid: projection.providerIndexUid,
+          query,
+          evidenceFamilies: ["graph", "text", "jieba"],
+          filters: {
+            kind: "and",
+            operands: [{
+              kind: "equals",
+              field: "knowledgeBaseId",
+              value: request.knowledgeBaseId
+            }, {
+              kind: "equals",
+              field: "documentKind",
+              value: "graph_seed"
+            }, {
+              kind: "equals",
+              field: "schemaVersion",
+              value: STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
+            }]
+          },
+          limit: Math.min(1_000, request.limit + 1),
+          searchFields: SEARCH_ATTRIBUTES,
+          returnFields: RESULT_ATTRIBUTES,
+          continuation: null,
+          cropLength: 0,
+          deadlineMs: await input.resolveDeadlineMs(),
+          matchingStrategy: "last",
+          distinctBy: "sourceFilePublicId"
+        }), input.retry);
       const candidates = uniqueHits(result.hits, request.sourceFilePublicId)
         .slice(0, request.limit);
       if (candidates.length === 0) return [];
@@ -162,6 +175,46 @@ function createGraphCandidateSearch(input: {
       });
     }
   };
+}
+
+function normalizeRetry(
+  retry: CandidateSearchRetry["retry"]
+): Required<NonNullable<CandidateSearchRetry["retry"]>> {
+  const normalized = {
+    maximumAttempts: retry?.maximumAttempts ?? 3,
+    delayMs: retry?.delayMs ?? 100,
+    sleep: retry?.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => {
+      setTimeout(resolve, delayMs);
+    }))
+  };
+  if (
+    !Number.isSafeInteger(normalized.maximumAttempts)
+    || normalized.maximumAttempts < 1
+    || normalized.maximumAttempts > 10
+    || !Number.isSafeInteger(normalized.delayMs)
+    || normalized.delayMs < 0
+    || normalized.delayMs > 10_000
+  ) throw candidateSearchError("invalid_retry_policy");
+  return normalized;
+}
+
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  retry: Required<NonNullable<CandidateSearchRetry["retry"]>>
+): Promise<T> {
+  for (let attempt = 1; attempt <= retry.maximumAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        !(error instanceof SearchProviderError)
+        || !error.retryable
+        || attempt === retry.maximumAttempts
+      ) throw error;
+      await retry.sleep(retry.delayMs * attempt);
+    }
+  }
+  throw candidateSearchError("retry_exhausted");
 }
 
 function deadlineResolver(input: CandidateSearchDeadline): () => Promise<number> {

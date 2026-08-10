@@ -212,7 +212,7 @@ function createKeyDefinitions(indexPrefix: string): KeyDefinition[] {
       name: `Focowiki ${indexPrefix} runtime`,
       description: "Scoped server-side key managed by Focowiki",
       actions: RUNTIME_ACTIONS,
-      indexes: [`${indexPrefix}_*`],
+      indexes: [`${indexPrefix}_*`, `${indexPrefix}-semantic-*`],
       expiresAt: null,
       fileName: API_KEY_FILE
     },

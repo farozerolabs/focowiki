@@ -20,7 +20,8 @@ import { dispatchWebhookSafely } from "../../webhooks/safe-dispatch.js";
 
 type PublicationWorkflowPort = Pick<
   StorageVnextWorkflowClaimPort & StorageVnextWorkflowWritePort,
-  "claim" | "renew" | "saveCheckpoint" | "complete" | "releaseForRetry"
+  | "claim" | "renew" | "saveCheckpoint" | "complete"
+  | "releaseForRetry" | "releaseForContinuation"
 >;
 
 type PublicationReleasePort = Pick<
@@ -48,6 +49,13 @@ type PublicationProcessor = {
   }): Promise<{ searchProjectionPublicId: StorageVnextPublicId }>;
 };
 
+type PublicationReadiness = {
+  inspect(input: { knowledgeBaseId: string }): Promise<
+    | { state: "ready" }
+    | { state: "pending" }
+  >;
+};
+
 type FailureObserver = (failure: {
   operationPublicId: string;
   knowledgeBaseId: string;
@@ -60,11 +68,22 @@ type PublicationWorkerInput = {
   workflow: PublicationWorkflowPort;
   releases: PublicationReleasePort;
   processor: PublicationProcessor;
+  readiness?: PublicationReadiness;
   mutations?: {
     prepare(input: {
       work: StorageVnextLiveWork;
       signal?: AbortSignal;
     }): Promise<{ checkpoint: StorageVnextBoundedMetadata }>;
+    inspectSemanticStages?(input: {
+      work: StorageVnextLiveWork;
+    }): Promise<
+      | { state: "ready" }
+      | { state: "pending" }
+      | { state: "failed"; safeCode: string }
+    >;
+    ensureSemanticStages?(input: {
+      work: StorageVnextLiveWork;
+    }): Promise<void>;
     terminate?(input: {
       work: StorageVnextLiveWork;
       outcome: "failed" | "timed_out";
@@ -146,8 +165,81 @@ async function processWork(
       });
     }
     checkpoint = parseCheckpoint(durableCheckpoint);
+    if (work.kind === "mutation" && input.mutations?.ensureSemanticStages) {
+      await input.mutations.ensureSemanticStages({
+        work: { ...work, checkpoint: durableCheckpoint }
+      });
+    }
+    if (work.kind === "mutation" && input.mutations?.inspectSemanticStages) {
+      const semantic = await input.mutations.inspectSemanticStages({
+        work: { ...work, checkpoint: durableCheckpoint }
+      });
+      if (semantic.state === "pending") {
+        await input.workflow.releaseForContinuation({
+          publicId: work.publicId,
+          owner,
+          nextAttemptAt: addMilliseconds(
+            input.clock(),
+            input.limits.retryDelayMilliseconds
+          )
+        });
+        return "retried";
+      }
+      if (semantic.state === "failed") {
+        await terminateCandidate(
+          input,
+          work,
+          checkpoint.candidatePublicId,
+          "failed",
+          semantic.safeCode
+        );
+        return "terminal";
+      }
+    }
+    if (work.kind === "publication" && input.readiness) {
+      const readiness = await input.readiness.inspect({
+        knowledgeBaseId: work.knowledgeBaseId
+      });
+      if (readiness.state === "pending") {
+        await input.workflow.releaseForContinuation({
+          publicId: work.publicId,
+          owner,
+          nextAttemptAt: addMilliseconds(
+            input.clock(),
+            input.limits.retryDelayMilliseconds
+          )
+        });
+        return "retried";
+      }
+    }
     if (checkpoint.phase === "planning") {
-      const candidate = await requireCandidate(input, work, checkpoint);
+      const resolution = await resolvePlanningCandidate(input, work, checkpoint);
+      if (resolution.state === "pending") {
+        if (work.kind === "publication" && work.attempt >= input.limits.maximumAttempts) {
+          await completePlanningSuperseded(input, work, owner, checkpoint, null);
+          return "terminal";
+        }
+        await input.workflow.releaseForContinuation({
+          publicId: work.publicId,
+          owner,
+          nextAttemptAt: addMilliseconds(
+            input.clock(),
+            input.limits.retryDelayMilliseconds
+          )
+        });
+        return "retried";
+      }
+      if (resolution.state === "superseded") {
+        await completePlanningSuperseded(
+          input,
+          work,
+          owner,
+          checkpoint,
+          resolution.candidate
+        );
+        return "terminal";
+      }
+      const candidate = resolution.candidate;
       const published = await publishWithDeadline(input, work, candidate, heartbeat.signal);
       checkpoint = {
         phase: "candidate_ready",
@@ -386,19 +478,54 @@ async function activateCandidate(
   throw error;
 }
 
-async function requireCandidate(
+async function resolvePlanningCandidate(
   input: PublicationWorkerInput,
   work: StorageVnextLiveWork,
   checkpoint: PublicationCheckpoint
-): Promise<StorageVnextCandidateDelta> {
+): Promise<
+  | { state: "ready"; candidate: StorageVnextCandidateDelta }
+  | { state: "pending" }
+  | { state: "superseded"; candidate: StorageVnextCandidateDelta }
+> {
   const candidate = await input.releases.getLiveCandidate(work.knowledgeBaseId);
+  if (!candidate) {
+    if (work.kind === "publication") return { state: "pending" };
+    throw workerError("candidate_unavailable");
+  }
+  if (candidate.knowledgeBaseId !== work.knowledgeBaseId) {
+    throw workerError("candidate_unavailable");
+  }
   if (
-    !candidate
-    || candidate.publicId !== checkpoint.candidatePublicId
-    || candidate.knowledgeBaseId !== work.knowledgeBaseId
+    candidate.publicId !== checkpoint.candidatePublicId
     || candidate.operationPublicId !== work.publicId
-  ) throw workerError("candidate_unavailable");
-  return candidate;
+  ) {
+    if (work.kind === "publication") return { state: "superseded", candidate };
+    throw workerError("candidate_unavailable");
+  }
+  return { state: "ready", candidate };
+}
+
+async function completePlanningSuperseded(
+  input: PublicationWorkerInput,
+  work: StorageVnextLiveWork,
+  owner: string,
+  checkpoint: PublicationCheckpoint,
+  winner: StorageVnextCandidateDelta | null
+): Promise<void> {
+  if (work.kind === "mutation") throw workerError("candidate_unavailable");
+  await input.workflow.complete({
+    publicId: work.publicId,
+    owner,
+    result: result(input, work, {
+      state: "superseded",
+      resultCode: "PUBLICATION_SUPERSEDED",
+      correlationPublicId: winner?.publicId ?? null,
+      summary: {
+        candidatePublicId: checkpoint.candidatePublicId,
+        activeCandidatePublicId: winner?.publicId ?? null
+      }
+    })
+  });
 }
 
 async function retryOrTerminate(

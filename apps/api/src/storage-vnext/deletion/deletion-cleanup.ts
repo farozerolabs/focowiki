@@ -25,7 +25,7 @@ export function createStorageVnextDeletionCleanupCoordinator(input: {
   });
   const terminal = createStorageVnextTerminalConvergence({
     adapters: [adapter],
-    maximumTargets: input.maximumTargets ?? 9
+    maximumTargets: input.maximumTargets ?? 10
   });
   return {
     runAttempt(context: StorageVnextTerminalContext) {

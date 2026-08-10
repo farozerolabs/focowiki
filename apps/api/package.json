@@ -11,6 +11,8 @@
     "dev": "tsx src/main.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
+    "test:python": "PYTHONPATH=python python3 -m unittest discover -s python/tests -v",
+    "test:python:compatibility": "PYTHONPATH=python python3 -m graphrag_adapter_check",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

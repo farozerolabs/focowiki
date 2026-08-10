@@ -34,6 +34,7 @@ Focowiki 会把运行日志写入 `./logs`，同时继续向容器 stdout 和 st
 | --- | --- | --- |
 | `FOCOWIKI_API_IMAGE` | 可选 | API 镜像，默认 `ghcr.io/farozerolabs/focowiki-api:latest`。生产环境建议固定版本标签。 |
 | `FOCOWIKI_ADMIN_IMAGE` | 可选 | Admin UI 镜像，默认 `ghcr.io/farozerolabs/focowiki-admin:latest`。与 API 镜像使用相同版本。 |
+| `FOCOWIKI_SOURCE_WORKER_IMAGE` | 可选 | 来源处理镜像，默认 `ghcr.io/farozerolabs/focowiki-source-worker:latest`。与 API 和 Admin 镜像使用相同版本。 |
 
 ## 管理员登录
 
@@ -259,15 +260,20 @@ Developer OpenAPI key 在 Admin UI 中创建，不要写入 `.env`。
 | `PAGINATION_CURSOR_TTL_SECONDS` | 分页读取 cursor 的有效秒数。 |
 | `GENERATED_CONTENT_MAX_BYTES` | 单次 API 响应允许返回的生成文件最大字节数，超过时返回 HTTP 413。 |
 
-## Worker 数据库连接池
+## Worker 启动限制
 
 | 变量 | 是否必填 | 填写方式 |
 | --- | --- | --- |
 | `SOURCE_WORKER_DATABASE_POOL_MAX` | 可选 | 单个来源处理 Worker 使用的 PostgreSQL 连接数。默认 `6`，模板使用 `8`。 |
 | `PUBLICATION_WORKER_DATABASE_POOL_MAX` | 可选 | 单个发布 Worker 使用的 PostgreSQL 连接数。默认 `4`。 |
 | `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | 可选 | 单个维护 Worker 使用的 PostgreSQL 连接数。默认 `2`。 |
+| `SOURCE_WORKER_CPUS` | 可选 | 来源处理容器的 CPU 硬上限。模板使用 `2.0`。 |
+| `SOURCE_WORKER_MEMORY_LIMIT` | 可选 | 来源处理容器的内存硬上限。模板使用 `2g`。 |
+| `SOURCE_WORKER_PIDS_LIMIT` | 可选 | 来源处理容器允许的最大进程和线程数。模板使用 `128`。 |
 
 使用多个副本时，需要汇总所有 API 和 Worker 的连接池上限，并为迁移和管理员访问预留连接。
+
+来源处理镜像包含可选的语义增强运行能力。这些启动硬上限保留在 `.env`；语义分块、证据、查询向量并发和缓存上限应在测量 CPU、内存、服务商延迟与工作量后通过 Admin 配置调整。
 
 ## 安全审计
 
@@ -280,7 +286,7 @@ Developer OpenAPI key 在 Admin UI 中创建，不要写入 `.env`。
 启动前确认：
 
 1. `.env` 中所有占位符均已替换。
-2. API 与 Admin UI 镜像固定为同一个 Focowiki 版本。
+2. API、Admin UI 与 source-worker 镜像固定为同一个 Focowiki 版本。
 3. 公网 origins 使用 HTTPS，并与反向代理域名一致。
 4. `ALLOWED_HOSTS` 包含反向代理转发给 API 的全部 hostname。
 5. 容器可以访问 PostgreSQL、Redis、所选搜索服务和 S3。

@@ -5,6 +5,12 @@ import { createStorageVnextMaintenanceCandidatePublicId } from "./identity.js";
 type CleanupOutcome = "completed" | "failed" | "superseded";
 
 export function createStorageVnextMaintenanceProductionCleanup(input: {
+  semanticTerminal?: {
+    discardCandidateByOperation(input: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+    }): Promise<"deleted" | "missing">;
+  };
   releases: {
     terminateCandidate(input: {
       knowledgeBaseId: string;
@@ -59,6 +65,10 @@ export function createStorageVnextMaintenanceProductionCleanup(input: {
       );
 
       if (request.outcome !== "completed") {
+        await input.semanticTerminal?.discardCandidateByOperation({
+          knowledgeBaseId: request.knowledgeBaseId,
+          operationPublicId: request.operationPublicId
+        });
         const abandoned = await input.searchTerminal.abandonCandidate({
           candidatePublicId,
           safeErrorCode: request.outcome === "superseded"

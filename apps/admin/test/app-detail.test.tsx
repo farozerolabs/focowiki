@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
 import {
+  cancelKnowledgeBaseIndexMaintenance,
   deleteKnowledgeBaseFile,
   deleteKnowledgeBaseSourceDirectory,
   deleteKnowledgeBaseSourceFileTasks,
@@ -27,6 +28,9 @@ vi.mock("../src/lib/admin-api", () => ({
     return new Response("{}", { status: 404 });
   }),
   checkAdminSession: vi.fn(async () => false),
+  cancelKnowledgeBaseIndexMaintenance: vi.fn(async () => ({
+    result: "cancelled"
+  })),
   createKnowledgeBase: vi.fn(),
   deleteKnowledgeBase: vi.fn(),
   deleteKnowledgeBaseFile: vi.fn(async () => ({
@@ -665,7 +669,7 @@ describe("Admin knowledge base detail", () => {
     expect(await screen.findByText("Maintenance started")).toBeTruthy();
   });
 
-  it("disables the maintenance action while the server reports active work", async () => {
+  it("cancels maintenance while the server reports active work", async () => {
     const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
       knowledgeBaseId: "kb-docs"
     });
@@ -689,12 +693,21 @@ describe("Admin knowledge base detail", () => {
     await openDetail();
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    const button = await screen.findByRole("button", {
-      name: "Maintenance in progress"
-    });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    const button = await screen.findByRole("button", { name: "Cancel maintenance" });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText("20 / 100")).toBeTruthy();
     expect(screen.getByText("Updating file navigation and relationships")).toBeTruthy();
+
+    fireEvent.click(button);
+    const dialog = screen.getByRole("alertdialog", { name: "Cancel this maintenance run?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel maintenance" }));
+
+    await waitFor(() => {
+      expect(cancelKnowledgeBaseIndexMaintenance).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs"
+      });
+    });
+    expect(await screen.findByText("Maintenance cancelled")).toBeTruthy();
   });
 
   it("shows when index maintenance is not required", async () => {
@@ -817,6 +830,53 @@ describe("Admin knowledge base detail", () => {
         path: "pages/intro.md"
       });
     });
+  });
+
+  it("renders every semantic upload stage with the existing task-table layout", async () => {
+    const stages = [
+      ["graphrag_processing", "GraphRAG processing"],
+      ["semantic_reconciliation", "Semantic reconciliation"],
+      ["embedding_generation", "Embedding generation"],
+      ["affected_projection", "Affected projection"],
+      ["search_publication", "Search publication"],
+      ["semantic_maintenance_required", "Semantic maintenance required"]
+    ] as const;
+    vi.mocked(listSourceFiles).mockResolvedValue({
+      items: stages.map(([currentStage], index) => ({
+        id: `source-semantic-stage-${index}`,
+        name: `stage-${index}.md`,
+        relativePath: `stage-${index}.md`,
+        state: currentStage === "semantic_maintenance_required"
+          ? "visible" as const
+          : "running" as const,
+        currentStage,
+        failure: null,
+        actions: [],
+        generatedOutputStatus: currentStage === "semantic_maintenance_required"
+          ? "visible" as const
+          : "pending" as const,
+        createdAt: "2026-06-14T00:00:00.000Z"
+      })),
+      nextCursor: null
+    });
+
+    await openDetail();
+
+    for (const [, label] of stages) {
+      expect(await screen.findByText(label)).toBeTruthy();
+    }
+    expect(screen.getAllByTestId(/^source-file-row-/u)).toHaveLength(stages.length);
+
+    const i18n = await initI18n("zh-CN");
+    await i18n.changeLanguage("zh-CN");
+    expect(i18n.t("tasks.phase.graphragProcessing")).toBe("GraphRAG 处理");
+    expect(i18n.t("tasks.phase.semanticReconciliation")).toBe("语义关系协调");
+    expect(i18n.t("tasks.phase.embeddingGeneration")).toBe("向量生成");
+    expect(i18n.t("tasks.phase.affectedProjection")).toBe("受影响投影生成");
+    expect(i18n.t("tasks.phase.searchPublication")).toBe("搜索入库");
+    expect(i18n.t("tasks.phase.semanticMaintenanceRequired")).toBe(
+      "需要维护语义索引"
+    );
   });
 
   it("shows publication failures with details and the backend-authorized retry action", async () => {

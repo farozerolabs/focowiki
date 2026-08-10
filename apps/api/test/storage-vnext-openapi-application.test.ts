@@ -181,12 +181,15 @@ describe("storage vNext Developer OpenAPI application", () => {
         graphDepth: 1,
         graphFanout: 10,
         limit: 20,
+        rerank: false,
+        rerankTopK: null,
+        rerankScoreThreshold: null,
         cursor: null
       })).rejects.toMatchObject({ code, httpStatus });
     }
   );
 
-  it("does not return source-backed pages for an unrelated generated file kind", async () => {
+  it("rejects an unsupported generated file kind instead of returning a false empty result", async () => {
     const search = vi.fn(async () => ({
       items: [{
         publicId: "source-file-one",
@@ -234,9 +237,116 @@ describe("storage vNext Developer OpenAPI application", () => {
       graphDepth: 1,
       graphFanout: 10,
       limit: 20,
+      rerank: false,
+      rerankTopK: null,
+      rerankScoreThreshold: null,
       cursor: null
-    })).resolves.toMatchObject({ items: [], searchStatus: "no_candidates" });
+    } as never)).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      httpStatus: 422,
+      details: { field: "fileKind" }
+    });
     expect(search).not.toHaveBeenCalled();
+  });
+
+  it("reports complete graph totals separately from the current result page", async () => {
+    const sql = (async (strings: TemplateStringsArray) => {
+      const query = strings.join("?");
+      if (query.includes("indexed_document_count")) {
+        return [{ indexed_document_count: "12", indexed_relationship_count: "34" }];
+      }
+      if (query.includes("seed_source_file_public_id")) {
+        return [{
+          seed_source_file_public_id: "source-file-one",
+          seed_node_public_id: "node-one",
+          from_source_file_public_id: "source-file-one",
+          relationship_depth: 1,
+          relation_ordinal: 1,
+          public_id: "edge-one-two",
+          source_file_public_id: "source-file-two",
+          logical_path: "pages/two.md",
+          title: "Two",
+          relation: "reference",
+          weight: 0.8,
+          reason: "One references Two.",
+          direction: "outgoing"
+        }];
+      }
+      throw new Error(`Unexpected query: ${query}`);
+    }) as never;
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql,
+      catalog: null as never,
+      releases: {
+        async getActiveRoot() {
+          return {
+            publicId: "root-graph-summary",
+            knowledgeBaseId: "knowledge-base-graph-summary",
+            role: "active",
+            manifestChecksum: "a".repeat(64),
+            revision: 1,
+            createdAt: "2026-08-07T00:00:00.000Z",
+            expiresAt: null
+          };
+        }
+      } as never,
+      adminRead: null as never,
+      adminCore: null as never,
+      resources: null as never,
+      sourceEvents: null as never,
+      source: null as never,
+      search: {
+        async search() {
+          return {
+            items: [{
+              publicId: "source-file-one",
+              sourceFilePublicId: "source-file-one",
+              logicalPath: "pages/one.md",
+              title: "One",
+              snippet: "One",
+              score: 1,
+              kind: "graph" as const,
+              metadata: {},
+              evidenceFamilies: ["file_graph"],
+              matchedFields: ["file_relationship"],
+              evidenceTypes: ["file_relationship"]
+            }],
+            nextCursor: null
+          };
+        }
+      },
+      webhooks: null as never
+    });
+
+    await expect(application.searchFiles({
+      knowledgeBaseId: "knowledge-base-graph-summary",
+      query: "How is One connected to Two?",
+      scope: "all",
+      fileKind: "page",
+      mode: "graph",
+      graphDepth: 1,
+      graphFanout: 10,
+      limit: 10,
+      rerank: false,
+      rerankTopK: null,
+      rerankScoreThreshold: null,
+      cursor: null
+    })).resolves.toMatchObject({
+      items: [{
+        graphContext: {
+          relationships: [{
+            fileId: "source-file-two",
+            relationshipDepth: 1,
+            fromFileId: "source-file-one"
+          }]
+        }
+      }],
+      graphSummary: {
+        indexedDocumentCount: 12,
+        indexedRelationshipCount: 34
+      },
+      resultSummary: { resultCount: 1 }
+    });
   });
 });
 

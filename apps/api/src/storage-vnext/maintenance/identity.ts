@@ -9,7 +9,10 @@ export function createStorageVnextMaintenanceRequestHash(
     request.knowledgeBaseId,
     request.searchProviderKind,
     request.trigger,
-    request.idempotencyKey
+    request.idempotencyKey,
+    request.semanticAdoption
+      ? JSON.stringify(request.semanticAdoption)
+      : ""
   ].join("\0");
   return createHash("sha256").update(identity).digest("hex");
 }

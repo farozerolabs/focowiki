@@ -29,7 +29,7 @@ type RegistrationDeletionPort = {
     storageKey: string;
     state: string;
   } | null>;
-  getClosure(objectId: string): Promise<{ ownerCount: number }>;
+  getClosure(objectId: string): Promise<{ referenceCount: number }>;
   markDeleting(objectId: string): Promise<void>;
   markDeleted(objectId: string): Promise<void>;
 };
@@ -43,7 +43,7 @@ export function createStorageVnextVersionAwareObjectDeletion(input: {
       const registration = await input.registrations.getRegistration(objectId);
       if (!registration) throw deletionError("object_not_found");
       const before = await input.registrations.getClosure(objectId);
-      if (before.ownerCount > 0) throw deletionError("owners_present");
+      if (before.referenceCount > 0) throw deletionError("owners_present");
       if (registration.state === "verified") {
         await input.registrations.markDeleting(objectId);
       } else if (registration.state !== "deleting" && registration.state !== "deleted") {
@@ -51,7 +51,7 @@ export function createStorageVnextVersionAwareObjectDeletion(input: {
       }
       const result = await input.provider.purge(registration.storageKey);
       const after = await input.registrations.getClosure(objectId);
-      if (after.ownerCount > 0) throw deletionError("owners_present");
+      if (after.referenceCount > 0) throw deletionError("owners_present");
       await input.registrations.markDeleted(objectId);
       return result;
     }

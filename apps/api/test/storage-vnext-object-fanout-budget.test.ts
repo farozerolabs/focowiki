@@ -6,17 +6,17 @@ import {
 } from "../src/storage-vnext/ownership/object-fanout-budget.js";
 
 describe("storage vNext generated object fan-out budget", () => {
-  it("allows at most five prospective active generated objects per source", () => {
+  it("adds fixed projection capacity to five prospective objects per source", () => {
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 100,
-      activeGeneratedObjectCount: 490,
-      candidateGeneratedObjectCount: 500,
+      activeGeneratedObjectCount: 957,
+      candidateGeneratedObjectCount: 967,
       candidateOnlyObjectCount: 10
-    })).toMatchObject({ passed: true, maximumActiveObjects: 500 });
+    })).toMatchObject({ passed: true, maximumActiveObjects: 967 });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 100,
-      activeGeneratedObjectCount: 490,
-      candidateGeneratedObjectCount: 501,
+      activeGeneratedObjectCount: 957,
+      candidateGeneratedObjectCount: 968,
       candidateOnlyObjectCount: 10
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
@@ -45,13 +45,13 @@ describe("storage vNext generated object fan-out budget", () => {
     })).toMatchObject({
       passed: true,
       candidateRatioPassed: true,
-      maximumActiveObjects: 467
+      maximumActiveObjects: 517
     });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 10,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 468,
-      candidateOnlyObjectCount: 468
+      candidateGeneratedObjectCount: 518,
+      candidateOnlyObjectCount: 518
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -63,14 +63,14 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 278
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 467,
+      maximumActiveObjects: 647,
       fileFirstCompletenessAllowanceUsed: true
     });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 36,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 468,
-      candidateOnlyObjectCount: 468
+      candidateGeneratedObjectCount: 648,
+      candidateOnlyObjectCount: 648
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -98,8 +98,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 109
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 467,
-      maximumCandidateOnlyObjects: 467
+      maximumActiveObjects: 507,
+      maximumCandidateOnlyObjects: 507
     });
   });
 
@@ -112,7 +112,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 467,
+      maximumActiveObjects: 512,
       maximumCandidateOnlyObjects: 29
     });
   });
@@ -127,7 +127,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 22
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 467,
+      maximumActiveObjects: 517,
       fileFirstCompletenessAllowanceUsed: false,
       candidateRatioPassed: true
     });
@@ -138,13 +138,13 @@ describe("storage vNext generated object fan-out budget", () => {
       sourceFileCount: 100,
       activeSourceFileCount: 99,
       changedSourceFileCount: 1,
-      activeGeneratedObjectCount: 500,
-      candidateGeneratedObjectCount: 501,
+      activeGeneratedObjectCount: 967,
+      candidateGeneratedObjectCount: 968,
       candidateOnlyObjectCount: 1
     })).toMatchObject({
       passed: false,
-      maximumActiveObjects: 500,
-      fileFirstCompletenessAllowanceUsed: false,
+      maximumActiveObjects: 967,
+      fileFirstCompletenessAllowanceUsed: true,
       activeFanoutPassed: false
     });
   });
@@ -158,7 +158,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 467,
+      maximumActiveObjects: 512,
       maximumCandidateOnlyObjects: 25
     });
   });
@@ -173,7 +173,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 29
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 467,
+      maximumActiveObjects: 512,
       maximumCandidateOnlyObjects: 36,
       candidateChangeAllowanceUsed: true
     });
@@ -202,8 +202,8 @@ describe("storage vNext generated object fan-out budget", () => {
       maintenanceRebuild: true
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 467,
-      maximumCandidateOnlyObjects: 467,
+      maximumActiveObjects: 482,
+      maximumCandidateOnlyObjects: 482,
       candidateCompletenessAllowanceUsed: true
     });
   });
@@ -239,14 +239,38 @@ describe("storage vNext generated object fan-out budget", () => {
       sourceFileCount: 3,
       activeSourceFileCount: 3,
       activeGeneratedObjectCount: 49,
-      candidateGeneratedObjectCount: 468,
-      candidateOnlyObjectCount: 468,
+      candidateGeneratedObjectCount: 483,
+      candidateOnlyObjectCount: 483,
       activeGeneratedEntryCount: 41,
       candidateGeneratedEntryCount: 53,
       maintenanceRebuild: true
     })).toMatchObject({
       passed: false,
       activeFanoutPassed: false
+    });
+  });
+
+  it("adds fixed projection shards to the per-source object ceiling", () => {
+    const complete = evaluateStorageVnextObjectFanoutBudget({
+      sourceFileCount: 53,
+      activeSourceFileCount: 0,
+      activeGeneratedObjectCount: 0,
+      candidateGeneratedObjectCount: 538,
+      candidateOnlyObjectCount: 538,
+      candidateGeneratedEntryCount: 506
+    });
+    expect(complete).toMatchObject({
+      maximumActiveObjects: 732,
+      activeFanoutPassed: true,
+      passed: true
+    });
+    expect(evaluateStorageVnextObjectFanoutBudget({
+      ...complete,
+      candidateGeneratedObjectCount: 733,
+      candidateOnlyObjectCount: 733
+    })).toMatchObject({
+      activeFanoutPassed: false,
+      passed: false
     });
   });
 

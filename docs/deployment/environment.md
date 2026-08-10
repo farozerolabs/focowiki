@@ -34,6 +34,7 @@ The production Compose template stores PostgreSQL data in `./data/postgres`, Red
 | --- | --- | --- |
 | `FOCOWIKI_API_IMAGE` | Optional | API image. Defaults to `ghcr.io/farozerolabs/focowiki-api:latest`. Pin a release tag for production. |
 | `FOCOWIKI_ADMIN_IMAGE` | Optional | Admin UI image. Defaults to `ghcr.io/farozerolabs/focowiki-admin:latest`. Use the same release tag as the API image. |
+| `FOCOWIKI_SOURCE_WORKER_IMAGE` | Optional | Source-processing image. Defaults to `ghcr.io/farozerolabs/focowiki-source-worker:latest`. Use the same release tag as the API and Admin images. |
 
 ## Admin Authentication
 
@@ -259,15 +260,20 @@ All values in this section are optional. The values in `.env.example` are the re
 | `PAGINATION_CURSOR_TTL_SECONDS` | Lifetime of paginated-read cursors. |
 | `GENERATED_CONTENT_MAX_BYTES` | Maximum generated file size returned by one API response. Larger content returns HTTP 413. |
 
-## Worker Database Pools
+## Worker Startup Limits
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
 | `SOURCE_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one source worker. Default: `6`; the template uses `8`. |
 | `PUBLICATION_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one publication worker. Default: `4`. |
 | `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one maintenance worker. Default: `2`. |
+| `SOURCE_WORKER_CPUS` | Optional | Hard CPU ceiling for the source-processing container. The template uses `2.0`. |
+| `SOURCE_WORKER_MEMORY_LIMIT` | Optional | Hard memory ceiling for the source-processing container. The template uses `2g`. |
+| `SOURCE_WORKER_PIDS_LIMIT` | Optional | Maximum processes and threads in the source-processing container. The template uses `128`. |
 
 When running multiple replicas, add the pool limits for every API and worker process and leave capacity for migrations and operator access.
+
+The source-processing image contains the optional semantic-enrichment runtime. Keep these startup ceilings in `.env`; tune semantic chunking, evidence, query-vector concurrency, and cache limits from Admin Settings after measuring CPU, memory, provider latency, and workload size.
 
 ## Security Audit
 
@@ -280,7 +286,7 @@ When running multiple replicas, add the pool limits for every API and worker pro
 Before starting the stack, confirm:
 
 1. Every placeholder in `.env` has been replaced.
-2. Image tags are pinned to the same Focowiki release.
+2. API, Admin UI, and source-worker image tags are pinned to the same Focowiki release.
 3. Public origins use HTTPS and match the reverse-proxy domains.
 4. `ALLOWED_HOSTS` includes every hostname forwarded to the API.
 5. PostgreSQL, Redis, the selected search provider, and S3 are reachable from the containers.

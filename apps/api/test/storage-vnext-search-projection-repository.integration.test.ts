@@ -45,7 +45,8 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
       VALUES
         ('kb-a', 'Knowledge base A', 1),
         ('kb-b', 'Knowledge base B', 1),
-        ('kb-c', 'Knowledge base C', 1)
+        ('kb-c', 'Knowledge base C', 1),
+        ('kb-d', 'Knowledge base D', 1)
     `;
     await sql`
       INSERT INTO focowiki.object_registrations (
@@ -116,6 +117,23 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
 
     expect(outcomes.map((result) => result.outcome).sort())
       .toEqual(["created", "existing"]);
+  });
+
+  it("reserves a fresh candidate while a failed projection awaits cleanup", async () => {
+    await repository.reserveCandidate(candidate("candidate-failed-d", "kb-d"));
+    await repository.failCandidateValidation({
+      candidatePublicId: "candidate-failed-d",
+      safeErrorCode: "candidate_checksum_mismatch"
+    });
+
+    await expect(repository.reserveCandidate(
+      candidate("candidate-retry-d", "kb-d")
+    )).resolves.toMatchObject({
+      outcome: "created",
+      projection: { publicId: "candidate-retry-d", state: "preparing" }
+    });
+    await expect(repository.getCandidate("candidate-failed-d"))
+      .resolves.toMatchObject({ state: "failed" });
   });
 
   it("hydrates only current source identities with released logical paths", async () => {

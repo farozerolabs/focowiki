@@ -40,6 +40,7 @@ export type StorageVnextGraphSeedDocument = {
   sourceFilePublicId: StorageVnextPublicId;
   sourceRevisionPublicId: StorageVnextPublicId;
   logicalPath: string;
+  fileKind: string;
   title: string | null;
   searchText: string;
   rankingTerms: readonly string[];
@@ -115,12 +116,14 @@ export function createStorageVnextGraphSeedDocument(input: {
   sourceFilePublicId: StorageVnextPublicId;
   sourceRevisionPublicId: StorageVnextPublicId;
   logicalPath: string;
+  fileKind?: string;
   title: string | null;
   searchText: string;
   rankingTerms: readonly string[];
   okfSignals?: OkfSearchSignals;
 }): StorageVnextGraphSeedDocument {
   assertIdentity(input);
+  const fileKind = input.fileKind ?? "page";
   const rankingTerms = [...new Set(
     input.rankingTerms.map((value) => value.trim()).filter(Boolean)
   )].sort();
@@ -132,6 +135,7 @@ export function createStorageVnextGraphSeedDocument(input: {
       input.sourceFilePublicId,
       input.sourceRevisionPublicId,
       input.logicalPath,
+      fileKind,
       input.title ?? "",
       input.searchText,
       JSON.stringify(rankingTerms),
@@ -143,6 +147,7 @@ export function createStorageVnextGraphSeedDocument(input: {
     sourceFilePublicId: input.sourceFilePublicId,
     sourceRevisionPublicId: input.sourceRevisionPublicId,
     logicalPath: input.logicalPath,
+    fileKind,
     title: input.title,
     searchText: input.searchText,
     rankingTerms,

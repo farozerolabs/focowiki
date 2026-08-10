@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import type { SearchProviderIndexDefinition } from
-  "../src/application/ports/search-provider-runtime.js";
 import {
   createMeilisearchTransport
 } from "../src/infrastructure/meilisearch/meilisearch-transport.js";
@@ -25,6 +23,8 @@ import {
 import {
   createStorageVnextActiveSearch
 } from "../src/storage-vnext/search/active-search.js";
+import { createStorageVnextSearchSettings } from
+  "../src/storage-vnext/search/settings.js";
 import type {
   StorageVnextSearchDocument,
   StorageVnextSearchValidationCase
@@ -42,25 +42,7 @@ const hasOwnedTarget = Boolean(
 );
 const describeOwnedMeilisearch = hasOwnedTarget ? describe : describe.skip;
 
-const settings: SearchProviderIndexDefinition = {
-  primaryKey: "id",
-  searchableAttributes: [
-    "title", "logicalPath", "headingAncestors", "searchText", "rankingTerms"
-  ],
-  filterableAttributes: [
-    "knowledgeBaseId", "documentKind", "schemaVersion", "sourceFilePublicId"
-  ],
-  displayedAttributes: [
-    "id", "schemaVersion", "documentKind", "contentKind", "knowledgeBaseId",
-    "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
-    "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms"
-  ],
-  rankingRules: ["words", "typo", "proximity", "attribute", "sort", "exactness"],
-  distinctAttribute: "sourceFilePublicId",
-  maximumTotalHits: 2_000,
-  searchCutoffMs: 1_000,
-  typoDisabledAttributes: ["logicalPath"]
-};
+const settings = createStorageVnextSearchSettings({ searchCutoffMs: 1_000 });
 const meilisearchSettings = toMeilisearchSettings(settings);
 
 describeOwnedMeilisearch("real storage vNext candidate validation", () => {

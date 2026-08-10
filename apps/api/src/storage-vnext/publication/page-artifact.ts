@@ -14,6 +14,8 @@ import type {
   StorageVnextGraphEdgeFact,
   StorageVnextGraphNodeFact
 } from "../graph/ports.js";
+import type { SemanticSourcePresentationContext } from
+  "../../semantic/presentation/source-context.js";
 import type {
   StorageVnextPublicDocument,
   StorageVnextPublicValue
@@ -27,6 +29,7 @@ export function assembleStorageVnextPageArtifact(input: {
   neighborhood: readonly StorageVnextGraphEdgeFact[];
   endpointNodes: readonly StorageVnextGraphNodeFact[];
   sourceBody: string;
+  semanticContext?: SemanticSourcePresentationContext;
   removedSourceLogicalPaths?: readonly string[] | undefined;
   ordinal: number;
   relatedFileLimit: number;
@@ -78,7 +81,8 @@ export function assembleStorageVnextPageArtifact(input: {
       metadata,
       sourceMetadata: input.current.sourceFile.metadata as unknown as SourceMetadataDefaults,
       suggestions: null,
-      graphLinks
+      graphLinks,
+      ...(input.semanticContext ? { semanticContext: input.semanticContext } : {})
     },
     sourceBody: resolved.body,
     removedSourceLogicalPaths: input.removedSourceLogicalPaths,
@@ -100,7 +104,7 @@ function validateInput(input: {
     || input.relatedFileLimit < 1
     || input.relatedFileLimit > 1_000
     || sourceFile.visibility !== "current"
-    || sourceFile.status !== "ready"
+    || (sourceFile.status !== "ready" && sourceFile.status !== "processing")
     || sourceFile.currentRevisionPublicId !== sourceRevision.publicId
     || sourceFile.publicId !== sourceRevision.sourceFilePublicId
     || sourceFile.knowledgeBaseId !== sourceRevision.knowledgeBaseId

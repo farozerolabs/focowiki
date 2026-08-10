@@ -6,6 +6,7 @@ const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const migrationDirectory = resolve(workspaceRoot, "apps/api/migrations");
 const bootstrapFileName = "001_storage_vnext.sql";
 const extensionProfileMigration = "002_extension_navigation_profile.sql";
+const semanticSearchMigration = "003_general_purpose_semantic_search.sql";
 const bootstrapPath = resolve(migrationDirectory, bootstrapFileName);
 
 function migrationFiles(): string[] {
@@ -32,18 +33,25 @@ function findIdentifiers(source: string, identifiers: readonly string[]): string
 }
 
 describe("storage vNext clean bootstrap and reset contract", () => {
-  it("keeps the absent bootstrap and adds only the extension-profile upgrade", () => {
+  it("keeps the absent bootstrap and declares the reset-only semantic baseline", () => {
     const manifest = readFileSync(
       resolve(workspaceRoot, "apps/api/src/db/migration-manifest.ts"),
       "utf8"
     );
 
-    expect(migrationFiles()).toEqual([bootstrapFileName, extensionProfileMigration]);
+    expect(migrationFiles()).toEqual([
+      bootstrapFileName,
+      extensionProfileMigration,
+      semanticSearchMigration
+    ]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
     expect(manifest).toContain('targetGeneration: "storage-vnext-v1"');
     expect(manifest).toContain(`fileName: "${extensionProfileMigration}"`);
     expect(manifest).toContain('targetGeneration: "storage-vnext-v2"');
+    expect(manifest).toContain(`fileName: "${semanticSearchMigration}"`);
+    expect(manifest).toContain('targetGeneration: "storage-vnext-v3-semantic"');
+    expect(manifest).toContain('safety: "breaking_reset"');
     expect(manifest).not.toMatch(
       /incremental-sharded-publication|compatible_with_persisted_work|createMigrationPlan\(currentGeneration/u
     );

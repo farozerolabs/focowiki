@@ -87,6 +87,25 @@ type DeletionPurgeInput = {
       remainingProviderKind: SearchProviderKind | null;
     }>;
   };
+  semantic: {
+    deleteSourceScope(input: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+      sourceFilePublicIds: readonly string[];
+      cursor: string | null;
+    }): Promise<{
+      outcome: "completed" | "continue";
+      nextCursor: string | null;
+    }>;
+    deleteKnowledgeBaseScope(input: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+      cursor: string | null;
+    }): Promise<{
+      outcome: "completed" | "continue";
+      nextCursor: string | null;
+    }>;
+  };
   postgres: StorageVnextDeletionPurgePostgresPort;
   objects: {
     deleteZeroOwner(objectId: string): Promise<{
@@ -154,6 +173,55 @@ export function createStorageVnextDeletionPurgeCoordinator(
             }
           }
           return completed();
+        case "semantic_scope": {
+          const semanticCursor = state.semanticScopeCursor === state.cursor
+            ? state.semanticCursor
+            : null;
+          try {
+            const result = state.targetKind === "knowledge_base"
+              ? await input.semantic.deleteKnowledgeBaseScope({
+                  knowledgeBaseId: context.knowledgeBaseId,
+                  operationPublicId: context.workPublicId,
+                  cursor: semanticCursor
+                })
+              : await deleteSourceSemanticScope();
+            if (result.outcome === "continue" && result.nextCursor !== null) {
+              return {
+                status: "retry" as const,
+                reasonCode: "DELETION_SEMANTIC_PAGE_REMAINING",
+                checkpoint: {
+                  semanticCursor: result.nextCursor,
+                  semanticScopeCursor: state.cursor
+                }
+              };
+            }
+            return completed();
+          } catch (error) {
+            if (hasCode(error, "semantic_search_provider_required")) {
+              return {
+                status: "retry" as const,
+                reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED",
+                checkpoint: {
+                  requiredSearchProviderKind: requiredProviderKind(error)
+                }
+              };
+            }
+            throw error;
+          }
+
+          async function deleteSourceSemanticScope() {
+            const page = await requirePage();
+            if (page.sourceFilePublicIds.length === 0) {
+              return { outcome: "completed" as const, nextCursor: null };
+            }
+            return input.semantic.deleteSourceScope({
+              knowledgeBaseId: context.knowledgeBaseId,
+              operationPublicId: context.workPublicId,
+              sourceFilePublicIds: page.sourceFilePublicIds,
+              cursor: semanticCursor
+            });
+          }
+        }
         case "graph_scope":
           if (state.targetKind === "knowledge_base") {
             await input.postgres.purgeKnowledgeBaseGraph(scope);
@@ -304,6 +372,8 @@ function readState(context: StorageVnextTerminalContext) {
     candidateProviderIndexUid: nullableString(value.candidateSearchProviderIndexUid),
     finishedBefore: optionalString(value.finishedBefore) ?? context.completedAt,
     taskFrom: nullableOrdinal(value.taskFrom),
+    semanticCursor: nullableString(value.semanticCursor),
+    semanticScopeCursor: nullableString(value.semanticScopeCursor),
     cursor: nullableString(value.cursor)
   };
 }
@@ -394,6 +464,14 @@ function objectFailureReason(error: unknown): string {
 
 function hasCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+function requiredProviderKind(error: unknown): SearchProviderKind {
+  if (!(error instanceof Error) || !("requiredProviderKind" in error)
+    || !isSearchProviderKind(error.requiredProviderKind)) {
+    throw purgeError("invalid_provider_continuation");
+  }
+  return error.requiredProviderKind;
 }
 
 function isTargetKind(value: unknown): value is StorageVnextDeletionKind {

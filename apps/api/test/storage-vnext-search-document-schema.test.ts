@@ -116,6 +116,7 @@ describe("storage vNext minimal search document schemas", () => {
       sourceFilePublicId: "source-a",
       sourceRevisionPublicId: "revision-a",
       logicalPath: "pages/guides/cache.md",
+      fileKind: "page",
       title: "Cache recovery",
       searchText: "cache restore dependency",
       rankingTerms: ["restore", "cache", "restore", "  dependency  "]
@@ -129,6 +130,7 @@ describe("storage vNext minimal search document schemas", () => {
       sourceFilePublicId: "source-a",
       sourceRevisionPublicId: "revision-a",
       logicalPath: "pages/guides/cache.md",
+      fileKind: "page",
       title: "Cache recovery",
       searchText: "cache restore dependency",
       rankingTerms: ["cache", "dependency", "restore"],

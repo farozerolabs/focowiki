@@ -23,6 +23,11 @@ export function createStorageVnextSourceRoleRuntime<
   owner: string;
   clock: () => string;
   getSettings(): Promise<TSettings>;
+  recoverStale(input: {
+    expiredBefore: string;
+    retryAt: string;
+    limit: number;
+  }): Promise<number>;
   createWorker(settings: TSettings): SourceWorker;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }) {
@@ -33,10 +38,17 @@ export function createStorageVnextSourceRoleRuntime<
       while (!signal.aborted) {
         const settings = await input.getSettings();
         validateSettings(settings);
+        const recoveredAt = input.clock();
+        const limit = Math.min(settings.claimBatchSize, settings.sourceFileConcurrency);
+        await input.recoverStale({
+          expiredBefore: recoveredAt,
+          retryAt: recoveredAt,
+          limit
+        });
         const worker = input.createWorker(settings);
         const outcome = await worker.runOnce({
           owner: input.owner,
-          limit: Math.min(settings.claimBatchSize, settings.sourceFileConcurrency),
+          limit,
           leaseExpiresAt: addSeconds(input.clock(), settings.lockTtlSeconds),
           signal
         });

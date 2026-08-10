@@ -42,8 +42,8 @@ Run Focowiki with Docker Compose and the published images on GHCR.
 
 Before installing Focowiki, make sure your machine meets these requirements:
 
-- Minimum: CPU >= 2 cores, RAM >= 4 GiB; 6 GiB RAM is preferred for background processing
-- Recommended: CPU >= 4 cores, RAM >= 8 GiB or more
+- Minimum: CPU >= 4 cores, RAM >= 8 GiB
+- Recommended with semantic enrichment enabled: CPU >= 6 cores, RAM >= 12 GiB or more
 
 ```bash
 git clone https://github.com/farozerolabs/focowiki.git && cd focowiki
@@ -70,7 +70,10 @@ The Docker Compose template uses `latest` by default. To pin a release, set the 
 ```env
 FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.1.0
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
+FOCOWIKI_SOURCE_WORKER_IMAGE=ghcr.io/farozerolabs/focowiki-source-worker:0.1.0
 ```
+
+Pin all three images to the same release tag.
 
 Read the [Docker Compose deployment guide](https://docs.focowiki.com/deployment/docker-compose) for configuration details.
 
@@ -84,7 +87,7 @@ Full documentation is available at [docs.focowiki.com](https://docs.focowiki.com
 - [Developer OpenAPI](https://docs.focowiki.com/openapi/)
 - [Agent integration](https://docs.focowiki.com/agent-integration/)
 - [Open Knowledge Format guide](https://docs.focowiki.com/guide/open-knowledge-format)
-- [File-first graph guide](https://docs.focowiki.com/guide/file-first-graph)
+- [Source-file evidence and graph guide](https://docs.focowiki.com/guide/file-first-graph)
 - [File cleaning and ingestion guide](https://docs.focowiki.com/guide/file-cleaning-ingestion)
 
 ## What Focowiki Provides
@@ -93,7 +96,7 @@ Focowiki takes Markdown files and folders and turns them into a knowledge base t
 
 - **Upload documents and folders.** Add individual Markdown files or complete folder trees. Focowiki keeps their paths, names, metadata, links, and content.
 - **Browse organized knowledge.** Open documents from a file tree, move or rename files and folders, replace content, and remove outdated material.
-- **Find relevant documents.** Search file content, browse directory indexes, follow related documents, and explore relationships through the knowledge graph.
+- **Find relevant documents.** Ask a complete natural-language question with default hybrid retrieval, browse directory indexes, follow related documents, and optionally rerank a limited number of source-grounded candidates. Search always returns readable source files; applications and Agents read the Markdown before using it as evidence. Once a knowledge base has a semantic contract, uploads and body replacements run GraphRAG and vector indexing automatically before final search publication.
 - **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow graph relationships, and manage document changes.
 - **Manage the system from the Admin UI.** Create knowledge bases, monitor file processing, configure models and runtime settings, and manage API keys.
 - **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, OpenSearch or Meilisearch, and S3-compatible storage.

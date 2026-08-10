@@ -78,7 +78,10 @@ export function storageVnextOwnerTarget(owner: StorageVnextObjectOwner) {
       ? owner.ownerPublicId
       : null,
     releaseShardPublicId: owner.kind === "shared_segment" ? owner.ownerPublicId : null,
-    operationPublicId: owner.kind === "live_reservation" ? owner.ownerPublicId : null
+    operationPublicId: owner.kind === "live_reservation" ? owner.ownerPublicId : null,
+    embeddingArtifactPublicId: owner.kind === "embedding_artifact"
+      ? owner.ownerPublicId
+      : null
   };
 }
 
@@ -198,7 +201,8 @@ export function assertStorageVnextOwnerKind(
     "candidate_root",
     "rollback_root",
     "shared_segment",
-    "live_reservation"
+    "live_reservation",
+    "embedding_artifact"
   ].includes(kind)) {
     throw new StorageVnextOwnershipRepositoryError("invalid_input");
   }

@@ -17,6 +17,12 @@ describe("storage vNext maintenance production cleanup", () => {
       .mockReturnValueOnce("2026-08-02T00:00:00.000Z")
       .mockReturnValue("2026-08-02T00:00:00.001Z");
     const cleanup = createStorageVnextMaintenanceProductionCleanup({
+      semanticTerminal: {
+        discardCandidateByOperation: vi.fn(async () => {
+          events.push("semantic");
+          return "deleted" as const;
+        })
+      },
       releases: {
         terminateCandidate: vi.fn(async () => {
           events.push("release");
@@ -52,6 +58,7 @@ describe("storage vNext maintenance production cleanup", () => {
     })).resolves.toMatchObject({ candidatePublicId });
 
     expect(events).toEqual([
+      "semantic",
       "abandon",
       "failed-index",
       "release",
@@ -103,6 +110,9 @@ describe("storage vNext maintenance production cleanup", () => {
       continuation: null
     }));
     const cleanup = createStorageVnextMaintenanceProductionCleanup({
+      semanticTerminal: {
+        discardCandidateByOperation: vi.fn(async () => "missing" as const)
+      },
       releases: { terminateCandidate },
       searchTerminal: { abandonCandidate },
       searchCleanup: {
@@ -128,6 +138,37 @@ describe("storage vNext maintenance production cleanup", () => {
     });
     expect(abandonCandidate).not.toHaveBeenCalled();
     expect(terminateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("does not discard an activated semantic generation after completion", async () => {
+    const discardCandidateByOperation = vi.fn();
+    const cleanup = createStorageVnextMaintenanceProductionCleanup({
+      semanticTerminal: { discardCandidateByOperation },
+      releases: { terminateCandidate: vi.fn() },
+      searchTerminal: { abandonCandidate: vi.fn() },
+      searchCleanup: {
+        cleanupFailedCandidate: vi.fn(),
+        cleanupOrphanIndexes: vi.fn(async () => ({
+          deleted: 0,
+          continuation: null
+        })),
+        cleanupFinishedTasks: vi.fn(async () => ({
+          deleted: 0,
+          continuation: null
+        }))
+      },
+      clock: () => "2026-08-02T00:00:00.000Z",
+      resultRetentionMilliseconds: 86_400_000,
+      maximumCleanupPages: 4
+    });
+
+    await cleanup.terminate({
+      knowledgeBaseId: "kb-maintenance",
+      operationPublicId: "operation-maintenance",
+      outcome: "completed"
+    });
+
+    expect(discardCandidateByOperation).not.toHaveBeenCalled();
   });
 });
 

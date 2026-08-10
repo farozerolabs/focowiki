@@ -29,6 +29,10 @@ const INDEX_EVIDENCE = {
   active_snapshots_release_root_idx: "release:active-root owner",
   active_snapshots_search_projection_idx: "search:active projection owner",
   active_snapshots_operation_idx: "workflow:activation operation inverse",
+  search_projections_active_role_uniq_idx:
+    "search:single active projection cardinality",
+  search_projections_live_candidate_uniq_idx:
+    "search:single live candidate projection cardinality",
   search_projections_failed_cleanup_idx: "search:list failed candidate cleanup",
   meilisearch_projection_maintenance_compaction_idx:
     "search:Meilisearch optional compaction scheduling",

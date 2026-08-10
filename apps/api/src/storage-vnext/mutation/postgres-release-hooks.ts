@@ -2,6 +2,19 @@ import type { TransactionSql } from "postgres";
 import type { StorageVnextReleaseLifecycleHooks } from
   "../release/postgres-repository.js";
 import type { StorageVnextStructuredMetadata } from "../shared/types.js";
+import {
+  planSemanticSourceStages,
+  type SemanticStageWorkItem
+} from "../../semantic/application/stage-orchestration.js";
+import type { SemanticSourceStageTarget } from
+  "../../semantic/application/source-handoff.js";
+import { selectSemanticCrudStages } from
+  "../../semantic/application/crud-planner.js";
+import { enqueueSemanticStagesInTransaction } from
+  "../../semantic/infrastructure/postgres-stage-repository.js";
+import { activateSemanticSourceRevision } from
+  "../../semantic/infrastructure/postgres-source-revision-activation.js";
+import { createOkfSearchSignals } from "../search/okf-signals.js";
 
 type MutationOperationRow = {
   operation_kind: string;
@@ -10,7 +23,7 @@ type MutationOperationRow = {
   checkpoint: MutationCheckpoint;
 };
 
-type MutationCheckpoint = {
+export type MutationCheckpoint = {
   version: number;
   kind: string;
   targetKind: string;
@@ -34,6 +47,10 @@ type MutationCheckpoint = {
   candidateDescription?: string | null;
   candidateTitle?: string;
   candidateMetadata?: StorageVnextStructuredMetadata;
+  semanticState?: "disabled" | "blocked" | "ready";
+  semanticGenerationPublicId?: string | null;
+  semanticSafeCode?: string | null;
+  semanticStageTargetJson?: string;
 };
 
 const MUTATION_KINDS = new Set([
@@ -127,6 +144,7 @@ async function applyCandidate(
     candidatePublicId: string;
   }
 ): Promise<void> {
+  await assertMutationSemanticStagesComplete(transaction, input);
   switch (input.checkpoint.kind) {
     case "knowledge_base_metadata":
       await activateKnowledgeBaseMetadata(transaction, input);
@@ -148,6 +166,33 @@ async function applyCandidate(
   }
   await activateCandidateGraph(transaction, input);
   await completeMutation(transaction, input);
+}
+
+async function assertMutationSemanticStagesComplete(
+  transaction: TransactionSql,
+  input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    checkpoint: MutationCheckpoint;
+  }
+): Promise<void> {
+  if (input.checkpoint.semanticState !== "ready" || ![
+    "source_replace", "source_file_metadata"
+  ].includes(input.checkpoint.kind)) return;
+  const rows = await transaction<Array<{
+    total_count: number | string;
+    incomplete_count: number | string;
+  }>>`
+    SELECT count(*) AS total_count,
+           count(*) FILTER (WHERE state <> 'completed') AS incomplete_count
+    FROM focowiki.semantic_stage_work_items
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND operation_public_id = ${input.operationPublicId}
+  `;
+  if (Number(rows[0]?.total_count ?? 0) === 0
+    || Number(rows[0]?.incomplete_count ?? 0) > 0) {
+    throw mutationActivationError("semantic_publication_barrier_incomplete");
+  }
 }
 
 async function activateCandidateGraph(
@@ -402,11 +447,58 @@ async function activateSourceDirectoryMove(
         OR logical_path LIKE ${`pages/${escapeLike(currentLogicalPath)}/%`} ESCAPE '\\'
       )
   `;
+  await transaction`
+    UPDATE focowiki.semantic_evidence
+    SET logical_path = CASE
+          WHEN logical_path LIKE ${`pages/${escapeLike(currentLogicalPath)}/%`} ESCAPE '\\'
+            THEN overlay(
+              logical_path PLACING ${`pages/${candidateLogicalPath}`}
+              FROM 1 FOR ${`pages/${currentLogicalPath}`.length}
+            )
+          ELSE overlay(
+            logical_path PLACING ${candidateLogicalPath}
+            FROM 1 FOR ${currentLogicalPath.length}
+          )
+        END
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND (
+        logical_path LIKE ${`${escapeLike(currentLogicalPath)}/%`} ESCAPE '\\'
+        OR logical_path LIKE ${`pages/${escapeLike(currentLogicalPath)}/%`} ESCAPE '\\'
+      )
+  `;
+  await transaction`
+    UPDATE focowiki.semantic_vector_documents
+    SET evidence_target_path = CASE
+          WHEN evidence_target_path LIKE
+            ${`pages/${escapeLike(currentLogicalPath)}/%`} ESCAPE '\\'
+            THEN overlay(
+              evidence_target_path PLACING ${`pages/${candidateLogicalPath}`}
+              FROM 1 FOR ${`pages/${currentLogicalPath}`.length}
+            )
+          ELSE overlay(
+            evidence_target_path PLACING ${candidateLogicalPath}
+            FROM 1 FOR ${currentLogicalPath.length}
+          )
+        END
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND (
+        evidence_target_path LIKE
+          ${`${escapeLike(currentLogicalPath)}/%`} ESCAPE '\\'
+        OR evidence_target_path LIKE
+          ${`pages/${escapeLike(currentLogicalPath)}/%`} ESCAPE '\\'
+      )
+  `;
 }
 
 async function activateSourceReplacement(
   transaction: TransactionSql,
-  input: { knowledgeBaseId: string; checkpoint: MutationCheckpoint; completedAt: string }
+  input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    checkpoint: MutationCheckpoint;
+    completedAt: string;
+    resultExpiresAt: string;
+  }
 ): Promise<void> {
   const candidateRevisionPublicId = requiredString(
     input.checkpoint.candidateRevisionPublicId
@@ -458,6 +550,26 @@ async function activateSourceReplacement(
     RETURNING source_file_public_id
   `;
   requireOne(pointers);
+  await recordReplacementModelInvocation(transaction, {
+    knowledgeBaseId: input.knowledgeBaseId,
+    operationPublicId: input.operationPublicId,
+    sourceFilePublicId: input.checkpoint.targetPublicId,
+    sourceRevisionPublicId: candidateRevisionPublicId
+  });
+  if (input.checkpoint.semanticState === "ready"
+    && input.checkpoint.currentRevisionPublicId
+    && input.checkpoint.currentRevisionPublicId !== candidateRevisionPublicId) {
+    await activateSemanticSourceRevision(transaction, {
+      knowledgeBaseId: input.knowledgeBaseId,
+      semanticGenerationPublicId: requiredString(
+        input.checkpoint.semanticGenerationPublicId
+      ),
+      sourceFilePublicId: input.checkpoint.targetPublicId,
+      priorSourceRevisionPublicId: input.checkpoint.currentRevisionPublicId,
+      currentSourceRevisionPublicId: candidateRevisionPublicId,
+      activatedAt: input.completedAt
+    });
+  }
   await transaction`
     UPDATE focowiki.graph_nodes
     SET source_revision_public_id = ${candidateRevisionPublicId},
@@ -473,19 +585,306 @@ async function activateSourceReplacement(
   `;
   if (input.checkpoint.currentRevisionPublicId
     && input.checkpoint.currentRevisionPublicId !== candidateRevisionPublicId) {
-    const released = await transaction<Array<{ object_id: string }>>`
-      DELETE FROM focowiki.source_revisions
+    const retained = await transaction<Array<{ public_id: string }>>`
+      UPDATE focowiki.source_revisions
+      SET revision_role = 'rollback', expires_at = ${input.resultExpiresAt}
       WHERE knowledge_base_id = ${input.knowledgeBaseId}
         AND source_file_public_id = ${input.checkpoint.targetPublicId}
         AND public_id = ${input.checkpoint.currentRevisionPublicId}
-      RETURNING object_id
+        AND revision_role = 'current'
+      RETURNING public_id
     `;
-    await markZeroOwnerObjects(
-      transaction,
-      released.map((row) => row.object_id),
-      input.completedAt
-    );
+    requireOne(retained);
   }
+}
+
+async function recordReplacementModelInvocation(
+  transaction: TransactionSql,
+  input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    sourceFilePublicId: string;
+    sourceRevisionPublicId: string;
+  }
+): Promise<void> {
+  await transaction`
+    WITH invocation AS MATERIALIZED (
+      SELECT model.model AS model_name,
+             stage.created_at AS started_at,
+             stage.completed_at AS ended_at
+      FROM focowiki.semantic_stage_work_items stage
+      JOIN focowiki.model_configs model
+        ON model.public_id = stage.settings_snapshot
+             ->> 'generationModelConfigurationPublicId'
+       AND model.revision::text = stage.settings_snapshot
+             ->> 'generationModelConfigurationRevision'
+      WHERE stage.knowledge_base_id = ${input.knowledgeBaseId}
+        AND stage.operation_public_id = ${input.operationPublicId}
+        AND stage.source_file_public_id = ${input.sourceFilePublicId}
+        AND stage.source_revision_public_id = ${input.sourceRevisionPublicId}
+        AND stage.stage_kind = 'extraction'
+        AND stage.state = 'completed'
+        AND stage.checkpoint ->> 'reconciliationState' = 'created'
+        AND stage.completed_at IS NOT NULL
+      LIMIT 1
+    )
+    UPDATE focowiki.source_files source
+    SET model_invocation_source_revision_public_id = ${input.sourceRevisionPublicId},
+        model_invocation_status = 'completed',
+        model_invocation_model_name = invocation.model_name,
+        model_invocation_started_at = invocation.started_at,
+        model_invocation_ended_at = invocation.ended_at,
+        model_invocation_warning_count = 0,
+        model_invocation_error_code = NULL
+    FROM invocation
+    WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+      AND source.public_id = ${input.sourceFilePublicId}
+      AND source.deleted_at IS NULL
+  `;
+}
+
+async function cancelStaleSemanticWork(
+  transaction: TransactionSql,
+  input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    checkpoint: MutationCheckpoint;
+    completedAt: string;
+  }
+): Promise<void> {
+  if (input.checkpoint.kind !== "source_replace") return;
+  if (input.checkpoint.kind === "source_replace") {
+    await transaction`
+      UPDATE focowiki.semantic_dirty_partitions partition
+      SET state = 'superseded', lease_owner = NULL,
+          lease_expires_at = NULL,
+          safe_error_code = 'semantic_partition_superseded',
+          revision = partition.revision + 1,
+          updated_at = ${input.completedAt}
+      WHERE partition.knowledge_base_id = ${input.knowledgeBaseId}
+        AND partition.state IN ('dirty', 'processing', 'failed')
+        AND EXISTS (
+          SELECT 1
+          FROM focowiki.semantic_entity_partitions assignment
+          JOIN focowiki.semantic_entity_observations observation
+            ON observation.knowledge_base_id = assignment.knowledge_base_id
+           AND observation.semantic_generation_public_id
+             = assignment.semantic_generation_public_id
+           AND observation.entity_public_id = assignment.entity_public_id
+          WHERE assignment.knowledge_base_id = partition.knowledge_base_id
+            AND assignment.semantic_generation_public_id
+              = partition.semantic_generation_public_id
+            AND assignment.partition_key = partition.partition_key
+            AND observation.source_file_public_id
+              = ${input.checkpoint.targetPublicId}
+        )
+    `;
+  }
+  await transaction`
+    UPDATE focowiki.semantic_stage_work_items
+    SET cancellation_requested_at = COALESCE(
+          cancellation_requested_at, ${input.completedAt}
+        ),
+        state = CASE WHEN state IN ('queued', 'retry')
+          THEN 'cancelled' ELSE state END,
+        completed_at = CASE WHEN state IN ('queued', 'retry')
+          THEN ${input.completedAt} ELSE completed_at END,
+        revision = revision + 1,
+        updated_at = ${input.completedAt}
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND source_file_public_id = ${input.checkpoint.targetPublicId}
+      AND operation_public_id <> ${input.operationPublicId}
+      AND state IN ('queued', 'running', 'retry')
+  `;
+}
+
+export async function prepareMutationSemanticStagesInTransaction(
+  transaction: TransactionSql,
+  input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    checkpoint: MutationCheckpoint;
+    completedAt: string;
+  }
+): Promise<void> {
+  if (input.checkpoint.semanticState !== "ready") return;
+  if (!["source_replace", "source_file_metadata"].includes(
+    input.checkpoint.kind
+  )) return;
+  await cancelStaleSemanticWork(transaction, input);
+  const target = parseSemanticTarget(input.checkpoint.semanticStageTargetJson);
+  if (target.semanticGenerationPublicId
+    !== input.checkpoint.semanticGenerationPublicId) {
+    throw mutationActivationError("semantic_target_invalid");
+  }
+  const projectionContractPublicId = target.settingsSnapshot
+    .projectionContractPublicId;
+  if (typeof projectionContractPublicId !== "string") {
+    throw mutationActivationError("semantic_target_invalid");
+  }
+  const generation = await transaction<Array<{ public_id: string }>>`
+    SELECT generation.public_id
+    FROM focowiki.semantic_generations generation
+    JOIN focowiki.semantic_projection_contracts contract
+      ON contract.knowledge_base_id = generation.knowledge_base_id
+     AND contract.semantic_generation_public_id = generation.public_id
+     AND contract.public_id = ${projectionContractPublicId}
+    WHERE generation.knowledge_base_id = ${input.knowledgeBaseId}
+      AND generation.public_id = ${target.semanticGenerationPublicId}
+      AND generation.generation_role = 'active'
+      AND generation.state = 'active'
+      AND generation.deleted_at IS NULL
+    FOR UPDATE OF generation
+  `;
+  if (!generation[0]) throw mutationActivationError("semantic_target_stale");
+  let cursor: string | null = null;
+  while (true) {
+    const rows = await readSemanticStageSourcePage(transaction, {
+      knowledgeBaseId: input.knowledgeBaseId,
+      targetPublicId: input.checkpoint.targetPublicId,
+      candidateRevisionPublicId: input.checkpoint.kind === "source_replace"
+        ? requiredString(input.checkpoint.candidateRevisionPublicId)
+        : null,
+      directoryNormalizedPath: null,
+      cursor
+    });
+    if (rows.length === 0) break;
+    const items = rows.flatMap((row) => planSemanticMutationStages({
+      knowledgeBaseId: input.knowledgeBaseId,
+      operationPublicId: input.operationPublicId,
+      sourceFilePublicId: row.public_id,
+      sourceRevisionPublicId: row.source_revision_public_id,
+      target,
+      mutationKind: input.checkpoint.kind === "source_replace"
+        ? "body_replacement"
+        : "source_file_metadata",
+      ...(input.checkpoint.candidateMetadata
+        ? { candidateMetadata: input.checkpoint.candidateMetadata }
+        : {})
+    }));
+    for (const batch of chunk(items, 1_000)) {
+      await enqueueSemanticStagesInTransaction(transaction, {
+        items: batch,
+        enqueuedAt: input.completedAt
+      });
+    }
+    break;
+  }
+}
+
+async function readSemanticStageSourcePage(
+  transaction: TransactionSql,
+  input: {
+    knowledgeBaseId: string;
+    targetPublicId: string;
+    candidateRevisionPublicId: string | null;
+    directoryNormalizedPath: string | null;
+    cursor: string | null;
+  }
+): Promise<Array<{ public_id: string; source_revision_public_id: string }>> {
+  if (input.directoryNormalizedPath === null) {
+    return transaction<Array<{
+      public_id: string;
+      source_revision_public_id: string;
+    }>>`
+      SELECT source.public_id,
+             coalesce(
+               ${input.candidateRevisionPublicId}::text,
+               current.source_revision_public_id
+             ) AS source_revision_public_id
+      FROM focowiki.source_files source
+      JOIN focowiki.source_file_current_revisions current
+        ON current.knowledge_base_id = source.knowledge_base_id
+       AND current.source_file_public_id = source.public_id
+      WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+        AND source.public_id = ${input.targetPublicId}
+        AND source.deleted_at IS NULL
+      LIMIT 1
+    `;
+  }
+  return transaction<Array<{
+    public_id: string;
+    source_revision_public_id: string;
+  }>>`
+    SELECT source.public_id, current.source_revision_public_id
+    FROM focowiki.source_files source
+    JOIN focowiki.source_file_current_revisions current
+      ON current.knowledge_base_id = source.knowledge_base_id
+     AND current.source_file_public_id = source.public_id
+    WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+      AND source.deleted_at IS NULL
+      AND source.normalized_path LIKE
+        ${`${escapeLike(input.directoryNormalizedPath)}/%`} ESCAPE '\\'
+      AND (${input.cursor}::text IS NULL
+        OR source.public_id COLLATE "C" > ${input.cursor}::text COLLATE "C")
+    ORDER BY source.public_id COLLATE "C"
+    LIMIT 200
+  `;
+}
+
+export function planSemanticMutationStages(input: {
+  knowledgeBaseId: string;
+  operationPublicId: string;
+  sourceFilePublicId: string;
+  sourceRevisionPublicId: string;
+  target: SemanticSourceStageTarget;
+  mutationKind:
+    | "body_replacement" | "file_move" | "directory_move"
+    | "source_file_metadata";
+  candidateMetadata?: StorageVnextStructuredMetadata;
+}): SemanticStageWorkItem[] {
+  const signals = input.mutationKind === "source_file_metadata"
+    ? createOkfSearchSignals(input.candidateMetadata ?? {})
+    : null;
+  const stages = planSemanticSourceStages({
+    knowledgeBaseId: input.knowledgeBaseId,
+    operationPublicId: input.operationPublicId,
+    semanticGenerationPublicId: input.target.semanticGenerationPublicId,
+    sourceFilePublicId: input.sourceFilePublicId,
+    sourceRevisionPublicId: input.sourceRevisionPublicId,
+    extractionContractVersion: input.target.extractionContractVersion,
+    embeddingConfigurationRevisionPublicId:
+      input.target.embeddingConfigurationRevisionPublicId,
+    settingsSnapshot: signals === null ? input.target.settingsSnapshot : {
+      ...input.target.settingsSnapshot,
+      sourceFilterProjectionOverride: true,
+      sourceOkfStatusOverride: signals.status,
+      sourceOkfTrustTierOverride: signals.trustTier,
+      sourceOkfStaleAfterEpochDayOverride: signals.staleAfterEpochDay
+    },
+    dirtyCommunityPartitionKeys: [],
+    includeValidation: false,
+    maximumAttempts: input.target.maximumAttempts
+  });
+  return selectSemanticCrudStages(input.mutationKind, stages);
+}
+
+function parseSemanticTarget(value: string | undefined): SemanticSourceStageTarget {
+  try {
+    const target = JSON.parse(requiredString(value)) as SemanticSourceStageTarget;
+    if (!target || typeof target !== "object"
+      || typeof target.semanticGenerationPublicId !== "string"
+      || typeof target.extractionContractVersion !== "string"
+      || typeof target.embeddingConfigurationRevisionPublicId !== "string"
+      || !Number.isSafeInteger(target.maximumAttempts)
+      || target.maximumAttempts < 1 || target.maximumAttempts > 100
+      || !target.settingsSnapshot
+      || typeof target.settingsSnapshot !== "object"
+      || Buffer.byteLength(JSON.stringify(target.settingsSnapshot)) > 32_768) {
+      throw new Error("invalid");
+    }
+    return target;
+  } catch {
+    throw mutationActivationError("semantic_target_invalid");
+  }
+}
+
+function chunk<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let offset = 0; offset < values.length; offset += size) {
+    result.push(values.slice(offset, offset + size));
+  }
+  return result;
 }
 
 async function updateGraphPath(
@@ -512,6 +911,26 @@ async function updateGraphPath(
     UPDATE focowiki.graph_evidence_refs
     SET logical_path = CASE
           WHEN logical_path = ${`pages/${input.currentLogicalPath}`}
+            THEN ${`pages/${input.candidateLogicalPath}`}
+          ELSE ${input.candidateLogicalPath}
+        END
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND source_file_public_id = ${input.sourceFilePublicId}
+  `;
+  await transaction`
+    UPDATE focowiki.semantic_evidence
+    SET logical_path = CASE
+          WHEN logical_path = ${`pages/${input.currentLogicalPath}`}
+            THEN ${`pages/${input.candidateLogicalPath}`}
+          ELSE ${input.candidateLogicalPath}
+        END
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND source_file_public_id = ${input.sourceFilePublicId}
+  `;
+  await transaction`
+    UPDATE focowiki.semantic_vector_documents
+    SET evidence_target_path = CASE
+          WHEN evidence_target_path = ${`pages/${input.currentLogicalPath}`}
             THEN ${`pages/${input.candidateLogicalPath}`}
           ELSE ${input.candidateLogicalPath}
         END
@@ -575,6 +994,23 @@ async function discardCandidate(
   }
 ): Promise<void> {
   if (input.checkpoint.candidateRevisionPublicId) {
+    if (input.checkpoint.semanticState === "ready"
+      && input.checkpoint.currentRevisionPublicId
+      && input.checkpoint.currentRevisionPublicId
+        !== input.checkpoint.candidateRevisionPublicId) {
+      await activateSemanticSourceRevision(transaction, {
+        knowledgeBaseId: input.knowledgeBaseId,
+        semanticGenerationPublicId: requiredString(
+          input.checkpoint.semanticGenerationPublicId
+        ),
+        sourceFilePublicId: input.checkpoint.targetPublicId,
+        priorSourceRevisionPublicId:
+          input.checkpoint.candidateRevisionPublicId,
+        currentSourceRevisionPublicId:
+          input.checkpoint.currentRevisionPublicId,
+        activatedAt: input.completedAt
+      });
+    }
     const released = await transaction<Array<{ object_id: string }>>`
       DELETE FROM focowiki.source_revisions
       WHERE knowledge_base_id = ${input.knowledgeBaseId}
@@ -635,7 +1071,19 @@ async function insertResult(
       ${input.terminalState}, ${input.resultCode}, NULL,
       ${transaction.json({
         kind: input.checkpoint.kind,
-        targetPublicId: input.checkpoint.targetPublicId
+        targetPublicId: input.checkpoint.targetPublicId,
+        ...(input.checkpoint.semanticState ? {
+          semanticState: input.terminalState === "completed"
+            ? input.checkpoint.semanticState === "ready"
+              ? "completed"
+              : "degraded"
+            : "failed",
+          semanticGenerationPublicId:
+            input.checkpoint.semanticGenerationPublicId ?? null,
+          semanticSafeCode: input.terminalState === "completed"
+            ? input.checkpoint.semanticSafeCode ?? null
+            : input.resultCode
+        } : {})
       })},
       ${input.candidatePublicId}, ${input.completedAt}, ${input.resultExpiresAt}
     )

@@ -17,8 +17,23 @@ import { createOkfV02MutationScope } from
 
 const OPERATION_POLL_INTERVAL_MS = 5_000;
 const MAXIMUM_RATE_LIMIT_RETRIES = 4;
+const RESERVED_SOURCE_FILENAME = /^(?:index|log)(?:-\d+)?\.md$/iu;
 const exactOkfCorpus = process.env.FOCOWIKI_RESOURCE_LIFECYCLE_EXACT_OKF_CORPUS === "1";
-const validationSampleCount = exactOkfCorpus ? 200 : 8;
+const allowUnresolvedSampleLinks =
+  process.env.FOCOWIKI_RESOURCE_LIFECYCLE_ALLOW_UNRESOLVED_LINKS === "1";
+const validationSampleCount = exactOkfCorpus ? 200 : positiveIntegerEnvironment(
+  "FOCOWIKI_RESOURCE_LIFECYCLE_SAMPLE_COUNT",
+  8,
+  200
+);
+const concurrentMutationCount = exactOkfCorpus ? 8 : Math.min(
+  validationSampleCount,
+  positiveIntegerEnvironment(
+    "FOCOWIKI_RESOURCE_LIFECYCLE_CONCURRENT_MUTATION_COUNT",
+    Math.min(8, validationSampleCount),
+    8
+  )
+);
 const mutationScope = createOkfV02MutationScope(
   exactOkfCorpus
     ? process.env.FOCOWIKI_RESOURCE_LIFECYCLE_MUTATION_PREFIX || "legacy/"
@@ -653,13 +668,15 @@ function selectSamples(limit) {
   walk(sampleRoot, files);
   const markdownFiles = files
     .filter((filePath) => filePath.toLowerCase().endsWith(".md"))
+    .filter((filePath) => !RESERVED_SOURCE_FILENAME.test(path.basename(filePath)))
     .sort((left, right) => left.localeCompare(right));
   const selectedPaths = exactOkfCorpus
     ? markdownFiles
     : selectClosedMarkdownSample({
-        filePaths: markdownFiles,
-        limit,
-        readText: (filePath) => fs.readFileSync(filePath, "utf8")
+      filePaths: markdownFiles,
+      limit,
+      allowUnresolvedLinks: allowUnresolvedSampleLinks,
+      readText: (filePath) => fs.readFileSync(filePath, "utf8")
       });
   return selectedPaths.map((filePath) => ({
     relativePath: exactOkfCorpus
@@ -864,8 +881,11 @@ async function checkConnectedReadOperations(sourceFile) {
 async function checkConcurrentMutationBurst(sourceFiles, sourceBodyByPath) {
   const targets = sourceFiles
     .filter((file) => mutationScope(file) && sourceBodyByPath.has(file.relativePath))
-    .slice(0, 8);
-  assert(targets.length === 8, "Concurrent mutation validation requires eight source files.");
+    .slice(0, concurrentMutationCount);
+  assert(
+    targets.length === concurrentMutationCount,
+    `Concurrent mutation validation requires ${concurrentMutationCount} source files.`
+  );
 
   const accepted = await Promise.all(targets.map(async (file, index) => {
     const original = sourceBodyByPath.get(file.relativePath);
@@ -945,7 +965,7 @@ async function createWebhookSubscription() {
 async function checkWebhooks() {
   const webhookId = await createWebhookSubscription();
   try {
-    const sample = selectSamples(8)[0];
+    const sample = selectSamples(validationSampleCount)[0];
     assert(sample, "Webhook validation Markdown sample is unavailable.");
     const uploaded = await upload([{
       relativePath: `webhook-validation/${Date.now()}-${path.posix.basename(sample.relativePath)}`,
@@ -1060,6 +1080,16 @@ function adminOrigin() {
 function requiredEnv(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
+
+function positiveIntegerEnvironment(name, fallback, maximum) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new Error(`${name} must be an integer between 1 and ${maximum}.`);
+  }
   return value;
 }
 

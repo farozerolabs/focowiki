@@ -18,7 +18,7 @@ title: Docker Compose 部署
 | S3 兼容存储 | 保存上传的 Markdown 和生成后的知识库文件。 |
 | 反向代理 | 为 Admin UI、Admin API 和 Developer OpenAPI 提供 HTTPS 访问。 |
 
-模板会启动 PostgreSQL、Redis 和选中的私有搜索服务。外部 S3 兼容服务需要在 `.env` 中配置。也可以用外部 OpenSearch 或 Meilisearch 替代模板附带的搜索容器。
+模板会启动 PostgreSQL、Redis 和选中的私有搜索服务。外部 S3 兼容服务需要在 `.env` 中配置。也可以用外部 OpenSearch 或 Meilisearch 替代模板附带的搜索容器。可选语义增强在现有 `source-worker` 服务的独立发布镜像中运行，不会增加另一个长期运行服务。
 
 ## 准备文件
 
@@ -69,7 +69,7 @@ MEILI_HOST=http://meilisearch:7700
 | --- | --- |
 | `admin` | Admin UI。 |
 | `api` | Admin API 和 Developer OpenAPI。 |
-| `source-worker` | 处理上传的 Markdown 文件。 |
+| `source-worker` | 处理上传的 Markdown 文件；同时配置两种模型后，还会在资源上限内执行语义增强。该服务使用独立的 source-worker 镜像。 |
 | `publication-worker` | 让已经处理完成的文件更新可以被读取。 |
 | `maintenance-worker` | 执行搜索和存储维护。 |
 | `migrate` | 在应用服务启动前检查并更新数据库。 |
@@ -87,11 +87,12 @@ MEILI_HOST=http://meilisearch:7700
 docker compose -f docker-compose.yml pull
 ```
 
-镜像变量默认使用 `latest`。生产环境应把两个镜像固定为相同的发布版本。
+镜像变量默认使用 `latest`。生产环境应把三个镜像固定为相同的发布版本。
 
 ```text
 FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
+FOCOWIKI_SOURCE_WORKER_IMAGE=ghcr.io/farozerolabs/focowiki-source-worker:0.0.1
 ```
 
 ## 启动服务
@@ -126,9 +127,11 @@ docker compose -f docker-compose.yml logs --tail=200 api source-worker publicati
 
 1. 打开 Admin UI，使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录。
 2. 检查 Admin 配置。
-3. 创建知识库并上传一个小型 Markdown 文件。
-4. 确认文件变为可见，并且可以读取和搜索。
-5. 创建 OpenAPI key，并检查 Developer OpenAPI。
+3. 需要启用语义增强时，在设置中分别创建并测试生成模型与向量模型，然后启用两者。基础文件优先流程不要求模型凭据。
+4. 创建知识库并上传一个小型 Markdown 文件。
+5. 确认文件依次经过 GraphRAG、语义协调、向量生成、受影响图与生成内容更新和最终搜索入库，然后变为可见并可读取、搜索。
+6. 该知识库后续普通上传和正文替换会自动执行同一处理流程。在当前存储基线内创建但尚未建立语义契约的知识库，以及后续需要接入模型、语义契约、向量维度或搜索服务变更的知识库，需要为该次接入运行一次**维护索引**。
+7. 创建 OpenAPI key，并检查 Developer OpenAPI。
 
 ## 常用命令
 
@@ -149,12 +152,12 @@ pnpm compose:clean
 
 ## 更新现有部署
 
-每次更新前都要阅读发行说明。本次破坏性搜索服务版本不能使用引入搜索服务选择之前创建的数据库。需要保留旧部署的有效备份，使用空的 PostgreSQL、Redis、所选搜索服务和 S3 位置，并重新导入 Markdown 文件。完成知识库数量、文件路径、预览、搜索、关系和 API 访问检查前，保留旧部署。本次版本不提供兼容迁移。
+本版本是完整的破坏式存储重置。所有旧版本 PostgreSQL schema 都会被拒绝；旧 PostgreSQL 数据、Redis 状态、S3 对象、运行时模型设置、知识库标识、生成内容和搜索索引均不复用。旧部署的完整协调备份只用于回滚。目标版本必须使用空 PostgreSQL 数据库、空 Redis namespace、空 S3 prefix 和空搜索 prefix，执行迁移后重新配置模型、创建知识库并重新导入来源 Markdown。禁止把旧版本备份还原到本版本。完成新导入的文件数量、路径、预览、搜索、关系和 API 访问检查前，保留完整旧部署。
 
 更新到继续支持当前数据库格式的后续版本时：
 
 1. 创建备份。
-2. 更新 `.env` 中两个镜像的版本并拉取镜像。
+2. 更新 `.env` 中三个镜像的版本并拉取镜像。
 3. 完成发行说明要求的准备工作。
 4. 执行数据库命令。
 5. 启动更新后的服务。
@@ -165,7 +168,7 @@ docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 ```
 
-数据库命令成功后可以再次执行。该命令不会处理上传文件，也不会重建搜索索引。版本更新需要维护索引时，知识库页面会显示维护操作。维护期间，已经可以读取的文件继续可用。
+数据库命令成功后可以再次执行。该命令不会处理上传文件，也不会重建搜索索引。当前干净基线启动后，后续当前基线内的契约或搜索服务变更可能需要维护索引；知识库页面会显示维护操作，维护期间已经可以读取的文件继续可用。
 
 ## 处理失败
 
@@ -177,9 +180,13 @@ docker compose -f docker-compose.yml up -d
 
 文件到达 `state=visible` 后可以读取生成内容。较新的更新失败时，之前已经可见的内容继续可读。
 
+语义任务会在来源 Markdown 文件之外单独报告 pending、degraded、failed、superseded 或 completed 状态。对于已有契约的上传或正文替换，所选搜索服务的入库是最后一个必需索引门禁，因此成功前文件不会显示为已就绪。安全语义错误或可选搜索通道不可用不会替换来源文件错误契约，也不会暴露服务商 payload。重试受影响任务前，先在 Admin 中修正模型、向量、搜索或资源上限问题。维护只用于首次接入、契约或搜索服务变更、明确修复、恢复和完整重建。
+
 ## 备份
 
 在 `.env` 和 `docker-compose.yml` 所在目录执行备份。停止会修改 Focowiki 数据的服务，并保持 PostgreSQL 运行。
+
+备份归档只能使用相同存储 schema generation 和匹配的镜像版本还原。旧版本创建的备份只用于配合旧版本镜像回滚，不能作为本次破坏式目标版本的初始数据。
 
 ```bash
 docker compose -f docker-compose.yml stop api source-worker publication-worker maintenance-worker
@@ -196,7 +203,7 @@ Redis 和搜索索引都可以重新生成。需要包含兼容的 Meilisearch s
 
 ## 从备份还原
 
-还原目标必须为空；目标中已有数据时先单独备份。
+只有当前存储基线创建的备份可以还原到本版本，且还原目标必须为空；目标中已有数据时先单独备份。旧版本备份只能配合其对应的旧镜像还原成回滚部署。
 
 1. 停止全部服务。
 
@@ -222,7 +229,7 @@ Redis 和搜索索引都可以重新生成。需要包含兼容的 Meilisearch s
 
 4. 还原模板附带的 OpenSearch 数据时，启动 OpenSearch 前还原与其匹配的完整 `opensearch-security` 目录。不要混入其他部署的文件。
 
-5. 使用备份对应的 API 和 Admin 镜像版本。
+5. 使用备份对应的 API、Admin 和 source-worker 镜像版本。
 
 6. 执行数据库命令并启动服务。
 
@@ -243,7 +250,7 @@ Redis 和搜索索引都可以重新生成。需要包含兼容的 Meilisearch s
 2. 修改 `SEARCH_PROVIDER`、对应的 endpoint 和认证字段，以及 `COMPOSE_PROFILES`（`opensearch`、`meilisearch`，外部服务则留空）。
 3. 启动服务并检查健康状态。
 4. 已有知识库的树、正文、生成文件、图关系、设置和 Developer OpenAPI 非搜索读取继续可用。完成接入前，搜索会返回可重试的暂不可用响应。
-5. 对每个已有知识库执行一次**维护索引**。系统会在所选搜索服务中完整构建并验证新索引，再将其设为生效索引。
+5. 对每个已有知识库执行一次**维护索引**。系统会在所选搜索服务中完整构建并验证新索引，再将其设为生效索引。兼容的已存储向量产物会被复用，因此只切换搜索服务不会重复调用相同模型。
 6. 验证搜索和常规发布后，再按照备份策略处理旧搜索服务数据。
 
 切换回原来的服务也执行相同步骤。旧的物理索引不会被自动重新启用。搜索服务变化不会修改 Developer OpenAPI 的请求和响应 schema。
@@ -258,4 +265,4 @@ Redis 和搜索索引都可以重新生成。需要包含兼容的 Meilisearch s
 
 ## 容量说明
 
-观察部署资源后，再通过 Admin UI 调整 Worker、发布、维护、搜索和图关系配置。避免使用一次性读取全部来源文件或全部关系数据的脚本。详见 [Admin 配置](./admin-settings.md)。
+生产模板默认把 `source-worker` 限制在 2 个 CPU、2 GiB 内存和 128 个进程或线程以内。启动硬上限在 `.env` 中调整；观察部署资源后，再通过 Admin UI 调整 Worker、发布、维护、搜索、图关系、语义搜索和向量模型配置。避免使用一次性读取全部来源文件或全部关系数据的脚本。详见 [环境变量配置](./environment.md#worker-启动限制) 和 [Admin 配置](./admin-settings.md)。

@@ -61,6 +61,7 @@ export function createPostgresStorageVnextSearchProjectionRepository(
             FROM focowiki.search_projections
             WHERE knowledge_base_id = ${input.knowledgeBaseId}
               AND projection_role = 'candidate'
+              AND state IN ('preparing', 'indexing', 'validating', 'ready')
             FOR UPDATE
           `;
           if (live[0]) throw repositoryError("candidate_exists");
@@ -267,7 +268,9 @@ async function readCandidateForKnowledgeBase(sql: ReadSql, knowledgeBaseId: stri
   const rows = await sql<ProjectionRow[]>`
     SELECT ${sql(projectionColumnNames)}
     FROM focowiki.search_projections
-    WHERE knowledge_base_id = ${knowledgeBaseId} AND projection_role = 'candidate'
+    WHERE knowledge_base_id = ${knowledgeBaseId}
+      AND projection_role = 'candidate'
+      AND state IN ('preparing', 'indexing', 'validating', 'ready')
   `;
   return rows[0] ? mapProjection(rows[0]) : null;
 }

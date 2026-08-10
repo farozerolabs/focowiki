@@ -33,6 +33,7 @@ const {
   S3Client
 } = require("@aws-sdk/client-s3");
 const MAX_COMMAND_ERROR_BYTES = 64 * 1024;
+const CURRENT_STORAGE_VNEXT_GENERATION = "storage-vnext-v3-semantic";
 
 export async function createStorageVnextRestore(options = {}) {
   const rootDirectory = resolve(options.rootDirectory ?? process.cwd());
@@ -344,7 +345,7 @@ async function assertRestoredPostgresTarget(
     "SELECT generation FROM focowiki.runtime_generation WHERE singleton = true;",
     "verify restored PostgreSQL schema"
   );
-  if (result !== "storage-vnext-v2") {
+  if (result !== CURRENT_STORAGE_VNEXT_GENERATION) {
     throw new Error("Restored PostgreSQL schema generation is invalid");
   }
 }

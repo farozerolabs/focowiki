@@ -38,12 +38,21 @@ type SourceGraphExtractionInput = {
   parsedMetadata: SourceMetadataDefaults;
   resolvedMetadata: SourceMetadata;
   suggestions: SourceModelSuggestions | null;
+  modelAssistanceSelected: boolean;
   body: string;
   sourceBody: string;
   signal: AbortSignal;
 };
 
 export function createStorageVnextSourceModelAdapter(input: {
+  selectModelAssistance?: (request: {
+    knowledgeBaseId: string;
+    sourceFilePublicId: string;
+    sourceRevisionPublicId: string;
+    sourceLogicalPath: string;
+    markdown: string;
+    signal: AbortSignal;
+  }) => Promise<boolean>;
   suggest?: (request: SourceSuggestionInput) => Promise<SourceSuggestionResult>;
   extractGraph(request: SourceGraphExtractionInput): Promise<{
     node: StorageVnextGraphNodeFact;
@@ -62,8 +71,24 @@ export function createStorageVnextSourceModelAdapter(input: {
         content: source
       });
       throwIfAborted(request.signal);
-      const suggestionResult = input.suggest
-        ? await input.suggest({
+      const modelAssistanceSelected = input.selectModelAssistance
+        ? await input.selectModelAssistance({
+            knowledgeBaseId: request.knowledgeBaseId,
+            sourceFilePublicId: request.sourceFile.publicId,
+            sourceRevisionPublicId: request.sourceRevisionPublicId,
+            sourceLogicalPath: request.sourceFile.logicalPath,
+            markdown: source,
+            signal: request.signal
+          })
+        : true;
+      if (typeof modelAssistanceSelected !== "boolean") {
+        throw sourceModelError("invalid_model_assistance_selection");
+      }
+      throwIfAborted(request.signal);
+      const modelAssistanceUsed = modelAssistanceSelected && Boolean(input.suggest);
+      if (modelAssistanceUsed) await request.onModelAssistanceStart?.();
+      const suggestionResult = modelAssistanceUsed
+        ? await input.suggest!({
             knowledgeBaseId: request.knowledgeBaseId,
             sourceFilePublicId: request.sourceFile.publicId,
             sourceRevisionPublicId: request.sourceRevisionPublicId,
@@ -88,6 +113,7 @@ export function createStorageVnextSourceModelAdapter(input: {
         parsedMetadata: analyzed.parsedMetadata,
         resolvedMetadata: analyzed.resolvedMetadata,
         suggestions: suggestionResult.suggestions,
+        modelAssistanceSelected,
         body: analyzed.body,
         sourceBody: source,
         signal: request.signal
@@ -98,6 +124,7 @@ export function createStorageVnextSourceModelAdapter(input: {
         metadata: analyzed.metadata,
         node: graph.node,
         edges: graph.edges,
+        modelAssistanceUsed,
         modelWarningCount: Math.min(1_000, suggestionResult.warningCount + graphWarningCount)
       };
     }

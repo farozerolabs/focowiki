@@ -102,7 +102,7 @@ Markdown links 是主要关系机制。正文中的链接帮助读者和 Agent �
 ## 下一步
 
 - [了解 Google OKF 规范](./guide/open-knowledge-format.md)
-- [了解文件优先图关系](./guide/file-first-graph.md)
+- [了解来源文件证据与图关系](./guide/file-first-graph.md)
 - [使用 Docker Compose 部署](./deployment/docker-compose.md)
 - [使用 Developer OpenAPI](./openapi/index.md)
 - [接入 Agent](./agent-integration/index.md)

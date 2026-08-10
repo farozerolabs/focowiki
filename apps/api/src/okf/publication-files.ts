@@ -56,6 +56,15 @@ export type GeneratedPageSummary = {
   sourceMetadata?: SourceMetadataDefaults;
   suggestions: SourceModelSuggestions | null;
   graphLinks?: OkfGraphRelationship[];
+  semanticContext?: {
+    entities: readonly {
+      label: string;
+      kind: string;
+      description: string | null;
+      confidence: number;
+      evidencePaths: readonly string[];
+    }[];
+  };
 };
 
 export type GeneratedOkfFile = {
@@ -124,12 +133,39 @@ export function renderPageFile(
     [
       canonicalBody,
       "",
+      ...renderSemanticContext(page.semanticContext?.entities ?? []),
       ...renderRelatedLinks(page.graphLinks ?? []),
       ...(prepared.trailingCitations
         ? ["", prepared.trailingCitations]
         : [])
     ].join("\n")
   );
+}
+
+function renderSemanticContext(entities: readonly {
+  label: string;
+  kind: string;
+  description: string | null;
+  confidence: number;
+  evidencePaths: readonly string[];
+}[]): string[] {
+  if (entities.length === 0) return [];
+  return [
+    "",
+    "## Concepts",
+    "",
+    ...entities.map((entity) => {
+      const label = renderMarkdownIdentityLabel(entity.label);
+      const kind = renderMarkdownIdentityLabel(entity.kind);
+      const description = canonicalizeOptionalGeneratedTextIdentity(
+        entity.description ?? ""
+      );
+      const evidence = entity.evidencePaths[0]
+        ? ` [Source evidence](${toBundleMarkdownHref(entity.evidencePaths[0])})`
+        : "";
+      return `- **${label}** (\`${kind}\`)${description ? ` — ${renderMarkdownIdentityLabel(description)}` : ""}${evidence}`;
+    })
+  ];
 }
 
 export function prepareSourceBodyForPublication(

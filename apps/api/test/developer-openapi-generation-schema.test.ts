@@ -71,7 +71,7 @@ describe("Developer OpenAPI generation schema", () => {
     }
   });
 
-  it("documents runtime search errors, required queries, and all searchable file kinds", () => {
+  it("documents runtime search errors, required queries, and source-file search kinds", () => {
     const document = createDeveloperOpenApiDocument();
     const errorCode = readObject(readObject(document.components.schemas.Error).properties).error;
     const errorCodeSchema = readObject(readObject(readObject(errorCode).properties).code);
@@ -87,7 +87,13 @@ describe("Developer OpenAPI generation schema", () => {
       "get"
     );
     expect(readParameter(search, "query")).toMatchObject({ required: true });
-    expect(readObject(readParameter(search, "fileKind").schema).enum).toContain("history_page");
+    expect(readObject(readParameter(search, "fileKind").schema).enum).toEqual([
+      "all",
+      "page"
+    ]);
+    expect(String(readParameter(search, "mode").description)).toContain("exact path");
+    expect(String(readParameter(search, "mode").description)).toContain("content vector");
+    expect(String(readParameter(search, "query").description)).toContain("2048 UTF-8 bytes");
     expect(readObject(readObject(document.components.schemas.FileSearchResult).properties).score)
       .toMatchObject({ type: "number" });
     expect(readObject(document.components.schemas.FileSearchResult).required)
@@ -97,6 +103,51 @@ describe("Developer OpenAPI generation schema", () => {
       "DATABASE_REPOSITORY_UNAVAILABLE",
       "SEARCH_UNAVAILABLE",
       "SEARCH_OVERLOADED"
+    ]);
+    expect(search["x-validation-detail-codes"]).toEqual(expect.arrayContaining([
+      "FILE_SEARCH_QUERY_REQUIRED",
+      "INVALID_FILE_SEARCH_KIND",
+      "INVALID_FILE_SEARCH_RERANK_CONTROLS"
+    ]));
+
+    const response = readObject(document.components.schemas.FileSearchResponse);
+    const responseProperties = readObject(response.properties);
+    expect(readObject(responseProperties.searchStatus).enum).toEqual([
+      "ok",
+      "no_candidates"
+    ]);
+    expect(readObject(readObject(responseProperties.evidenceStatus).properties))
+      .toMatchObject({
+        completedFamilies: {
+          items: {
+            enum: expect.arrayContaining(["exact_path", "content_vector"])
+          }
+        }
+      });
+    expect(readObject(readObject(responseProperties.semanticStatus).properties).safeCode)
+      .toMatchObject({
+        anyOf: expect.arrayContaining([
+          expect.objectContaining({
+            enum: expect.arrayContaining(["SEMANTIC_ADOPTION_REQUIRED"])
+          })
+        ])
+      });
+    expect(readObject(readObject(responseProperties.rerankerStatus).properties).safeCode)
+      .toMatchObject({
+        anyOf: expect.arrayContaining([
+          expect.objectContaining({
+            enum: expect.arrayContaining(["RERANKER_DISABLED"])
+          })
+        ])
+      });
+
+    const searchResult = readObject(document.components.schemas.FileSearchResult);
+    expect(readObject(readObject(searchResult.properties).matchType).enum).toEqual([
+      "file_direct",
+      "graph_node",
+      "graph_edge",
+      "graph_neighbor",
+      "hybrid"
     ]);
   });
 
@@ -267,6 +318,14 @@ describe("Developer OpenAPI generation schema", () => {
       "edgeId",
       "query"
     ]);
+    expect(readObject(readParameter(operation, "query").schema)).toMatchObject({
+      minLength: 2,
+      maxLength: 512
+    });
+    expect(operation["x-validation-detail-codes"]).toEqual(expect.arrayContaining([
+      "GRAPH_EXPANSION_SEED_REQUIRED",
+      "INVALID_GRAPH_EXPANSION_DEPTH"
+    ]));
   });
 
   it("requires ancestor arrays on every generated tree entry", () => {

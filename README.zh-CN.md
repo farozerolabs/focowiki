@@ -42,8 +42,8 @@ Focowiki 使用可阅读的 Markdown 作为核心知识表示。系统保留元�
 
 安装 Focowiki 前，请确认机器满足以下要求：
 
-- 最小配置：CPU >= 2 Core，RAM >= 4 GiB；运行后台处理任务时建议使用 6 GiB RAM
-- 推荐配置：CPU >= 4 Core，RAM >= 8 GiB 或更高
+- 最小配置：CPU >= 4 Core，RAM >= 8 GiB
+- 启用语义增强时推荐：CPU >= 6 Core，RAM >= 12 GiB 或更高
 
 ```bash
 git clone https://github.com/farozerolabs/focowiki.git && cd focowiki
@@ -70,7 +70,10 @@ Docker Compose 模板默认使用 `latest`。若需固定版本，在 `.env` 中
 ```env
 FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.1.0
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
+FOCOWIKI_SOURCE_WORKER_IMAGE=ghcr.io/farozerolabs/focowiki-source-worker:0.1.0
 ```
+
+三个镜像必须固定为同一个发布版本。
 
 配置细节和运行命令见 [Docker Compose 部署文档](https://docs.focowiki.com/zh-CN/deployment/docker-compose)。
 
@@ -84,7 +87,7 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
 - [Developer OpenAPI](https://docs.focowiki.com/zh-CN/openapi/)
 - [Agent 接入](https://docs.focowiki.com/zh-CN/agent-integration/)
 - [Open Knowledge Format 指南](https://docs.focowiki.com/zh-CN/guide/open-knowledge-format)
-- [文件优先图关系指南](https://docs.focowiki.com/zh-CN/guide/file-first-graph)
+- [来源文件证据与图关系指南](https://docs.focowiki.com/zh-CN/guide/file-first-graph)
 - [文件清洗入库指南](https://docs.focowiki.com/zh-CN/guide/file-cleaning-ingestion)
 
 ## Focowiki 提供什么
@@ -93,7 +96,7 @@ Focowiki 将 Markdown 文件和文件夹生成可供用户、应用和 AI Agent 
 
 - **上传文档和文件夹。** 添加单个 Markdown 文件或完整的多层文件夹，并保留路径、名称、元数据、链接和正文。
 - **浏览结构化知识。** 通过文件树打开文档，移动或重命名文件和文件夹，替换正文并删除过时内容。
-- **查找相关文档。** 搜索文件内容、浏览目录索引、查看相关文档，并通过知识图谱继续探索关联内容。
+- **查找相关文档。** 使用完整自然语言问题执行默认混合检索、浏览目录索引、查看相关文档，并可选择对有限数量、有来源依据的候选进行重排。搜索始终返回可读取的来源文件，应用和 Agent 必须读取 Markdown 正文后才能将其作为证据。知识库已有语义契约后，上传和正文替换会自动执行 GraphRAG 与向量处理，最后完成搜索入库。
 - **接入应用和 AI Agent。** 使用 Developer OpenAPI 上传内容、浏览文件树、读取完整 Markdown 文件、执行搜索、探索图关系并管理文档变更。
 - **通过 Admin UI 管理系统。** 创建知识库、查看文件处理进度、配置模型和运行参数，并管理 API key。
 - **部署到自己的基础设施。** 使用 Docker Compose、PostgreSQL、Redis、OpenSearch 或 Meilisearch，以及 S3 兼容存储运行 Focowiki。

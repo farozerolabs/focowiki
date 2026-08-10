@@ -15,6 +15,12 @@ import type { StorageVnextAdminMutationApplication } from "../storage-vnext/api/
 import type { StorageVnextAdminCoreApplication } from "../storage-vnext/api/admin-core-application.js";
 import type { StorageVnextAdminMaintenanceApplication } from "../storage-vnext/api/admin-maintenance-application.js";
 import type { DeveloperOpenApiApplication } from "../storage-vnext/api/openapi-application.js";
+import type { EmbeddingConfigurationService } from
+  "../semantic/embedding/service.js";
+import type { RerankerConfigurationService } from
+  "../semantic/reranker/service.js";
+import type { StorageVnextSemanticAdoptionSnapshot } from
+  "../storage-vnext/maintenance/ports.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -27,11 +33,32 @@ export type ApiAppOptions = {
   storageVnextAdminProcessing?: StorageVnextAdminProcessingApplication;
   storageVnextCatalog?: StorageVnextCatalogReadPort;
   storageVnextMaintenanceRequests?: ReturnType<typeof createStorageVnextMaintenanceRequestService>;
-  storageVnextMaintenanceStatus?: Pick<StorageVnextMaintenanceRepository, "getStatus">;
+  storageVnextMaintenanceStatus?: Pick<
+    StorageVnextMaintenanceRepository,
+    "getStatus" | "cancel"
+  >;
   storageVnextAdminSource?: StorageVnextAdminSourceApplication;
   storageVnextAdminUpload?: StorageVnextAdminUploadApplication;
   storageVnextAdminMutation?: StorageVnextAdminMutationApplication;
   storageVnextAdminCore?: StorageVnextAdminCoreApplication;
   storageVnextAdminMaintenance?: StorageVnextAdminMaintenanceApplication;
   storageVnextOpenApi?: DeveloperOpenApiApplication;
+  embeddingConfigurations?: EmbeddingConfigurationService;
+  rerankerConfigurations?: RerankerConfigurationService;
+  semanticAdoption?: {
+    resolve(input: {
+      knowledgeBaseId: string;
+      settingsRevisionPublicId: string;
+    }): Promise<
+      | { available: true; snapshot: StorageVnextSemanticAdoptionSnapshot | null }
+      | { available: false; safeCode: string }
+    >;
+  };
+  semanticCancellation?: {
+    cancel(input: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+      requestedAt: string;
+    }): Promise<unknown>;
+  };
 };

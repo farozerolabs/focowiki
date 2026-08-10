@@ -13,6 +13,24 @@ import {
 } from "../../infrastructure/tokenization/nodejieba-tokenizer.js";
 import { createRuntimeSearchProvider } from
   "../../runtime/search-provider.js";
+import { createSemanticDeletionService } from
+  "../../semantic/application/deletion-service.js";
+import { createPostgresSemanticDeletionRepository } from
+  "../../semantic/infrastructure/postgres-semantic-deletion-repository.js";
+import { createSemanticAdoptionService } from
+  "../../semantic/application/adoption.js";
+import { createPostgresSemanticGenerationRepository } from
+  "../../semantic/infrastructure/postgres-generation-repository.js";
+import { createPostgresSemanticStageRepository } from
+  "../../semantic/infrastructure/postgres-stage-repository.js";
+import { createSemanticProviderAdoptionService } from
+  "../../semantic/application/provider-adoption.js";
+import { createPostgresSemanticProviderAdoptionRepository } from
+  "../../semantic/infrastructure/postgres-provider-adoption-repository.js";
+import { createPostgresEmbeddingArtifactRepository } from
+  "../../semantic/infrastructure/postgres-embedding-artifact-repository.js";
+import { createS3EmbeddingArtifactStore } from
+  "../../semantic/infrastructure/s3-embedding-artifact-store.js";
 import {
   createRedisClient,
   createRedisCoordinator
@@ -142,6 +160,13 @@ const MAXIMUM_CLEANUP_PAGES = 100;
 const FAILED_SEARCH_CANDIDATE_CLEANUP_ID =
   "maintenance-failed-search-candidate-cleanup";
 
+function requireSemanticVectorPort(provider: SearchProviderRuntime | null) {
+  if (!provider?.vector) {
+    throw new Error("Semantic vector provider is required for maintenance");
+  }
+  return provider.vector;
+}
+
 export async function runStorageVnextMaintenanceWorker(
   config: RuntimeConfig
 ): Promise<void> {
@@ -184,9 +209,8 @@ export async function runStorageVnextMaintenanceWorker(
     });
     await runtimeSettings.ensureBootstrapped();
     const initialSnapshot = await runtimeSettings.getSnapshot();
-    const tokenizer = searchConfig.provider === "opensearch"
-      ? (assertNodeJiebaRuntimeAvailable(), createNodeJiebaTokenizer())
-      : undefined;
+    assertNodeJiebaRuntimeAvailable();
+    const tokenizer = createNodeJiebaTokenizer();
     let quarantineGraceMilliseconds =
       initialSnapshot.maintenance.quarantineGracePeriodSeconds * 1_000;
     const resourceBudgets = createProcessResourceBudgets(
@@ -209,6 +233,19 @@ export async function runStorageVnextMaintenanceWorker(
     const webhookRepository = createPostgresStorageVnextWebhookRepository(sql);
     const maintenanceRepository = createPostgresStorageVnextMaintenanceRepository(sql, {
       selectedSearchProviderKind: searchConfig.provider
+    });
+    const semanticAdoption = createSemanticAdoptionService({
+      generations: createPostgresSemanticGenerationRepository(sql),
+      stages: createPostgresSemanticStageRepository(sql),
+      catalog
+    });
+    const semanticProviderAdoptionRepository =
+      createPostgresSemanticProviderAdoptionRepository(sql);
+    const embeddingArtifacts = createPostgresEmbeddingArtifactRepository(sql);
+    const embeddingArtifactStore = createS3EmbeddingArtifactStore({
+      client: s3,
+      bucket: config.storage.bucket,
+      prefix: config.storage.prefix
     });
     const sourceBodies = createS3StorageVnextSourceBodyStore({
       client: s3,
@@ -297,6 +334,8 @@ export async function runStorageVnextMaintenanceWorker(
     const deletionScope = createPostgresStorageVnextDeletionReleaseScope(sql);
     const deletionPurgeRepository =
       createPostgresStorageVnextDeletionPurgeRepository(sql);
+    const semanticDeletionRepository =
+      createPostgresSemanticDeletionRepository(sql);
     const automaticMaintenance = createStorageVnextAutomaticMaintenanceScheduler({
       due: createPostgresStorageVnextAutomaticMaintenanceDue(sql, {
         selectedSearchProviderKind: searchConfig.provider
@@ -336,7 +375,7 @@ export async function runStorageVnextMaintenanceWorker(
           indexDefinition: createStorageVnextSearchSettings({
             searchCutoffMs: snapshot.search.engineSearchCutoffMs
           }),
-          ...(tokenizer ? { tokenizer } : {})
+          tokenizer
         });
         searchProviderSettingsKey = nextSearchProviderSettingsKey;
         await closeSearchProvider(previousSearchProvider);
@@ -409,6 +448,19 @@ export async function runStorageVnextMaintenanceWorker(
               abort.signal
             )
           }),
+          semantic: createSemanticDeletionService({
+            repository: semanticDeletionRepository,
+            provider: requireSemanticVectorProvider(searchProvider),
+            selectedProviderKind: searchConfig.provider,
+            indexPrefix: searchConfig.indexPrefix,
+            pageSize: deletionBatchSize(snapshot),
+            maximumOperationPolls: Math.max(1, Math.ceil(
+              snapshot.search.taskTimeoutMs
+                / snapshot.search.taskPollIntervalMs
+            )),
+            operationPollIntervalMs: snapshot.search.taskPollIntervalMs,
+            wait: (milliseconds) => waitForPoll(milliseconds, abort.signal)
+          }),
           postgres: deletionPurgeRepository,
           objects: objectDeletion,
           maximumObjectsPerAttempt: deletionBatchSize(snapshot)
@@ -438,7 +490,10 @@ export async function runStorageVnextMaintenanceWorker(
         claimLimit: Math.min(100, snapshot.worker.claimBatchSize),
         maximumAttempts: snapshot.worker.jobMaxAttempts,
         retryDelayMilliseconds: snapshot.worker.jobRetryDelayMs,
-        requestTimeoutMilliseconds: snapshot.worker.lockTtlSeconds * 1_000,
+        requestTimeoutMilliseconds:
+          storageVnextWebhookRequestTimeoutMilliseconds(
+            snapshot.worker.lockTtlSeconds
+          ),
         clock: now
       });
       const searchCleanup = createStorageVnextSearchCleanup({
@@ -465,6 +520,7 @@ export async function runStorageVnextMaintenanceWorker(
         retryDelayMs: snapshot.search.retryDelayMs
       });
       const cleanup = createStorageVnextMaintenanceProductionCleanup({
+        semanticTerminal: createPostgresSemanticGenerationRepository(sql),
         releases,
         searchTerminal: createPostgresStorageVnextSearchTerminalCleanup(sql),
         searchCleanup,
@@ -482,6 +538,23 @@ export async function runStorageVnextMaintenanceWorker(
         ).toISOString()
       });
       const phaseRunner = createStorageVnextMaintenanceProductionPhases({
+        semanticAdoption,
+        semanticProviderAdoption: createSemanticProviderAdoptionService({
+          catalog,
+          artifacts: embeddingArtifacts,
+          store: embeddingArtifactStore,
+          repository: semanticProviderAdoptionRepository,
+          provider: requireSemanticVectorPort(searchProvider),
+          indexPrefix: searchConfig.indexPrefix,
+          artifactReadConcurrency: Math.min(
+            8,
+            snapshot.maintenance.lexicalRebuildSourceReadConcurrency
+          ),
+          operationPollLimit: Math.max(1, Math.ceil(
+            snapshot.search.taskTimeoutMs / snapshot.search.taskPollIntervalMs
+          )),
+          operationPollIntervalMs: snapshot.search.taskPollIntervalMs
+        }),
         providerAdoption,
         planner,
         catalog,
@@ -596,21 +669,23 @@ export async function runStorageVnextMaintenanceWorker(
         retryAt: cycleAt,
         limit: Math.min(1_000, snapshot.maintenance.scanBatchSize)
       });
-      const leaseExpiresAt = addMilliseconds(
-        cycleAt,
+      const nextLeaseExpiresAt = () => addMilliseconds(
+        now(),
         snapshot.worker.lockTtlSeconds * 1_000
       );
       const providerIndexCleanupOutcome = await providerIndexCleanup.runBatch({
         owner: providerIndexCleanupWorkerId,
         limit: cleanupPageSize(snapshot),
-        leaseExpiresAt
+        leaseExpiresAt: nextLeaseExpiresAt()
       });
       if (providerIndexCleanupOutcome.claimed > 0) {
         logger[
           providerIndexCleanupOutcome.retried > 0 ? "warn" : "info"
         ]("maintenance_worker.provider_index_cleanup", providerIndexCleanupOutcome);
       }
-      const deletionOutcomes = await deletionWorker.runBatch({ leaseExpiresAt });
+      const deletionOutcomes = await deletionWorker.runBatch({
+        leaseExpiresAt: nextLeaseExpiresAt()
+      });
       for (const outcome of deletionOutcomes) {
         logger.info("deletion_worker.cycle", outcome);
       }
@@ -618,7 +693,7 @@ export async function runStorageVnextMaintenanceWorker(
         await candidateObjectCleanupWorker.runBatch({
           owner: candidateObjectCleanupWorkerId,
           limit: deletionBatchSize(snapshot),
-          leaseExpiresAt,
+          leaseExpiresAt: nextLeaseExpiresAt(),
           now: cycleAt,
           retryDelayMilliseconds: snapshot.maintenance.retryDelayMs,
           signal: abort.signal
@@ -661,7 +736,7 @@ export async function runStorageVnextMaintenanceWorker(
         );
       }
       const webhookOutcome = await webhookWorker.runBatch({
-        leaseExpiresAt,
+        leaseExpiresAt: nextLeaseExpiresAt(),
         signal: abort.signal
       });
       if (webhookOutcome.claimed > 0) {
@@ -680,7 +755,7 @@ export async function runStorageVnextMaintenanceWorker(
         { length: concurrency },
         () => coordinator.runOne({
           workerId,
-          leaseExpiresAt,
+          leaseExpiresAt: nextLeaseExpiresAt(),
           signal: abort.signal
         })
       ));
@@ -734,6 +809,13 @@ async function closeSearchProvider(
   if (provider) await provider.close();
 }
 
+function requireSemanticVectorProvider(provider: SearchProviderRuntime | null) {
+  if (!provider?.vector) {
+    throw new Error("Search provider vector capability is required");
+  }
+  return provider.vector;
+}
+
 export function storageVnextStagingRetentionCutoff(
   cycleAt: string,
   stagingRetentionHours: number
@@ -746,6 +828,15 @@ export function storageVnextStagingRetentionCutoff(
   return new Date(
     Date.parse(cycleAt) - stagingRetentionHours * MILLISECONDS_PER_HOUR
   ).toISOString();
+}
+
+export function storageVnextWebhookRequestTimeoutMilliseconds(
+  lockTtlSeconds: number
+): number {
+  if (!Number.isSafeInteger(lockTtlSeconds) || lockTtlSeconds < 1) {
+    throw new Error("Storage vNext worker lock TTL is invalid");
+  }
+  return Math.max(1, Math.floor(lockTtlSeconds * 1_000 * 0.8));
 }
 
 function pageSize(config: RuntimeConfig): number {

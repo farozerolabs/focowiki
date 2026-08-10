@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRuntimeSettingsRepository } from
   "../src/runtime-settings/repository.js";
 import { createPostgresStorageVnextWorkflowRepository } from
   "../src/storage-vnext/workflow/postgres-repository.js";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -16,10 +16,6 @@ const hasOwnedTarget = Boolean(
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner)
 );
 const describeOwnedDatabase = hasOwnedTarget ? describe : describe.skip;
-const bootstrap = readFileSync(
-  resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-  "utf8"
-);
 
 describeOwnedDatabase("storage vNext runtime settings revision repository", () => {
   const connectionUrl = databaseUrl
@@ -36,7 +32,7 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
   }, 120_000);
 
   afterAll(async () => {
@@ -227,6 +223,48 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
     expect(deleted?.deletedAt).not.toBeNull();
     expect(await repository.getModel(created.id)).toBeNull();
     expect(await repository.listModels()).toEqual([]);
+  });
+
+  it("does not rewrite a pinned model revision when another model becomes active", async () => {
+    const pinned = await repository.createModel({
+      displayName: "Pinned model",
+      apiMode: "responses",
+      baseUrl: "https://api.example.com/v1",
+      encryptedApiKey: "encrypted-pinned-key",
+      apiKeyFingerprint: "pinned-fingerprint",
+      modelName: "pinned-model",
+      contextWindowTokens: 128_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 2_000,
+      isActive: true
+    });
+    const replacement = await repository.createModel({
+      displayName: "Replacement model",
+      apiMode: "responses",
+      baseUrl: "https://api.example.com/v1",
+      encryptedApiKey: "encrypted-replacement-key",
+      apiKeyFingerprint: "replacement-fingerprint",
+      modelName: "replacement-model",
+      contextWindowTokens: 128_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 2_000,
+      isActive: false
+    });
+
+    await repository.setActiveModel(replacement.id);
+
+    expect(await repository.getModel(pinned.id)).toMatchObject({
+      id: pinned.id,
+      configurationRevision: pinned.configurationRevision,
+      isActive: false,
+      status: "active"
+    });
   });
 
   it("keeps accepted work on its revision while later work uses the new revision", async () => {

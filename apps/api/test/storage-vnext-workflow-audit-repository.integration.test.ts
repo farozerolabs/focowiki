@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { applyStorageVnextTestMigrations } from "./helpers/storage-vnext-test-migrations.js";
 import type { DatabaseClient } from "../src/db/client.js";
 import {
   createPostgresStorageVnextAuditRepository
@@ -42,10 +41,7 @@ describeOwnedDatabase("storage vNext workflow and audit PostgreSQL repositories"
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(readFileSync(
-      resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-      "utf8"
-    ));
+    await applyStorageVnextTestMigrations(sql);
     await sql`
       INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
       VALUES ('kb-workflow', 'Workflow knowledge base', 1)
@@ -317,6 +313,50 @@ describeOwnedDatabase("storage vNext workflow and audit PostgreSQL repositories"
         }
       });
     }
+  });
+
+  it("fairly interleaves source work across knowledge bases", async () => {
+    const now = Date.now();
+    const knowledgeBaseIds = ["kb-workflow-source-a", "kb-workflow-source-b"];
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+      VALUES
+        (${knowledgeBaseIds[0]!}, 'Source workflow knowledge base A', 1),
+        (${knowledgeBaseIds[1]!}, 'Source workflow knowledge base B', 1)
+    `;
+    const workItems = knowledgeBaseIds.flatMap((knowledgeBaseId, knowledgeBaseIndex) => (
+      Array.from({ length: 4 }, (_, itemIndex) => ({
+        ...liveWork(
+          `operation-source-fair-${knowledgeBaseIndex}-${itemIndex}`,
+          `request-source-fair-${knowledgeBaseIndex}-${itemIndex}`,
+          String(knowledgeBaseIndex * 4 + itemIndex + 1).repeat(64),
+          now
+        ),
+        knowledgeBaseId
+      }))
+    ));
+    for (const work of workItems) await workflow.enqueue(work);
+
+    const claims = await workflow.claim({
+      kinds: ["source"],
+      owner: "worker-source-fair",
+      limit: 4,
+      leaseExpiresAt: new Date(now + 3_600_000).toISOString()
+    });
+    const claimCounts = Object.fromEntries(knowledgeBaseIds.map((knowledgeBaseId) => [
+      knowledgeBaseId,
+      claims.filter((work) => work.knowledgeBaseId === knowledgeBaseId).length
+    ]));
+    await sql`
+      DELETE FROM focowiki.operations
+      WHERE knowledge_base_id = ANY(${knowledgeBaseIds})
+    `;
+
+    expect(claims).toHaveLength(4);
+    expect(claimCounts).toEqual({
+      "kb-workflow-source-a": 2,
+      "kb-workflow-source-b": 2
+    });
   });
 
   it("does not consume a publication attempt while source work is still live", async () => {

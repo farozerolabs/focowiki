@@ -13,6 +13,9 @@ import {
 } from "./admin-api";
 import { fileRelativePath, normalizeUploadRelativePath } from "./upload-selection";
 
+const CONTENT_UPLOAD_MAX_ATTEMPTS = 3;
+const CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS = 25;
+
 export type UploadClientStage =
   | "hashing"
   | "manifest"
@@ -249,7 +252,7 @@ async function transferMissingEntries(input: {
         if (!file) {
           throw new Error("UPLOAD_SELECTION_CHANGED");
         }
-        const response = await uploadSessionContent({
+        const response = await uploadEntryContentWithRetry({
           knowledgeBaseId: input.knowledgeBaseId,
           sessionId: input.sessionId,
           entryId: entry.id,
@@ -284,6 +287,28 @@ async function transferMissingEntries(input: {
   return { ok: true, session };
 }
 
+async function uploadEntryContentWithRetry(input: {
+  knowledgeBaseId: string;
+  sessionId: string;
+  entryId: string;
+  file: File;
+}): Promise<Awaited<ReturnType<typeof uploadSessionContent>>> {
+  let lastFailure: ApiFailure = { messageKey: "errors.uploadFailed" };
+  for (let attempt = 1; attempt <= CONTENT_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await uploadSessionContent(input);
+      if (!isFailure(response)) return response;
+      lastFailure = response;
+    } catch {
+      lastFailure = { messageKey: "errors.uploadFailed" };
+    }
+    if (attempt < CONTENT_UPLOAD_MAX_ATTEMPTS) {
+      await sleep(CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS * attempt);
+    }
+  }
+  return lastFailure;
+}
+
 function isFailure(value: unknown): value is ApiFailure {
   return Boolean(value && typeof value === "object" && "messageKey" in value);
 }
@@ -311,4 +336,8 @@ async function mapWithConcurrency<T, R>(
     Array.from({ length: Math.min(concurrency, values.length) }, () => worker())
   );
   return results;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

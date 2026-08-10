@@ -1,6 +1,19 @@
 import type { StorageVnextBoundedMetadata } from "../shared/types.js";
 import type { SearchProviderKind } from
   "../../application/ports/search-provider-runtime.js";
+import type { SemanticMaintenanceTarget } from
+  "../../semantic/domain/contracts.js";
+import type { SemanticStageSettingsSnapshot } from
+  "../../semantic/application/stage-orchestration.js";
+
+export type StorageVnextSemanticAdoptionSnapshot = {
+  mode: "full" | "provider_only" | "query_policy_only";
+  target: SemanticMaintenanceTarget;
+  stageSettings: SemanticStageSettingsSnapshot;
+  expectedPredecessorPublicId: string | null;
+  expectedPredecessorRevision: number;
+  sourcePageSize: number;
+};
 
 export const STORAGE_VNEXT_MAINTENANCE_PHASES = [
   "planning",
@@ -38,6 +51,7 @@ export type StorageVnextMaintenanceCheckpoint = {
   estimatedCompletionAt: string | null;
   maxAttempts: number;
   resultExpiresAt: string;
+  semanticAdoption?: StorageVnextSemanticAdoptionSnapshot | null;
 };
 
 export type StorageVnextMaintenanceRequest = {
@@ -51,6 +65,7 @@ export type StorageVnextMaintenanceRequest = {
   requestedAt: string;
   expiresAt: string;
   maxAttempts: number;
+  semanticAdoption?: StorageVnextSemanticAdoptionSnapshot | null;
 };
 
 export type StorageVnextMaintenanceRequestInput = Omit<
@@ -161,6 +176,11 @@ export interface StorageVnextMaintenanceRepository {
     retryAt: string;
     limit: number;
   }): Promise<number>;
+  cancel(input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    canceledAt: string;
+  }): Promise<"cancelled" | "not_active">;
   getStatus(input: {
     knowledgeBaseId: string;
   }): Promise<StorageVnextMaintenanceStatus>;

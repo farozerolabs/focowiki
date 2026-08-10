@@ -43,6 +43,26 @@ export async function enqueueStorageVnextCandidateObjectCleanupActions(
         FROM focowiki.object_owners owner
         WHERE owner.object_id = registration.object_id
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM focowiki.source_revisions revision
+        WHERE revision.object_id = registration.object_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM focowiki.release_catalog_entries entry
+        WHERE entry.object_id = registration.object_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM focowiki.release_shards shard
+        WHERE shard.object_id = registration.object_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM focowiki.upload_entries entry
+        WHERE entry.object_id = registration.object_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM focowiki.embedding_artifacts artifact
+        WHERE artifact.object_id = registration.object_id
+      )
     ORDER BY registration.object_id
   `;
   if (rows.length === 0) return 0;

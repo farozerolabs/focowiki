@@ -139,7 +139,7 @@ describeOwnedDatabase("storage vNext run-owned clean bootstrap integration", () 
       WHERE singleton = true
     `;
 
-    expect(rows).toEqual([{ generation: "storage-vnext-v2" }]);
+    expect(rows).toEqual([{ generation: "storage-vnext-v3-semantic" }]);
   });
 
   it("accepts the provider-aware signature and rejects the prior shape", async () => {

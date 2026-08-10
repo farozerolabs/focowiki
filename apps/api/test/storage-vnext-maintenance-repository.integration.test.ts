@@ -269,6 +269,49 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
     });
   });
 
+  it("cancels queued and running maintenance without allowing work resurrection", async () => {
+    await seedKnowledgeBase("kb-maintenance-cancel", 2);
+    const coordinator = createCoordinator([]);
+    await coordinator.requestMaintenance(request(
+      "cancel",
+      "kb-maintenance-cancel",
+      2
+    ));
+    const claim = await repository.claimOne(workerClaim("maintenance-worker-cancel"));
+    expect(claim).not.toBeNull();
+    const canceledAt = new Date().toISOString();
+
+    await expect(repository.cancel({
+      knowledgeBaseId: "kb-maintenance-cancel",
+      operationPublicId: "maintenance-cancel",
+      canceledAt
+    })).resolves.toBe("cancelled");
+    await expect(repository.saveProgress({
+      operationPublicId: "maintenance-cancel",
+      leaseOwner: "maintenance-worker-cancel",
+      checkpoint: claim!.checkpoint
+    })).resolves.toBeUndefined();
+
+    const residue = await sql<Array<{ work_count: number; result_count: number }>>`
+      SELECT
+        (SELECT count(*)::int FROM focowiki.operation_work_items
+         WHERE operation_public_id = 'maintenance-cancel') AS work_count,
+        (SELECT count(*)::int FROM focowiki.operation_results
+         WHERE public_id = 'maintenance-cancel'
+           AND terminal_state = 'superseded') AS result_count
+    `;
+    expect(residue[0]).toEqual({ work_count: 0, result_count: 1 });
+    await expect(repository.getStatus({
+      knowledgeBaseId: "kb-maintenance-cancel"
+    })).resolves.toMatchObject({
+      requestId: "maintenance-cancel",
+      state: "superseded",
+      active: false,
+      maintenanceRequired: true,
+      safeErrorCode: "MAINTENANCE_CANCELLED"
+    });
+  });
+
   function createCoordinator(phaseResults: StorageVnextMaintenancePhaseResult[]) {
     return createStorageVnextMaintenanceCoordinator({
       repository,

@@ -38,3 +38,16 @@ test("rejects a requested sample size that cannot preserve link closure", () => 
     }
   }), /closed Markdown sample/u);
 });
+
+test("can explicitly preserve an open corpus with unresolved Markdown links", () => {
+  const selected = selectClosedMarkdownSample({
+    filePaths: ["/corpus/a.md", "/corpus/b.md"],
+    limit: 1,
+    allowUnresolvedLinks: true,
+    readText(filePath) {
+      return filePath.endsWith("a.md") ? "[External](missing.md)" : "";
+    }
+  });
+
+  assert.deepEqual(selected, ["/corpus/a.md"]);
+});

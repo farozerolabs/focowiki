@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { StorageVnextSourceEventSummary } from
   "../src/storage-vnext/source-events/ports.js";
+import type { StorageVnextModelInvocationFact } from
+  "../src/storage-vnext/catalog/ports.js";
 
 type Worker = {
   runOnce(input: {
@@ -101,7 +103,7 @@ describe("storage vNext source/model processing contract", () => {
     );
     expect(fixture.catalog.updateSourceFileState).toHaveBeenNthCalledWith(
       3,
-      expect.objectContaining({ status: "ready", revisionCheck: { expectedRevision: 3 } })
+      expect.objectContaining({ status: "processing", revisionCheck: { expectedRevision: 3 } })
     );
     expect(fixture.workflow.complete).toHaveBeenCalledWith(expect.objectContaining({
       publicId: fixture.work.publicId,
@@ -140,7 +142,7 @@ describe("storage vNext source/model processing contract", () => {
     expect(fixture.persistedBodyWrites).toBe(0);
   });
 
-  it("enqueues the released source lifecycle events without changing processing output", async () => {
+  it("keeps source completion pending until final release publication", async () => {
     const fixture = createFixture();
     const dispatch = vi.fn(async (_event: Record<string, unknown>) => undefined);
     const worker = createWorker(fixture, undefined, { dispatch });
@@ -150,14 +152,16 @@ describe("storage vNext source/model processing contract", () => {
     expect(dispatch.mock.calls.map(([event]) => event.eventType)).toEqual([
       "source_file.accepted",
       "source_file.progress",
-      "source_file.completed"
+      "source_file.progress"
     ]);
     expect(dispatch).toHaveBeenLastCalledWith(expect.objectContaining({
-      eventType: "source_file.completed",
+      eventType: "source_file.progress",
       payload: {
         knowledgeBaseId: fixture.work.knowledgeBaseId,
         sourceFileId: fixture.sourceFile.publicId,
-        sourceRevisionId: fixture.revision.publicId
+        sourceRevisionId: fixture.revision.publicId,
+        stage: "search_publication",
+        status: "running"
       }
     }));
     expect(fixture.events.record.mock.calls.map(([event]) => ({
@@ -179,12 +183,156 @@ describe("storage vNext source/model processing contract", () => {
         severity: "info"
       },
       {
-        publicId: expect.stringMatching(/^source-event-completed-/u),
-        stageKey: "generation_activation",
+        publicId: expect.stringMatching(/^source-event-publication_progress-/u),
+        stageKey: "search_publication",
         sequence: 30,
         severity: "info"
       }
     ]);
+  });
+
+  it("durably enqueues active-contract semantic stages before deferring final release publication", async () => {
+    const fixture = createFixture();
+    const semanticHandoff = {
+      enqueue: vi.fn(async () => ({
+        state: "queued" as const,
+        semanticGenerationPublicId: "semantic-active",
+        stageCount: 7,
+        safeCode: null
+      }))
+    };
+    Object.assign(fixture.ports, { semanticHandoff });
+    const worker = createWorker(fixture);
+
+    await expect(worker.runOnce(runRequest(1))).resolves.toMatchObject({ completed: 1 });
+
+    expect(semanticHandoff.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      operationPublicId: fixture.work.publicId,
+      knowledgeBaseId: fixture.work.knowledgeBaseId,
+      settingsRevisionPublicId: fixture.work.settingsRevisionPublicId,
+      sourceFile: fixture.sourceFile,
+      sourceRevision: fixture.revision,
+      skeletonGraphSignals: {
+        acceptedEdgeCount: 0,
+        inboundEdgeCount: 0,
+        outboundEdgeCount: 0,
+        distinctNeighborCount: 0,
+        relationKindCount: 0,
+        contentProfileHeadingCount: 0,
+        contentProfileDefinitionCount: 0,
+        contentProfileExplicitReferenceCount: 0
+      }
+    }));
+    expect(semanticHandoff.enqueue.mock.invocationCallOrder[0]).toBeLessThan(
+      fixture.handoff.apply.mock.invocationCallOrder[0]!
+    );
+    expect(fixture.handoff.apply).toHaveBeenCalledWith(expect.objectContaining({
+      publicationMode: "semantic_final"
+    }));
+    expect(fixture.catalog.updateSourceFileState).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "ready" })
+    );
+    expect(fixture.workflow.complete).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({
+        summary: expect.objectContaining({
+          semanticState: "queued",
+          semanticGenerationPublicId: "semantic-active",
+          semanticStageCount: 7
+        })
+      })
+    }));
+    expect(fixture.events.record).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stageKey: "generation_activation" })
+    );
+    expect(fixture.events.record).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        stageKey: "graphrag_processing",
+        endedAt: null,
+        severity: "info"
+      })
+    );
+  });
+
+  it("resumes a failed publication without rereading source or repeating model and graph work", async () => {
+    const fixture = createFixture();
+    fixture.work.checkpoint = {
+      sourceRevisionPublicId: fixture.revision.publicId,
+      semanticResumeStage: "publication"
+    };
+    fixture.sourceFile.modelInvocation = {
+      sourceRevisionPublicId: fixture.revision.publicId,
+      status: "completed",
+      modelName: "generation-model",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      endedAt: "2026-08-01T00:01:00.000Z",
+      warningCount: 0,
+      errorCode: null
+    };
+    const semanticHandoff = {
+      enqueue: vi.fn(async () => ({
+        state: "queued" as const,
+        semanticGenerationPublicId: "semantic-active",
+        stageCount: 2,
+        safeCode: null
+      }))
+    };
+    Object.assign(fixture.ports, { semanticHandoff });
+    const worker = createWorker(fixture);
+
+    await expect(worker.runOnce(runRequest(1))).resolves.toEqual({
+      claimed: 1,
+      completed: 1,
+      retried: 0,
+      terminal: 0
+    });
+
+    expect(fixture.bodyStore.readVerifiedStream).not.toHaveBeenCalled();
+    expect(fixture.model.extract).not.toHaveBeenCalled();
+    expect(fixture.handoff.apply).not.toHaveBeenCalled();
+    expect(semanticHandoff.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      resumeFromStage: "publication"
+    }));
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "processing",
+        modelInvocation: fixture.sourceFile.modelInvocation
+      })
+    );
+  });
+
+  it("terminalizes a blocked semantic contract immediately with its safe code", async () => {
+    const fixture = createFixture();
+    const semanticHandoff = {
+      enqueue: vi.fn(async () => ({
+        state: "blocked" as const,
+        semanticGenerationPublicId: "semantic-active",
+        stageCount: 0,
+        safeCode: "semantic_embedding_revision_unavailable"
+      }))
+    };
+    Object.assign(fixture.ports, { semanticHandoff });
+    const worker = createWorker(fixture);
+
+    await expect(worker.runOnce(runRequest(1))).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      retried: 0,
+      terminal: 1
+    });
+    expect(fixture.workflow.releaseForRetry).not.toHaveBeenCalled();
+    expect(fixture.handoff.apply).not.toHaveBeenCalled();
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "failed",
+        safeErrorCode: "semantic_embedding_revision_unavailable"
+      })
+    );
+    expect(fixture.workflow.complete).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({
+        state: "failed",
+        resultCode: "semantic_embedding_revision_unavailable"
+      })
+    }));
   });
 
   it("rejects a claim larger than the configured concurrency before touching durable work", async () => {
@@ -238,7 +386,10 @@ describe("storage vNext source/model processing contract", () => {
     const timeout = Object.assign(new Error("Provider details must not persist"), {
       name: "TimeoutError"
     });
-    fixture.model.extract.mockRejectedValueOnce(timeout);
+    fixture.model.extract.mockImplementationOnce(async (input) => {
+      await input.onModelAssistanceStart?.();
+      throw timeout;
+    });
     const worker = createWorker(fixture, onFailure);
 
     await expect(worker.runOnce(runRequest(1))).resolves.toEqual({
@@ -270,7 +421,10 @@ describe("storage vNext source/model processing contract", () => {
   it("stores only a bounded safe failure after retry exhaustion", async () => {
     const fixture = createFixture();
     fixture.work.attempt = 3;
-    fixture.model.extract.mockRejectedValueOnce(new Error("private provider payload"));
+    fixture.model.extract.mockImplementationOnce(async (input) => {
+      await input.onModelAssistanceStart?.();
+      throw new Error("private provider payload");
+    });
     const worker = createWorker(fixture);
 
     await expect(worker.runOnce(runRequest(1))).resolves.toEqual({
@@ -348,10 +502,38 @@ describe("storage vNext source/model processing contract", () => {
 
   it("records a skipped LLM invocation when source processing has no configured model", async () => {
     const fixture = createFixture();
+    fixture.modelResult.modelAssistanceUsed = false;
     const worker = createWorker(fixture, undefined, undefined, null);
 
     await expect(worker.runOnce(runRequest(1))).resolves.toMatchObject({ completed: 1 });
 
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelInvocation: {
+          sourceRevisionPublicId: fixture.revision.publicId,
+          status: "skipped",
+          modelName: null,
+          startedAt: null,
+          endedAt: "2026-08-01T00:00:00.000Z",
+          warningCount: 0,
+          errorCode: null
+        }
+      })
+    );
+  });
+
+  it("records a skipped LLM invocation when the semantic skeleton excludes the source", async () => {
+    const fixture = createFixture();
+    fixture.modelResult.modelAssistanceUsed = false;
+    const worker = createWorker(fixture);
+
+    await expect(worker.runOnce(runRequest(1))).resolves.toMatchObject({ completed: 1 });
+
+    expect(fixture.catalog.updateSourceFileState).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelInvocation: expect.objectContaining({ status: "running" })
+      })
+    );
     expect(fixture.catalog.updateSourceFileState).toHaveBeenLastCalledWith(
       expect.objectContaining({
         modelInvocation: {
@@ -469,6 +651,7 @@ function createFixture() {
     status: "pending",
     safeErrorCode: null,
     safeErrorMessage: null,
+    modelInvocation: null as StorageVnextModelInvocationFact | null,
     revision: 1,
     visibility: "current" as const
   };
@@ -493,7 +676,7 @@ function createFixture() {
     leaseExpiresAt: "2026-08-01T00:05:00.000Z",
     nextAttemptAt: null,
     safeErrorCode: null,
-    checkpoint: { sourceRevisionPublicId: revision.publicId },
+    checkpoint: { sourceRevisionPublicId: revision.publicId } as Record<string, string>,
     idempotency: {
       key: "source-processing-revision",
       requestHash: "a".repeat(64),
@@ -524,6 +707,7 @@ function createFixture() {
     )
   };
   const modelResult = {
+    modelAssistanceUsed: true,
     metadata: { headingCount: 1 },
     node: {
       publicId: "node-source-processing",
@@ -543,10 +727,14 @@ function createFixture() {
     extract: vi.fn(async (input: {
       body: AsyncIterable<Uint8Array>;
       signal: AbortSignal;
+      onModelAssistanceStart?: () => Promise<void>;
     }) => {
       const received: Uint8Array[] = [];
       for await (const chunk of input.body) received.push(chunk);
       expect(Buffer.concat(received.map((chunk) => Buffer.from(chunk)))).toEqual(body);
+      if (modelResult.modelAssistanceUsed) {
+        await input.onModelAssistanceStart?.();
+      }
       return modelResult;
     })
   };

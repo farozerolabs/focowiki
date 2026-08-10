@@ -19,6 +19,10 @@ describe("developer file search filters", () => {
       mode: "hybrid",
       graphDepth: 2,
       graphFanout: 25,
+      limit: 10,
+      rerank: false,
+      rerankTopK: null,
+      rerankScoreThreshold: null,
       okfFilters: {
         status: null,
         trustTier: null,
@@ -48,6 +52,24 @@ describe("developer file search filters", () => {
     });
   });
 
+  it("accepts only source-backed page search kinds", () => {
+    expect(readDeveloperFileSearchFilters({
+      query: "How is the deployment configured?",
+      scope: undefined,
+      fileKind: "all"
+    })).toMatchObject({ ok: true, fileKind: null });
+    expect(readDeveloperFileSearchFilters({
+      query: "How is the deployment configured?",
+      scope: undefined,
+      fileKind: "page"
+    })).toMatchObject({ ok: true, fileKind: "page" });
+    expect(readDeveloperFileSearchFilters({
+      query: "How is the deployment configured?",
+      scope: undefined,
+      fileKind: "index"
+    })).toEqual({ ok: false, code: "INVALID_FILE_SEARCH_KIND" });
+  });
+
   it.each([
     ["okfStatus", "unknown", "INVALID_FILE_SEARCH_OKF_STATUS"],
     ["okfTrustTier", "trusted", "INVALID_FILE_SEARCH_OKF_TRUST_TIER"],
@@ -65,7 +87,7 @@ describe("developer file search filters", () => {
   it.each([
     ["", "FILE_SEARCH_QUERY_REQUIRED"],
     ["a", "FILE_SEARCH_QUERY_TOO_SHORT"],
-    ["x".repeat(161), "FILE_SEARCH_QUERY_TOO_LONG"],
+    ["x".repeat(513), "FILE_SEARCH_QUERY_TOO_LONG"],
     ["cache\u0000consistency", "INVALID_FILE_SEARCH_QUERY"],
     ["cache\nconsistency", "INVALID_FILE_SEARCH_QUERY"]
   ])("rejects invalid query input without database access", (query, code) => {

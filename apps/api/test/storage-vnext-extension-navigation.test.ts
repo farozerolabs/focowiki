@@ -164,6 +164,25 @@ describe("storage vNext extension navigation", () => {
     expect(unchanged.internalShards.map((shard) => shard.firstLogicalPath))
       .toEqual(["_index/search/v1"]);
 
+    const repaired = await assembleStorageVnextExtensionNavigation({
+      knowledgeBaseId: "kb-one",
+      projectionShards,
+      navigation: {
+        ...currentNavigation,
+        existingMarkdownPaths: [],
+        previousPresentDirectoryPaths: []
+      }
+    });
+    expect(repaired.artifacts.map((artifact) => artifact.logicalPath)).toEqual([
+      "_index/index.md",
+      "_graph/index.md",
+      "_index/search/index.md",
+      "_index/search/v1/index.md",
+      expect.stringMatching(
+        /^_index\/search\/v1\/index-extension-leaf-[a-f0-9-]+\.md$/u
+      )
+    ]);
+
     const changed = await assembleStorageVnextExtensionNavigation({
       knowledgeBaseId: "kb-one",
       projectionShards: [

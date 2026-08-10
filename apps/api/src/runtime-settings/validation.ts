@@ -14,6 +14,7 @@ import {
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
+  type RuntimeSemanticSettings,
   type RuntimeSearchSettings,
   type RuntimeSettingsDefaults,
   type RuntimeSettingsValidationIssue,
@@ -59,6 +60,21 @@ export const DEFAULT_SEARCH_SETTINGS: RuntimeSearchSettings = {
   cropLength: 1_200
 };
 
+export const DEFAULT_SEMANTIC_SETTINGS: RuntimeSemanticSettings = {
+  maximumChunkCharacters: 8_000,
+  maximumChunks: 32,
+  maximumEvidenceTargets: 64,
+  maximumCommunityPartitions: 256,
+  maximumCommunityEntities: 10_000,
+  maximumCommunityRelationships: 20_000,
+  maximumCommunityBoundaryRelationships: 10_000,
+  maximumCommunitySummaryCharacters: 8_000,
+  communityAdapterTimeoutMs: 30_000,
+  searchLaneCutoffMs: 2_500,
+  queryEmbeddingConcurrency: 4,
+  queryEmbeddingCacheEntries: 1_000
+};
+
 export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSettingsDefaults {
   const worker = resolveWorkerConfig(config);
   const publication = resolvePublicationConfig(config);
@@ -79,6 +95,7 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
     }),
     graph: sanitizeGraphSettings(resolveGraphConfig(config)),
     maintenance: { ...DEFAULT_MAINTENANCE_SETTINGS },
+    semantic: { ...DEFAULT_SEMANTIC_SETTINGS },
     search: { ...DEFAULT_SEARCH_SETTINGS },
     model: config.model.enabled
         ? {
@@ -96,6 +113,58 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
           isActive: true
         }
       : null
+  };
+}
+
+export function validateSemanticSettings(
+  input: unknown
+): RuntimeSettingsValidationIssue[] {
+  const issues: RuntimeSettingsValidationIssue[] = [];
+  const value = objectValue(input);
+  validateIntegerRange(value, "maximumChunkCharacters", 1, 64_000, issues);
+  validateIntegerRange(value, "maximumChunks", 1, 32, issues);
+  validateIntegerRange(value, "maximumEvidenceTargets", 1, 256, issues);
+  validateIntegerRange(value, "maximumCommunityPartitions", 1, 256, issues);
+  validateIntegerRange(value, "maximumCommunityEntities", 1, 10_000, issues);
+  validateIntegerRange(value, "maximumCommunityRelationships", 0, 20_000, issues);
+  validateIntegerRange(
+    value,
+    "maximumCommunityBoundaryRelationships",
+    0,
+    10_000,
+    issues
+  );
+  validateIntegerRange(
+    value,
+    "maximumCommunitySummaryCharacters",
+    256,
+    65_536,
+    issues
+  );
+  validateIntegerRange(value, "communityAdapterTimeoutMs", 100, 300_000, issues);
+  validateIntegerRange(value, "searchLaneCutoffMs", 50, 3_000, issues);
+  validateIntegerRange(value, "queryEmbeddingConcurrency", 1, 32, issues);
+  validateIntegerRange(value, "queryEmbeddingCacheEntries", 1, 10_000, issues);
+  return issues;
+}
+
+export function sanitizeSemanticSettings(
+  input: RuntimeSemanticSettings
+): RuntimeSemanticSettings {
+  return {
+    maximumChunkCharacters: input.maximumChunkCharacters,
+    maximumChunks: input.maximumChunks,
+    maximumEvidenceTargets: input.maximumEvidenceTargets,
+    maximumCommunityPartitions: input.maximumCommunityPartitions,
+    maximumCommunityEntities: input.maximumCommunityEntities,
+    maximumCommunityRelationships: input.maximumCommunityRelationships,
+    maximumCommunityBoundaryRelationships:
+      input.maximumCommunityBoundaryRelationships,
+    maximumCommunitySummaryCharacters: input.maximumCommunitySummaryCharacters,
+    communityAdapterTimeoutMs: input.communityAdapterTimeoutMs,
+    searchLaneCutoffMs: input.searchLaneCutoffMs,
+    queryEmbeddingConcurrency: input.queryEmbeddingConcurrency,
+    queryEmbeddingCacheEntries: input.queryEmbeddingCacheEntries
   };
 }
 

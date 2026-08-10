@@ -3,7 +3,8 @@ import type { LexicalTokenizer } from
   "../src/application/ports/lexical-tokenizer.js";
 import type {
   SearchProviderIndexDefinition,
-  SearchProviderRuntime
+  SearchProviderRuntime,
+  SearchProviderVectorPort
 } from "../src/application/ports/search-provider-runtime.js";
 import type { SearchStartupConfig } from "../src/runtime/search-config.js";
 import {
@@ -20,7 +21,8 @@ describe("runtime search provider selection", () => {
     const selected = createRuntimeSearchProvider({
       config: meilisearchConfig(),
       settings: searchSettings(),
-      indexDefinition: definition()
+      indexDefinition: definition(),
+      tokenizer: tokenizer()
     }, { meilisearch, opensearch });
 
     expect(selected.kind).toBe("meilisearch");
@@ -28,9 +30,14 @@ describe("runtime search provider selection", () => {
     expect(opensearch).not.toHaveBeenCalled();
   });
 
-  it("constructs only the selected OpenSearch adapter and requires Jieba", () => {
+  it("requires the shared tokenizer for every selected search provider", () => {
     const meilisearch = vi.fn(() => runtime("meilisearch"));
     const opensearch = vi.fn(() => runtime("opensearch"));
+    expect(() => createRuntimeSearchProvider({
+      config: meilisearchConfig(),
+      settings: searchSettings(),
+      indexDefinition: definition()
+    }, { meilisearch, opensearch })).toThrow();
     expect(() => createRuntimeSearchProvider({
       config: openSearchConfig(),
       settings: searchSettings(),
@@ -129,6 +136,26 @@ describe("runtime search provider selection", () => {
     expect(provider.close).toHaveBeenCalledOnce();
   });
 
+  it("exposes the selected provider vector port through the dynamic runtime", async () => {
+    const getIndexDefinition = vi.fn(async () => null);
+    const provider = runtime("opensearch", undefined, {
+      ...vectorPort(),
+      getIndexDefinition
+    });
+    const selected = createDynamicRuntimeSearchQueryProvider({
+      config: openSearchConfig(),
+      tokenizer: tokenizer(),
+      indexDefinition: definition(),
+      resolveSettings: async () => searchSettings()
+    }, { meilisearch: vi.fn(), opensearch: vi.fn(() => provider) });
+
+    await expect(selected.vector.getIndexDefinition({ indexUid: "semantic-a" }))
+      .resolves.toBeNull();
+    expect(getIndexDefinition).toHaveBeenCalledOnce();
+    await selected.close();
+    expect(provider.close).toHaveBeenCalledOnce();
+  });
+
   it.each(searchSettingCases())(
     "refreshes $provider after changing only $field",
     async ({ provider, field }) => {
@@ -140,7 +167,7 @@ describe("runtime search provider selection", () => {
         config: provider === "meilisearch"
           ? meilisearchConfig()
           : openSearchConfig(),
-        ...(provider === "opensearch" ? { tokenizer: tokenizer() } : {}),
+        tokenizer: tokenizer(),
         indexDefinition: definition(),
         resolveSettings: async () => settings
       }, { meilisearch, opensearch });
@@ -187,7 +214,8 @@ function searchSettingCases(): readonly {
 
 function runtime(
   kind: "meilisearch" | "opensearch",
-  query: SearchProviderRuntime["query"]["query"] = vi.fn(async () => queryResult())
+  query: SearchProviderRuntime["query"]["query"] = vi.fn(async () => queryResult()),
+  vector: SearchProviderVectorPort | undefined = undefined
 ): SearchProviderRuntime {
   return {
     kind,
@@ -196,7 +224,25 @@ function runtime(
     query: { query },
     validation: {} as SearchProviderRuntime["validation"],
     operations: {} as SearchProviderRuntime["operations"],
+    ...(vector ? { vector } : {}),
     close: vi.fn(async () => undefined)
+  };
+}
+
+function vectorPort(): SearchProviderVectorPort {
+  return {
+    createIndex: vi.fn(async () => ({ state: "completed" as const })),
+    deleteIndex: vi.fn(async () => ({ state: "completed" as const })),
+    getIndexDefinition: vi.fn(async () => null),
+    writeDocuments: vi.fn(async () => ({ state: "completed" as const })),
+    deleteDocuments: vi.fn(async () => ({ state: "completed" as const })),
+    query: vi.fn(async () => ({ hits: [], processingTimeMs: 1 })),
+    count: vi.fn(async () => 0),
+    scan: vi.fn(async () => ({ documents: [], continuation: null })),
+    validate: vi.fn(async () => ({ valid: true, documentCount: 0 })),
+    activateCandidate: vi.fn(async () => ({ state: "completed" as const })),
+    getOperation: vi.fn(async () => ({ state: "completed" as const })),
+    findOperationByCorrelation: vi.fn(async () => null)
   };
 }
 

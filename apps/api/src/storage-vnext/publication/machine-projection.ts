@@ -288,6 +288,7 @@ function sourceRecord(
     };
   }
   if (projectionKind === "graph_node") {
+    const semanticContext = semanticContextRecord(page);
     return {
       ...common,
       type: page.node.kind,
@@ -302,6 +303,7 @@ function sourceRecord(
       language: readString(profile?.language),
       profileVersion: readString(profile?.profileVersion),
       profileSource: readString(profile?.profileSource),
+      ...(semanticContext ? { semanticContext } : {}),
       metadata: page.node.metadata
     };
   }
@@ -322,8 +324,10 @@ function sourceRecord(
       ...(edge.metadata ? { evidence: edge.metadata } : {})
     }, source.publicId);
   })).slice(0, relatedFileLimit);
+  const semanticContext = semanticContextRecord(page);
   return {
     ...common,
+    ...(semanticContext ? { semanticContext } : {}),
     relationships: relationships.map((relationship) => ({
       fileId: relationship.fileId,
       path: relationship.path,
@@ -334,6 +338,27 @@ function sourceRecord(
       reason: relationship.reason,
       source: relationship.source,
       evidence: relationship.evidence ?? {}
+    }))
+  };
+}
+
+function semanticContextRecord(page: StorageVnextPublicationPageInput): {
+  entities: Array<{
+    label: string;
+    kind: string;
+    description: string | null;
+    confidence: number;
+    evidencePaths: readonly string[];
+  }>;
+} | null {
+  const entities = page.semanticContext?.entities ?? [];
+  return entities.length === 0 ? null : {
+    entities: entities.map((entity) => ({
+      label: entity.label,
+      kind: entity.kind,
+      description: entity.description,
+      confidence: entity.confidence,
+      evidencePaths: entity.evidencePaths
     }))
   };
 }

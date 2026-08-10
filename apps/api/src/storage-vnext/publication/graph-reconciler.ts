@@ -44,6 +44,7 @@ export function createStorageVnextPublicationGraphReconciler(input: {
     current: StorageVnextCurrentSourceFact;
     node: StorageVnextGraphNodeFact;
     body: string;
+    operationPublicId: string;
     searchProjectionPublicId: string;
     signal: AbortSignal;
   }): Promise<
@@ -93,6 +94,7 @@ export function createStorageVnextPublicationGraphReconciler(input: {
       current,
       node,
       body,
+      operationPublicId: request.operationPublicId,
       searchProjectionPublicId: request.searchProjectionPublicId,
       signal: request.signal
     });

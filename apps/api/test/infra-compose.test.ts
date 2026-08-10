@@ -7,6 +7,10 @@ const devComposeTemplatePath = resolve(rootDir, "docker-compose.dev.yml.example"
 const localComposeTemplatePath = resolve(rootDir, "docker-compose.local.yml.example");
 const deploymentComposeTemplatePath = resolve(rootDir, "docker-compose.yml.example");
 const dockerfilePath = resolve(rootDir, "Dockerfile");
+const adminNginxTemplatePath = resolve(
+  rootDir,
+  "deploy/nginx/default.conf.template"
+);
 const dockerignorePath = resolve(rootDir, ".dockerignore");
 const gitignorePath = resolve(rootDir, ".gitignore");
 const packageJsonPath = resolve(rootDir, "package.json");
@@ -35,6 +39,19 @@ const workerMainSourcePaths = [
 ].map((fileName) => resolve(rootDir, "apps/api/src", fileName));
 
 describe("Docker Compose infrastructure", () => {
+  it("re-resolves the Admin API proxy target after API container replacement", () => {
+    const nginxTemplate = readFileSync(adminNginxTemplatePath, "utf8");
+
+    expect(nginxTemplate).toContain("resolver 127.0.0.11 valid=10s ipv6=off;");
+    expect(nginxTemplate).toContain(
+      "set $admin_api_proxy_target ${ADMIN_API_PROXY_TARGET};"
+    );
+    expect(nginxTemplate).toContain("proxy_pass $admin_api_proxy_target;");
+    expect(nginxTemplate).not.toContain(
+      "proxy_pass ${ADMIN_API_PROXY_TARGET};"
+    );
+  });
+
   it("defines the complete locally built runtime topology in the local template", () => {
     const compose = readFileSync(localComposeTemplatePath, "utf8");
 
@@ -492,7 +509,10 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("sbom: true");
     expect(
       workflow.split('docker image rm --force "${image}" >/dev/null 2>&1 || true').length - 1
-    ).toBe(3);
+    ).toBe(4);
+    expect(workflow).toContain(
+      'docker image rm --force "${source_worker_image}" >/dev/null 2>&1 || true'
+    );
     expect(workflow).not.toContain("focowiki-lexical-rebuild-worker");
     expect(workflow).not.toContain("LEXICAL_IMAGE");
     expect(workflow).toContain("http://127.0.0.1:43000/healthz");

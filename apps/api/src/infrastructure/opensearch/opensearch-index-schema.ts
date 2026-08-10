@@ -23,7 +23,7 @@ const CONTENT_DOCUMENT_FIELDS = new Set([
 ]);
 const GRAPH_DOCUMENT_FIELDS = new Set([
   "id", "schemaVersion", "documentKind", "knowledgeBaseId",
-  "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "title",
+  "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind", "title",
   "searchText", "rankingTerms", "okfSignals"
 ]);
 

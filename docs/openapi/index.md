@@ -172,19 +172,23 @@ curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
   --data-urlencode "path=pages/handbook/onboarding/guide.md"
 ```
 
-The tree endpoint supports parent-path navigation, fuzzy lookup, type filtering, and cursor pagination. Search returns matching files with `fileId`, `path`, match information, and read actions. Relationship exploration accepts a file or query and returns paths that can be opened through the file-content operations.
+The tree endpoint supports parent-path navigation, fuzzy lookup, type filtering, and cursor pagination. Search accepts one standalone natural-language question from 2 through 512 grapheme clusters and at most 2048 UTF-8 bytes after normalization. Unsafe control characters are rejected. Omit `mode` to use the recommended `hybrid` retrieval. With `scope=all`, `file` uses exact path, grounded title, lexical, Jieba, and content-vector evidence; `graph` uses exact path, grounded title, file relationships, and entity, relationship, and community vectors; `hybrid` uses both plans. `scope=path` keeps exact path and title evidence, while `scope=metadata` keeps lexical metadata evidence.
+
+Search returns active Markdown pages created from uploaded files. `fileKind=page` is the default; `fileKind=all` removes the explicit type predicate but currently returns the same page set. OKF filters are optional and exclude files without matching valid OKF signals, so omit them for unrestricted search. `graphDepth=0` returns only the seed graph reference, `1` includes direct relationships, and `2` may include second-level relationships within the requested `graphFanout`. Search results include `fileId`, `path`, actual matched fields, safe evidence types, a short source excerpt when available, status, and read actions.
 
 Search and relationship results guide navigation. Applications should read the returned Markdown files before presenting an answer.
 
 ```bash
 curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/search" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "query=installation" \
+  --data-urlencode "query=How do I install, configure, and verify this knowledge base?" \
   --data-urlencode "mode=hybrid" \
   --data-urlencode "limit=10"
 ```
 
-Search can return `ok`, `no_candidates`, or `index_unavailable`. `no_candidates` describes the current query result and does not prove that the knowledge base lacks relevant content. Clients can try a shorter phrase, inspect `index.md`, browse the tree, or follow file relationships.
+Search returns `searchStatus=ok` or `searchStatus=no_candidates`. `no_candidates` describes only the current query result and does not prove that the knowledge base lacks relevant content. Dependency failures use the documented 503 or 504 error envelope. The response exposes stable semantic and reranker reason codes plus the completed and degraded evidence-family enums. A 422 response uses top-level `VALIDATION_ERROR`; its `details.code` is one of the operation's machine-readable `x-validation-detail-codes`, such as `FILE_SEARCH_QUERY_TOO_LONG`, `INVALID_FILE_SEARCH_KIND`, or `INVALID_FILE_SEARCH_RERANK_CONTROLS`.
+
+Reranking is disabled by default. Set `rerank=true` per request to use the active Admin-configured reranker; `rerankTopK` controls its non-exact candidate window and `rerankScoreThreshold` filters only valid non-exact reranker scores. These fields do not change the embedding model's server-owned cosine relevance threshold. Missing or failed reranking falls back to deterministic hybrid order and reports a safe `rerankerStatus`. Search excerpts, entity or relationship labels, community summaries, and reranker output are discovery hints. Read the returned source Markdown through `readActions` before using its content in an answer.
 
 ## Manage Uploaded Content
 

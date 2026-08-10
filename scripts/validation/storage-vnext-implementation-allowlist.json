@@ -56,7 +56,7 @@
   ],
   "settingsFieldFiles": {
     "apps/admin/src/components/settings-panel.tsx": {
-      "approvedPatchSha256": "a8aae3dc6231c5ee146719983fb6727e94516b3a0a09029245c899961dea04c4",
+      "approvedPatchSha256": "3303db2c5b9b381957b109007687d202e6c92029a339fe26232bfab3fec45d4f",
       "allowedSymbols": [
         "workerNumberFields",
         "workerBooleanFields",
@@ -79,7 +79,7 @@
       ]
     },
     "apps/admin/src/lib/admin-api.ts": {
-      "approvedPatchSha256": "4084108c175c33734430ff2b991d83ec2ba0c38a0ead72fdd38fb64bb72b2aa4",
+      "approvedPatchSha256": "c2dd396e72b28cb137b4cd1b32b6b669d825198a5e657d29cad4c49a5556688f",
       "allowedSymbols": [
         "WorkerSettings",
         "PublicationSettings",
@@ -719,6 +719,286 @@
       "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 1.13 approved by the user",
       "reason": "Retain the focused OKF 0.2 regression suite created from the approved Red evidence",
       "preservedContract": "The regression suite covers only the approved OKF 0.2 behavior and existing compatibility boundaries"
+    },
+    {
+      "path": "apps/admin/src/components/embedding-settings-panel.tsx",
+      "taskId": "13.4",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 13.4 approved by the user",
+      "reason": "Add embedding model controls through the existing settings table and dialog patterns",
+      "preservedContract": "The established Admin layout, styles, navigation, and unrelated model controls remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/components/knowledge-base-maintenance-panel.tsx",
+      "taskId": "12.1",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 12.1 approved by the user",
+      "reason": "Expose bounded per-knowledge-base semantic maintenance actions and truthful progress",
+      "preservedContract": "Maintenance stays explicit and the existing knowledge-base page layout and ordinary upload behavior remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/components/reranker-settings-panel.tsx",
+      "taskId": "21.4",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 21.4 approved by the user",
+      "reason": "Add optional reranker model configuration through the existing model settings patterns",
+      "preservedContract": "Only model connection fields are exposed and the existing Admin layout and styles remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/i18n/resources.ts",
+      "taskId": "21.4",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 21.4 approved by the user",
+      "reason": "Keep English and Chinese embedding, semantic, maintenance, and reranker product text synchronized",
+      "preservedContract": "All product text remains routed through bilingual i18n without changing unrelated copy"
+    },
+    {
+      "path": "apps/admin/src/lib/source-file-list-filters.ts",
+      "taskId": "13.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 13.3 approved by the user",
+      "reason": "Represent truthful GraphRAG and semantic processing states in the existing source-file list filters",
+      "preservedContract": "The existing source-file list, cards, filtering layout, and source identity behavior remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/lib/upload-session-client.ts",
+      "taskId": "13.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 13.5 approved by the user",
+      "reason": "Map durable semantic processing stages returned by the existing upload-session API",
+      "preservedContract": "Upload registration and existing UI polling contracts remain unchanged while status reflects real backend work"
+    },
+    {
+      "path": "apps/admin/test/embedding-settings-panel.test.tsx",
+      "taskId": "13.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 13.3 approved by the user",
+      "reason": "Verify every embedding model field and lifecycle action through the existing settings component",
+      "preservedContract": "The test guards the approved fields without authorizing UI redesign or unrelated settings changes"
+    },
+    {
+      "path": "apps/admin/test/reranker-settings-panel.test.tsx",
+      "taskId": "21.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 21.5 approved by the user",
+      "reason": "Verify reranker model configuration and lifecycle behavior field by field",
+      "preservedContract": "Request ranking controls remain absent from persisted UI settings and existing component styling remains unchanged"
+    },
+    {
+      "path": "apps/admin/test/upload-session-client.test.ts",
+      "taskId": "13.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 13.5 approved by the user",
+      "reason": "Verify upload processing stage responses are preserved and presented truthfully",
+      "preservedContract": "The test does not alter upload request or response contracts outside the approved semantic status fields"
+    },
+    {
+      "path": "apps/api/python/THIRD_PARTY.md",
+      "taskId": "4.1",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.1 approved by the user",
+      "reason": "Record the exact GraphRAG Python dependency license and supported version",
+      "preservedContract": "The dependency remains isolated to the source-worker adapter and adds no public product contract"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/__init__.py",
+      "taskId": "4.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.3 approved by the user",
+      "reason": "Define the narrow public surface of the isolated GraphRAG adapter package",
+      "preservedContract": "GraphRAG SDK types remain confined to the Python adapter boundary"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/__main__.py",
+      "taskId": "4.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.3 approved by the user",
+      "reason": "Run the framed GraphRAG adapter protocol inside the dedicated source worker",
+      "preservedContract": "The adapter is an internal worker process and does not add an HTTP service or public API"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/compatibility.py",
+      "taskId": "4.1",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.1 approved by the user",
+      "reason": "Validate the pinned GraphRAG runtime APIs and normalized output shapes at build and startup",
+      "preservedContract": "Incompatible SDK versions fail worker health without changing source files or generated knowledge-base structure"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/contracts.py",
+      "taskId": "4.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.3 approved by the user",
+      "reason": "Define bounded versioned adapter input and output contracts",
+      "preservedContract": "Only Focowiki-owned normalized records cross the adapter boundary"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/normalize.py",
+      "taskId": "4.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.3 approved by the user",
+      "reason": "Normalize selective GraphRAG results into source-evidence-owned semantic records",
+      "preservedContract": "Malformed or unsupported model output is rejected and no domain-specific facts are fabricated"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/prompt.py",
+      "taskId": "4.2",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.2 approved by the user",
+      "reason": "Define the bounded domain-neutral extraction prompt used by the adapter",
+      "preservedContract": "Production prompts and entity types remain general purpose and source grounded"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/protocol.py",
+      "taskId": "4.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.3 approved by the user",
+      "reason": "Implement bounded length-prefixed worker messages and safe diagnostics",
+      "preservedContract": "The protocol remains internal, bounded, cancellable, and free of public DTOs"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter/runtime.py",
+      "taskId": "4.3",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.3 approved by the user",
+      "reason": "Execute selective GraphRAG primitives behind the adapter contracts",
+      "preservedContract": "SDK details remain isolated and only bounded source revisions are processed"
+    },
+    {
+      "path": "apps/api/python/graphrag_adapter_check.py",
+      "taskId": "4.6",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.6 approved by the user",
+      "reason": "Provide build-time and startup compatibility health validation for the adapter",
+      "preservedContract": "The check is internal validation and cannot claim semantic readiness when dependencies are incompatible"
+    },
+    {
+      "path": "apps/api/python/requirements.in",
+      "taskId": "4.1",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.1 approved by the user",
+      "reason": "Declare the supported GraphRAG dependency input for the isolated Python environment",
+      "preservedContract": "Python dependencies remain confined to the dedicated source-worker image"
+    },
+    {
+      "path": "apps/api/python/requirements.lock",
+      "taskId": "4.1",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.1 approved by the user",
+      "reason": "Lock the complete GraphRAG Python environment for reproducible builds",
+      "preservedContract": "Runtime dependency resolution is deterministic and does not affect the API or Admin images"
+    },
+    {
+      "path": "apps/api/python/tests/test_normalize.py",
+      "taskId": "4.2",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.2 approved by the user",
+      "reason": "Verify normalized entities, relationships, evidence, and malformed-output rejection",
+      "preservedContract": "The test enforces source grounding and domain-neutral output ownership"
+    },
+    {
+      "path": "apps/api/python/tests/test_protocol.py",
+      "taskId": "4.4",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.4 approved by the user",
+      "reason": "Verify framed protocol bounds, errors, and safe diagnostics",
+      "preservedContract": "The test keeps internal worker messages bounded and does not expose the protocol publicly"
+    },
+    {
+      "path": "apps/api/python/tests/test_runtime.py",
+      "taskId": "4.7",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 4.7 approved by the user",
+      "reason": "Verify repeated adapter runtime behavior, selective processing, and stable normalized output",
+      "preservedContract": "The test guards bounded CPU and memory behavior without adding a fallback implementation"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/graph-expansion-filters.ts",
+      "taskId": "20.1",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 20.1 approved by the user",
+      "reason": "Apply the shared natural-language query and semantic filter contract to graph expansion",
+      "preservedContract": "The existing graph expansion route, authentication, response envelope, and source-file read workflow remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/search-query-contract.ts",
+      "taskId": "20.1",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 20.1 approved by the user",
+      "reason": "Define one bounded query, mode, limit, cursor, and request-scoped reranker contract",
+      "preservedContract": "Existing search route identity and source-file result contract remain unchanged"
+    },
+    {
+      "path": "docs/.vitepress/config.ts",
+      "taskId": "22.7",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.7 approved by the user",
+      "reason": "Keep the existing documentation navigation synchronized with the reviewed retrieval guidance",
+      "preservedContract": "Documentation structure remains developer facing and exposes no unnecessary internal implementation detail"
+    },
+    {
+      "path": "docs/agent-integration/backend-adapter.md",
+      "taskId": "22.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.5 approved by the user",
+      "reason": "Document hybrid retrieval, request-scoped reranking, and mandatory source-file reads for backend adapters",
+      "preservedContract": "Search remains retrieval-only and agents must read original source Markdown before answering"
+    },
+    {
+      "path": "docs/agent-integration/index.md",
+      "taskId": "22.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.5 approved by the user",
+      "reason": "Update the Agent integration overview for general-purpose hybrid retrieval",
+      "preservedContract": "The guidance stays provider neutral and source-file centered"
+    },
+    {
+      "path": "docs/agent-integration/own-agent-client/skill-design.md",
+      "taskId": "22.6",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.6 approved by the user",
+      "reason": "Document the bounded standalone-query and source-reading Agent exploration loop",
+      "preservedContract": "Snippets, graph summaries, and reranker output cannot be used as final answer evidence"
+    },
+    {
+      "path": "docs/agent-integration/own-agent-client/tools-design.md",
+      "taskId": "22.6",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.6 approved by the user",
+      "reason": "Align Agent tool guidance with hybrid search, graph expansion, and source-file reads",
+      "preservedContract": "Existing OpenAPI operations remain the only documented integration surface"
+    },
+    {
+      "path": "docs/agent-integration/third-party-agent-client/skill-design.md",
+      "taskId": "22.6",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.6 approved by the user",
+      "reason": "Align third-party Agent guidance with the bounded source-grounded exploration workflow",
+      "preservedContract": "The workflow remains general purpose and requires original source Markdown reads"
+    },
+    {
+      "path": "docs/guide/file-first-graph.md",
+      "taskId": "22.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.5 approved by the user",
+      "reason": "Describe the current fused lexical, vector, file-graph, and GraphRAG retrieval behavior",
+      "preservedContract": "The public tree structure and source-file-first answer evidence contract remain unchanged"
+    },
+    {
+      "path": "docs/zh-CN/agent-integration/backend-adapter.md",
+      "taskId": "22.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.5 approved by the user",
+      "reason": "Keep Chinese backend adapter guidance aligned with hybrid retrieval and source-file reads",
+      "preservedContract": "Chinese and English guidance describe the same public source-grounded behavior"
+    },
+    {
+      "path": "docs/zh-CN/agent-integration/index.md",
+      "taskId": "22.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.5 approved by the user",
+      "reason": "Keep the Chinese Agent integration overview aligned with general-purpose hybrid retrieval",
+      "preservedContract": "Chinese and English guidance remain provider neutral and source-file centered"
+    },
+    {
+      "path": "docs/zh-CN/agent-integration/own-agent-client/skill-design.md",
+      "taskId": "22.6",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.6 approved by the user",
+      "reason": "Document the bounded source-grounded Agent exploration loop in Chinese",
+      "preservedContract": "Chinese guidance preserves the same evidence and round limits as English"
+    },
+    {
+      "path": "docs/zh-CN/agent-integration/own-agent-client/tools-design.md",
+      "taskId": "22.6",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.6 approved by the user",
+      "reason": "Align Chinese Agent tool guidance with hybrid search and source-file reads",
+      "preservedContract": "Existing OpenAPI operations remain the only documented integration surface"
+    },
+    {
+      "path": "docs/zh-CN/agent-integration/third-party-agent-client/skill-design.md",
+      "taskId": "22.6",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.6 approved by the user",
+      "reason": "Align Chinese third-party Agent guidance with the bounded exploration workflow",
+      "preservedContract": "The workflow stays general purpose and requires original source Markdown reads"
+    },
+    {
+      "path": "docs/zh-CN/guide/file-first-graph.md",
+      "taskId": "22.5",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.5 approved by the user",
+      "reason": "Keep Chinese retrieval guidance synchronized with fused lexical, vector, file-graph, and GraphRAG behavior",
+      "preservedContract": "Chinese and English documentation preserve the same public tree and source-file evidence contract"
+    },
+    {
+      "path": "scripts/docs/test/swagger-api-explorer.test.ts",
+      "taskId": "22.7",
+      "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.7 approved by the user",
+      "reason": "Verify the documentation explorer renders the approved natural-language and reranker request fields",
+      "preservedContract": "The test validates documented public fields without exposing internal graph or provider details"
     }
   ]
 }

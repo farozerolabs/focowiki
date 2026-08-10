@@ -52,6 +52,8 @@ import {
   STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE,
   STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES
 } from "./profile.js";
+import type { SemanticSourcePresentationReadPort } from
+  "../../semantic/presentation/source-context.js";
 
 type ProjectionRequest = {
   knowledgeBaseId: string;
@@ -123,6 +125,7 @@ export type StorageVnextPublicationSnapshotPort = {
   listExtensionCatalogPaths(input: {
     knowledgeBaseId: string;
     candidatePublicId: string;
+    includeByFileResources?: boolean;
     limit: number;
     cursor: string | null;
   }): Promise<{
@@ -154,6 +157,7 @@ export function createStorageVnextPublicationProjectionLoader(input: {
   >;
   graph: GraphPort;
   sourceBodies: StorageVnextSourceBodyReadPort;
+  semanticPresentation?: SemanticSourcePresentationReadPort;
   snapshot: StorageVnextPublicationSnapshotPort;
   limits: {
     catalogPageSize: number;
@@ -208,6 +212,14 @@ export function createStorageVnextPublicationProjectionLoader(input: {
       } : request.plan;
       const effectiveRequest = { ...request, plan: effectivePlan };
       const affectedSourceIds = await resolveAffectedSourceIds(input, request);
+      const candidateProcessingSources = await loadCandidateProcessingSources(
+        input,
+        effectiveRequest,
+        affectedSourceIds
+      );
+      const candidateProcessingSourceIds = new Set(candidateProcessingSources.map(
+        (source) => source.publicId
+      ));
       const removedSourceLogicalPaths = await resolveRemovedSourceLogicalPaths(
         input,
         request
@@ -218,16 +230,20 @@ export function createStorageVnextPublicationProjectionLoader(input: {
         knowledgeBaseId: request.knowledgeBaseId,
         directoryPaths: effectivePlan.directoryPaths
       });
+      const emittedDirectoryPaths = new Set(effectivePlan.directoryPaths);
       const directories: StorageVnextPublicationDirectoryInput[] = [];
       for (const path of effectivePlan.directoryPaths) {
         const fact = path === "pages" ? null : directoryFacts.get(path);
         if (path !== "pages" && !fact) continue;
         directories.push(await loadDirectory(
           input,
-          request,
+          effectiveRequest,
           path,
           fact ?? null,
-          descendantCounts.get(path) ?? 0,
+          (descendantCounts.get(path) ?? 0)
+            + countDescendantSources(path, candidateProcessingSources),
+          candidateProcessingSourceIds,
+          emittedDirectoryPaths,
           knowledgeBase.updatedAt
         ));
       }
@@ -244,6 +260,7 @@ export function createStorageVnextPublicationProjectionLoader(input: {
         profileUpgrade,
         projectionShards,
         plan: effectivePlan,
+        candidateProcessingSourceIds,
         changedAt: knowledgeBase.updatedAt
       });
       return {
@@ -251,7 +268,7 @@ export function createStorageVnextPublicationProjectionLoader(input: {
           id: knowledgeBase.publicId,
           name: knowledgeBase.name,
           description: knowledgeBase.description,
-          sourceFileCount: counts.sourceFileCount,
+          sourceFileCount: counts.sourceFileCount + candidateProcessingSources.length,
           graphEdgeCount: counts.graphEdgeCount,
           changedAt: knowledgeBase.updatedAt
         },
@@ -273,6 +290,7 @@ export function createStorageVnextPublicationProjectionLoader(input: {
           input,
           request: effectiveRequest,
           affectedSourceIds,
+          candidateProcessingSourceIds,
           directories,
           currentDirectoryPaths,
           deletedDirectoryPaths
@@ -298,6 +316,7 @@ async function loadExtensionNavigation(
     profileUpgrade: boolean;
     projectionShards: readonly EffectiveProjectionShard[];
     plan: StorageVnextPublicationBatchPlan;
+    candidateProcessingSourceIds: ReadonlySet<string>;
     changedAt: string;
   }
 ): Promise<{
@@ -331,12 +350,15 @@ async function loadExtensionNavigation(
     shard.firstLogicalPath)).size !== unaffectedDirectories.length) {
     throw projectionLoaderError("extension_navigation_state_incomplete");
   }
+  const catalogPaths = await listExtensionCatalogPaths(input, request, {
+    includeByFileResources: context.profileUpgrade
+  });
   const paths = context.profileUpgrade
-    ? await listLegacyExtensionPaths(input, request)
+    ? catalogPaths
     : deriveCurrentExtensionPaths(
-        context.projectionShards,
         previousLeaves,
-        affectedDirectories
+        affectedDirectories,
+        catalogPaths.markdownLogicalPaths
       );
   return {
     navigation: {
@@ -345,13 +367,11 @@ async function loadExtensionNavigation(
       previousLeaves,
       changedAt: context.changedAt,
       sources: context.profileUpgrade
-        ? listExtensionSources(input, request)
+        ? listExtensionSources(input, request, context.candidateProcessingSourceIds)
         : emptyExtensionSources(),
       affectedDirectoryPaths: affectedDirectories,
       previousPresentDirectoryPaths: previousPresentExtensionDirectories(
-        context.projectionShards,
-        previousLeaves,
-        reusedShards
+        catalogPaths.markdownLogicalPaths
       ),
       completeProfile: context.profileUpgrade,
       maxEntries: input.limits.directoryIndexMaxEntries,
@@ -362,9 +382,10 @@ async function loadExtensionNavigation(
   };
 }
 
-async function listLegacyExtensionPaths(
+async function listExtensionCatalogPaths(
   input: Parameters<typeof createStorageVnextPublicationProjectionLoader>[0],
-  request: ProjectionRequest
+  request: ProjectionRequest,
+  options: { includeByFileResources: boolean }
 ): Promise<{
   byFileLogicalPaths: string[];
   markdownLogicalPaths: string[];
@@ -380,6 +401,7 @@ async function listLegacyExtensionPaths(
     const page = await input.snapshot.listExtensionCatalogPaths({
       knowledgeBaseId: request.knowledgeBaseId,
       candidatePublicId: request.candidatePublicId,
+      includeByFileResources: options.includeByFileResources,
       limit: Math.min(input.limits.catalogPageSize, remaining),
       cursor
     });
@@ -398,29 +420,24 @@ async function listLegacyExtensionPaths(
 }
 
 function deriveCurrentExtensionPaths(
-  projectionShards: readonly EffectiveProjectionShard[],
   previousLeaves: ReadonlyMap<string, readonly PersistentDirectoryLeaf[]>,
-  affectedDirectories: readonly string[]
+  affectedDirectories: readonly string[],
+  currentMarkdownPaths: readonly string[]
 ): { byFileLogicalPaths: string[]; markdownLogicalPaths: string[] } {
-  const markdownLogicalPaths = new Set<string>();
+  const affected = new Set(affectedDirectories);
+  const markdownLogicalPaths = currentMarkdownPaths.filter((logicalPath) => {
+    if (logicalPath === "_index/index.md" || logicalPath === "_graph/index.md") {
+      return true;
+    }
+    return [...affected].some((directoryPath) =>
+      logicalPath === `${parentPath(directoryPath)}/index.md`
+      || logicalPath.startsWith(`${directoryPath}/index`));
+  });
   const byFileLogicalPaths = (previousLeaves.get("_graph/by-file") ?? [])
     .flatMap((leaf) => leaf.entries.map((entry) => entry.targetPath));
-  for (const directoryPath of affectedDirectories) {
-    const leaves = previousLeaves.get(directoryPath) ?? [];
-    const hasTypedProjection = projectionShards.some((shard) =>
-      parentPath(shard.logicalPath) === directoryPath);
-    if (leaves.length === 0 && !hasTypedProjection) continue;
-    markdownLogicalPaths.add(`${directoryPath}/index.md`);
-    if (directoryPath !== "_graph/by-file") {
-      markdownLogicalPaths.add(`${parentPath(directoryPath)}/index.md`);
-    }
-    for (const leaf of leaves) {
-      markdownLogicalPaths.add(`${directoryPath}/index-${leaf.id}.md`);
-    }
-  }
   return {
     byFileLogicalPaths: [...new Set(byFileLogicalPaths)].sort(compareUtf8),
-    markdownLogicalPaths: [...markdownLogicalPaths].sort(compareUtf8)
+    markdownLogicalPaths: [...new Set(markdownLogicalPaths)].sort(compareUtf8)
   };
 }
 
@@ -447,23 +464,18 @@ function affectedExtensionNavigationDirectories(
 }
 
 function previousPresentExtensionDirectories(
-  projectionShards: readonly EffectiveProjectionShard[],
-  previousLeaves: ReadonlyMap<string, readonly PersistentDirectoryLeaf[]>,
-  reusedShards: readonly StorageVnextShardDescriptor[]
+  currentMarkdownPaths: readonly string[]
 ): string[] {
+  const current = new Set(currentMarkdownPaths);
   const present = new Set<string>();
-  for (const shard of projectionShards) {
-    const directoryPath = parentPath(shard.logicalPath);
-    if (STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES.includes(
-      directoryPath as (typeof STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES)[number]
-    )) present.add(directoryPath);
-  }
-  if ((previousLeaves.get("_graph/by-file") ?? []).length > 0) {
-    present.add("_graph/by-file");
-  }
-  if (reusedShards.some((shard) =>
-    shard.firstLogicalPath === "_graph/by-file" && shard.recordCount > 0)) {
-    present.add("_graph/by-file");
+  for (const directoryPath of STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES) {
+    if (
+      current.has(`${directoryPath}/index.md`)
+      && (
+        directoryPath === "_graph/by-file"
+        || current.has(`${parentPath(directoryPath)}/index.md`)
+      )
+    ) present.add(directoryPath);
   }
   return [...present].sort(compareUtf8);
 }
@@ -476,7 +488,8 @@ async function* emptyExtensionSources(): AsyncIterable<
 
 async function* listExtensionSources(
   input: Parameters<typeof createStorageVnextPublicationProjectionLoader>[0],
-  request: ProjectionRequest
+  request: ProjectionRequest,
+  candidateProcessingSourceIds: ReadonlySet<string>
 ): AsyncIterable<readonly StorageVnextExtensionNavigationSource[]> {
   let cursor: string | null = null;
   do {
@@ -487,7 +500,10 @@ async function* listExtensionSources(
       limit: input.limits.catalogPageSize,
       cursor
     });
-    yield page.items.filter(isPublishedSource).map((source) => ({
+    yield page.items.filter((source) => isPublishedSource(
+      source,
+      candidateProcessingSourceIds
+    )).map((source) => ({
       publicId: source.publicId,
       title: source.title,
       pagePath: `pages/${source.logicalPath}`
@@ -524,6 +540,7 @@ async function* createProjectionBatches(context: {
   input: Parameters<typeof createStorageVnextPublicationProjectionLoader>[0];
   request: ProjectionRequest & { plan: StorageVnextPublicationBatchPlan };
   affectedSourceIds: readonly string[];
+  candidateProcessingSourceIds: ReadonlySet<string>;
   directories: readonly StorageVnextPublicationDirectoryInput[];
   currentDirectoryPaths: readonly string[];
   deletedDirectoryPaths: readonly string[];
@@ -535,7 +552,12 @@ async function* createProjectionBatches(context: {
   for (let index = 0; index < batches.length; index += 1) {
     throwIfAborted(context.request.signal);
     const sourceIds = batches[index]!;
-    const pages = await loadPages(context.input, context.request, sourceIds);
+    const pages = await loadPages(
+      context.input,
+      context.request,
+      sourceIds,
+      context.candidateProcessingSourceIds
+    );
     currentSourcePaths.push(...pages.map((page) => page.node.logicalPath));
     const machine = await assembleStorageVnextMachineProjection({
       knowledgeBaseId: context.request.knowledgeBaseId,
@@ -577,7 +599,8 @@ async function* createProjectionBatches(context: {
     const pages = await loadPages(
       context.input,
       context.request,
-      work.sourceFilePublicIds
+      work.sourceFilePublicIds,
+      context.candidateProcessingSourceIds
     );
     const nodeCache = new Map<string, StorageVnextGraphNodeFact | null>();
     const machine = await assembleStorageVnextMachineProjection({
@@ -773,10 +796,43 @@ async function resolveAffectedSourceIds(
   return [...ids].sort(compareUtf8);
 }
 
+async function loadCandidateProcessingSources(
+  input: Parameters<typeof createStorageVnextPublicationProjectionLoader>[0],
+  request: ProjectionRequest & { plan: StorageVnextPublicationBatchPlan },
+  affectedSourceIds: readonly string[]
+): Promise<StorageVnextSourceFileFact[]> {
+  const plannedPaths = new Set(request.plan.sourcePaths);
+  const sources: StorageVnextSourceFileFact[] = [];
+  for (const publicIds of chunked(affectedSourceIds, input.limits.catalogPageSize)) {
+    throwIfAborted(request.signal);
+    sources.push(...await input.catalog.listSourceFilesByPublicIds({
+      knowledgeBaseId: request.knowledgeBaseId,
+      publicIds,
+      limit: publicIds.length
+    }));
+  }
+  return sources.filter((source) =>
+    source.visibility === "current"
+    && source.status === "processing"
+    && source.currentRevisionPublicId !== null
+    && plannedPaths.has(`pages/${source.logicalPath}`)
+  ).sort((left, right) => compareUtf8(left.publicId, right.publicId));
+}
+
+function countDescendantSources(
+  directoryPath: string,
+  sources: readonly StorageVnextSourceFileFact[]
+): number {
+  if (directoryPath === "pages") return sources.length;
+  const prefix = `${directoryPath.slice("pages/".length)}/`;
+  return sources.filter((source) => source.logicalPath.startsWith(prefix)).length;
+}
+
 async function loadPages(
   input: Parameters<typeof createStorageVnextPublicationProjectionLoader>[0],
   request: ProjectionRequest,
-  sourceFilePublicIds: readonly string[]
+  sourceFilePublicIds: readonly string[],
+  candidateProcessingSourceIds: ReadonlySet<string>
 ): Promise<StorageVnextPublicationPageInput[]> {
   const sourceFiles: StorageVnextSourceFileFact[] = [];
   for (let offset = 0; offset < sourceFilePublicIds.length;
@@ -796,7 +852,7 @@ async function loadPages(
     throwIfAborted(request.signal);
     if (
       sourceFile.visibility !== "current"
-      || sourceFile.status !== "ready"
+      || !isPublishedSource(sourceFile, candidateProcessingSourceIds)
       || !sourceFile.currentRevisionPublicId
     ) continue;
     const sourceRevision = await input.catalog.getCurrentSourceRevision({
@@ -831,7 +887,16 @@ async function loadPages(
       node,
       neighborhood,
       endpointNodes,
-      sourceBody: await readUtf8(chunks, request.signal)
+      sourceBody: await readUtf8(chunks, request.signal),
+      ...(input.semanticPresentation ? {
+        semanticContext: await input.semanticPresentation.getSourceContext({
+          knowledgeBaseId: request.knowledgeBaseId,
+          operationPublicId: request.operationPublicId,
+          sourceFilePublicId: sourceFile.publicId,
+          sourceRevisionPublicId: sourceRevision.publicId,
+          entityLimit: input.limits.relatedFileLimit
+        })
+      } : {})
     });
   }
   return pages.sort((left, right) =>
@@ -930,6 +995,8 @@ async function loadDirectory(
   directoryPath: string,
   directory: StorageVnextDirectoryFact | null,
   descendantFileCount: number,
+  candidateProcessingSourceIds: ReadonlySet<string>,
+  emittedDirectoryPaths: ReadonlySet<string>,
   changedAt: string
 ): Promise<StorageVnextPublicationDirectoryInput> {
   const [directories, sources, previousLeaves] = await Promise.all([
@@ -943,8 +1010,14 @@ async function loadDirectory(
       signal: request.signal
     })
   ]);
+  const inheritedDirectoryIds = new Set(previousLeaves.flatMap((leaf) =>
+    leaf.entries.filter((entry) => entry.kind === "directory")
+      .map((entry) => entry.id)));
   const entries: OrderedDirectoryEntry[] = [
-    ...directories.map((child) => {
+    ...directories.filter((child) =>
+      emittedDirectoryPaths.has(`pages/${child.logicalPath}`)
+      || inheritedDirectoryIds.has(`directory:${child.logicalPath}`)
+    ).map((child) => {
       const name = child.logicalPath.split("/").at(-1)!;
       return {
         id: `directory:${child.logicalPath}`,
@@ -955,7 +1028,7 @@ async function loadDirectory(
       };
     }),
     ...sources
-      .filter(isPublishedSource)
+      .filter((source) => isPublishedSource(source, candidateProcessingSourceIds))
       .map((source) => {
         const name = source.logicalPath.split("/").at(-1)!;
         return {
@@ -1122,9 +1195,18 @@ function directoryLogicalPaths(directory: StorageVnextPublicationDirectoryInput)
   ];
 }
 
-function isPublishedSource(source: StorageVnextSourceFileFact): boolean {
+function isPublishedSource(
+  source: StorageVnextSourceFileFact,
+  candidateProcessingSourceIds: ReadonlySet<string> = new Set()
+): boolean {
   return source.visibility === "current"
-    && source.status === "ready"
+    && (
+      source.status === "ready"
+      || (
+        source.status === "processing"
+        && candidateProcessingSourceIds.has(source.publicId)
+      )
+    )
     && source.currentRevisionPublicId !== null;
 }
 

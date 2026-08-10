@@ -251,6 +251,144 @@ describe("storage vNext maintenance production phases", () => {
     })).rejects.toMatchObject({ code: "stale_plan" });
   });
 
+  it("pages, waits for, and activates an explicit semantic adoption snapshot", async () => {
+    const candidatePublicId = createStorageVnextMaintenanceCandidatePublicId({
+      knowledgeBaseId: "kb-maintenance",
+      operationPublicId: "operation-maintenance"
+    });
+    const planSourcePage = vi.fn()
+      .mockResolvedValueOnce({ sourceCount: 2, stageCount: 10, nextCursor: "source-2" })
+      .mockResolvedValueOnce({ sourceCount: 1, stageCount: 5, nextCursor: null });
+    const validateSemantic = vi.fn()
+      .mockResolvedValueOnce({
+        outcome: "pending" as const,
+        summary: { totalCount: 15, completedCount: 10 }
+      })
+      .mockResolvedValueOnce({
+        outcome: "pending" as const,
+        summary: { totalCount: 15, completedCount: 10 }
+      })
+      .mockResolvedValueOnce({
+        outcome: "ready" as const,
+        summary: { totalCount: 15, completedCount: 15 }
+      })
+      .mockResolvedValueOnce({
+        outcome: "ready" as const,
+        summary: { totalCount: 15, completedCount: 15 }
+      });
+    const activateSemantic = vi.fn();
+    const pipeline = pipelineFixture();
+    pipeline.buildSearchCandidate.mockResolvedValue({
+      sourceCount: 3,
+      graphSeedCount: 0,
+      documentCount: 3,
+      batchCount: 1,
+      compressedBytes: 128,
+      documentChecksum: "c".repeat(64),
+      queryCases: []
+    });
+    const phases = createStorageVnextMaintenanceProductionPhases({
+      semanticAdoption: {
+        planSourcePage,
+        validateCandidate: validateSemantic,
+        activateCandidate: activateSemantic
+      },
+      planner: { plan: vi.fn(async () => ({
+        candidatePublicId,
+        candidateRootPublicId: "root-candidate",
+        sourceCount: 3,
+        directoryCount: 0
+      })) },
+      catalog: { getKnowledgeBase: vi.fn(async () => ({
+        publicId: "kb-maintenance", revision: 11, visibility: "current" as const
+      })) },
+      releases: {
+        hasCandidateCatalogEntries: vi.fn(),
+        getActiveRoot: vi.fn(async () => null),
+        getLiveCandidate: vi.fn(async () => null),
+        activateCandidate: vi.fn(async () => ({ outcome: "activated" as const }))
+      },
+      pipeline,
+      objectReconciliation: { runPage: vi.fn() },
+      candidateObjectCleanup: { runPage: vi.fn() },
+      clock: () => "2026-08-02T00:00:00.000Z",
+      rollbackRetentionMilliseconds: 1,
+      resultRetentionMilliseconds: 1
+    });
+    const semanticAdoption = semanticAdoptionSnapshot();
+
+    const first = await phases.runPhase(phaseRequest({
+      ...checkpoint("planning"),
+      semanticAdoption
+    }));
+    expect(first).toMatchObject({ outcome: "progress", cursor: "source-2" });
+
+    const second = await phases.runPhase(phaseRequest({
+      ...checkpoint("planning"),
+      cursor: "source-2",
+      batchOrdinal: 1,
+      semanticAdoption
+    }));
+    expect(second).toMatchObject({ outcome: "phase_completed" });
+    expect(planSourcePage).toHaveBeenLastCalledWith(expect.objectContaining({
+      cursor: "source-2",
+      expectedPredecessorPublicId: "semantic-active"
+    }));
+
+    const pendingSemantic = await phases.runPhase(phaseRequest({
+      ...checkpoint("search_rebuild"), semanticAdoption
+    }));
+    expect(pendingSemantic).toMatchObject({
+      outcome: "progress",
+      cursor: "semantic-stages:0:10",
+      completedDelta: 10,
+      expectedCount: 15,
+      batchOrdinalDelta: 0
+    });
+    expect(pipeline.buildSearchCandidate).not.toHaveBeenCalled();
+    await expect(phases.runPhase(phaseRequest({
+      ...checkpoint("search_rebuild"),
+      cursor: pendingSemantic.outcome === "progress"
+        ? pendingSemantic.cursor
+        : null,
+      completedCount: 10,
+      expectedCount: 15,
+      semanticAdoption
+    }))).resolves.toMatchObject({
+      outcome: "progress",
+      cursor: "semantic-stages:0:10",
+      completedDelta: 0,
+      expectedCount: 15,
+      batchOrdinalDelta: 0
+    });
+    await expect(phases.runPhase(phaseRequest({
+      ...checkpoint("search_rebuild"),
+      cursor: pendingSemantic.outcome === "progress"
+        ? pendingSemantic.cursor
+        : null,
+      completedCount: 10,
+      expectedCount: 15,
+      semanticAdoption
+    }))).resolves.toMatchObject({
+      outcome: "phase_completed",
+      completedDelta: 8,
+      expectedCount: 18
+    });
+    expect(pipeline.buildSearchCandidate).toHaveBeenCalledOnce();
+    await expect(phases.runPhase(phaseRequest({
+      ...checkpoint("catch_up"), semanticAdoption
+    }))).resolves.toMatchObject({ outcome: "phase_completed" });
+
+    await phases.runPhase(phaseRequest({
+      ...checkpoint("activation"), semanticAdoption
+    }));
+    expect(activateSemantic).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-maintenance",
+      operationPublicId: "operation-maintenance",
+      activatedAt: "2026-08-02T00:00:00.000Z"
+    });
+  });
+
   it("adopts a provider by rebuilding and activating only search", async () => {
     const planner = { plan: vi.fn() };
     const prepareCandidate = vi.fn();
@@ -336,6 +474,140 @@ describe("storage vNext maintenance production phases", () => {
     expect(reconcileObjects).not.toHaveBeenCalled();
     expect(cleanupCandidateObjects).not.toHaveBeenCalled();
   });
+
+  it("rebuilds semantic provider state from artifacts without full semantic stages", async () => {
+    const semanticAdoption = {
+      planSourcePage: vi.fn(),
+      validateCandidate: vi.fn(),
+      activateCandidate: vi.fn()
+    };
+    const planProviderPage = vi.fn(async () => ({
+      sourceCount: 1,
+      documentCount: 4,
+      nextCursor: null,
+      candidateIndexUid: "semantic-candidate"
+    }));
+    const validateProvider = vi.fn();
+    const activateProviderProjection = vi.fn();
+    const phases = createStorageVnextMaintenanceProductionPhases({
+      semanticAdoption,
+      semanticProviderAdoption: {
+        planSourcePage: planProviderPage,
+        validate: validateProvider,
+        activate: activateProviderProjection
+      },
+      providerAdoption: { activate: vi.fn(async () => ({ outcome: "activated" as const })) },
+      planner: { plan: vi.fn() },
+      catalog: { getKnowledgeBase: vi.fn(async () => ({
+        publicId: "kb-maintenance", revision: 11, visibility: "current" as const
+      })) },
+      releases: {
+        hasCandidateCatalogEntries: vi.fn(),
+        getActiveRoot: vi.fn(),
+        getLiveCandidate: vi.fn(),
+        activateCandidate: vi.fn()
+      },
+      pipeline: pipelineFixture(),
+      objectReconciliation: { runPage: vi.fn() },
+      candidateObjectCleanup: { runPage: vi.fn() },
+      clock: () => "2026-08-02T00:00:00.000Z",
+      rollbackRetentionMilliseconds: 1,
+      resultRetentionMilliseconds: 1
+    });
+    const providerOnly = {
+      ...semanticAdoptionSnapshot(),
+      mode: "provider_only" as const
+    };
+
+    await phases.runPhase(phaseRequest({
+      ...checkpoint("planning"),
+      maintenanceKind: "provider_adoption",
+      semanticAdoption: providerOnly
+    }));
+    await phases.runPhase(phaseRequest({
+      ...checkpoint("catch_up"),
+      maintenanceKind: "provider_adoption",
+      semanticAdoption: providerOnly
+    }));
+    await phases.runPhase(phaseRequest({
+      ...checkpoint("activation"),
+      maintenanceKind: "provider_adoption",
+      semanticAdoption: providerOnly
+    }));
+
+    expect(planProviderPage).toHaveBeenCalledOnce();
+    expect(validateProvider).toHaveBeenCalledOnce();
+    expect(activateProviderProjection).toHaveBeenCalledWith(expect.objectContaining({
+      semanticGenerationPublicId: "semantic-active",
+      expectedGenerationRevision: 3
+    }));
+    expect(semanticAdoption.planSourcePage).not.toHaveBeenCalled();
+    expect(semanticAdoption.validateCandidate).not.toHaveBeenCalled();
+    expect(semanticAdoption.activateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("adopts a compatible query policy without rebuilding any projection", async () => {
+    const adoptQueryPolicy = vi.fn(async () => ({
+      adopted: true as const,
+      reusedVectorArtifacts: true as const
+    }));
+    const semanticAdoption = {
+      planSourcePage: vi.fn(),
+      validateCandidate: vi.fn(),
+      activateCandidate: vi.fn(),
+      adoptQueryPolicy
+    };
+    const planner = { plan: vi.fn() };
+    const pipeline = pipelineFixture();
+    const phases = createStorageVnextMaintenanceProductionPhases({
+      semanticAdoption,
+      planner,
+      catalog: { getKnowledgeBase: vi.fn() },
+      releases: {
+        hasCandidateCatalogEntries: vi.fn(),
+        getActiveRoot: vi.fn(),
+        getLiveCandidate: vi.fn(),
+        activateCandidate: vi.fn()
+      },
+      pipeline,
+      objectReconciliation: { runPage: vi.fn() },
+      candidateObjectCleanup: { runPage: vi.fn() },
+      clock: () => "2026-08-02T00:00:00.000Z",
+      rollbackRetentionMilliseconds: 1,
+      resultRetentionMilliseconds: 1
+    });
+    const queryPolicyOnly = {
+      ...semanticAdoptionSnapshot(),
+      mode: "query_policy_only" as const,
+      target: {
+        ...semanticAdoptionSnapshot().target,
+        embeddingQueryPolicyRevisionPublicId: "embedding-revision-2",
+        minimumVectorRelevance: 0.42
+      }
+    };
+
+    for (const phase of [
+      "planning", "search_rebuild", "projection_repair", "catch_up",
+      "validation", "activation", "cleanup"
+    ] as const) {
+      await phases.runPhase(phaseRequest({
+        ...checkpoint(phase),
+        semanticAdoption: queryPolicyOnly
+      }));
+    }
+
+    expect(adoptQueryPolicy).toHaveBeenCalledOnce();
+    expect(adoptQueryPolicy).toHaveBeenCalledWith(expect.objectContaining({
+      semanticGenerationPublicId: "semantic-active",
+      expectedGenerationRevision: 3,
+      target: expect.objectContaining({ minimumVectorRelevance: 0.42 })
+    }));
+    expect(planner.plan).not.toHaveBeenCalled();
+    expect(pipeline.buildSearchCandidate).not.toHaveBeenCalled();
+    expect(semanticAdoption.planSourcePage).not.toHaveBeenCalled();
+    expect(semanticAdoption.validateCandidate).not.toHaveBeenCalled();
+    expect(semanticAdoption.activateCandidate).not.toHaveBeenCalled();
+  });
 });
 
 function checkpoint(
@@ -373,5 +645,46 @@ function pipelineFixture() {
     graphReconciler: { reconcile: vi.fn() },
     artifacts: { publish: vi.fn() },
     releaseValidation: { validate: vi.fn() }
+  };
+}
+
+function phaseRequest(checkpointValue: StorageVnextMaintenanceCheckpoint) {
+  return {
+    knowledgeBaseId: "kb-maintenance",
+    operationPublicId: "operation-maintenance",
+    checkpoint: checkpointValue,
+    searchProjection: {
+      activeRole: "active" as const,
+      candidateRole: "candidate" as const,
+      documentKinds: ["content", "graph_seed"] as const
+    },
+    signal: new AbortController().signal
+  };
+}
+
+function semanticAdoptionSnapshot() {
+  return {
+    mode: "full" as const,
+    target: {
+      knowledgeBaseId: "kb-maintenance",
+      generationModelConfigurationPublicId: "model-1",
+      generationModelConfigurationRevision: 1,
+      extractionContractVersion: "extraction-v1",
+      graphSchemaVersion: "graph-v1",
+      promptContractVersion: "prompt-v1",
+      embeddingConfigurationRevisionPublicId: "embedding-revision-1",
+      embeddingQueryPolicyRevisionPublicId: "embedding-revision-1",
+      minimumVectorRelevance: 0.7,
+      resolvedDimension: 3,
+      normalization: "l2" as const,
+      artifactSchemaVersion: "artifact-v1",
+      vectorSchemaVersion: "vector-v1",
+      searchProviderKind: "meilisearch" as const,
+      mappingFingerprintSha256: "a".repeat(64)
+    },
+    stageSettings: { runtimeSettingsRevisionPublicId: "settings-1" },
+    expectedPredecessorPublicId: "semantic-active",
+    expectedPredecessorRevision: 3,
+    sourcePageSize: 20
   };
 }

@@ -150,6 +150,43 @@ async function assertProviderAwareSchemaSignature(
             lower(pg_get_constraintdef(oid)), '\\s+', '', 'g'
           ) = 'unique(provider_kind,provider_index_uid)'
       )
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'semantic_projection_contracts'
+          AND column_name = 'resolved_dimension'
+          AND data_type = 'integer'
+          AND is_nullable = 'NO'
+      )
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'semantic_stage_work_items'
+          AND column_name = 'embedding_configuration_revision_public_id'
+          AND data_type = 'text'
+          AND is_nullable = 'NO'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'focowiki.source_event_summaries'::regclass
+          AND conname = 'source_event_summaries_stage_check'
+          AND pg_get_constraintdef(oid) LIKE '%graphrag_processing%'
+          AND pg_get_constraintdef(oid) LIKE '%semantic_reconciliation%'
+          AND pg_get_constraintdef(oid) LIKE '%embedding_generation%'
+          AND pg_get_constraintdef(oid) LIKE '%affected_projection%'
+          AND pg_get_constraintdef(oid) LIKE '%search_publication%'
+          AND pg_get_constraintdef(oid) LIKE '%semantic_maintenance_required%'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'focowiki.semantic_source_reconciliations'::regclass
+          AND conname = 'semantic_source_reconciliations_pkey'
+          AND regexp_replace(
+            lower(pg_get_constraintdef(oid)), '\\s+', '', 'g'
+          ) = 'primarykey(semantic_generation_public_id,source_file_public_id,source_revision_public_id)'
+      )
     ) AS provider_schema_compatible
   `;
   if (rows[0]?.provider_schema_compatible !== true) {

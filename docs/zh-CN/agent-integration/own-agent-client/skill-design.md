@@ -69,21 +69,18 @@ Use them for tool inputs, exploration rounds, stop conditions, citation style, a
 
 Use an exploration loop before answering:
 
-1. Read all files listed in Required Reading in full.
-2. Call `read_file` with `path: "index.md"` for broad context.
-3. Call `read_file` with `path: "schema.md"` when metadata fields are unclear.
-4. Inspect `_index/*` or the file tree when the question needs generated index, link, or directory context.
-5. Derive an initial set of concise search phrases from the user question and visible knowledge-base context.
-6. Keep a short evidence plan with the evidence target, initial search phrases, known paths, expansion strategy, and stop condition.
-7. Alternate breadth and depth: discover candidates, read useful files, extract new terms or paths from what was read, then discover again.
-8. Use `search_files`, `list_tree`, Markdown links, `read_related`, `expand_graph`, or `read_file` with a returned `graphRef` as the next discovery action.
-9. Read useful candidates that can close the current evidence gap.
-10. Track visited `fileId` and `path` values to avoid repeated reads.
-11. After each file read, record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap`.
-12. When `search_files` returns `no_candidates`, `index_unavailable`, or an empty candidate list, follow `nextActions` when present, shorten or broaden the phrase, inspect `index.md`, list the tree, or read graph context.
-13. Continue while new leads or remaining gaps can expand scope, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify context.
-14. Stop only when the stop conditions in `references/exploration-workflow.md` are met.
-15. Cite file titles or paths in the final answer.
+1. 完整阅读 Required Reading 中列出的文件。
+2. 将用户请求整理成一个完整、独立的自然语言问题。
+3. 先用完整问题执行一次 `search_files`，除非明确要求其他模式，否则使用默认 `hybrid`。
+4. 将结果视为候选，并通过返回的文件 ID、路径或 read actions 读取最有价值的来源 Markdown。
+5. 记录已访问的 `fileId` 和 `path`，后续读取必须去重。
+6. 来源证据不完整时，可以使用 `read_related`、`expand_graph`、Markdown links 或返回的 `graphRef`。
+7. 最多执行两轮后续搜索，问题只能从已读来源 Markdown 中发现的术语、路径、链接、标题、比较对象或证据缺口派生。
+8. 第一次检索为空或范围仍不清晰时，在一次有界后续搜索前读取 `index.md`、文件树或 `_index/*`。
+9. 每轮记录已读来源文件和剩余证据缺口。
+10. 来源已覆盖用户范围、没有新的相关来源，或两轮后续搜索已完成时停止。
+11. 搜索摘要、实体或关系描述、社区报告和 Reranker 输出都不能作为回答证据。
+12. 最终回答引用实际读取的来源 Markdown 标题或路径。
 
 ## Identifier Rules
 
@@ -184,7 +181,7 @@ Output: candidate file entries, `searchStatus`, optional `message`, optional `ne
 
 Candidate entries can include `fileId`, `path`, `title`, `description`, `score`, and `matchedFields`.
 
-`search_files` is optional. The Agent chooses search phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, the Agent updates its phrase list, path list, related candidates, and remaining gap. When `searchStatus` is `no_candidates` or `index_unavailable`, follow `nextActions`, read `index.md`, use `list_tree`, try another phrase, or inspect graph context.
+`search_files` 是可选工具。Agent 第一次搜索应发送完整独立的用户问题。读取有用的来源文件后，最多再根据这些文件和剩余证据缺口派生两个有界后续问题。`searchStatus` 为 `no_candidates` 时，应遵循 `nextActions`、读取 `index.md`、使用 `list_tree`、尝试一个由来源正文派生的后续问题，或检查图上下文。503 和 504 应按文档中的错误结构处理，不能当作空搜索结果。
 
 ## expand_graph
 
@@ -222,23 +219,19 @@ Output: seed details, bounded relationship records, file paths, read actions, an
 
 ## Query Planning
 
-The Agent owns query planning. Before using `search_files`, derive an initial set of concise phrases from the user question and visible knowledge-base context. Prefer terms that are explicit in the user request or already visible in the knowledge base.
-
-Search one phrase at a time. Treat results as candidates, then read files to confirm evidence. After reading, extract new phrases, paths, links, titles, headings, metadata terms, graph relations, and remaining gaps from the content. Use those leads to continue exploration.
-
-Do not send the full user question as the only search query. When search returns no candidates or an unavailable index, continue with index, tree, shorter phrases, graph, or related-file exploration.
+第一次 `hybrid` 搜索发送用户的完整独立问题。将结果视为候选，读取来源 Markdown 核验证据，并最多从已读来源正文派生两轮后续搜索。搜索无候选或索引不可用时，继续读取 `index.md`、文件树、图关系，或执行一次有界的来源派生搜索。所有文件读取去重，摘要和模型生成的语义文本不能作为最终证据。
 
 ## Exploration Plan
 
 Before starting the loop, create a short plan in working notes:
 
 - `evidence target`: what the answer must prove or summarize.
-- `initial search phrases`: Agent-derived phrases to try one at a time.
+- `initial question`: the complete standalone natural-language question for the first hybrid search.
 - `known paths`: paths discovered from `index.md`, `schema.md`, links, or previous reads.
 - `expansion strategy`: how to alternate broad discovery and deep reading when new leads or gaps appear.
 - `stop condition`: what evidence is enough to answer.
 
-Record the initial search phrases before the first search request. Update the phrase list and path list after each useful read.
+Record the initial question before the first search request. Track the source-derived follow-up questions and paths after each useful read.
 
 ## Evidence Loop
 
@@ -246,14 +239,14 @@ Use this loop before answering any substantive question.
 
 1. Restate the user question as a short evidence target.
 2. Start with `index.md` when the knowledge base scope is unclear.
-3. Derive initial search phrases when the question contains a concrete concept, title, product, date, status, version, owner, or named entity.
+3. Run the complete standalone question as the one initial hybrid search.
 4. Write the exploration plan.
 5. Start with a broad discovery action unless an exact path is already known.
 6. Use a discovery action to build a candidate set from search, tree, `_index/*`, links, related files, graph expansion, or graph records.
 7. Read useful candidates that can close the current gap, using logical `path` when present or `fileId` when no path is available.
 8. Extract new leads from the content, including titles, headings, terms, paths, links, graph records, and unresolved gaps.
 9. Record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap` for the round.
-10. Continue when new leads or remaining gaps can expand breadth, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify scope.
+10. Continue only when a source-derived lead can close a remaining gap and fewer than two follow-up rounds have run.
 11. Keep a visited list of `fileId` and `path` values.
 12. Answer after the stop conditions are satisfied.
 
@@ -264,7 +257,7 @@ Use explicit breadth-depth rounds. Continue or stop based on evidence quality, n
 - Breadth: use search, tree, graph, related files, or links to find candidate files.
 - Depth: read selected files and extract useful evidence.
 - Expansion: turn the read content into new search phrases, paths, related files, or comparison targets.
-- Repeat breadth and depth while new evidence changes the answer, adds missing scope, reveals important exceptions, or points to related files.
+- 广度和深度探索最多执行两轮来源派生的后续搜索。
 
 Simple definition or title lookup questions can stop after one file when the file directly answers it.
 

@@ -28,10 +28,22 @@ export function createPostgresStorageVnextAdminSource(input: {
         sourceFilePublicId: request.sourceFileId
       });
       if (!revision) return failure("SOURCE_FILE_RETRY_RESOURCE_CONFLICT");
+      const publicationRetry = isPublicationRetry(file, revision.publicId);
       const settingsRevision = await input.runtimeSettings.getCurrentRevision();
-      const idempotencyKey = `source-retry:${file.publicId}:${revision.publicId}`;
+      const idempotencyKey = [
+        "source-retry",
+        file.publicId,
+        revision.publicId,
+        String(file.revision)
+      ].join(":");
       const requestHash = createHash("sha256")
-        .update(`storage-vnext-source-retry-v1\0${request.knowledgeBaseId}\0${file.publicId}\0${revision.publicId}`)
+        .update([
+          "storage-vnext-source-retry-v2",
+          request.knowledgeBaseId,
+          file.publicId,
+          revision.publicId,
+          String(file.revision)
+        ].join("\0"))
         .digest("hex");
       const existing = await input.workflow.findIdempotent({
         knowledgeBaseId: request.knowledgeBaseId,
@@ -41,7 +53,11 @@ export function createPostgresStorageVnextAdminSource(input: {
       if (existing) {
         return success({
           file: toAdminFile(file, revision, existing.type === "live" ? existing.work.attempt : 0),
-          retry: { kind: "source_processing", scope: "source_file", coalesced: true }
+          retry: {
+            kind: publicationRetry ? "publication" : "source_processing",
+            scope: "source_file",
+            coalesced: true
+          }
         });
       }
       const now = new Date();
@@ -61,7 +77,8 @@ export function createPostgresStorageVnextAdminSource(input: {
         safeErrorCode: null,
         checkpoint: {
           sourceFilePublicId: file.publicId,
-          sourceRevisionPublicId: revision.publicId
+          sourceRevisionPublicId: revision.publicId,
+          ...(publicationRetry ? { semanticResumeStage: "publication" } : {})
         },
         idempotency: {
           key: idempotencyKey,
@@ -76,12 +93,16 @@ export function createPostgresStorageVnextAdminSource(input: {
         status: "pending",
         safeErrorCode: null,
         safeErrorMessage: null,
-        modelInvocation: null,
+        modelInvocation: publicationRetry ? file.modelInvocation ?? null : null,
         revisionCheck: { expectedRevision: file.revision }
       });
       return success({
         file: toAdminFile(updated, revision, 0),
-        retry: { kind: "source_processing", scope: "source_file", coalesced: false }
+        retry: {
+          kind: publicationRetry ? "publication" : "source_processing",
+          scope: "source_file",
+          coalesced: false
+        }
       });
     },
 
@@ -128,6 +149,19 @@ export function createPostgresStorageVnextAdminSource(input: {
       });
     }
   };
+}
+
+function isPublicationRetry(
+  file: NonNullable<Awaited<ReturnType<StorageVnextCatalogRepository["getSourceFile"]>>>,
+  sourceRevisionPublicId: string
+): boolean {
+  const code = file.safeErrorCode ?? "";
+  const reusableModelInvocation = file.modelInvocation;
+  return (
+    code === "PUBLICATION_FAILED"
+    || code.startsWith("semantic_publication_")
+  ) && reusableModelInvocation?.sourceRevisionPublicId === sourceRevisionPublicId
+    && ["completed", "skipped"].includes(reusableModelInvocation.status);
 }
 
 function toAdminFile(

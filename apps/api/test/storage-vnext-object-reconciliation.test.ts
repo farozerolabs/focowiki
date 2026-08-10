@@ -134,6 +134,7 @@ describe("storage vNext provider inventory and object reconciliation", () => {
           objectId,
           owners: [],
           ownerCount: 0,
+          referenceCount: 0,
           graceExpiresAt: "2026-08-01T00:00:00.000Z"
         }))
       },
@@ -166,6 +167,7 @@ describe("storage vNext provider inventory and object reconciliation", () => {
           owners: [{ publicId: "owner", knowledgeBaseId: "kb", objectId: verified.objectId,
             kind: "source_revision" as const, ownerPublicId: "revision", createdAt: "2026-08-01T00:00:00.000Z" }],
           ownerCount: 1,
+          referenceCount: 1,
           graceExpiresAt: null
         }))
       },

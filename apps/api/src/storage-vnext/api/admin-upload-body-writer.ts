@@ -128,24 +128,30 @@ async function writeBeforeCleanup(
     writeAttemptPublicId,
     createdAt: new Date().toISOString()
   });
-  if (reserved.registration.state === "verified") return descriptor;
+  if (reserved.registration.state === "verified") {
+    try {
+      await verifyObject(input.s3, input.bucket, descriptor);
+    } catch (error) {
+      if (!isMissingObject(error)) throw error;
+      await copyAndVerifyObject({
+        client: input.s3,
+        bucket: input.bucket,
+        temporaryKey,
+        descriptor
+      });
+    }
+    return descriptor;
+  }
   if (reserved.registration.writeAttemptPublicId !== writeAttemptPublicId) {
     throw new UploadSessionError("UPLOAD_ENTRY_STORAGE_FAILED");
   }
   try {
-    await input.s3.send(new CopyObjectCommand({
-      Bucket: input.bucket,
-      CopySource: `${encodeURIComponent(input.bucket)}/${temporaryKey
-        .split("/").map(encodeURIComponent).join("/")}`,
-      Key: descriptor.storageKey,
-      MetadataDirective: "REPLACE",
-      ContentType: descriptor.contentType,
-      Metadata: {
-        "checksum-sha256": descriptor.checksum,
-        "object-format": descriptor.objectFormat
-      }
-    }));
-    await verifyObject(input.s3, input.bucket, descriptor);
+    await copyAndVerifyObject({
+      client: input.s3,
+      bucket: input.bucket,
+      temporaryKey,
+      descriptor
+    });
     await input.registrations.markVerified({
       objectId: descriptor.objectId,
       writeAttemptPublicId,
@@ -173,6 +179,27 @@ async function writeBeforeCleanup(
     throw writeError;
   }
   return descriptor;
+}
+
+async function copyAndVerifyObject(input: {
+  client: S3Client;
+  bucket: string;
+  temporaryKey: string;
+  descriptor: StorageVnextUploadedSourceDescriptor;
+}) {
+  await input.client.send(new CopyObjectCommand({
+    Bucket: input.bucket,
+    CopySource: `${encodeURIComponent(input.bucket)}/${input.temporaryKey
+      .split("/").map(encodeURIComponent).join("/")}`,
+    Key: input.descriptor.storageKey,
+    MetadataDirective: "REPLACE",
+    ContentType: input.descriptor.contentType,
+    Metadata: {
+      "checksum-sha256": input.descriptor.checksum,
+      "object-format": input.descriptor.objectFormat
+    }
+  }));
+  await verifyObject(input.client, input.bucket, input.descriptor);
 }
 
 async function verifyObject(
@@ -203,6 +230,18 @@ async function* readableStreamToAsyncIterable(stream: ReadableStream<Uint8Array>
   } finally {
     reader.releaseLock();
   }
+}
+
+function isMissingObject(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const status = "$metadata" in error
+    && error.$metadata
+    && typeof error.$metadata === "object"
+    && "httpStatusCode" in error.$metadata
+    ? error.$metadata.httpStatusCode
+    : null;
+  return ("name" in error && ["NotFound", "NoSuchKey"].includes(String(error.name)))
+    || status === 404;
 }
 
 function normalizeUploadWriteFailure(error: unknown) {

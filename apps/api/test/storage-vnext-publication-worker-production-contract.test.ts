@@ -59,7 +59,7 @@ describe("storage vNext publication worker production contract", () => {
     expect(composition).toContain("buildPersistedGraphCandidateTerms");
     expect(runtime).toContain("nodejieba-tokenizer");
     expect(runtime).toContain("createNodeJiebaTokenizer");
-    expect(runtime).toContain('searchConfig.provider === "opensearch"');
+    expect(runtime).not.toContain('searchConfig.provider === "opensearch"');
     expect(runtime).toContain("previousSearchProvider");
     expect(runtime).toContain("await closeSearchProvider(previousSearchProvider)");
     expect(runtime).toContain("await closeSearchProvider(searchProvider)");

@@ -54,6 +54,7 @@ export type StorageVnextReleaseCandidateRow = {
   expected_active_root_public_id: string | null;
   expected_active_revision: number | string;
   state: "building" | "validating" | "ready";
+  fact_revision: number | string;
   changed_fact_count: number | string;
   affected_dependency_count: number | string;
   manifest_checksum_sha256: string | null;
@@ -512,6 +513,7 @@ export function mapStorageVnextCandidate(
     expectedActiveRootPublicId: row.expected_active_root_public_id,
     expectedActiveRevision: Number(row.expected_active_revision),
     state: row.state,
+    factRevision: Number(row.fact_revision),
     changedFactCount: Number(row.changed_fact_count),
     affectedDependencyCount: Number(row.affected_dependency_count),
     manifestChecksum: row.manifest_checksum_sha256,

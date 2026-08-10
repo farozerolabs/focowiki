@@ -24,6 +24,13 @@ type GraphSample = SourceSample & {
   query: string;
 };
 
+type ContentQueryCandidate = {
+  sample: ContentSample;
+  query: string;
+  sourceFilePublicIds: Set<string>;
+  score: number;
+};
+
 type SignalSample = SourceSample & {
   signals: OkfSearchSignals;
 };
@@ -54,6 +61,10 @@ export function createStorageVnextCandidateQueryMatrix() {
   let source: SourceSample | null = null;
   const titleCandidates = new Map<string, TitleCandidate>();
   let content: ContentSample | null = null;
+  const contentCandidates = new Map<string, ContentQueryCandidate>();
+  let multiTermProbe: ContentQueryCandidate | null = null;
+  const hanCandidates = new Map<string, ContentQueryCandidate>();
+  let mixedScriptProbe: ContentQueryCandidate | null = null;
   let graphFallback: GraphSample | null = null;
   const graphCandidates = new Map<string, {
     sample: GraphSample;
@@ -77,12 +88,34 @@ export function createStorageVnextCandidateQueryMatrix() {
         }
         if (document.contentKind !== "segment" || !document.searchText.trim()) return;
         const candidate = contentSample(document);
+        observeContentQueryCandidates(contentCandidates, contentProbeQueries(candidate), candidate);
+        multiTermProbe = observeTermPairProbe(
+          multiTermProbe,
+          candidate,
+          preferredMultiTermQuery(candidate)
+        );
+        observeContentQueryCandidates(hanCandidates, candidate.hanTerms, candidate);
+        const candidateHan = candidate.anchoredHanTerm
+          ?? preferredHanTerm(candidate.hanTerms);
+        const candidateLatin = candidate.anchoredLatinTerm
+          ?? preferredLatinTerm(candidate.latinTerms);
+        mixedScriptProbe = observeTermPairProbe(
+          mixedScriptProbe,
+          candidate,
+          candidateHan && candidateLatin
+            ? boundedQuery(`${candidateHan} ${candidateLatin}`)
+            : null
+        );
         if (!content || candidate.score > content.score) content = candidate;
         return;
       }
       const candidate = graphSample(document);
       graphFallback ??= candidate;
-      observeGraphCandidates(graphCandidates, document.rankingTerms, candidate);
+      observeGraphCandidates(graphCandidates, [
+        ...document.rankingTerms,
+        ...collectTerms(document.searchText, HAN_TERM_PATTERN, 2, 24),
+        ...collectTerms(document.searchText, LATIN_TERM_PATTERN, 3, 63)
+      ], candidate);
     },
 
     finish(): readonly StorageVnextSearchValidationCase[] {
@@ -96,7 +129,7 @@ export function createStorageVnextCandidateQueryMatrix() {
         CASE_LIMIT,
         titleRelevantSourceFilePublicIds.length
       );
-      const contentSource = content ?? {
+      const baseContentSource = content ?? {
         ...source,
         hanTerms: [],
         latinTerms: [],
@@ -105,29 +138,58 @@ export function createStorageVnextCandidateQueryMatrix() {
         fallbackTerm: null,
         score: 0
       };
+      const preferredHanQuery = baseContentSource.anchoredHanTerm
+        ?? preferredHanTerm(baseContentSource.hanTerms);
+      const preferredLatinQuery = baseContentSource.anchoredLatinTerm
+        ?? preferredLatinTerm(baseContentSource.latinTerms);
+      const preferredContentQuery = baseContentSource.anchoredHanTerm
+        ?? baseContentSource.anchoredLatinTerm
+        ?? preferredHanQuery
+        ?? preferredLatinQuery
+        ?? baseContentSource.fallbackTerm;
+      const uniqueContent = selectSourceUniqueContentQuery(
+        contentCandidates,
+        preferredContentQuery
+      );
+      const uniqueMultiTerm = multiTermProbe;
+      const uniqueHan = selectSourceUniqueContentQuery(
+        hanCandidates,
+        preferredHanQuery
+      );
+      const uniqueMixedScript = mixedScriptProbe;
+      const contentSource = uniqueContent?.sample ?? baseContentSource;
       const graph = selectSourceUniqueGraphTerm(graphCandidates);
       const selectedGraph = graph ?? graphFallback;
       const titleQuery = boundedQuery(title.title ?? "");
       const pathQuery = boundedQuery(title.logicalPath);
-      const hanQuery = contentSource.anchoredHanTerm
+      const hanQuery = uniqueHan?.query ?? contentSource.anchoredHanTerm
         ?? preferredHanTerm(contentSource.hanTerms);
       const latinQuery = contentSource.anchoredLatinTerm
         ?? preferredLatinTerm(contentSource.latinTerms);
-      const contentQuery = contentSource.anchoredHanTerm
+      const contentQuery = uniqueContent?.query ?? contentSource.anchoredHanTerm
         ?? contentSource.anchoredLatinTerm
         ?? hanQuery
         ?? latinQuery
         ?? contentSource.fallbackTerm;
-      const multiTermQuery = preferredMultiTermQuery(contentSource);
+      const multiTermQuery = uniqueMultiTerm?.query
+        ?? preferredMultiTermQuery(contentSource);
+      const multiTermRelevantSourceFilePublicIds = uniqueMultiTerm
+        ? [...uniqueMultiTerm.sourceFilePublicIds].sort()
+        : [];
+      const supportsMultiTermQuality = multiTermRelevantSourceFilePublicIds.length > 0
+        && multiTermRelevantSourceFilePublicIds.length <= MAXIMUM_VALIDATION_CASE_LIMIT;
       const phraseQuery = contentQuery ? boundedQuery(`"${contentQuery}"`) : null;
       const typoQuery = latinQuery ? createTypo(latinQuery) : null;
-      const mixedScriptQuery = hanQuery && latinQuery
-        ? boundedQuery(`${hanQuery} ${latinQuery}`)
-        : null;
+      const mixedScriptQuery = uniqueMixedScript?.query
+        ?? (hanQuery && latinQuery ? boundedQuery(`${hanQuery} ${latinQuery}`) : null);
+      const mixedScriptRelevantSourceFilePublicIds = uniqueMixedScript
+        ? [...uniqueMixedScript.sourceFilePublicIds].sort()
+        : [];
+      const supportsMixedScriptQuality = mixedScriptRelevantSourceFilePublicIds.length > 0
+        && mixedScriptRelevantSourceFilePublicIds.length <= MAXIMUM_VALIDATION_CASE_LIMIT;
       const rankingQuery = titleQuery || contentQuery;
       const supportsTitleQuality = Boolean(titleQuery) && !titleCandidate?.overflow;
-      const hasCapturedContentTerm = contentSource.hanTerms.length > 0
-        || contentSource.latinTerms.length > 0;
+      const supportsContentQuality = uniqueContent !== null;
 
       return [
         validationCase("exact", titleQuery, ["title"], "content", title, supportsTitleQuality, {
@@ -139,11 +201,24 @@ export function createStorageVnextCandidateQueryMatrix() {
           relevantSourceFilePublicIds: titleRelevantSourceFilePublicIds
         }),
         validationCase("path", pathQuery, ["logicalPath"], "content", title, Boolean(pathQuery)),
-        validationCase("content", contentQuery, ["searchText"], "content", contentSource, Boolean(contentQuery) && hasCapturedContentTerm),
-        validationCase("multi_term", multiTermQuery, ["searchText"], "content", contentSource, Boolean(multiTermQuery)),
-        validationCase("phrase", phraseQuery, ["searchText"], "content", contentSource, Boolean(phraseQuery) && hasCapturedContentTerm),
+        validationCase("content", contentQuery, ["searchText"], "content", contentSource, Boolean(contentQuery) && supportsContentQuality),
+        validationCase(
+          "multi_term",
+          multiTermQuery,
+          ["searchText"],
+          "content",
+          uniqueMultiTerm?.sample ?? contentSource,
+          supportsMultiTermQuality,
+          supportsMultiTermQuality
+            ? {
+                limit: Math.max(CASE_LIMIT, multiTermRelevantSourceFilePublicIds.length),
+                relevantSourceFilePublicIds: multiTermRelevantSourceFilePublicIds
+              }
+            : {}
+        ),
+        validationCase("phrase", phraseQuery, ["searchText"], "content", contentSource, Boolean(phraseQuery) && supportsContentQuality),
         validationCase("typo", typoQuery, ["searchText"], "content", contentSource, false),
-        validationCase("chinese", hanQuery, ["searchText"], "content", contentSource, Boolean(hanQuery), {
+        validationCase("chinese", hanQuery, ["searchText"], "content", uniqueHan?.sample ?? contentSource, uniqueHan !== null, {
           fallbackQuery: "候选验证"
         }),
         validationCase(
@@ -151,9 +226,15 @@ export function createStorageVnextCandidateQueryMatrix() {
           mixedScriptQuery,
           ["searchText"],
           "content",
-          contentSource,
-          Boolean(mixedScriptQuery),
-          { fallbackQuery: "候选 validation" }
+          uniqueMixedScript?.sample ?? contentSource,
+          supportsMixedScriptQuality,
+          supportsMixedScriptQuality
+            ? {
+                fallbackQuery: "候选 validation",
+                limit: Math.max(CASE_LIMIT, mixedScriptRelevantSourceFilePublicIds.length),
+                relevantSourceFilePublicIds: mixedScriptRelevantSourceFilePublicIds
+              }
+            : { fallbackQuery: "候选 validation" }
         ),
         validationCase(
           "graph_seed",
@@ -161,7 +242,8 @@ export function createStorageVnextCandidateQueryMatrix() {
           ["searchText", "rankingTerms"],
           "graph_seed",
           selectedGraph ?? source,
-          Boolean(graph?.query)
+          Boolean(graph?.query),
+          { supportedMinimumNdcg: 0 }
         ),
         validationCase(
           "ranking",
@@ -179,6 +261,89 @@ export function createStorageVnextCandidateQueryMatrix() {
       ];
     }
   };
+}
+
+function observeContentQueryCandidates(
+  candidates: Map<string, ContentQueryCandidate>,
+  queries: readonly (string | null)[],
+  sample: ContentSample
+): void {
+  for (const rawQuery of queries) {
+    const query = boundedQuery(rawQuery ?? "");
+    const key = query.toLocaleLowerCase("en");
+    if (!key) continue;
+    const existing = candidates.get(key);
+    if (existing) {
+      existing.sourceFilePublicIds.add(sample.sourceFilePublicId);
+      continue;
+    }
+    candidates.set(key, {
+      sample,
+      query,
+      sourceFilePublicIds: new Set([sample.sourceFilePublicId]),
+      score: contentQueryScore(sample, query)
+    });
+  }
+}
+
+function contentProbeQueries(sample: ContentSample): (string | null)[] {
+  return [
+    sample.anchoredHanTerm,
+    sample.anchoredLatinTerm,
+    ...sample.hanTerms,
+    ...sample.latinTerms,
+    sample.fallbackTerm
+  ];
+}
+
+function selectSourceUniqueContentQuery(
+  candidates: ReadonlyMap<string, ContentQueryCandidate>,
+  preferredQuery: string | null
+): ContentQueryCandidate | null {
+  const preferred = candidates.get(
+    boundedQuery(preferredQuery ?? "").toLocaleLowerCase("en")
+  );
+  if (preferred?.sourceFilePublicIds.size === 1) return preferred;
+  let selected: ContentQueryCandidate | null = null;
+  for (const candidate of candidates.values()) {
+    if (candidate.sourceFilePublicIds.size !== 1) continue;
+    if (
+      !selected
+      || candidate.score > selected.score
+      || candidate.score === selected.score
+        && candidate.query.localeCompare(selected.query, "en") < 0
+    ) selected = candidate;
+  }
+  return selected;
+}
+
+function observeTermPairProbe(
+  probe: ContentQueryCandidate | null,
+  sample: ContentSample,
+  candidateQuery: string | null
+): ContentQueryCandidate | null {
+  if (!probe) {
+    const query = candidateQuery;
+    return query ? {
+      sample,
+      query,
+      sourceFilePublicIds: new Set([sample.sourceFilePublicId]),
+      score: contentQueryScore(sample, query)
+    } : null;
+  }
+  const terms = new Set([...sample.hanTerms, ...sample.latinTerms].map(
+    (term) => term.toLocaleLowerCase("en")
+  ));
+  if (probe.query.split(/\s+/u).every((term) =>
+    terms.has(term.toLocaleLowerCase("en"))
+  )) probe.sourceFilePublicIds.add(sample.sourceFilePublicId);
+  return probe;
+}
+
+function contentQueryScore(sample: ContentSample, query: string): number {
+  return sample.score * 100
+    + (/\p{Number}/u.test(query) ? 50 : 0)
+    + Math.min([...query].length, 64);
 }
 
 function observeTitleCandidate(

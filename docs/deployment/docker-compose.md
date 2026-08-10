@@ -18,7 +18,7 @@ Production deployment requires:
 | S3-compatible storage | Uploaded Markdown and generated knowledge-base files. |
 | Reverse proxy | HTTPS access to Admin UI, Admin API, and Developer OpenAPI. |
 
-The template starts PostgreSQL, Redis, and the selected private search service. Configure an external S3-compatible service in `.env`. An external OpenSearch or Meilisearch service can replace the bundled search container.
+The template starts PostgreSQL, Redis, and the selected private search service. Configure an external S3-compatible service in `.env`. An external OpenSearch or Meilisearch service can replace the bundled search container. Optional semantic enrichment runs inside the existing `source-worker` service through its dedicated release image; it does not add another long-running service.
 
 ## Prepare Files
 
@@ -69,7 +69,7 @@ To use an external service, leave `COMPOSE_PROFILES` empty and set the selected 
 | --- | --- |
 | `admin` | Admin UI. |
 | `api` | Admin API and Developer OpenAPI. |
-| `source-worker` | Processes uploaded Markdown files. |
+| `source-worker` | Processes uploaded Markdown files and, when both model roles are configured, runs resource-limited semantic enrichment. It uses the dedicated source-worker image. |
 | `publication-worker` | Makes completed file updates available to readers. |
 | `maintenance-worker` | Runs search and storage maintenance. |
 | `migrate` | Checks and updates the database before application services start. |
@@ -87,11 +87,12 @@ The production template publishes Admin UI, Admin API, and Developer OpenAPI onl
 docker compose -f docker-compose.yml pull
 ```
 
-The image variables default to `latest`. Pin both images to the same release tag in production.
+The image variables default to `latest`. Pin all three images to the same release tag in production.
 
 ```text
 FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
+FOCOWIKI_SOURCE_WORKER_IMAGE=ghcr.io/farozerolabs/focowiki-source-worker:0.0.1
 ```
 
 ## Start Services
@@ -126,9 +127,11 @@ After startup:
 
 1. Open Admin UI and sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 2. Review Admin Settings.
-3. Create a knowledge base and upload a small Markdown file.
-4. Confirm the file becomes visible and can be read and searched.
-5. Create an OpenAPI key and check Developer OpenAPI.
+3. To enable semantic enrichment, create and test a generation model and an embedding model in Settings, then activate both. No model credentials are required for the base file-first workflow.
+4. Create a knowledge base and upload a small Markdown file.
+5. Confirm the file advances through GraphRAG, semantic reconciliation, embedding generation, affected graph and generated-content updates, and final search publication, then becomes visible and can be read and searched.
+6. New ordinary uploads and body replacements in that contracted knowledge base follow the same automatic processing path. Knowledge bases created in this storage baseline without a semantic contract, and knowledge bases adopting a later model, semantic contract, vector dimension, or provider change, require **Maintain index** once for that adoption.
+7. Create an OpenAPI key and check Developer OpenAPI.
 
 ## Common Commands
 
@@ -149,12 +152,12 @@ Use `docker compose logs -f` for container output. Product log files are stored 
 
 ## Update an Existing Deployment
 
-Read the release notes before every update. This breaking search-provider release cannot reuse a database created before provider selection was introduced. Keep a verified backup of the old deployment, start with empty PostgreSQL, Redis, selected-provider, and S3 locations, and import the Markdown files again. Keep the previous deployment until file counts, paths, previews, search, relationships, and API access have been checked. There is no compatibility migration for this release.
+This release is a complete breaking storage reset. It rejects every PostgreSQL schema from an earlier release and does not reuse earlier PostgreSQL rows, Redis state, S3 objects, runtime model settings, knowledge-base identities, generated content, or search indexes. Keep a coordinated backup and the complete old deployment only for rollback. Provision an empty PostgreSQL database, Redis namespace, S3 prefix, and search prefix for the target release, run migration, configure models again, create new knowledge bases, and import the source Markdown again. Do not restore an earlier-release backup into this release. Keep the old deployment until the new import's file counts, paths, previews, search, relationships, and API access have been checked.
 
 For a later release that supports the current database format:
 
 1. Create a backup.
-2. Update both image tags in `.env` and pull the images.
+2. Update all three image tags in `.env` and pull the images.
 3. Complete any preparation described in the release notes.
 4. Run the database command.
 5. Start the updated services.
@@ -165,7 +168,7 @@ docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 ```
 
-The database command can be run again after a successful completion. It does not process uploaded files or rebuild search indexes. When an update requires index maintenance, the knowledge-base page shows the maintenance action. Existing readable files remain available while maintenance runs.
+The database command can be run again after a successful completion. It does not process uploaded files or rebuild search indexes. After the clean baseline is running, a later current-baseline contract or provider change may require index maintenance; the knowledge-base page shows the maintenance action, and existing readable files remain available while that maintenance runs.
 
 ## Processing Failures
 
@@ -177,9 +180,13 @@ The source-file list shows the current state, current step, failure information,
 
 Generated content is available after the file reaches `state=visible`. Previously visible content remains readable if a newer update fails.
 
+Semantic work reports pending, degraded, failed, superseded, or completed state separately from the source Markdown file. For a contracted upload or body replacement, selected-provider search publication is the final required indexing gate, so the file is not reported ready before it succeeds. A safe semantic error or unavailable optional search lane does not replace the source-file error contract or expose provider payloads. Correct the model, embedding, search, or resource-limit problem shown in Admin before retrying the affected work. Run maintenance only for first adoption, a contract or provider change, explicit repair, recovery, or full rebuild.
+
 ## Backup
 
 Run backup from the directory containing `.env` and `docker-compose.yml`. Stop services that can change Focowiki data and keep PostgreSQL running.
+
+An archive can be restored only with the same storage schema generation and matching image versions. A backup made by an earlier release is rollback material for that earlier release and cannot seed this breaking target release.
 
 ```bash
 docker compose -f docker-compose.yml stop api source-worker publication-worker maintenance-worker
@@ -196,7 +203,7 @@ If the deployment uses an explicit Compose project name, pass the same `--projec
 
 ## Restore From Backup
 
-Restore into an empty target and keep a separate backup of any existing target data.
+Restore a backup created by this storage baseline into an empty target and keep a separate backup of any existing target data. Earlier-release backups must be restored only with their matching earlier images as a rollback deployment.
 
 1. Stop the stack.
 
@@ -222,7 +229,7 @@ Restore into an empty target and keep a separate backup of any existing target d
 
 4. If bundled OpenSearch data is being restored, restore its matching complete `opensearch-security` directory before starting OpenSearch. Do not combine its files with assets from another deployment.
 
-5. Use the same API and Admin image versions recorded for the backup.
+5. Use the same API, Admin, and source-worker image versions recorded for the backup.
 
 6. Run the database command and start the stack.
 
@@ -243,7 +250,7 @@ Switching providers does not copy or automatically rebuild indexes.
 2. Change `SEARCH_PROVIDER`, the matching endpoint and authentication fields, and `COMPOSE_PROFILES` (`opensearch`, `meilisearch`, or empty for an external service).
 3. Start the stack and verify service health.
 4. Existing knowledge bases continue to support tree, content, generated-file, graph, settings, and non-search Developer OpenAPI reads. Search reports a temporary unavailable response until adoption finishes.
-5. Use **Maintain index** once for each existing knowledge base. A new validated index is built in the selected provider before it becomes active.
+5. Use **Maintain index** once for each existing knowledge base. A new validated index is built in the selected provider before it becomes active. Compatible stored embedding artifacts are reused, so a provider-only switch does not repeat the same model calls.
 6. Verify search and normal publication, then retire the old provider data according to your backup policy.
 
 Switching back follows the same steps. An old physical index is never reactivated automatically. The Developer OpenAPI request and response schemas do not change when the provider changes.
@@ -258,4 +265,4 @@ If startup reports `OpenSearch security assets are incomplete or invalid`, keep 
 
 ## Capacity Notes
 
-Adjust Worker, Publication, Maintenance, Search, and Graph settings from Admin UI after measuring the deployment. Avoid scripts that read every source file or every relationship into memory at once. See [Admin Settings](./admin-settings.md).
+The production template caps `source-worker` at 2 CPUs, 2 GiB memory, and 128 processes or threads by default. Adjust those startup ceilings in `.env`, then tune Worker, Publication, Maintenance, Search, Graph, Semantic Search, and Embedding settings from Admin UI only after measuring the deployment. Avoid scripts that read every source file or every relationship into memory at once. See [Environment Configuration](./environment.md#worker-startup-limits) and [Admin Settings](./admin-settings.md).

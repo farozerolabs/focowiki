@@ -11,6 +11,13 @@ import {
   createStorageVnextMutationReleaseHandoff,
   planStorageVnextMutationCandidate
 } from "./candidate-planning.js";
+import type {
+  SemanticSourceStageTargetResolution
+} from "../../semantic/application/source-handoff.js";
+import {
+  prepareMutationSemanticStagesInTransaction,
+  type MutationCheckpoint as MutationSemanticCheckpoint
+} from "./postgres-release-hooks.js";
 
 type ReleasePort = Pick<
   StorageVnextReleaseReadPort & StorageVnextReleaseWritePort,
@@ -27,6 +34,10 @@ type MutationCheckpoint = StorageVnextBoundedMetadata & {
   currentNormalizedPath?: string;
   candidateLogicalPath?: string | null;
   candidateRevisionPublicId?: string;
+  semanticState?: "disabled" | "blocked" | "ready";
+  semanticGenerationPublicId?: string | null;
+  semanticSafeCode?: string | null;
+  semanticStageTargetJson?: string;
   terminalFailureCode?: "RESOURCE_PATH_CONFLICT";
 };
 
@@ -43,6 +54,12 @@ export function createPostgresStorageVnextMutationCandidatePreparer(input: {
   sql: DatabaseClient;
   releases: ReleasePort;
   clock(): string;
+  semanticTargets?: {
+    resolve(input: {
+      knowledgeBaseId: string;
+      runtimeSettingsRevisionPublicId: string;
+    }): Promise<SemanticSourceStageTargetResolution>;
+  };
 }) {
   const handoff = createStorageVnextMutationReleaseHandoff(input.releases);
   return {
@@ -87,14 +104,106 @@ export function createPostgresStorageVnextMutationCandidatePreparer(input: {
         },
         createdAt: input.clock()
       });
-      return {
-        checkpoint: {
-          ...checkpoint,
-          phase: "planning",
-          candidatePublicId: candidate.candidatePublicId
-        }
+      const semantic = input.semanticTargets
+        ? await input.semanticTargets.resolve({
+            knowledgeBaseId: request.work.knowledgeBaseId,
+            runtimeSettingsRevisionPublicId:
+              request.work.settingsRevisionPublicId
+          })
+        : null;
+      if (semantic?.state === "blocked") {
+        throw preparerError(semantic.safeCode);
+      }
+      const preparedCheckpoint = {
+        ...checkpoint,
+        phase: "planning",
+        candidatePublicId: candidate.candidatePublicId,
+        ...(semantic ? semanticCheckpoint(semantic) : {})
       };
+      return {
+        checkpoint: preparedCheckpoint
+      };
+    },
+    async ensureSemanticStages(request: {
+      work: StorageVnextLiveWork;
+    }): Promise<void> {
+      const checkpoint = parseCheckpoint(request.work.checkpoint);
+      await input.sql.begin((transaction) =>
+        prepareMutationSemanticStagesInTransaction(transaction, {
+          knowledgeBaseId: request.work.knowledgeBaseId,
+          operationPublicId: request.work.publicId,
+          checkpoint: checkpoint as MutationSemanticCheckpoint,
+          completedAt: input.clock()
+        }));
+    },
+    async inspectSemanticStages(request: {
+      work: StorageVnextLiveWork;
+    }): Promise<
+      | { state: "ready" }
+      | { state: "pending" }
+      | { state: "failed"; safeCode: string }
+    > {
+      const checkpoint = parseCheckpoint(request.work.checkpoint);
+      if (checkpoint.semanticState !== "ready"
+        || !["source_replace", "source_file_metadata"].includes(
+          checkpoint.kind
+        )) return { state: "ready" };
+      const rows = await input.sql<Array<{
+        total_count: number | string;
+        pending_count: number | string;
+        failed_count: number | string;
+        safe_error_code: string | null;
+      }>>`
+        SELECT count(*) AS total_count,
+               count(*) FILTER (
+                 WHERE state IN ('queued', 'running', 'retry')
+               ) AS pending_count,
+               count(*) FILTER (
+                 WHERE state IN ('failed', 'cancelled', 'superseded')
+               ) AS failed_count,
+               min(safe_error_code) FILTER (
+                 WHERE state IN ('failed', 'cancelled', 'superseded')
+               ) AS safe_error_code
+        FROM focowiki.semantic_stage_work_items
+        WHERE knowledge_base_id = ${request.work.knowledgeBaseId}
+          AND operation_public_id = ${request.work.publicId}
+      `;
+      const row = rows[0];
+      if (Number(row?.total_count ?? 0) === 0) {
+        return { state: "failed", safeCode: "semantic_stage_plan_missing" };
+      }
+      if (Number(row?.failed_count ?? 0) > 0) {
+        return {
+          state: "failed",
+          safeCode: row?.safe_error_code ?? "semantic_stage_failed"
+        };
+      }
+      if (Number(row?.pending_count ?? 0) > 0) return { state: "pending" };
+      return { state: "ready" };
     }
+  };
+}
+
+function semanticCheckpoint(
+  resolution: SemanticSourceStageTargetResolution
+): StorageVnextBoundedMetadata {
+  if (resolution.state !== "ready") {
+    return {
+      semanticState: resolution.state,
+      semanticGenerationPublicId: null,
+      semanticSafeCode: resolution.safeCode
+    };
+  }
+  const value = JSON.stringify(resolution.target);
+  if (Buffer.byteLength(value) > 16_384) {
+    throw preparerError("semantic_target_limit");
+  }
+  return {
+    semanticState: "ready",
+    semanticGenerationPublicId:
+      resolution.target.semanticGenerationPublicId,
+    semanticSafeCode: null,
+    semanticStageTargetJson: value
   };
 }
 
