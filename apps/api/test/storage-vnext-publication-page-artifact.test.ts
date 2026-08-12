@@ -35,6 +35,52 @@ describe("storage vNext publication page artifact", () => {
     })).not.toThrow();
   });
 
+  it("accepts a publication-failed source selected for maintenance recovery", () => {
+    const current = currentSource();
+    current.sourceFile.status = "failed";
+    current.sourceFile.safeErrorCode = "PUBLICATION_FAILED";
+    const node = graphNode({
+      publicId: "node-setup",
+      sourceFilePublicId: current.sourceFile.publicId,
+      sourceRevisionPublicId: current.sourceRevision.publicId,
+      logicalPath: "pages/guides/setup.md",
+      label: "Setup"
+    });
+
+    expect(() => assembleStorageVnextPageArtifact({
+      current,
+      node,
+      neighborhood: [],
+      endpointNodes: [node],
+      sourceBody: "# Setup\n\nRecovered source body.",
+      ordinal: 7,
+      relatedFileLimit: 10
+    })).not.toThrow();
+  });
+
+  it("rejects a failed source outside publication recovery", () => {
+    const current = currentSource();
+    current.sourceFile.status = "failed";
+    current.sourceFile.safeErrorCode = "SOURCE_MODEL_FAILED";
+    const node = graphNode({
+      publicId: "node-setup",
+      sourceFilePublicId: current.sourceFile.publicId,
+      sourceRevisionPublicId: current.sourceRevision.publicId,
+      logicalPath: "pages/guides/setup.md",
+      label: "Setup"
+    });
+
+    expect(() => assembleStorageVnextPageArtifact({
+      current,
+      node,
+      neighborhood: [],
+      endpointNodes: [node],
+      sourceBody: "# Setup\n\nFailed model source body.",
+      ordinal: 7,
+      relatedFileLimit: 10
+    })).toThrow(/source_scope_conflict/u);
+  });
+
   it("removes a source Markdown link when its target was deleted", () => {
     const current = currentSource();
     const setup = graphNode({

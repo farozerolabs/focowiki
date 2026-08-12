@@ -221,7 +221,7 @@ async function* iterateCandidateDocuments(
     for (const node of page.items) {
       assertCurrentGraphNode(input.knowledgeBaseId, node);
       const sourceFile = sourceFilesByPublicId.get(node.sourceFilePublicId);
-      if (!sourceFile) throw new Error("Current graph seed source is unavailable");
+      if (!sourceFile) continue;
       assertCurrentGraphSource(node, sourceFile);
       const profile = readStorageVnextGraphSeedProfile(node);
       yield createStorageVnextGraphSeedDocument({

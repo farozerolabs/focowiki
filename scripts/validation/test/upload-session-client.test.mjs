@@ -167,6 +167,7 @@ test("validation uploads entry bodies with the advertised bounded concurrency", 
   }));
   let activeTransfers = 0;
   let maxActiveTransfers = 0;
+  const transferEvents = [];
   const request = async (pathname, options = {}) => {
     if (pathname.endsWith("/upload-sessions") && options.method === "POST") {
       return {
@@ -199,10 +200,18 @@ test("validation uploads entry bodies with the advertised bounded concurrency", 
   await uploadMarkdownFilesWithSession({
     request,
     routeBase: "/openapi/v2/knowledge-bases/kb-test/upload-sessions",
-    files: entries.map((entry) => ({ relativePath: entry.relativePath, bytes: Buffer.from("# Test") }))
+    files: entries.map((entry) => ({ relativePath: entry.relativePath, bytes: Buffer.from("# Test") })),
+    onFileTransfer: (event) => transferEvents.push(event)
   });
 
   assert.equal(maxActiveTransfers, 2);
+  assert.deepEqual(transferEvents.map((event) => event.relativePath).sort(),
+    entries.map((entry) => entry.relativePath).sort());
+  assert.equal(transferEvents.every((event) =>
+    event.status === "completed"
+      && event.attempts === 1
+      && event.elapsedMs >= 0
+      && event.finishedAt >= event.startedAt), true);
 });
 
 test("validation retries one transient entry-body transfer without restarting the session", async () => {

@@ -21,7 +21,7 @@ import {
 const checksum = "a".repeat(64);
 
 describe("storage vNext publication projection loader", () => {
-  it("loads only affected pages, directory ancestors, and obsolete navigation paths", async () => {
+  it("recovers an affected publication-failed page with its navigation and artifacts", async () => {
     const directory = directoryFact();
     const pendingSiblingDirectory = {
       ...directoryFact(),
@@ -30,7 +30,11 @@ describe("storage vNext publication projection loader", () => {
       normalizedPath: "research",
       title: "research"
     };
-    const source = { ...sourceFile(), status: "processing" as const };
+    const source = {
+      ...sourceFile(),
+      status: "failed" as const,
+      safeErrorCode: "PUBLICATION_FAILED"
+    };
     const revision = sourceRevision();
     const node = graphNode();
     const listDirectories = vi.fn(async (request: { parentPublicId: string | null | undefined }) => ({

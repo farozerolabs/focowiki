@@ -99,6 +99,13 @@ export async function readDeveloperJsonObjectBody(
   request: Request,
   allowedFields?: readonly string[]
 ): Promise<Record<string, unknown>> {
+  const mediaType = request.headers.get("content-type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  if (mediaType !== "application/json") {
+    throw validationError("An application/json request body is required.");
+  }
   try {
     const bytes = await request.arrayBuffer();
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

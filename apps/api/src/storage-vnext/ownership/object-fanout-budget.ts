@@ -11,10 +11,12 @@ import {
   "../publication/profile.js";
 
 export const MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE = 5;
+export const MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY = 3;
 export const MAX_STORAGE_VNEXT_CANDIDATE_ONLY_RATIO = 0.2;
 const MIN_STORAGE_VNEXT_RELEASED_OBJECTS =
-  REQUIRED_GENERATED_NAVIGATION_PATHS.length + 2
+  REQUIRED_GENERATED_NAVIGATION_PATHS.length
   + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT
+  + Object.keys(INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner).length
   + STORAGE_VNEXT_MINIMUM_EXTENSION_NAVIGATION_MARKDOWN_COUNT;
 const MIN_STORAGE_VNEXT_FANOUT_SAMPLE_SOURCE_COUNT =
   REQUIRED_GENERATED_NAVIGATION_PATHS.length
@@ -29,11 +31,17 @@ const MIN_STORAGE_VNEXT_FILE_FIRST_OBJECT_CEILING =
   Object.values(INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner)
     .reduce((total, shardCount) => total + shardCount, 0)
   + MIN_STORAGE_VNEXT_RELEASED_OBJECTS;
+const MAX_STORAGE_VNEXT_TRANSITION_OBJECT_ALLOWANCE =
+  Object.values(INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner)
+    .reduce((total, shardCount) => total + shardCount, 0);
 
 export type StorageVnextObjectFanoutMeasurement = {
   sourceFileCount: number;
   activeSourceFileCount?: number;
+  directoryCount?: number;
+  activeDirectoryCount?: number;
   changedSourceFileCount?: number;
+  changedDirectoryCount?: number;
   activeGeneratedObjectCount: number;
   candidateGeneratedObjectCount: number;
   candidateOnlyObjectCount: number;
@@ -44,6 +52,7 @@ export type StorageVnextObjectFanoutMeasurement = {
 
 export type StorageVnextObjectFanoutBudget = StorageVnextObjectFanoutMeasurement & {
   maximumActiveObjects: number;
+  maximumCandidateObjects: number;
   maximumCandidateOnlyObjects: number;
   candidateChangeAllowanceUsed: boolean;
   candidateCompletenessAllowanceUsed: boolean;
@@ -58,13 +67,19 @@ export function evaluateStorageVnextObjectFanoutBudget(
 ): StorageVnextObjectFanoutBudget {
   const activeSourceFileCount = measurement.activeSourceFileCount
     ?? measurement.sourceFileCount;
+  const directoryCount = measurement.directoryCount ?? 0;
+  const activeDirectoryCount = measurement.activeDirectoryCount ?? directoryCount;
   const changedSourceFileCount = measurement.changedSourceFileCount ?? 0;
+  const changedDirectoryCount = measurement.changedDirectoryCount ?? 0;
   const activeGeneratedEntryCount = measurement.activeGeneratedEntryCount ?? 0;
   const candidateGeneratedEntryCount = measurement.candidateGeneratedEntryCount ?? 0;
   for (const value of [
     measurement.sourceFileCount,
     activeSourceFileCount,
+    directoryCount,
+    activeDirectoryCount,
     changedSourceFileCount,
+    changedDirectoryCount,
     measurement.activeGeneratedObjectCount,
     measurement.candidateGeneratedObjectCount,
     measurement.candidateOnlyObjectCount,
@@ -78,11 +93,33 @@ export function evaluateStorageVnextObjectFanoutBudget(
     }
   }
   const scaleMaximumActiveObjects = scaleMaximumActiveObjectsForSources(
+    activeSourceFileCount
+  ) + activeDirectoryCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY;
+  const scaleMaximumCandidateObjects = scaleMaximumActiveObjectsForSources(
     measurement.sourceFileCount
-  );
-  const maximumActiveObjects = maximumActiveObjectsForSources(
+  ) + directoryCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY;
+  const ordinaryMaximumActiveObjects = maximumActiveObjectsForSources(
+    activeSourceFileCount
+  ) + activeDirectoryCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY;
+  const activeTransitionRoot = activeSourceFileCount === 0
+    && activeGeneratedEntryCount > 0
+    && measurement.activeGeneratedObjectCount > ordinaryMaximumActiveObjects;
+  const maximumActiveObjects = activeTransitionRoot
+    ? MIN_STORAGE_VNEXT_FILE_FIRST_OBJECT_CEILING
+      + activeDirectoryCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY
+    : ordinaryMaximumActiveObjects;
+  const candidateTransitionObjectAllowance = measurement.sourceFileCount === 0
+    && activeSourceFileCount > 0
+    ? Math.min(
+        MAX_STORAGE_VNEXT_TRANSITION_OBJECT_ALLOWANCE,
+        changedSourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE
+          + changedDirectoryCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY
+      )
+    : 0;
+  const maximumCandidateObjects = maximumActiveObjectsForSources(
     measurement.sourceFileCount
-  );
+  ) + directoryCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY
+    + candidateTransitionObjectAllowance;
   const addedSourceFileCount = Math.max(
     0,
     measurement.sourceFileCount - activeSourceFileCount
@@ -94,42 +131,50 @@ export function evaluateStorageVnextObjectFanoutBudget(
     ? measurement.candidateOnlyObjectCount
     : addedSourceFileCount > 0
       ? Math.max(
-          maximumActiveObjects,
+          maximumCandidateObjects,
           ratioBudget
             + addedSourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE
         )
       : ratioBudget
         + changedSourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE
-        + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT;
+        + changedDirectoryCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_DIRECTORY * 2
+        + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT
+        + STORAGE_VNEXT_MINIMUM_EXTENSION_NAVIGATION_MARKDOWN_COUNT;
   const candidateCompletenessEligible = measurement.maintenanceRebuild === true
     && measurement.sourceFileCount > 0
-    && candidateGeneratedEntryCount > activeGeneratedEntryCount
-    && maximumActiveObjects > scaleMaximumActiveObjects;
+    && maximumCandidateObjects > scaleMaximumCandidateObjects;
   const maximumCandidateOnlyObjects = candidateCompletenessEligible
-    ? maximumActiveObjects
+    ? maximumCandidateObjects
     : ordinaryMaximumCandidateOnlyObjects;
   const candidateChangeAllowanceUsed = measurement.activeGeneratedObjectCount > 0
     && addedSourceFileCount === 0
-    && changedSourceFileCount > 0;
+    && (changedSourceFileCount > 0 || changedDirectoryCount > 0);
   const candidateCompletenessAllowanceUsed = candidateCompletenessEligible
     && measurement.candidateOnlyObjectCount > ordinaryMaximumCandidateOnlyObjects;
-  const fileFirstCompletenessAllowanceUsed = measurement.sourceFileCount > 0
-    && maximumActiveObjects > scaleMaximumActiveObjects
-    && (
-      measurement.activeGeneratedObjectCount > scaleMaximumActiveObjects
-      || measurement.candidateGeneratedObjectCount > scaleMaximumActiveObjects
-    );
+  const fileFirstCompletenessAllowanceUsed = (
+    activeSourceFileCount > 0
+      && maximumActiveObjects > scaleMaximumActiveObjects
+      && measurement.activeGeneratedObjectCount > scaleMaximumActiveObjects
+  ) || (
+    measurement.sourceFileCount > 0
+      && maximumCandidateObjects > scaleMaximumCandidateObjects
+      && measurement.candidateGeneratedObjectCount > scaleMaximumCandidateObjects
+  );
   const activeFanoutPassed = measurement.activeGeneratedObjectCount <= maximumActiveObjects
-    && measurement.candidateGeneratedObjectCount <= maximumActiveObjects;
+    && measurement.candidateGeneratedObjectCount <= maximumCandidateObjects;
   const candidateRatioPassed = measurement.activeGeneratedObjectCount === 0
     || measurement.candidateOnlyObjectCount <= maximumCandidateOnlyObjects;
   return {
     ...measurement,
     activeSourceFileCount,
+    directoryCount,
+    activeDirectoryCount,
     changedSourceFileCount,
+    changedDirectoryCount,
     activeGeneratedEntryCount,
     candidateGeneratedEntryCount,
     maximumActiveObjects,
+    maximumCandidateObjects,
     maximumCandidateOnlyObjects,
     candidateChangeAllowanceUsed,
     candidateCompletenessAllowanceUsed,
@@ -161,7 +206,10 @@ export async function measureStorageVnextObjectFanout(
   const rows = await sql<Array<{
     source_file_count: number | string;
     active_source_file_count: number | string;
+    directory_count: number | string;
+    active_directory_count: number | string;
     changed_source_file_count: number | string;
+    changed_directory_count: number | string;
     active_object_count: number | string;
     candidate_object_count: number | string;
     candidate_only_count: number | string;
@@ -181,6 +229,17 @@ export async function measureStorageVnextObjectFanout(
           AND active_root.root_role = 'active'
         LIMIT 1
       ), 0) AS active_source_file_count,
+      COALESCE(summary.directory_count, 0) AS directory_count,
+      COALESCE((
+        SELECT active_summary.directory_count
+        FROM focowiki.release_roots active_root
+        JOIN focowiki.knowledge_base_summaries active_summary
+          ON active_summary.knowledge_base_id = active_root.knowledge_base_id
+         AND active_summary.release_root_public_id = active_root.public_id
+        WHERE active_root.knowledge_base_id = ${input.knowledgeBaseId}
+          AND active_root.root_role = 'active'
+        LIMIT 1
+      ), 0) AS active_directory_count,
       (SELECT count(*)
        FROM focowiki.release_candidates candidate
        JOIN focowiki.release_candidate_changed_facts fact
@@ -189,6 +248,14 @@ export async function measureStorageVnextObjectFanout(
        WHERE candidate.knowledge_base_id = ${input.knowledgeBaseId}
          AND candidate.candidate_root_public_id = ${input.candidateRootPublicId}
          AND fact.fact_kind = 'source_file') AS changed_source_file_count,
+      (SELECT count(*)
+       FROM focowiki.release_candidates candidate
+       JOIN focowiki.release_candidate_changed_facts fact
+         ON fact.candidate_public_id = candidate.public_id
+        AND fact.knowledge_base_id = candidate.knowledge_base_id
+       WHERE candidate.knowledge_base_id = ${input.knowledgeBaseId}
+         AND candidate.candidate_root_public_id = ${input.candidateRootPublicId}
+         AND fact.fact_kind = 'directory') AS changed_directory_count,
       (SELECT count(DISTINCT released.object_id)
        FROM (
          SELECT entry.object_id
@@ -260,7 +327,10 @@ export async function measureStorageVnextObjectFanout(
   return {
     sourceFileCount: Number(row?.source_file_count ?? 0),
     activeSourceFileCount: Number(row?.active_source_file_count ?? 0),
+    directoryCount: Number(row?.directory_count ?? 0),
+    activeDirectoryCount: Number(row?.active_directory_count ?? 0),
     changedSourceFileCount: Number(row?.changed_source_file_count ?? 0),
+    changedDirectoryCount: Number(row?.changed_directory_count ?? 0),
     activeGeneratedObjectCount: Number(row?.active_object_count ?? 0),
     candidateGeneratedObjectCount: Number(row?.candidate_object_count ?? 0),
     candidateOnlyObjectCount: Number(row?.candidate_only_count ?? 0),

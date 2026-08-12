@@ -67,6 +67,13 @@ function createStorageVnextAdminMaintenanceBackend(input: {
       requestedAt: string;
     }): Promise<unknown>;
   } | null;
+  cancellationCleanup: {
+    terminate(input: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+      cancelledAt: string;
+    }): Promise<unknown>;
+  } | null;
 }): StorageVnextAdminMaintenanceApplication {
   return {
     async requestMaintenance(request: {
@@ -145,10 +152,23 @@ function createStorageVnextAdminMaintenanceBackend(input: {
       const current = await input.status.getStatus({
         knowledgeBaseId: request.knowledgeBaseId
       });
-      if (!current.requestId || !current.active) {
+      if (!current.requestId) {
         return { available: true as const, outcome: "not_active" as const };
       }
       const requestedAt = new Date().toISOString();
+      if (!current.active) {
+        if (
+          current.safeErrorCode === "MAINTENANCE_CANCELLED"
+          && input.cancellationCleanup
+        ) {
+          await input.cancellationCleanup.terminate({
+            knowledgeBaseId: request.knowledgeBaseId,
+            operationPublicId: current.requestId,
+            cancelledAt: requestedAt
+          });
+        }
+        return { available: true as const, outcome: "not_active" as const };
+      }
       const outcome = await input.status.cancel({
         knowledgeBaseId: request.knowledgeBaseId,
         operationPublicId: current.requestId,
@@ -165,6 +185,13 @@ function createStorageVnextAdminMaintenanceBackend(input: {
           if (!isMissingSemanticCandidate(error)) throw error;
         }
       }
+      if (outcome === "cancelled" && input.cancellationCleanup) {
+        await input.cancellationCleanup.terminate({
+          knowledgeBaseId: request.knowledgeBaseId,
+          operationPublicId: current.requestId,
+          cancelledAt: requestedAt
+        });
+      }
       return { available: true as const, outcome };
     }
   };
@@ -178,11 +205,13 @@ export function createStorageVnextAdminMaintenanceApplication(input: {
   runtimeSettings: RuntimeSettingsService | null;
   semanticAdoption?: Parameters<typeof createStorageVnextAdminMaintenanceBackend>[0]["semanticAdoption"];
   semanticCancellation?: Parameters<typeof createStorageVnextAdminMaintenanceBackend>[0]["semanticCancellation"];
+  cancellationCleanup?: Parameters<typeof createStorageVnextAdminMaintenanceBackend>[0]["cancellationCleanup"];
 }): StorageVnextAdminMaintenanceApplication {
   return input.backend ?? createStorageVnextAdminMaintenanceBackend({
     ...input,
     semanticAdoption: input.semanticAdoption ?? null,
-    semanticCancellation: input.semanticCancellation ?? null
+    semanticCancellation: input.semanticCancellation ?? null,
+    cancellationCleanup: input.cancellationCleanup ?? null
   });
 }
 

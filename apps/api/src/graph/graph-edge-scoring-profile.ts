@@ -44,6 +44,7 @@ export type GraphEdgeNodeProfile = {
   normalizedVersionHints: string[];
   compactVersionHints: string[];
   explicitReferences: Array<{
+    value: string;
     normalizedPath: string;
     normalizedText: string;
   }>;
@@ -145,6 +146,7 @@ export function createGraphEdgeNodeProfile(
     normalizedVersionHints,
     compactVersionHints: normalizedVersionHints.map(normalization.compactText),
     explicitReferences: (node.explicitReferences ?? []).map((reference) => ({
+      value: reference,
       normalizedPath: normalizePublicPath(reference),
       normalizedText: normalization.searchText(reference)
     })),

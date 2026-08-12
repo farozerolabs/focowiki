@@ -89,6 +89,26 @@ describe("Knowledge base Admin API", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects a non-string knowledge-base description", async () => {
+    const { app, cookie } = await createAuthenticatedKnowledgeBaseApp();
+    const response = await app.request("/admin/api/knowledge-bases", {
+      method: "POST",
+      headers: withTrustedAdminOrigin({
+        cookie,
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ name: "Developer docs", description: 1 })
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "INVALID_KNOWLEDGE_BASE",
+        messageKey: "errors.invalidKnowledgeBase"
+      }
+    });
+    expect(response.status).toBe(400);
+  });
+
   it("returns not found for a missing knowledge base detail", async () => {
     const { app, cookie } = await createAuthenticatedKnowledgeBaseApp();
     const response = await app.request("/admin/api/knowledge-bases/kb-missing", {

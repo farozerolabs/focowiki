@@ -105,6 +105,34 @@ describe("storage vNext deletion worker", () => {
     expect(current.workflow.releaseForRetry).not.toHaveBeenCalled();
   });
 
+  it("continues semantic work draining without consuming failure attempts", async () => {
+    const current = fixture({ attempt: 3 });
+    current.purge.runAttempt.mockResolvedValueOnce({
+      status: "retry",
+      receipts: [{
+        target: { resourceKind: "semantic_scope" },
+        status: "retry",
+        reasonCode: "DELETION_SEMANTIC_WORK_DRAINING",
+        checkpoint: { semanticCursor: null }
+      }]
+    });
+    const worker = createWorker(current);
+
+    await expect(worker.runBatch({
+      leaseExpiresAt: "2026-08-01T07:05:00.000Z"
+    })).resolves.toMatchObject([{
+      outcome: "retry",
+      reasonCode: "DELETION_SEMANTIC_WORK_DRAINING"
+    }]);
+    expect(current.workflow.releaseForContinuation).toHaveBeenCalledWith({
+      publicId: "operation-delete-worker",
+      owner: "deletion-worker-a",
+      nextAttemptAt: "2026-08-01T07:00:02.000Z"
+    });
+    expect(current.workflow.releaseForRetry).not.toHaveBeenCalled();
+    expect(current.retryDelayMilliseconds).toHaveBeenCalledWith(3);
+  });
+
   it("backs off provider-required continuation without consuming failure attempts", async () => {
     const current = fixture({ attempt: 3 });
     current.purge.runAttempt.mockResolvedValueOnce({
@@ -256,6 +284,46 @@ describe("storage vNext deletion worker", () => {
     expect(JSON.stringify(result)).not.toContain("raw provider credentials");
   });
 
+  it("reports the internal attempt failure without exposing it in the result", async () => {
+    const current = fixture();
+    const failure = Object.assign(new Error("internal publication context"), {
+      code: "publication_failed"
+    });
+    current.prepare.mockRejectedValueOnce(failure);
+    const worker = createWorker(current);
+
+    const result = await worker.runBatch({
+      leaseExpiresAt: "2026-08-01T07:05:00.000Z"
+    });
+
+    expect(current.onAttemptError).toHaveBeenCalledWith({
+      work: expect.objectContaining({ publicId: "operation-delete-worker" }),
+      error: failure
+    });
+    expect(JSON.stringify(result)).not.toContain("internal publication context");
+  });
+
+  it("keeps deletion convergence when the attempt error observer fails", async () => {
+    const current = fixture();
+    current.prepare.mockRejectedValueOnce(new Error("preparation failed"));
+    current.onAttemptError.mockImplementationOnce(() => {
+      throw new Error("observer failed");
+    });
+    const worker = createWorker(current);
+
+    await expect(worker.runBatch({
+      leaseExpiresAt: "2026-08-01T07:05:00.000Z"
+    })).resolves.toEqual([{
+      workPublicId: "operation-delete-worker",
+      outcome: "retry",
+      reasonCode: "DELETION_ATTEMPT_FAILED",
+      errorClass: "Error",
+      errorCode: "unexpected_error"
+    }]);
+    expect(current.workflow.releaseForRetry).toHaveBeenCalledOnce();
+    expect(current.workflow.complete).not.toHaveBeenCalled();
+  });
+
   it("claims only deletion work and does not multiply completed replays", async () => {
     const current = fixture();
     const worker = createWorker(current);
@@ -358,6 +426,7 @@ function fixture(options: { attempt?: number } = {}) {
     clock: () => "2026-08-01T07:00:00.000Z",
     webhooks: {
       dispatch: vi.fn(async () => undefined)
-    }
+    },
+    onAttemptError: vi.fn()
   };
 }

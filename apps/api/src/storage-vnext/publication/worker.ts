@@ -46,7 +46,14 @@ type PublicationProcessor = {
     candidatePublicId: string;
     operationPublicId: string;
     signal: AbortSignal;
-  }): Promise<{ searchProjectionPublicId: StorageVnextPublicId }>;
+    beforeValidate?: () => Promise<
+      | { state: "ready" }
+      | { state: "pending" }
+    >;
+  }): Promise<
+    | { searchProjectionPublicId: StorageVnextPublicId }
+    | { state: "pending" }
+  >;
 };
 
 type PublicationReadiness = {
@@ -196,7 +203,7 @@ async function processWork(
         return "terminal";
       }
     }
-    if (work.kind === "publication" && input.readiness) {
+    if (input.readiness) {
       const readiness = await input.readiness.inspect({
         knowledgeBaseId: work.knowledgeBaseId
       });
@@ -241,6 +248,17 @@ async function processWork(
       }
       const candidate = resolution.candidate;
       const published = await publishWithDeadline(input, work, candidate, heartbeat.signal);
+      if ("state" in published) {
+        await input.workflow.releaseForContinuation({
+          publicId: work.publicId,
+          owner,
+          nextAttemptAt: addMilliseconds(
+            input.clock(),
+            input.limits.retryDelayMilliseconds
+          )
+        });
+        return "retried";
+      }
       checkpoint = {
         phase: "candidate_ready",
         candidatePublicId: candidate.publicId,
@@ -362,7 +380,10 @@ async function publishWithDeadline(
   work: StorageVnextLiveWork,
   candidate: StorageVnextCandidateDelta,
   roleSignal: AbortSignal | undefined
-): Promise<{ searchProjectionPublicId: string }> {
+): Promise<
+  | { searchProjectionPublicId: string }
+  | { state: "pending" }
+> {
   const controller = new AbortController();
   const abortFromRole = () => controller.abort(
     roleSignal?.reason ?? new DOMException("Publication role shutting down", "AbortError")
@@ -380,8 +401,14 @@ async function publishWithDeadline(
       knowledgeBaseId: work.knowledgeBaseId,
       candidatePublicId: candidate.publicId,
       operationPublicId: work.publicId,
-      signal: controller.signal
+      signal: controller.signal,
+      ...(input.readiness ? {
+        beforeValidate: () => input.readiness!.inspect({
+          knowledgeBaseId: work.knowledgeBaseId
+        })
+      } : {})
     });
+    if ("state" in result) return result;
     assertPublicId(result.searchProjectionPublicId, "invalid_processor_result");
     return result;
   } finally {

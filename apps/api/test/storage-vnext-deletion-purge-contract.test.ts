@@ -217,6 +217,80 @@ describe("storage vNext deletion physical purge", () => {
     );
   });
 
+  it("remembers a completed semantic provider before requesting the other provider", async () => {
+    const current = fixture({ knowledgeBase: true });
+    current.semantic.deleteKnowledgeBaseScope.mockResolvedValueOnce({
+      outcome: "provider_required",
+      nextCursor: null,
+      completedProviderKind: "opensearch",
+      requiredProviderKind: "meilisearch"
+    } as any);
+    const coordinator = createCoordinator(current);
+
+    const result = await coordinator.runAttempt(context({
+      targetKind: "knowledge_base",
+      targetPublicId: "kb-purge",
+      activeSearchProviderKind: "opensearch",
+      candidateSearchProviderKind: "meilisearch"
+    }));
+
+    expect(result).toMatchObject({ status: "retry" });
+    expect(result.receipts.at(-1)).toMatchObject({
+      reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED",
+      checkpoint: {
+        requiredSearchProviderKind: "meilisearch",
+        semanticCompletedSearchProviderKind: "opensearch",
+        semanticCursor: null,
+        activeSearchProviderKind: null,
+        activeSearchProviderIndexUid: null
+      }
+    });
+    expect(current.postgres.purgeKnowledgeBaseGraph).not.toHaveBeenCalled();
+  });
+
+  it("accepts a bounded opaque semantic cursor larger than a resource identifier", async () => {
+    const current = fixture();
+    const coordinator = createCoordinator(current);
+    const semanticCursor = "c".repeat(256);
+
+    await expect(coordinator.runAttempt(context({ semanticCursor })))
+      .resolves.toMatchObject({ status: "completed" });
+    expect(current.semantic.deleteSourceScope).toHaveBeenCalledWith(
+      expect.objectContaining({ cursor: semanticCursor })
+    );
+  });
+
+  it("rejects an oversized semantic cursor before calling cleanup providers", async () => {
+    const current = fixture();
+    const coordinator = createCoordinator(current);
+
+    await expect(coordinator.runAttempt(context({
+      semanticCursor: "c".repeat(4_097)
+    }))).rejects.toMatchObject({ code: "invalid_input" });
+    expect(current.semantic.deleteSourceScope).not.toHaveBeenCalled();
+  });
+
+  it("retries while semantic work drains before touching graph state", async () => {
+    const current = fixture();
+    current.semantic.deleteSourceScope.mockResolvedValueOnce({
+      outcome: "blocked",
+      nextCursor: null
+    });
+    const coordinator = createCoordinator(current);
+
+    const result = await coordinator.runAttempt(context());
+    expect(result).toMatchObject({ status: "retry" });
+    expect(result.receipts.at(-1)).toMatchObject({
+      reasonCode: "DELETION_SEMANTIC_WORK_DRAINING",
+      checkpoint: {
+        semanticCursor: null,
+        semanticScopeCursor: null
+      }
+    });
+    expect(current.postgres.purgeSourceGraph).not.toHaveBeenCalled();
+    expect(current.postgres.purgeSourceCatalog).not.toHaveBeenCalled();
+  });
+
   it("keeps provider failures retryable with an operator-safe reason", async () => {
     const current = fixture();
     current.objects.deleteZeroOwner.mockRejectedValueOnce(
@@ -356,14 +430,14 @@ function fixture(options: { knowledgeBase?: boolean; paged?: boolean } = {}) {
     },
     semantic: {
       deleteSourceScope: vi.fn(async (): Promise<{
-        outcome: "completed" | "continue";
+        outcome: "blocked" | "completed" | "continue";
         nextCursor: string | null;
       }> => {
         calls.push("semantic-source");
         return { outcome: "completed" as const, nextCursor: null };
       }),
       deleteKnowledgeBaseScope: vi.fn(async (): Promise<{
-        outcome: "completed" | "continue";
+        outcome: "blocked" | "completed" | "continue";
         nextCursor: string | null;
       }> => {
         calls.push("semantic-kb");

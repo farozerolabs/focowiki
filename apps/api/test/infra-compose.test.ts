@@ -136,6 +136,19 @@ describe("Docker Compose infrastructure", () => {
     }
   });
 
+  it("disables the unused OpenSearch Performance Analyzer CLI in every template", () => {
+    for (const composePath of [
+      deploymentComposeTemplatePath,
+      devComposeTemplatePath,
+      localComposeTemplatePath
+    ]) {
+      const compose = readFileSync(composePath, "utf8");
+      expect(composeServiceSection(compose, "opensearch")).toContain(
+        'DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: "true"'
+      );
+    }
+  });
+
   it("provides initialized S3-compatible storage in local development templates", () => {
     for (const composePath of [devComposeTemplatePath, localComposeTemplatePath]) {
       const compose = readFileSync(composePath, "utf8");

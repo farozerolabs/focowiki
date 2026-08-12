@@ -153,6 +153,72 @@ describe("OpenSearch semantic vector port", () => {
     expect(sleep).toHaveBeenCalledWith(10);
   });
 
+  it("splits vector bulk writes at the configured byte boundary without dropping documents", async () => {
+    const bulk = vi.fn(async (input: { body: unknown[] }) => ({
+      body: {
+        items: input.body.filter((_, index) => index % 2 === 0)
+          .map((item) => ({
+            index: {
+              _id: (item as { index: { _id: string } }).index._id,
+              status: 201
+            }
+          }))
+      }
+    }));
+    const first = { ...document(), sourceExcerpt: "a".repeat(400) };
+    const second = {
+      ...document(),
+      id: "vector-2",
+      ownerPublicId: "entity-2",
+      sourceExcerpt: "b".repeat(400)
+    };
+    const port = createValidatedSearchProviderVectorPort(
+      createOpenSearchVectorPort({
+        client: clientStub({ bulk }),
+        maximumBulkBytes: 1_200
+      })
+    );
+
+    await expect(port.writeDocuments({
+      indexUid: "semantic-candidate-1",
+      definition: definition(),
+      documents: [first, second],
+      correlation: "operation-byte-bounded"
+    })).resolves.toEqual({ state: "completed" });
+    expect(bulk).toHaveBeenCalledTimes(2);
+    expect(bulk.mock.calls.map(([request]) => request.body)).toEqual([
+      [
+        { index: { _index: "semantic-candidate-1", _id: "vector-1" } },
+        expect.objectContaining({ id: "vector-1" })
+      ],
+      [
+        { index: { _index: "semantic-candidate-1", _id: "vector-2" } },
+        expect.objectContaining({ id: "vector-2" })
+      ]
+    ]);
+  });
+
+  it("rejects a single vector document that exceeds the byte boundary", async () => {
+    const bulk = vi.fn();
+    const port = createValidatedSearchProviderVectorPort(
+      createOpenSearchVectorPort({
+        client: clientStub({ bulk }),
+        maximumBulkBytes: 300
+      })
+    );
+
+    await expect(port.writeDocuments({
+      indexUid: "semantic-candidate-1",
+      definition: definition(),
+      documents: [document()],
+      correlation: "operation-oversized-document"
+    })).rejects.toMatchObject({
+      code: "SEARCH_ENGINE_MAPPING_INVALID",
+      retryable: false
+    });
+    expect(bulk).not.toHaveBeenCalled();
+  });
+
   it("keeps exhausted vector bulk overloads retryable and provider-safe", async () => {
     const client = clientStub({
       bulk: vi.fn(async () => ({

@@ -94,7 +94,7 @@ describe("storage vNext deletion production release", () => {
     expect(current.processor.publish).not.toHaveBeenCalled();
   });
 
-  it("terminates an owned candidate when deletion publication fails", async () => {
+  it("preserves an owned candidate for a bounded deletion publication retry", async () => {
     const current = fixture();
     current.processor.publish.mockRejectedValueOnce(
       Object.assign(new Error("candidate publication failed"), {
@@ -105,6 +105,26 @@ describe("storage vNext deletion production release", () => {
     await expect(createRelease(current).prepare(work())).rejects.toMatchObject({
       code: "publication_failed"
     });
+    expect(current.releases.terminateCandidate).not.toHaveBeenCalled();
+
+    await expect(createRelease(current).prepare(work({ attempt: 2 }))).resolves.toEqual({
+      releaseActivated: true,
+      releaseRootPublicId: "root-delete-active",
+      searchProjectionPublicId: "candidate-delete"
+    });
+    expect(current.releases.createCandidate).toHaveBeenCalledOnce();
+  });
+
+  it("terminates an owned candidate after the final deletion publication attempt", async () => {
+    const current = fixture();
+    current.processor.publish.mockRejectedValueOnce(
+      Object.assign(new Error("candidate publication failed"), {
+        code: "publication_failed"
+      })
+    );
+
+    await expect(createRelease(current).prepare(work({ attempt: 3 })))
+      .rejects.toMatchObject({ code: "publication_failed" });
     expect(current.releases.terminateCandidate).toHaveBeenCalledWith(
       expect.objectContaining({
         knowledgeBaseId: "kb-delete-production",
@@ -181,6 +201,7 @@ function fixture() {
     clock: () => "2026-08-01T01:00:00.000Z",
     rollbackRetentionMilliseconds: 86_400_000,
     resultRetentionMilliseconds: 86_400_000,
+    maximumAttempts: 3,
     maximumChangedFacts: 100_000,
     maximumDependencies: 250_000
   };

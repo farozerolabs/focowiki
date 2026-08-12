@@ -226,6 +226,94 @@ describe("storage vNext publication worker", () => {
     expect(fixture.releases.activateCandidate).not.toHaveBeenCalled();
   });
 
+  it("waits for current semantic source stages before a mutation owner builds a release", async () => {
+    const fixture = createFixture();
+    fixture.work.kind = "mutation";
+    fixture.work.checkpoint = {
+      version: 1,
+      kind: "knowledge_base_metadata",
+      targetKind: "knowledge_base",
+      targetPublicId: fixture.work.knowledgeBaseId,
+      expectedResourceRevision: 1
+    };
+    const mutations = {
+      prepare: vi.fn(async () => ({
+        checkpoint: {
+          ...fixture.work.checkpoint,
+          phase: "planning",
+          candidatePublicId: fixture.candidate.publicId
+        }
+      }))
+    };
+    const readiness = {
+      inspect: vi.fn(async () => ({ state: "pending" as const }))
+    };
+    const worker = createWorker(
+      fixture,
+      undefined,
+      mutations,
+      undefined,
+      readiness
+    );
+
+    await expect(worker.runOnce(runRequest())).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      retried: 1,
+      terminal: 0
+    });
+
+    expect(readiness.inspect).toHaveBeenCalledWith({
+      knowledgeBaseId: fixture.work.knowledgeBaseId
+    });
+    expect(fixture.workflow.releaseForContinuation).toHaveBeenCalledWith({
+      publicId: fixture.work.publicId,
+      owner: "publication-worker-one",
+      nextAttemptAt: "2026-08-02T00:01:00.000Z"
+    });
+    expect(fixture.processor.publish).not.toHaveBeenCalled();
+    expect(fixture.releases.activateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("continues without freezing a candidate when late readiness becomes pending", async () => {
+    const fixture = createFixture();
+    const readiness = {
+      inspect: vi.fn()
+        .mockResolvedValueOnce({ state: "ready" as const })
+        .mockResolvedValueOnce({ state: "pending" as const })
+    };
+    fixture.processor.publish.mockImplementationOnce((async (request: {
+      beforeValidate?: () => Promise<{ state: "ready" } | { state: "pending" }>;
+    }) => {
+      if (!request.beforeValidate) throw new Error("Late readiness is missing");
+      return request.beforeValidate();
+    }) as never);
+    const worker = createWorker(
+      fixture,
+      undefined,
+      undefined,
+      undefined,
+      readiness
+    );
+
+    await expect(worker.runOnce(runRequest())).resolves.toEqual({
+      claimed: 1,
+      completed: 0,
+      retried: 1,
+      terminal: 0
+    });
+
+    expect(readiness.inspect).toHaveBeenCalledTimes(2);
+    expect(fixture.workflow.releaseForContinuation).toHaveBeenCalledWith({
+      publicId: fixture.work.publicId,
+      owner: "publication-worker-one",
+      nextAttemptAt: "2026-08-02T00:01:00.000Z"
+    });
+    expect(fixture.workflow.releaseForRetry).not.toHaveBeenCalled();
+    expect(fixture.workflow.saveCheckpoint).not.toHaveBeenCalled();
+    expect(fixture.releases.activateCandidate).not.toHaveBeenCalled();
+  });
+
   it("waits for an uncommitted coalesced candidate without recording a failure", async () => {
     const fixture = createFixture();
     fixture.releases.getLiveCandidate.mockResolvedValueOnce(null);

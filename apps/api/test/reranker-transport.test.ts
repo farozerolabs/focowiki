@@ -103,7 +103,7 @@ describe("provider-neutral reranker transport", () => {
     );
   });
 
-  it("rejects oversized input before fetch and maps timeout safely", async () => {
+  it("rejects oversized input before fetch", async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       await new Promise<void>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
@@ -120,15 +120,70 @@ describe("provider-neutral reranker transport", () => {
       ...request(), documents: ["x".repeat(1_000)]
     })).rejects.toMatchObject({ code: "payload_too_large" });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
+  it("maps a reranker transport deadline to timeout", async () => {
     const timeoutTransport = createOpenAiCompatibleRerankerTransport({
-      fetchImpl: fetchImpl as typeof fetch
+      fetchImpl: hangingFetch()
     });
     await expect(timeoutTransport.rerank({
       ...request(), timeoutMs: 100
     })).rejects.toMatchObject({ code: "timeout" });
   });
+
+  it("classifies reranker HTTP 429 as retryable rate limiting", async () => {
+    const transport = createOpenAiCompatibleRerankerTransport({
+      fetchImpl: vi.fn(async () => new Response(null, { status: 429 }))
+    });
+    await expect(transport.rerank(request())).rejects.toMatchObject({
+      code: "rate_limited",
+      retryable: true
+    });
+  });
+
+  it("classifies reranker HTTP 503 as retryable unavailability", async () => {
+    const transport = createOpenAiCompatibleRerankerTransport({
+      fetchImpl: vi.fn(async () => new Response(null, { status: 503 }))
+    });
+    await expect(transport.rerank(request())).rejects.toMatchObject({
+      code: "provider_unavailable",
+      retryable: true
+    });
+  });
+
+  it("classifies reranker HTTP 400 as a non-retryable invalid request", async () => {
+    const transport = createOpenAiCompatibleRerankerTransport({
+      fetchImpl: vi.fn(async () => new Response(null, { status: 400 }))
+    });
+    await expect(transport.rerank(request())).rejects.toMatchObject({
+      code: "invalid_request",
+      retryable: false
+    });
+  });
+
+  it("maps caller reranker cancellation to aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const transport = createOpenAiCompatibleRerankerTransport({
+      fetchImpl: hangingFetch()
+    });
+    await expect(transport.rerank({
+      ...request(), signal: controller.signal
+    })).rejects.toMatchObject({ code: "aborted" });
+  });
 });
+
+function hangingFetch(): typeof fetch {
+  return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
+    await new Promise<void>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+        once: true
+      });
+    });
+    return new Response();
+  }) as unknown as typeof fetch;
+}
 
 function request() {
   return {

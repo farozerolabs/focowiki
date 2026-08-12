@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   CheckIcon,
   PauseIcon,
+  PencilIcon,
   PlayIcon,
   PlusIcon,
   SettingsIcon,
@@ -57,6 +58,7 @@ import {
   updateMaintenanceSettings,
   updatePublicationSettings,
   updateRateLimitSettings,
+  updateRuntimeModel,
   updateSearchSettings,
   updateSemanticSettings,
   updateWorkerSettings,
@@ -300,6 +302,7 @@ export function SettingsPanel() {
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState("");
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
+  const [editingModel, setEditingModel] = useState<RuntimeModelConfig | null>(null);
   const [hasModelFormError, setHasModelFormError] = useState(false);
   const [deleteModelTarget, setDeleteModelTarget] = useState<RuntimeModelConfig | null>(null);
   const [modelForm, setModelForm] = useState(createEmptyModelForm);
@@ -446,7 +449,7 @@ export function SettingsPanel() {
 
   async function handleCreateModel(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const payload = buildModelPayload(modelForm);
+    const payload = buildModelPayload(modelForm, Boolean(editingModel));
     if (!payload) {
       const messageKey = "settings.models.requiredHint";
       setHasModelFormError(true);
@@ -460,7 +463,9 @@ export function SettingsPanel() {
     setHasModelFormError(false);
     setIsSaving("model");
     setError("");
-    const result = await createRuntimeModel(payload);
+    const result = editingModel
+      ? await updateRuntimeModel(editingModel.id, withoutActiveFlag(payload))
+      : await createRuntimeModel(payload);
     setIsSaving("");
 
     if ("messageKey" in result) {
@@ -474,6 +479,7 @@ export function SettingsPanel() {
     }
 
     setIsModelDialogOpen(false);
+    setEditingModel(null);
     setHasModelFormError(false);
     setModelForm(createEmptyModelForm());
     showAdminToast({ title: t("settings.toast.modelCreated") });
@@ -1105,6 +1111,8 @@ export function SettingsPanel() {
                       type="button"
                       onClick={() => {
                         setHasModelFormError(false);
+                        setEditingModel(null);
+                        setModelForm(createEmptyModelForm());
                         setIsModelDialogOpen(true);
                       }}
                     >
@@ -1185,6 +1193,20 @@ export function SettingsPanel() {
                               <Button
                                 type="button"
                                 size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setHasModelFormError(false);
+                                  setEditingModel(model);
+                                  setModelForm(toEditableModelForm(model));
+                                  setIsModelDialogOpen(true);
+                                }}
+                              >
+                                <PencilIcon data-icon="inline-start" />
+                                {t("common.edit")}
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
                                 variant="destructive"
                                 onClick={() => setDeleteModelTarget(model)}
                               >
@@ -1219,13 +1241,20 @@ export function SettingsPanel() {
           setIsModelDialogOpen(open);
           if (!open) {
             setHasModelFormError(false);
+            setEditingModel(null);
           }
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("settings.models.add")}</DialogTitle>
-            <DialogDescription>{t("settings.models.addDescription")}</DialogDescription>
+            <DialogTitle>
+              {editingModel ? t("settings.models.update") : t("settings.models.add")}
+            </DialogTitle>
+            <DialogDescription>
+              {editingModel
+                ? t("settings.models.updateDescription")
+                : t("settings.models.addDescription")}
+            </DialogDescription>
           </DialogHeader>
           <form noValidate onSubmit={handleCreateModel}>
             <FieldGroup>
@@ -1269,7 +1298,7 @@ export function SettingsPanel() {
                 id="model-api-key"
                 label={t("settings.fields.apiKey")}
                 value={modelForm.apiKey}
-                required
+                required={!editingModel}
                 onChange={(value) => setModelForm({ ...modelForm, apiKey: value })}
               />
               <TextField
@@ -1301,13 +1330,18 @@ export function SettingsPanel() {
                   variant="outline"
                   onClick={() => {
                     setHasModelFormError(false);
+                    setEditingModel(null);
                     setIsModelDialogOpen(false);
                   }}
                 >
                   {t("common.cancel")}
                 </Button>
                 <Button type="submit" disabled={isSaving === "model"}>
-                  {isSaving === "model" ? t("settings.saving") : t("settings.models.create")}
+                  {isSaving === "model"
+                    ? t("settings.saving")
+                    : editingModel
+                      ? t("settings.models.update")
+                      : t("settings.models.create")}
                 </Button>
               </DialogFooter>
             </FieldGroup>
@@ -1744,7 +1778,8 @@ function isGraphDepth(value: number): value is GraphSettings["searchDefaultDepth
 }
 
 function buildModelPayload(
-  input: EditableModelForm
+  input: EditableModelForm,
+  allowEmptyApiKey = false
 ): Parameters<typeof createRuntimeModel>[0] | null {
   const displayName = input.displayName.trim();
   const baseUrl = input.baseUrl.trim();
@@ -1760,7 +1795,7 @@ function buildModelPayload(
   if (
     !displayName ||
     !baseUrl ||
-    !apiKey ||
+    (!allowEmptyApiKey && !apiKey) ||
     !modelName ||
     contextWindowTokens === null ||
     requestMaxTimeoutMs === null ||
@@ -1785,6 +1820,30 @@ function buildModelPayload(
     transientRetryDelayMs,
     requestMinIntervalMs,
     isActive: input.isActive
+  };
+}
+
+function withoutActiveFlag(
+  input: Parameters<typeof createRuntimeModel>[0]
+): Parameters<typeof updateRuntimeModel>[1] {
+  const { isActive: _isActive, ...value } = input;
+  return value;
+}
+
+function toEditableModelForm(model: RuntimeModelConfig): EditableModelForm {
+  return {
+    displayName: model.displayName,
+    apiMode: model.apiMode,
+    baseUrl: model.baseUrl,
+    apiKey: "",
+    modelName: model.modelName,
+    contextWindowTokens: model.contextWindowTokens,
+    requestMaxTimeoutMs: model.requestMaxTimeoutMs,
+    requestIdleTimeoutMs: model.requestIdleTimeoutMs,
+    suggestionConcurrency: model.suggestionConcurrency,
+    transientRetryDelayMs: model.transientRetryDelayMs,
+    requestMinIntervalMs: model.requestMinIntervalMs,
+    isActive: model.isActive
   };
 }
 

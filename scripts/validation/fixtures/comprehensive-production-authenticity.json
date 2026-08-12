@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "counts": {
+    "admin-route": 67,
+    "compatibility-fallback": 5,
+    "environment-field": 84,
+    "external-dependency": 45,
+    "generated-output": 89,
+    "port": 37,
+    "postgres-table": 82,
+    "runtime-field": 111,
+    "source": 762,
+    "surface-item": 17857,
+    "ui-control": 185,
+    "worker-role": 6
+  },
+  "edgeCounts": {
+    "belongs-to-operation": 7444,
+    "binds-port": 263,
+    "configures-setting": 350,
+    "consumes-setting": 1693,
+    "declares-fallback": 5,
+    "defines-route": 67,
+    "implemented-by": 10314,
+    "imports": 2582,
+    "presents": 185,
+    "produces-output": 89,
+    "queries-table": 561,
+    "starts-role": 6,
+    "verified-by-test": 5
+  },
+  "findingCounts": {
+    "best-effort-cleanup": 1,
+    "bounded-contract-term": 4,
+    "bounded-count-literal": 128,
+    "contract-example-count": 30,
+    "dormant-library-module": 1,
+    "explicit-domain-state": 74,
+    "explicit-empty-contract": 78,
+    "explicit-error-handling": 27,
+    "explicit-error-normalization": 2,
+    "explicit-error-propagation": 195,
+    "explicit-safe-degradation": 107,
+    "presentation-model-label": 8,
+    "production-secret-placeholder-rejection": 2,
+    "test-only-module": 33,
+    "ui-placeholder-presentation": 8,
+    "validation-only-module": 14
+  },
+  "nodeHash": "5cc518df574947361ee013d7f256d893ff3380f04fe5032a53027898f0f37dd7",
+  "edgeHash": "8f648a369acd38e42ea50c2b0556548583cc45508e1afb74317bc167b2928931",
+  "findingHash": "21b0d508626693ce32e98d7d4e2bd417b490d097a9471a13b7fbb863e9d8c0fa"
+}

@@ -10,18 +10,19 @@ function readWorkspaceFile(path: string): string {
 
 describe("storage vNext module graph contract", () => {
   it("has one public activation owner", () => {
-    const transactionSource = readWorkspaceFile(
-      "apps/api/src/storage-vnext/transactions/ports.ts"
-    );
     const releaseSource = readWorkspaceFile(
       "apps/api/src/storage-vnext/release/ports.ts"
+    );
+    const releaseRepository = readWorkspaceFile(
+      "apps/api/src/storage-vnext/release/postgres-repository.ts"
     );
     const searchSource = readWorkspaceFile(
       "apps/api/src/storage-vnext/search/ports.ts"
     );
 
-    expect(transactionSource).toContain("compareAndSwapActiveSnapshot");
-    expect(releaseSource).not.toContain("compareAndSwapActive");
+    expect(releaseSource).toContain("activateCandidate");
+    expect(releaseRepository).toContain("active_snapshots");
+    expect(releaseRepository).toContain("publicly_visible_at");
     expect(searchSource).not.toContain("activateCandidate");
   });
 

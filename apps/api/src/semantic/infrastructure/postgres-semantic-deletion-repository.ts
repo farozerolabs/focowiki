@@ -2,18 +2,73 @@ import type { DatabaseClient } from "../../db/client.js";
 import type {
   SemanticDeletionRepositoryPort
 } from "../application/deletion-service.js";
+import { enqueueUnavailableSemanticVectorDocumentCleanupActions } from
+  "./postgres-vector-document-cleanup-actions.js";
 
 type VectorRow = {
   semantic_generation_public_id: string;
   mapping_fingerprint_sha256: string;
   search_provider_kind: "meilisearch" | "opensearch";
-  public_id: string;
+  provider_document_id: string;
 };
 
 export function createPostgresSemanticDeletionRepository(
   sql: DatabaseClient
 ): SemanticDeletionRepositoryPort {
   return {
+    async cancelSourceWork(input) {
+      assertSourceBatch(input.sourceFilePublicIds);
+      assertTimestamp(input.requestedAt);
+      const rows = await sql<Array<{ public_id: string }>>`
+        UPDATE focowiki.semantic_stage_work_items
+        SET cancellation_requested_at = ${input.requestedAt},
+            state = CASE WHEN state IN ('queued', 'retry')
+              THEN 'cancelled' ELSE state END,
+            completed_at = CASE WHEN state IN ('queued', 'retry')
+              THEN ${input.requestedAt} ELSE completed_at END,
+            revision = revision + 1, updated_at = ${input.requestedAt}
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND source_file_public_id = ANY(${input.sourceFilePublicIds})
+          AND state IN ('queued', 'running', 'retry')
+          AND cancellation_requested_at IS NULL
+        RETURNING public_id
+      `;
+      return rows.length;
+    },
+
+    async hasRunningSourceWork(input) {
+      assertSourceBatch(input.sourceFilePublicIds);
+      const rows = await sql<Array<{ present: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM focowiki.semantic_stage_work_items
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND (
+              source_file_public_id = ANY(${input.sourceFilePublicIds})
+              OR source_file_public_id IS NULL
+            )
+            AND state = 'running'
+        ) AS present
+      `;
+      return rows[0]?.present === true;
+    },
+
+    async hasRunningKnowledgeBaseWork(input) {
+      const rows = await sql<Array<{ present: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM focowiki.semantic_stage_work_items
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND state = 'running'
+        ) AS present
+      `;
+      return rows[0]?.present === true;
+    },
+
+    async deferUnavailableSourceVectors(input) {
+      assertSourceBatch(input.sourceFilePublicIds);
+      assertTimestamp(input.notBefore);
+      return enqueueUnavailableSemanticVectorDocumentCleanupActions(sql, input);
+    },
+
     async listSourceVectorPage(input) {
       assertSourceBatch(input.sourceFilePublicIds);
       const limit = assertLimit(input.limit);
@@ -22,7 +77,7 @@ export function createPostgresSemanticDeletionRepository(
         SELECT vector.semantic_generation_public_id,
                contract.mapping_fingerprint_sha256,
                contract.search_provider_kind,
-               vector.public_id
+               vector.provider_document_id
         FROM focowiki.semantic_vector_documents vector
         JOIN focowiki.semantic_projection_contracts contract
           ON contract.knowledge_base_id = vector.knowledge_base_id
@@ -34,6 +89,7 @@ export function createPostgresSemanticDeletionRepository(
          AND generation.public_id = vector.semantic_generation_public_id
          AND generation.deleted_at IS NULL
         WHERE vector.knowledge_base_id = ${input.knowledgeBaseId}
+          AND contract.search_provider_kind = ${input.selectedProviderKind}
           AND (
             vector.source_file_public_id = ANY(${input.sourceFilePublicIds})
             OR (
@@ -59,13 +115,13 @@ export function createPostgresSemanticDeletionRepository(
           AND (${cursor.generationPublicId}::text IS NULL
             OR ROW(
               vector.semantic_generation_public_id COLLATE "C",
-              vector.public_id COLLATE "C"
+              vector.provider_document_id COLLATE "C"
             ) > ROW(
               ${cursor.generationPublicId}::text COLLATE "C",
               ${cursor.documentPublicId}::text COLLATE "C"
             ))
         ORDER BY vector.semantic_generation_public_id COLLATE "C",
-                 vector.public_id COLLATE "C"
+                 vector.provider_document_id COLLATE "C"
         LIMIT ${limit + 1}
       `;
       const selected = rows.slice(0, limit);
@@ -87,7 +143,7 @@ export function createPostgresSemanticDeletionRepository(
           searchProviderKind: row.search_provider_kind,
           documentIds: []
         };
-        group.documentIds.push(row.public_id);
+        group.documentIds.push(row.provider_document_id);
         groups.set(key, group);
       }
       const last = selected.at(-1);
@@ -96,7 +152,7 @@ export function createPostgresSemanticDeletionRepository(
         nextCursor: rows.length > limit && last
           ? encodeVectorCursor(
               last.semantic_generation_public_id,
-              last.public_id
+              last.provider_document_id
             )
           : null
       };
@@ -104,7 +160,7 @@ export function createPostgresSemanticDeletionRepository(
 
     async listKnowledgeBaseGenerationPage(input) {
       const limit = assertLimit(input.limit);
-      const rows = await sql<Array<{
+      const [rows, remainingRows] = await Promise.all([sql<Array<{
         semantic_generation_public_id: string;
         mapping_fingerprint_sha256: string;
         search_provider_kind: "meilisearch" | "opensearch";
@@ -117,12 +173,22 @@ export function createPostgresSemanticDeletionRepository(
           ON generation.knowledge_base_id = contract.knowledge_base_id
          AND generation.public_id = contract.semantic_generation_public_id
         WHERE contract.knowledge_base_id = ${input.knowledgeBaseId}
+          AND contract.search_provider_kind = ${input.selectedProviderKind}
           AND (${input.cursor}::text IS NULL
             OR contract.semantic_generation_public_id COLLATE "C"
               > ${input.cursor}::text COLLATE "C")
         ORDER BY contract.semantic_generation_public_id COLLATE "C"
         LIMIT ${limit + 1}
-      `;
+      `, sql<Array<{
+        search_provider_kind: "meilisearch" | "opensearch";
+      }>>`
+        SELECT DISTINCT contract.search_provider_kind
+        FROM focowiki.semantic_projection_contracts contract
+        WHERE contract.knowledge_base_id = ${input.knowledgeBaseId}
+          AND contract.search_provider_kind <> ${input.selectedProviderKind}
+        ORDER BY contract.search_provider_kind
+        LIMIT 1
+      `]);
       const selected = rows.slice(0, limit);
       return {
         items: selected.map((row) => ({
@@ -132,7 +198,8 @@ export function createPostgresSemanticDeletionRepository(
         })),
         nextCursor: rows.length > limit
           ? selected.at(-1)?.semantic_generation_public_id ?? null
-          : null
+          : null,
+        remainingProviderKind: remainingRows[0]?.search_provider_kind ?? null
       };
     },
 
@@ -396,6 +463,7 @@ export function createPostgresSemanticDeletionRepository(
             revision = revision + 1, updated_at = ${input.requestedAt}
         WHERE knowledge_base_id = ${input.knowledgeBaseId}
           AND state IN ('queued', 'running', 'retry')
+          AND cancellation_requested_at IS NULL
         RETURNING public_id
       `;
       return rows.length;

@@ -72,6 +72,8 @@ test("OKF 0.2 legacy selection is deterministic and requires exactly 147 safe fi
 
   assert.equal(first.length, 147);
   assert.deepEqual(first, second);
+  assert.equal(first[0].relativePath, "legacy/f-000.md");
+  assert.equal(first.at(-1).relativePath, "legacy/f-146.md");
   assert.throws(() => select(paths.slice(0, 146), 147), /147/u);
   assert.throws(() => select([
     ...paths,

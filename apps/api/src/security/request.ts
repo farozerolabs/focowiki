@@ -13,9 +13,14 @@ export function getClientIp(config: RuntimeConfig, context: RequestContext): str
     if (forwardedFor) {
       return forwardedFor;
     }
+
+    const realIp = context.req.header("x-real-ip")?.trim();
+    if (realIp) {
+      return realIp;
+    }
   }
 
-  return context.req.header("x-real-ip")?.trim() || "local";
+  return "local";
 }
 
 export function getRateLimitClientKey(config: RuntimeConfig, context: RequestContext): string {

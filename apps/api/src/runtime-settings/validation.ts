@@ -121,6 +121,9 @@ export function validateSemanticSettings(
 ): RuntimeSettingsValidationIssue[] {
   const issues: RuntimeSettingsValidationIssue[] = [];
   const value = objectValue(input);
+  for (const field of Object.keys(DEFAULT_SEMANTIC_SETTINGS)) {
+    requireInteger(value[field], field, issues);
+  }
   validateIntegerRange(value, "maximumChunkCharacters", 1, 64_000, issues);
   validateIntegerRange(value, "maximumChunks", 1, 32, issues);
   validateIntegerRange(value, "maximumEvidenceTargets", 1, 256, issues);
@@ -418,7 +421,7 @@ export function validateModelDraft(input: RuntimeModelConfigDraft): RuntimeSetti
   const issues: RuntimeSettingsValidationIssue[] = [];
 
   requireNonEmptyString(input.displayName, "displayName", issues);
-  if (input.apiMode && !modelApiModeValues().includes(input.apiMode)) {
+  if (input.apiMode !== undefined && !modelApiModeValues().includes(input.apiMode)) {
     issues.push({ field: "apiMode", message: "apiMode must be responses or chat_completions" });
   }
   requireUrl(input.baseUrl, "baseUrl", issues);
@@ -430,6 +433,9 @@ export function validateModelDraft(input: RuntimeModelConfigDraft): RuntimeSetti
   requirePositiveInteger(input.suggestionConcurrency, "suggestionConcurrency", issues);
   requirePositiveInteger(input.transientRetryDelayMs, "transientRetryDelayMs", issues);
   requireNonNegativeInteger(input.requestMinIntervalMs, "requestMinIntervalMs", issues);
+  if (typeof input.isActive !== "boolean") {
+    issues.push({ field: "isActive", message: "isActive must be true or false" });
+  }
 
   return issues;
 }
@@ -666,5 +672,15 @@ function requireNonNegativeInteger(
 ) {
   if (!Number.isInteger(value) || Number(value) < 0) {
     issues.push({ field, message: `${field} must be a non-negative integer` });
+  }
+}
+
+function requireInteger(
+  value: unknown,
+  field: string,
+  issues: RuntimeSettingsValidationIssue[]
+) {
+  if (!Number.isInteger(value)) {
+    issues.push({ field, message: `${field} must be an integer` });
   }
 }

@@ -163,6 +163,13 @@ export async function runStorageVnextPublicationWorker(
     const semanticPublicationReadiness =
       createPostgresSemanticPublicationCoalescingReadiness(sql);
     const releases = createPostgresStorageVnextReleaseRepository(sql, {
+      onValidationMismatch(mismatch) {
+        logger.error("publication_candidate.validation_mismatch", {
+          candidatePublicId: mismatch.candidatePublicId,
+          fields: mismatch.fields.join(","),
+          ...(mismatch.diagnostics ?? {})
+        });
+      },
       lifecycleHooks: {
         async beforeActivate(input) {
           await mutationReleaseHooks.beforeActivate?.(input);

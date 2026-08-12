@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { mapUploadEntry } from
   "../src/storage-vnext/api/postgres-admin-upload-session-store.js";
+import { mapUploadContentCommitError } from
+  "../src/storage-vnext/api/postgres-admin-upload.js";
 
 type ManifestEntry = {
   entryPublicId: string;
@@ -92,6 +94,15 @@ beforeAll(async () => {
 });
 
 describe("storage vNext upload lifecycle contract", () => {
+  it("maps a concurrent upload cancellation to an entry-not-found API error", () => {
+    const mapped = mapUploadContentCommitError(errorWithCode("entry_missing"));
+
+    expect(mapped).toMatchObject({
+      name: "UploadSessionError",
+      code: "UPLOAD_ENTRY_NOT_FOUND"
+    });
+  });
+
   it("preserves the released skipped-existing entry contract", () => {
     expect(mapUploadEntry({
       upload_session_public_id: "upload-overlap",

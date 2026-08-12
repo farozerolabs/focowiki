@@ -1,13 +1,18 @@
 import type { TransactionSql } from "postgres";
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 import type { DatabaseClient } from "../../db/client.js";
 import { enqueueStorageVnextCandidateObjectCleanupActions } from
   "../cleanup/postgres-candidate-object-actions.js";
+import { enqueueStorageVnextRetiredSearchIndexCleanup } from
+  "../search/postgres-retired-index-cleanup.js";
 import type { StorageVnextActiveSnapshot } from "../transactions/ports.js";
 import { STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE } from
   "../publication/profile.js";
 import {
   evaluateStorageVnextObjectFanoutBudget,
-  measureStorageVnextObjectFanout
+  measureStorageVnextObjectFanout,
+  type StorageVnextObjectFanoutBudget
 } from "../ownership/object-fanout-budget.js";
 import {
   MAX_STORAGE_VNEXT_CANDIDATE_CHANGED_FACTS,
@@ -17,6 +22,7 @@ import {
   type StorageVnextCandidateChangedFact,
   type StorageVnextCandidateDelta,
   type StorageVnextCandidateDependency,
+  type StorageVnextCandidateValidationReceipt,
   type StorageVnextReleaseEventSummary,
   type StorageVnextReleaseReadPort,
   type StorageVnextReleaseRoot,
@@ -98,11 +104,22 @@ export type StorageVnextReleaseLifecycleHooks = {
   }): Promise<void>;
 };
 
+export type StorageVnextCandidateValidationMismatch = {
+  candidatePublicId: string;
+  fields: readonly string[];
+  diagnostics?: Readonly<Record<string, number | boolean>>;
+};
+
 type ReadSql = DatabaseClient | TransactionSql;
 
 export function createPostgresStorageVnextReleaseRepository(
   sql: DatabaseClient,
-  options: { lifecycleHooks?: StorageVnextReleaseLifecycleHooks } = {}
+  options: {
+    lifecycleHooks?: StorageVnextReleaseLifecycleHooks;
+    onValidationMismatch?: (
+      mismatch: StorageVnextCandidateValidationMismatch
+    ) => void;
+  } = {}
 ): StorageVnextReleaseRepository {
   return {
     async getActiveRoot(knowledgeBaseId) {
@@ -778,14 +795,26 @@ export function createPostgresStorageVnextReleaseRepository(
 
     async recordCandidateValidation(input) {
       validateStorageVnextCandidateValidationReceipt(input);
-      if (!storageVnextCandidateValidationPassed(input)) return false;
+      if (!storageVnextCandidateValidationPassed(input)) {
+        observeValidationMismatch(options.onValidationMismatch, {
+          candidatePublicId: input.candidatePublicId,
+          fields: ["receipt_gate"]
+        });
+        return false;
+      }
       return sql.begin(async (transaction) => {
         const candidate = await requireCandidate(
           transaction,
           input.candidatePublicId,
           true
         );
-        if (candidate.state !== "validating") return false;
+        if (candidate.state !== "validating") {
+          observeValidationMismatch(options.onValidationMismatch, {
+            candidatePublicId: input.candidatePublicId,
+            fields: ["candidate_state"]
+          });
+          return false;
+        }
         await requireCandidateObjectsReady(
           transaction,
           candidate.candidate_root_public_id
@@ -796,18 +825,12 @@ export function createPostgresStorageVnextReleaseRepository(
           candidateRootPublicId: candidate.candidate_root_public_id,
           searchProjectionPublicId: input.searchProjectionPublicId
         });
-        if (
-          !actuals
-          || (actuals.searchRole !== "candidate"
-            && (actuals.searchRole !== "active" || !actuals.activeSnapshotSearch))
-          || actuals.searchState !== "ready"
-          || actuals.objectOwnerCount !== input.objectOwnerCount
-          || actuals.searchDocumentCount !== input.searchDocumentCount
-          || actuals.graphNodeCount !== input.graphNodeCount
-          || actuals.graphEdgeCount !== input.graphEdgeCount
-          || actuals.linkCount !== input.linkCount
-          || actuals.generatedEntryCount !== input.generatedEntryCount
-        ) {
+        const mismatchFields = candidateValidationMismatchFields(actuals, input);
+        if (mismatchFields.length > 0) {
+          observeValidationMismatch(options.onValidationMismatch, {
+            candidatePublicId: input.candidatePublicId,
+            fields: mismatchFields
+          });
           return false;
         }
         const objectFanout = evaluateStorageVnextObjectFanoutBudget(
@@ -816,7 +839,14 @@ export function createPostgresStorageVnextReleaseRepository(
             candidateRootPublicId: candidate.candidate_root_public_id
           })
         );
-        if (!objectFanout.passed) return false;
+        if (!objectFanout.passed) {
+          observeValidationMismatch(options.onValidationMismatch, {
+            candidatePublicId: input.candidatePublicId,
+            fields: ["object_fanout"],
+            diagnostics: objectFanoutDiagnostics(objectFanout)
+          });
+          return false;
+        }
         const roots = await transaction<Array<{ public_id: string }>>`
           UPDATE focowiki.release_roots
           SET manifest_checksum_sha256 = ${input.manifestChecksum},
@@ -1138,12 +1168,44 @@ export function createPostgresStorageVnextReleaseRepository(
           active?.searchProjectionPublicId
           && active.searchProjectionPublicId !== input.searchProjectionPublicId
         ) {
-          await transaction`
+          const previousSearches = await transaction<Array<{
+            public_id: string;
+            provider_kind: SearchProviderKind;
+            provider_index_uid: string;
+            document_count: number | string;
+          }>>`
+            SELECT public_id, provider_kind, provider_index_uid, document_count
+            FROM focowiki.search_projections
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND public_id = ${active.searchProjectionPublicId}
+              AND projection_role = 'active'
+            FOR UPDATE
+          `;
+          const previousSearch = previousSearches[0];
+          if (!previousSearch) {
+            throw new StorageVnextReleaseRepositoryError("scope_conflict");
+          }
+          await enqueueStorageVnextRetiredSearchIndexCleanup(transaction, {
+            domain: "search_projection_retirement",
+            operationPublicId: candidate.operation_public_id,
+            knowledgeBaseId: input.knowledgeBaseId,
+            cleanupNotBefore: input.activatedAt,
+            providerKind: previousSearch.provider_kind,
+            providerIndexUid: previousSearch.provider_index_uid,
+            documentCount: Number(previousSearch.document_count)
+          });
+          const retiredSearches = await transaction<Array<{ public_id: string }>>`
             DELETE FROM focowiki.search_projections
             WHERE knowledge_base_id = ${input.knowledgeBaseId}
               AND public_id = ${active.searchProjectionPublicId}
               AND projection_role = 'active'
+              AND provider_kind = ${previousSearch.provider_kind}
+              AND provider_index_uid = ${previousSearch.provider_index_uid}
+            RETURNING public_id
           `;
+          if (!retiredSearches[0]) {
+            throw new StorageVnextReleaseRepositoryError("scope_conflict");
+          }
         }
         if (!retainingActiveSearch) {
           await transaction`
@@ -1802,6 +1864,65 @@ async function readCandidateValidationActuals(
     linkCount: Number(row.link_count),
     generatedEntryCount: Number(row.generated_entry_count ?? 0)
   } : null;
+}
+
+function candidateValidationMismatchFields(
+  actuals: Awaited<ReturnType<typeof readCandidateValidationActuals>>,
+  expected: StorageVnextCandidateValidationReceipt
+): string[] {
+  if (!actuals) return ["actuals_missing"];
+  const fields: string[] = [];
+  if (actuals.searchRole !== "candidate"
+    && (actuals.searchRole !== "active" || !actuals.activeSnapshotSearch)) {
+    fields.push("search_role");
+  }
+  if (actuals.searchState !== "ready") fields.push("search_state");
+  for (const [field, actual, value] of [
+    ["object_owner_count", actuals.objectOwnerCount, expected.objectOwnerCount],
+    ["search_document_count", actuals.searchDocumentCount, expected.searchDocumentCount],
+    ["graph_node_count", actuals.graphNodeCount, expected.graphNodeCount],
+    ["graph_edge_count", actuals.graphEdgeCount, expected.graphEdgeCount],
+    ["link_count", actuals.linkCount, expected.linkCount],
+    ["generated_entry_count", actuals.generatedEntryCount, expected.generatedEntryCount]
+  ] as const) {
+    if (actual !== value) fields.push(field);
+  }
+  return fields;
+}
+
+function observeValidationMismatch(
+  observer: ((input: StorageVnextCandidateValidationMismatch) => void) | undefined,
+  mismatch: StorageVnextCandidateValidationMismatch
+): void {
+  try {
+    observer?.(mismatch);
+  } catch {
+    // Validation diagnostics must never change release consistency.
+    return;
+  }
+}
+
+function objectFanoutDiagnostics(
+  budget: StorageVnextObjectFanoutBudget
+): Readonly<Record<string, number | boolean>> {
+  return {
+    activeSourceCount: budget.activeSourceFileCount ?? budget.sourceFileCount,
+    candidateSourceCount: budget.sourceFileCount,
+    activeDirectoryCount: budget.activeDirectoryCount ?? budget.directoryCount ?? 0,
+    candidateDirectoryCount: budget.directoryCount ?? 0,
+    changedSourceCount: budget.changedSourceFileCount ?? 0,
+    changedDirectoryCount: budget.changedDirectoryCount ?? 0,
+    activeCount: budget.activeGeneratedObjectCount,
+    candidateCount: budget.candidateGeneratedObjectCount,
+    exclusiveCount: budget.candidateOnlyObjectCount,
+    activeEntryCount: budget.activeGeneratedEntryCount ?? 0,
+    candidateEntryCount: budget.candidateGeneratedEntryCount ?? 0,
+    maximumActiveCount: budget.maximumActiveObjects,
+    maximumCandidateCount: budget.maximumCandidateObjects,
+    maximumExclusiveCount: budget.maximumCandidateOnlyObjects,
+    activePassed: budget.activeFanoutPassed,
+    ratioPassed: budget.candidateRatioPassed
+  };
 }
 
 async function deleteRootAndReleaseObjects(

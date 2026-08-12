@@ -259,6 +259,14 @@ describe("storage vNext streamed search candidate builder", () => {
     expect(casesByKind.get("content")?.query).toBe("Alpha");
     expect(casesByKind.get("multi_term")?.query.split(" ")).toHaveLength(2);
     expect(casesByKind.get("multi_term")?.query).not.toMatch(/[0-9a-f]{32,}/u);
+    expect(casesByKind.get("multi_term")).toMatchObject({
+      minimumRecall: 1,
+      minimumNdcg: 0
+    });
+    expect(casesByKind.get("mixed_script")).toMatchObject({
+      minimumRecall: 1,
+      minimumNdcg: 0
+    });
     expect(casesByKind.get("mixed_script")?.query).toMatch(
       /\p{Script=Han}+ [A-Za-z]{5,}/u
     );
@@ -270,6 +278,10 @@ describe("storage vNext streamed search candidate builder", () => {
     expect(casesByKind.get("graph_seed")).toMatchObject({
       minimumRecall: 1,
       minimumNdcg: 0
+    });
+    expect(casesByKind.get("ranking")).toMatchObject({
+      minimumRecall: 1,
+      minimumNdcg: 1
     });
   });
 
@@ -417,6 +429,42 @@ describe("storage vNext streamed search candidate builder", () => {
     })).rejects.toThrow("Search candidate resume ordinal exceeds deterministic batch count");
   });
 
+  it("omits graph seeds whose source left the current catalog during deletion", async () => {
+    const writeDocumentBatch = vi.fn();
+    const result = await buildStorageVnextSearchCandidate({
+      knowledgeBaseId: "kb-stream",
+      candidatePublicId: "candidate-delete-last-source",
+      operationPublicId: "operation-delete-last-source",
+      catalog: {
+        listCurrentSources: vi.fn(async () => ({ items: [], nextCursor: null })),
+        listSourceFilesByPublicIds: vi.fn(async () => [])
+      },
+      sourceBodies: {
+        readVerifiedStream: vi.fn()
+      },
+      graph: {
+        listNodes: vi.fn(async () => ({ items: [graphNode], nextCursor: null }))
+      },
+      projection: { writeDocumentBatch },
+      sourcePageSize: 1,
+      graphPageSize: 1,
+      sourceReadConcurrency: 1,
+      maxInFlightSourceBytes: 1_000,
+      maxSourceBytes: 1_000,
+      maxSegmentBytes: 64,
+      maxBatchDocuments: 1,
+      maxBatchCompressedBytes: 900
+    });
+
+    expect(result).toMatchObject({
+      sourceCount: 0,
+      graphSeedCount: 0,
+      documentCount: 0,
+      batchCount: 0
+    });
+    expect(writeDocumentBatch).not.toHaveBeenCalled();
+  });
+
   it("uses the strongest distinct term for a mixed-script multi-term probe", () => {
     const matrix = createStorageVnextCandidateQueryMatrix();
     matrix.observe(createStorageVnextContentDocument({
@@ -436,7 +484,7 @@ describe("storage vNext streamed search candidate builder", () => {
       .toMatchObject({
         query: "source 非常明确的最长验证词语",
         minimumRecall: 1,
-        minimumNdcg: 1
+        minimumNdcg: 0
       });
   });
 
@@ -477,7 +525,7 @@ describe("storage vNext streamed search candidate builder", () => {
           { sourceFilePublicId: "file-beta", relevance: 3 }
         ],
         minimumRecall: 1,
-        minimumNdcg: 1
+        minimumNdcg: 0
       });
   });
 
@@ -529,7 +577,7 @@ describe("storage vNext streamed search candidate builder", () => {
           { sourceFilePublicId: "file-alpha", relevance: 3 }
         ],
         minimumRecall: 1,
-        minimumNdcg: 1
+        minimumNdcg: 0
       });
   });
 
@@ -570,7 +618,47 @@ describe("storage vNext streamed search candidate builder", () => {
           { sourceFilePublicId: "file-beta", relevance: 3 }
         ],
         minimumRecall: 1,
-        minimumNdcg: 1
+        minimumNdcg: 0
+      });
+  });
+
+  it("does not treat snake-case identifier fragments as standalone multi-term matches", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-alpha",
+        sourceRevisionPublicId: "revision-alpha",
+        logicalPath: "pages/alpha.md",
+        fileKind: "page",
+        title: "posts",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "posts stackoverflow stableTerm"
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-snake-case",
+        sourceRevisionPublicId: "revision-snake-case",
+        logicalPath: "pages/snake-case.md",
+        fileKind: "page",
+        title: "Snake case",
+        contentKind: "segment",
+        segmentOrdinal: 0,
+        headingAncestors: [],
+        searchText: "posts_questions stackoverflow_posts"
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().find((item) => item.kind === "multi_term"))
+      .toMatchObject({
+        query: "posts stackoverflow",
+        relevantSources: [
+          { sourceFilePublicId: "file-alpha", relevance: 3 }
+        ],
+        minimumRecall: 1,
+        minimumNdcg: 0
       });
   });
 
@@ -774,6 +862,41 @@ describe("storage vNext streamed search candidate builder", () => {
       });
   });
 
+  it("prefers a portable graph term over a source-unique natural-language phrase", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextGraphSeedDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-phrase-a",
+        sourceRevisionPublicId: "revision-phrase-a",
+        logicalPath: "pages/phrase/a.md",
+        title: "Phrase A",
+        searchText: "portable-anchor-alpha relationship",
+        rankingTerms: [
+          "Builds a uniquely detailed audience from several activity windows",
+          "portable-anchor-alpha"
+        ]
+      }),
+      createStorageVnextGraphSeedDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-phrase-b",
+        sourceRevisionPublicId: "revision-phrase-b",
+        logicalPath: "pages/phrase/b.md",
+        title: "Phrase B",
+        searchText: "portable-anchor-beta relationship",
+        rankingTerms: ["portable-anchor-beta"]
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().find((item) => item.kind === "graph_seed"))
+      .toMatchObject({
+        query: "portable-anchor-alpha",
+        relevantSources: [{ sourceFilePublicId: "file-phrase-a", relevance: 3 }],
+        minimumRecall: 1,
+        minimumNdcg: 0
+      });
+  });
+
   it("keeps a shared graph fallback non-quantitative", () => {
     const matrix = createStorageVnextCandidateQueryMatrix();
     for (const document of [
@@ -859,8 +982,9 @@ describe("storage vNext streamed search candidate builder", () => {
     expect(matrix.finish().find((item) => item.kind === "chinese"))
       .toMatchObject({
         query: "搜索尾部证据-01",
+        limit: 100,
         minimumRecall: 1,
-        minimumNdcg: 1
+        minimumNdcg: 0
       });
   });
 
@@ -904,6 +1028,46 @@ describe("storage vNext streamed search candidate builder", () => {
         minimumRecall: 1,
         minimumNdcg: 1
       });
+  });
+
+  it("does not build provider-neutral content probes from URL host fragments", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    matrix.observe(createStorageVnextContentDocument({
+      knowledgeBaseId: "kb-stream",
+      sourceFilePublicId: "file-license",
+      sourceRevisionPublicId: "revision-license",
+      logicalPath: "pages/license.md",
+      fileKind: "page",
+      title: "Creative Commons Licenses",
+      contentKind: "segment",
+      segmentOrdinal: 0,
+      headingAncestors: [],
+      searchText: [
+        "# Creative Commons Licenses",
+        "",
+        "See [Creative Commons](https://creativecommons.org/licenses/by/4.0/)."
+      ].join("\n")
+    }));
+    matrix.observe(createStorageVnextContentDocument({
+      knowledgeBaseId: "kb-stream",
+      sourceFilePublicId: "file-shared",
+      sourceRevisionPublicId: "revision-shared",
+      logicalPath: "pages/shared.md",
+      fileKind: "page",
+      title: "Creative Dataset",
+      contentKind: "segment",
+      segmentOrdinal: 0,
+      headingAncestors: [],
+      searchText: "# Creative Dataset\n\nShared reference material."
+    }));
+
+    const contentCase = matrix.finish().find((item) => item.kind === "content");
+    expect(contentCase).toMatchObject({
+      minimumRecall: 1,
+      minimumNdcg: 1
+    });
+    expect(contentCase?.query).not.toBe("creativecommons");
+    expect(contentCase?.relevantSources).toHaveLength(1);
   });
 
   it("uses current keyset facts without a persistent PostgreSQL search corpus", () => {

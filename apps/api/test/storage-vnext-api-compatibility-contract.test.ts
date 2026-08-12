@@ -46,21 +46,26 @@ const expectedOpenApiPaths = [
 ] as const;
 
 describe("storage vNext API compatibility contract", () => {
-  it("defines storage-neutral backend adapters for the existing route handlers", () => {
+  it("defines the connected storage-neutral application contracts for existing route handlers", () => {
     const adminSource = readWorkspaceFile(
       "apps/api/src/storage-vnext/api/admin-ports.ts"
     );
     const openApiSource = readWorkspaceFile(
-      "apps/api/src/storage-vnext/api/openapi-ports.ts"
+      "apps/api/src/storage-vnext/api/openapi-application.ts"
+    );
+    const postgresOpenApi = readWorkspaceFile(
+      "apps/api/src/storage-vnext/api/postgres-openapi-application.ts"
     );
 
     expect(adminSource).toMatch(/export\s+type\s+StorageVnextAdminBackendAdapter\b/u);
-    expect(openApiSource).toMatch(/export\s+type\s+StorageVnextOpenApiBackendAdapter\b/u);
+    expect(openApiSource).toMatch(/export\s+type\s+DeveloperOpenApiApplication\b/u);
+    expect(postgresOpenApi).toContain("): DeveloperOpenApiApplication");
     expect(adminSource).toContain("refreshAfterMs");
     expect(adminSource).toContain("listOperations");
-    expect(openApiSource).toContain("listOperations");
     expect(adminSource).toContain("logicalPath");
-    expect(openApiSource).toContain("logicalPath");
+    expect(openApiSource).toContain("getSourceFile");
+    expect(openApiSource).toContain("searchFiles");
+    expect(openApiSource).toContain("listWebhooks");
 
     for (const source of [adminSource, openApiSource]) {
       expect(source).not.toMatch(

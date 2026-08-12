@@ -81,7 +81,8 @@ export function resolveApiAppServices(options: ApiAppOptions) {
       status: options.storageVnextMaintenanceStatus ?? null,
       runtimeSettings,
       semanticAdoption: options.semanticAdoption ?? null,
-      semanticCancellation: options.semanticCancellation ?? null
+      semanticCancellation: options.semanticCancellation ?? null,
+      cancellationCleanup: options.maintenanceCancellationCleanup ?? null
     }),
     adminUploadApplication: createStorageVnextAdminUploadApplication({
       backend: storageVnextAdminUpload

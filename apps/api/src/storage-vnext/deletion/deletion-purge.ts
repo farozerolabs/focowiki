@@ -94,16 +94,19 @@ type DeletionPurgeInput = {
       sourceFilePublicIds: readonly string[];
       cursor: string | null;
     }): Promise<{
-      outcome: "completed" | "continue";
+      outcome: "blocked" | "completed" | "continue";
       nextCursor: string | null;
     }>;
     deleteKnowledgeBaseScope(input: {
       knowledgeBaseId: string;
       operationPublicId: string;
       cursor: string | null;
+      completedProviderKind: SearchProviderKind | null;
     }): Promise<{
-      outcome: "completed" | "continue";
+      outcome: "blocked" | "completed" | "continue" | "provider_required";
       nextCursor: string | null;
+      completedProviderKind?: SearchProviderKind;
+      requiredProviderKind?: SearchProviderKind;
     }>;
   };
   postgres: StorageVnextDeletionPurgePostgresPort;
@@ -182,13 +185,44 @@ export function createStorageVnextDeletionPurgeCoordinator(
               ? await input.semantic.deleteKnowledgeBaseScope({
                   knowledgeBaseId: context.knowledgeBaseId,
                   operationPublicId: context.workPublicId,
-                  cursor: semanticCursor
+                  cursor: semanticCursor,
+                  completedProviderKind: state.semanticCompletedProviderKind
                 })
               : await deleteSourceSemanticScope();
+            if (
+              result.outcome === "provider_required"
+              && result.completedProviderKind
+              && result.requiredProviderKind
+            ) {
+              return {
+                status: "retry" as const,
+                reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED",
+                checkpoint: {
+                  ...clearedProviderCheckpoint(
+                    result.completedProviderKind,
+                    state
+                  ),
+                  requiredSearchProviderKind: result.requiredProviderKind,
+                  semanticCompletedSearchProviderKind: result.completedProviderKind,
+                  semanticCursor: null,
+                  semanticScopeCursor: state.cursor
+                }
+              };
+            }
             if (result.outcome === "continue" && result.nextCursor !== null) {
               return {
                 status: "retry" as const,
                 reasonCode: "DELETION_SEMANTIC_PAGE_REMAINING",
+                checkpoint: {
+                  semanticCursor: result.nextCursor,
+                  semanticScopeCursor: state.cursor
+                }
+              };
+            }
+            if (result.outcome === "blocked") {
+              return {
+                status: "retry" as const,
+                reasonCode: "DELETION_SEMANTIC_WORK_DRAINING",
                 checkpoint: {
                   semanticCursor: result.nextCursor,
                   semanticScopeCursor: state.cursor
@@ -372,8 +406,11 @@ function readState(context: StorageVnextTerminalContext) {
     candidateProviderIndexUid: nullableString(value.candidateSearchProviderIndexUid),
     finishedBefore: optionalString(value.finishedBefore) ?? context.completedAt,
     taskFrom: nullableOrdinal(value.taskFrom),
-    semanticCursor: nullableString(value.semanticCursor),
+    semanticCursor: nullableOpaqueCursor(value.semanticCursor),
     semanticScopeCursor: nullableString(value.semanticScopeCursor),
+    semanticCompletedProviderKind: nullableProviderKind(
+      value.semanticCompletedSearchProviderKind
+    ),
     cursor: nullableString(value.cursor)
   };
 }
@@ -387,21 +424,30 @@ function providerContinuation(
 ) {
   if (result.remainingProviderKind === null) return null;
   const checkpoint: Record<string, string | null> = {
-    requiredSearchProviderKind: result.remainingProviderKind
+    requiredSearchProviderKind: result.remainingProviderKind,
+    ...clearedProviderCheckpoint(result.processedProviderKind, state)
   };
-  if (state.activeProviderKind === result.processedProviderKind) {
-    checkpoint.activeSearchProviderKind = null;
-    checkpoint.activeSearchProviderIndexUid = null;
-  }
-  if (state.candidateProviderKind === result.processedProviderKind) {
-    checkpoint.candidateSearchProviderKind = null;
-    checkpoint.candidateSearchProviderIndexUid = null;
-  }
   return {
     status: "retry" as const,
     reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED",
     checkpoint
   };
+}
+
+function clearedProviderCheckpoint(
+  processedProviderKind: SearchProviderKind,
+  state: ReturnType<typeof readState>
+): Record<string, string | null> {
+  const checkpoint: Record<string, string | null> = {};
+  if (state.activeProviderKind === processedProviderKind) {
+    checkpoint.activeSearchProviderKind = null;
+    checkpoint.activeSearchProviderIndexUid = null;
+  }
+  if (state.candidateProviderKind === processedProviderKind) {
+    checkpoint.candidateSearchProviderKind = null;
+    checkpoint.candidateSearchProviderIndexUid = null;
+  }
+  return checkpoint;
 }
 
 function nullableProviderKind(value: unknown): SearchProviderKind | null {
@@ -487,6 +533,17 @@ function optionalString(value: unknown): string | null {
 
 function nullableString(value: unknown): string | null {
   return optionalString(value);
+}
+
+function nullableOpaqueCursor(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || Buffer.byteLength(value) > 4_096
+    || value.includes("\0")
+  ) throw purgeError("invalid_input");
+  return value;
 }
 
 function requiredString(value: unknown): string {

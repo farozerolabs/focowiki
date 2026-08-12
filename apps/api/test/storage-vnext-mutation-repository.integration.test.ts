@@ -417,6 +417,64 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     )).resolves.toMatchObject({ logical_path: "Unrelated.md", revision: "5" });
   });
 
+  it("prepares a candidate for a durable empty directory", async () => {
+    const knowledgeBaseId = "kb-mutation-empty-directory";
+    const operationPublicId = "operation-mutation-empty-directory";
+    const directoryPublicId = "dir-mutation-empty";
+    await seedKnowledgeBase(knowledgeBaseId);
+    await sql`
+      INSERT INTO focowiki.source_directories (
+        public_id, knowledge_base_id, parent_public_id, logical_path,
+        normalized_path, title, revision
+      ) VALUES (
+        ${directoryPublicId}, ${knowledgeBaseId}, NULL,
+        'Validation', 'validation', 'Validation', 1
+      )
+    `;
+    await coordinator.acceptMutation({
+      kind: "source_directory_move",
+      knowledgeBaseId,
+      operationPublicId,
+      targetPublicId: directoryPublicId,
+      expectedResourceRevision: 1,
+      idempotencyKey: "mutation-empty-directory",
+      destinationParentPublicId: null,
+      destinationLogicalPath: "Renamed",
+      settingsRevisionPublicId: "settings-mutation-integration",
+      createdAt: "2026-08-01T01:00:00.000Z",
+      expiresAt: "2026-08-02T01:00:00.000Z"
+    });
+    const claimed = await workflow.claim({
+      kinds: ["mutation"],
+      owner: "worker-empty-directory",
+      limit: 1,
+      leaseExpiresAt: "2027-08-01T02:00:00.000Z"
+    });
+    expect(claimed.map((work) => work.publicId)).toEqual([operationPublicId]);
+    const preparer = createPostgresStorageVnextMutationCandidatePreparer({
+      sql: database,
+      releases,
+      clock: () => "2026-08-01T02:00:00.000Z"
+    });
+
+    const prepared = await preparer.prepare({ work: claimed[0]! });
+
+    expect(prepared.checkpoint).toMatchObject({
+      phase: "planning",
+      candidatePublicId: expect.stringMatching(/^mutation-candidate-/u)
+    });
+    const changedFacts = await sql<Array<{ fact_kind: string; fact_public_id: string }>>`
+      SELECT fact_kind, fact_public_id
+      FROM focowiki.release_candidate_changed_facts
+      WHERE candidate_public_id = ${String(prepared.checkpoint.candidatePublicId)}
+      ORDER BY fact_kind COLLATE "C", fact_public_id COLLATE "C"
+    `;
+    expect(changedFacts).toEqual([{
+      fact_kind: "directory",
+      fact_public_id: directoryPublicId
+    }]);
+  });
+
   it("activates knowledge-base metadata only after its root candidate is ready", async () => {
     await seedKnowledgeBase("kb-mutation-metadata");
     const request = {
@@ -724,6 +782,11 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     await seedKnowledgeBase("kb-mutation-replace");
     await seedVerifiedObject("object-replace-current", "b".repeat(64), 12);
     await seedVerifiedObject("object-replace-next", "c".repeat(64), 14);
+    await sql`
+      UPDATE focowiki.object_registrations
+      SET zero_owner_since = '2026-08-01T00:00:00.000Z'
+      WHERE object_id = 'object-replace-next'
+    `;
     await seedSourceFile({
       knowledgeBaseId: "kb-mutation-replace",
       sourceFilePublicId: "file-mutation-replace",
@@ -791,6 +854,7 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
         'runtime/model-replace', '{}'::jsonb, true, 1,
         '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
       )
+      ON CONFLICT (public_id) DO NOTHING
     `;
     await seedSemanticProjectionContract({
       knowledgeBaseId: "kb-mutation-replace",
@@ -1126,11 +1190,305 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       WHERE object_id = 'object-replace-current'
     `;
     expect(oldObject[0]?.zero_owner_since).toBeNull();
+    const replacementObject = await sql<Array<{ zero_owner_since: Date | null }>>`
+      SELECT zero_owner_since FROM focowiki.object_registrations
+      WHERE object_id = 'object-replace-next'
+    `;
+    expect(replacementObject[0]?.zero_owner_since).toBeNull();
     await expect(coordinator.acceptMutation({
       ...replaceRequest("unchanged-replace", "kb-mutation-replace"),
       expectedResourceRevision: 8,
       candidateRevisionPublicId: "revision-replace-unchanged"
     })).rejects.toMatchObject({ code: "content_unchanged" });
+  });
+
+  it("restores historical content by reusing its rollback revision", async () => {
+    await seedKnowledgeBase("kb-mutation-restore");
+    await seedVerifiedObject("object-restore-old", "4".repeat(64), 10);
+    await seedVerifiedObject("object-restore-current", "5".repeat(64), 11);
+    await seedSourceFile({
+      knowledgeBaseId: "kb-mutation-restore",
+      sourceFilePublicId: "file-mutation-restore",
+      logicalPath: "Restore.md",
+      revision: 8,
+      sourceRevision: {
+        publicId: "revision-restore-current",
+        objectId: "object-restore-current",
+        checksum: "5".repeat(64),
+        byteCount: 11
+      }
+    });
+    await seedRollbackRevision({
+      knowledgeBaseId: "kb-mutation-restore",
+      sourceFilePublicId: "file-mutation-restore",
+      sourceRevisionPublicId: "revision-restore-old",
+      objectId: "object-restore-old",
+      checksum: "4".repeat(64),
+      byteCount: 10,
+      expiresAt: "2026-08-15T00:00:00.000Z"
+    });
+    const request = {
+      ...replaceRequest("restore", "kb-mutation-restore"),
+      targetPublicId: "file-mutation-restore",
+      expectedResourceRevision: 8,
+      candidateRevisionPublicId: "revision-restore-generated",
+      objectId: "object-restore-old",
+      checksumSha256: "4".repeat(64),
+      byteCount: 10
+    };
+
+    await expect(coordinator.acceptMutation(request)).resolves.toMatchObject({
+      outcome: "queued"
+    });
+    expect(await revisionRoles("kb-mutation-restore")).toEqual([
+      { public_id: "revision-restore-current", revision_role: "current" },
+      { public_id: "revision-restore-old", revision_role: "candidate" }
+    ]);
+    const restorePlan = planStorageVnextMutationCandidate({
+      knowledgeBaseId: "kb-mutation-restore",
+      operationPublicId: request.operationPublicId,
+      mutationKind: "replacement",
+      targetKind: "source_file",
+      targetPublicId: request.targetPublicId,
+      candidateRevisionPublicId: "revision-restore-old",
+      sourceFilePublicIds: [request.targetPublicId],
+      sourceLogicalPaths: ["Restore.md"],
+      previousSourceLogicalPaths: ["Restore.md"],
+      directoryLogicalPaths: [],
+      graphSourceFilePublicIds: [request.targetPublicId],
+      graphEdgePublicIds: [],
+      maximumChangedFacts: 20,
+      maximumDependencies: 100
+    });
+    const candidatePublicId = await prepareReadyCandidate({
+      knowledgeBaseId: "kb-mutation-restore",
+      operationPublicId: request.operationPublicId,
+      plan: restorePlan
+    });
+    await expect(releases.activateCandidate(activationRequest({
+      knowledgeBaseId: "kb-mutation-restore",
+      candidatePublicId,
+      operationPublicId: request.operationPublicId
+    }))).resolves.toMatchObject({ outcome: "activated" });
+    expect(await currentRevision(
+      "kb-mutation-restore",
+      "file-mutation-restore"
+    )).toBe("revision-restore-old");
+    expect(await revisionRoles("kb-mutation-restore")).toEqual([
+      { public_id: "revision-restore-current", revision_role: "rollback" },
+      { public_id: "revision-restore-old", revision_role: "current" }
+    ]);
+  });
+
+  it("returns reused rollback revisions when restore mutations are cancelled", async () => {
+    for (const phase of ["accepted", "candidate"] as const) {
+      const knowledgeBaseId = `kb-mutation-restore-cancel-${phase}`;
+      const sourceFilePublicId = `file-mutation-restore-cancel-${phase}`;
+      const currentRevisionPublicId = `revision-restore-current-${phase}`;
+      const rollbackRevisionPublicId = `revision-restore-old-${phase}`;
+      const rollbackExpiresAt = "2026-08-15T00:00:00.000Z";
+      await seedKnowledgeBase(knowledgeBaseId);
+      await seedVerifiedObject(`object-restore-old-${phase}`, "6".repeat(64), 12);
+      await seedVerifiedObject(`object-restore-current-${phase}`, "7".repeat(64), 13);
+      await seedSourceFile({
+        knowledgeBaseId,
+        sourceFilePublicId,
+        logicalPath: "RestoreCancel.md",
+        revision: 4,
+        sourceRevision: {
+          publicId: currentRevisionPublicId,
+          objectId: `object-restore-current-${phase}`,
+          checksum: "7".repeat(64),
+          byteCount: 13
+        }
+      });
+      await seedRollbackRevision({
+        knowledgeBaseId,
+        sourceFilePublicId,
+        sourceRevisionPublicId: rollbackRevisionPublicId,
+        objectId: `object-restore-old-${phase}`,
+        checksum: "6".repeat(64),
+        byteCount: 12,
+        expiresAt: rollbackExpiresAt
+      });
+      const request = {
+        ...replaceRequest(`restore-cancel-${phase}`, knowledgeBaseId),
+        targetPublicId: sourceFilePublicId,
+        expectedResourceRevision: 4,
+        candidateRevisionPublicId: `revision-restore-generated-${phase}`,
+        objectId: `object-restore-old-${phase}`,
+        checksumSha256: "6".repeat(64),
+        byteCount: 12
+      };
+      await coordinator.acceptMutation(request);
+      if (phase === "candidate") {
+        await prepareReadyCandidate({
+          knowledgeBaseId,
+          operationPublicId: request.operationPublicId,
+          plan: planStorageVnextMutationCandidate({
+            knowledgeBaseId,
+            operationPublicId: request.operationPublicId,
+            mutationKind: "replacement",
+            targetKind: "source_file",
+            targetPublicId: sourceFilePublicId,
+            candidateRevisionPublicId: rollbackRevisionPublicId,
+            sourceFilePublicIds: [sourceFilePublicId],
+            sourceLogicalPaths: ["RestoreCancel.md"],
+            previousSourceLogicalPaths: ["RestoreCancel.md"],
+            directoryLogicalPaths: [],
+            graphSourceFilePublicIds: [sourceFilePublicId],
+            graphEdgePublicIds: [],
+            maximumChangedFacts: 20,
+            maximumDependencies: 100
+          })
+        });
+      }
+      await terminal.cancelMutation({
+        knowledgeBaseId,
+        operationPublicId: request.operationPublicId,
+        completedAt: "2026-08-01T03:00:00.000Z",
+        resultExpiresAt: "2026-09-01T03:00:00.000Z"
+      });
+      expect(await currentRevision(knowledgeBaseId, sourceFilePublicId))
+        .toBe(currentRevisionPublicId);
+      expect(await revisionRoles(knowledgeBaseId)).toEqual([
+        { public_id: currentRevisionPublicId, revision_role: "current" },
+        { public_id: rollbackRevisionPublicId, revision_role: "rollback" }
+      ]);
+      const restored = await sql<Array<{ expires_at: Date }>>`
+        SELECT expires_at
+        FROM focowiki.source_revisions
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND public_id = ${rollbackRevisionPublicId}
+      `;
+      expect(restored[0]?.expires_at.toISOString()).toBe(rollbackExpiresAt);
+    }
+  });
+
+  it("queues provider cleanup before a cancelled candidate revision cascades", async () => {
+    const knowledgeBaseId = "kb-mutation-vector-cancel";
+    const sourceFilePublicId = "file-mutation-vector-cancel";
+    const candidateRevisionPublicId = "revision-vector-cancel-next";
+    await seedKnowledgeBase(knowledgeBaseId);
+    await seedVerifiedObject("object-vector-cancel-current", "1".repeat(64), 10);
+    await seedVerifiedObject("object-vector-cancel-next", "2".repeat(64), 11);
+    await seedSourceFile({
+      knowledgeBaseId,
+      sourceFilePublicId,
+      logicalPath: "VectorCancel.md",
+      revision: 3,
+      sourceRevision: {
+        publicId: "revision-vector-cancel-current",
+        objectId: "object-vector-cancel-current",
+        checksum: "1".repeat(64),
+        byteCount: 10
+      }
+    });
+    const request = {
+      ...replaceRequest("vector-cancel", knowledgeBaseId),
+      targetPublicId: sourceFilePublicId,
+      expectedResourceRevision: 3,
+      candidateRevisionPublicId,
+      objectId: "object-vector-cancel-next",
+      checksumSha256: "2".repeat(64),
+      byteCount: 11
+    };
+    await coordinator.acceptMutation(request);
+    await prepareReadyCandidate({
+      knowledgeBaseId,
+      operationPublicId: request.operationPublicId,
+      plan: planStorageVnextMutationCandidate({
+        knowledgeBaseId,
+        operationPublicId: request.operationPublicId,
+        mutationKind: "replacement",
+        targetKind: "source_file",
+        targetPublicId: sourceFilePublicId,
+        candidateRevisionPublicId,
+        sourceFilePublicIds: [sourceFilePublicId],
+        sourceLogicalPaths: ["VectorCancel.md"],
+        previousSourceLogicalPaths: ["VectorCancel.md"],
+        directoryLogicalPaths: [],
+        graphSourceFilePublicIds: [sourceFilePublicId],
+        graphEdgePublicIds: [],
+        maximumChangedFacts: 20,
+        maximumDependencies: 100
+      })
+    });
+    await seedActiveSemanticProjection({
+      knowledgeBaseId,
+      operationPublicId: "operation-vector-cancel-semantic",
+      semanticGenerationPublicId: "semantic-vector-cancel",
+      projectionContractPublicId: "projection-vector-cancel",
+      embeddingRevisionPublicId: "embedding-revision-vector-cancel"
+    });
+    await sql`
+      INSERT INTO focowiki.object_registrations (
+        object_id, storage_key, checksum_sha256, byte_count, content_type,
+        object_format, state, write_attempt_public_id, verified_at
+      ) VALUES (
+        'object-vector-cancel-artifact', 'semantic/vector-cancel',
+        ${"3".repeat(64)}, 64, 'application/octet-stream',
+        'semantic-vector-v1', 'verified', 'write-vector-cancel-artifact',
+        '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.embedding_artifacts (
+        public_id, knowledge_base_id, object_id, owner_kind, owner_public_id,
+        source_revision_public_id, canonical_input_sha256, input_kind,
+        embedding_configuration_revision_public_id, normalization, dimension,
+        artifact_schema_version, vector_checksum_sha256, byte_count, state
+      ) VALUES (
+        'artifact-vector-cancel', ${knowledgeBaseId},
+        'object-vector-cancel-artifact', 'content', 'owner-vector-cancel',
+        ${candidateRevisionPublicId}, ${"4".repeat(64)}, 'content',
+        'embedding-revision-vector-cancel', 'l2', 3,
+        'artifact-v1', ${"5".repeat(64)}, 64, 'verified'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_vector_documents (
+        knowledge_base_id, semantic_generation_public_id, public_id,
+        projection_contract_public_id,
+        embedding_configuration_revision_public_id, artifact_public_id,
+        vector_family, owner_public_id, source_file_public_id,
+        source_revision_public_id, evidence_target_path, dimension,
+        provider_document_id, state
+      ) VALUES (
+        ${knowledgeBaseId}, 'semantic-vector-cancel', 'vector-cancel-document',
+        'projection-vector-cancel', 'embedding-revision-vector-cancel',
+        'artifact-vector-cancel', 'content', 'owner-vector-cancel',
+        ${sourceFilePublicId}, ${candidateRevisionPublicId},
+        'pages/VectorCancel.md', 3, 'vector-cancel-document', 'candidate'
+      )
+    `;
+
+    await terminal.cancelMutation({
+      knowledgeBaseId,
+      operationPublicId: request.operationPublicId,
+      completedAt: "2026-08-01T03:00:00.000Z",
+      resultExpiresAt: "2026-09-01T03:00:00.000Z"
+    });
+
+    await expect(scopedCount("semantic_vector_documents", knowledgeBaseId))
+      .resolves.toBe(0);
+    await expect(sql<Array<{
+      resource_public_id: string;
+      state: string;
+      checkpoint: Record<string, unknown>;
+    }>>`
+      SELECT resource_public_id, state, checkpoint
+      FROM focowiki.cleanup_actions
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND action_kind = 'semantic_vector_document_cleanup'
+    `).resolves.toEqual([{
+      resource_public_id: "vector-cancel-document",
+      state: "queued",
+      checkpoint: {
+        semanticGenerationPublicId: "semantic-vector-cancel",
+        mappingFingerprintSha256: "8".repeat(64)
+      }
+    }]);
   });
 
   it("cancels candidate and pre-candidate mutations without stale owners or work", async () => {
@@ -1542,6 +1900,38 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     `;
   }
 
+  async function seedRollbackRevision(input: {
+    knowledgeBaseId: string;
+    sourceFilePublicId: string;
+    sourceRevisionPublicId: string;
+    objectId: string;
+    checksum: string;
+    byteCount: number;
+    expiresAt: string;
+  }) {
+    await sql`
+      INSERT INTO focowiki.source_revisions (
+        public_id, knowledge_base_id, source_file_public_id, object_id,
+        checksum_sha256, byte_count, content_type, revision_role,
+        expires_at, created_at
+      ) VALUES (
+        ${input.sourceRevisionPublicId}, ${input.knowledgeBaseId},
+        ${input.sourceFilePublicId}, ${input.objectId}, ${input.checksum},
+        ${input.byteCount}, 'text/markdown; charset=utf-8', 'rollback',
+        ${input.expiresAt}, '2026-08-01T00:00:00.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.object_owners (
+        public_id, knowledge_base_id, object_id, owner_kind,
+        source_revision_public_id
+      ) VALUES (
+        ${`owner-${input.sourceRevisionPublicId}`}, ${input.knowledgeBaseId},
+        ${input.objectId}, 'source_revision', ${input.sourceRevisionPublicId}
+      )
+    `;
+  }
+
   async function currentSource(knowledgeBaseId: string, sourceFilePublicId: string) {
     const rows = await sql<Array<{ logical_path: string; revision: string }>>`
       SELECT logical_path, revision::text AS revision
@@ -1610,6 +2000,17 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     projectionContractPublicId: string;
     embeddingRevisionPublicId: string;
   }): Promise<void> {
+    await sql`
+      INSERT INTO focowiki.model_configs (
+        public_id, provider, model, secret_reference, config,
+        enabled, revision, created_at, updated_at
+      ) VALUES (
+        'model-replace', 'openai-compatible', 'deepseek-v4-flash',
+        'runtime/model-replace', '{}'::jsonb, true, 1,
+        '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+      )
+      ON CONFLICT (public_id) DO NOTHING
+    `;
     await sql`
       INSERT INTO focowiki.operations (
         public_id, knowledge_base_id, operation_kind, state, completed_at

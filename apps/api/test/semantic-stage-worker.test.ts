@@ -185,30 +185,45 @@ describe("semantic stage worker", () => {
     }));
   });
 
-  it("returns interrupted role work to retry instead of cancelling durable stages", async () => {
-    const controller = new AbortController();
-    const finish = vi.fn(async () => true);
-    const worker = createSemanticStageWorker({
-      repository: repositoryStub({ finish }),
-      budgets: { acquire: async () => () => undefined },
-      handlers: handlers({
-        extraction: async (_claim, signal) => new Promise((_resolve, reject) => {
-          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-          controller.abort(new DOMException("Worker stopping", "AbortError"));
-        })
-      }),
-      clock: () => "2027-08-08T00:00:00.000Z",
-      retryDelayMs: 500
-    });
+  it.each([
+    "extraction",
+    "reconciliation",
+    "community",
+    "embedding",
+    "vector",
+    "publication",
+    "validation",
+    "cleanup"
+  ] satisfies SemanticStageKind[])(
+    "returns interrupted %s role work to retry instead of cancelling durable stages",
+    async (stageKind) => {
+      const controller = new AbortController();
+      const finish = vi.fn(async () => true);
+      const worker = createSemanticStageWorker({
+        repository: repositoryStub({ finish }),
+        budgets: { acquire: async () => () => undefined },
+        handlers: handlers({
+          [stageKind]: async (
+            _claim: SemanticStageWorkClaim,
+            signal?: AbortSignal
+          ) => new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+            controller.abort(new DOMException("Worker stopping", "AbortError"));
+          })
+        }),
+        clock: () => "2027-08-08T00:00:00.000Z",
+        retryDelayMs: 500
+      });
 
-    await expect(worker.runClaim(claim("extraction"), controller.signal))
-      .rejects.toMatchObject({ name: "AbortError" });
-    expect(finish).toHaveBeenCalledWith(expect.objectContaining({
-      outcome: "retry",
-      safeCode: "semantic_stage_dependency_failed",
-      nextAttemptAt: "2027-08-08T00:00:00.500Z"
-    }));
-  });
+      await expect(worker.runClaim(claim(stageKind), controller.signal))
+        .rejects.toMatchObject({ name: "AbortError" });
+      expect(finish).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: "retry",
+        safeCode: "semantic_stage_dependency_failed",
+        nextAttemptAt: "2027-08-08T00:00:00.500Z"
+      }));
+    }
+  );
 });
 
 function claim(stageKind: SemanticStageKind): SemanticStageWorkClaim {

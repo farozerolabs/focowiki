@@ -35,7 +35,7 @@ type TreeCursor = {
 type TreeSearchCursor = {
   version: 1;
   scope: string;
-  phase: "directories" | "files";
+  phase: "directories" | "generated-files" | "files";
   logicalPath: string | null;
   recordId: string | null;
   fileCursor: string | null;
@@ -80,7 +80,11 @@ export function createPostgresStorageVnextAdminRead(input: {
       const knowledgeBase = await input.catalog.getKnowledgeBase(request);
       if (!knowledgeBase) return notFound();
       const root = await input.releases.getActiveRoot(request.knowledgeBaseId);
-      if (!root) return success({ items: [], nextCursor: null });
+      if (!root) {
+        return request.cursor
+          ? invalidPagination()
+          : success({ items: [], nextCursor: null });
+      }
       const scope = treeScope(request, root.publicId);
       let cursor: TreeCursor | null;
       try {
@@ -192,7 +196,11 @@ export function createPostgresStorageVnextAdminRead(input: {
       if (!knowledgeBase) return notFound();
       if (!input.search) return unavailable();
       const root = await input.releases.getActiveRoot(request.knowledgeBaseId);
-      if (!root) return success({ items: [], nextCursor: null });
+      if (!root) {
+        return request.cursor
+          ? invalidPagination()
+          : success({ items: [], nextCursor: null });
+      }
       const scope = treeSearchScope(request, root.publicId);
       try {
         const cursor = decodeTreeSearchCursor(request.cursor, scope);
@@ -204,6 +212,21 @@ export function createPostgresStorageVnextAdminRead(input: {
             query: request.query,
             limit: request.limit,
             cursor: cursor.fileCursor,
+            scope
+          }));
+        }
+
+        if (cursor.phase === "generated-files") {
+          return success(await searchGeneratedFilePage({
+            sql: input.sql,
+            search: input.search,
+            catalog: input.catalog,
+            knowledgeBaseId: request.knowledgeBaseId,
+            rootPublicId: root.publicId,
+            query: request.query,
+            limit: request.limit,
+            logicalPath: cursor.logicalPath,
+            recordId: cursor.recordId,
             scope
           }));
         }
@@ -239,28 +262,22 @@ export function createPostgresStorageVnextAdminRead(input: {
 
         const remaining = request.limit - directoryItems.length;
         if (remaining === 0) {
-          const probe = await input.search.search({
-            knowledgeBaseId: request.knowledgeBaseId,
-            query: request.query,
-            kinds: ["file"],
-            limit: 1,
-            cursor: null
-          });
           return success({
             items: directoryItems,
-            nextCursor: probe.items.length > 0
-              ? encodeTreeSearchCursor(filePhaseCursor(scope, null))
-              : null
+            nextCursor: encodeTreeSearchCursor(generatedFilePhaseCursor(scope, null, null))
           });
         }
 
-        const filePage = await searchFilePage({
+        const filePage = await searchGeneratedFilePage({
+          sql: input.sql,
           search: input.search,
           catalog: input.catalog,
           knowledgeBaseId: request.knowledgeBaseId,
+          rootPublicId: root.publicId,
           query: request.query,
           limit: remaining,
-          cursor: null,
+          logicalPath: null,
+          recordId: null,
           scope
         });
         return success({
@@ -392,6 +409,35 @@ function toDirectorySearchItem(
   };
 }
 
+function toGeneratedFileSearchItem(
+  row: TreeRow,
+  knowledgeBaseId: string
+): StorageVnextAdminTreeSearchItem {
+  const entry = toTreeEntry(row);
+  return {
+    entry,
+    ancestors: ancestorPaths(row.parent_path).map((logicalPath) => ({
+      ...entry,
+      id: stableGeneratedDirectoryId(knowledgeBaseId, logicalPath),
+      parentPath: parentPathOf(logicalPath),
+      name: logicalPath.split("/").at(-1) ?? logicalPath,
+      logicalPath,
+      sortKey: logicalPath,
+      entryType: "directory",
+      generatedFileId: null,
+      sourceFileId: null,
+      sourceDirectoryId: null,
+      fileKind: null,
+      directEntryCount: 0,
+      directDirectoryCount: 0,
+      directFileCount: 0,
+      descendantFileCount: 0,
+      resourceRevision: null,
+      deletable: false
+    }))
+  };
+}
+
 async function listMatchingDirectories(input: {
   sql: DatabaseClient;
   knowledgeBaseId: string;
@@ -463,6 +509,125 @@ async function listMatchingDirectories(input: {
   `;
 }
 
+async function listMatchingGeneratedFiles(input: {
+  sql: DatabaseClient;
+  knowledgeBaseId: string;
+  rootPublicId: string;
+  query: string;
+  limit: number;
+  logicalPath: string | null;
+  recordId: string | null;
+}): Promise<TreeRow[]> {
+  return input.sql<TreeRow[]>`
+    SELECT
+      focowiki.public_generated_file_id(
+        ${input.knowledgeBaseId},
+        entry.logical_path
+      ) AS record_id,
+      entry.logical_path,
+      CASE
+        WHEN strpos(entry.logical_path, '/') = 0 THEN ''
+        ELSE regexp_replace(entry.logical_path, '/[^/]+$', '')
+      END AS parent_path,
+      'file'::text AS entry_type,
+      NULL::text AS source_file_public_id,
+      NULL::text AS source_directory_public_id,
+      entry.entry_kind,
+      0::bigint AS direct_directory_count,
+      0::bigint AS direct_file_count,
+      0::bigint AS descendant_file_count,
+      NULL::bigint AS resource_revision
+    FROM focowiki.resolve_release_catalog(${input.rootPublicId}) entry
+    WHERE entry.source_file_public_id IS NULL
+      AND strpos(lower(entry.logical_path), lower(${input.query.trim()})) > 0
+      AND (
+        ${input.logicalPath}::text IS NULL
+        OR (
+          entry.logical_path,
+          focowiki.public_generated_file_id(
+            ${input.knowledgeBaseId},
+            entry.logical_path
+          )
+        ) > (${input.logicalPath}::text, ${input.recordId}::text)
+      )
+    ORDER BY entry.logical_path COLLATE "C",
+             focowiki.public_generated_file_id(
+               ${input.knowledgeBaseId},
+               entry.logical_path
+             ) COLLATE "C"
+    LIMIT ${input.limit}
+  `;
+}
+
+async function searchGeneratedFilePage(input: {
+  sql: DatabaseClient;
+  search: StorageVnextSearchQueryPort;
+  catalog: StorageVnextCatalogReadPort;
+  knowledgeBaseId: string;
+  rootPublicId: string;
+  query: string;
+  limit: number;
+  logicalPath: string | null;
+  recordId: string | null;
+  scope: string;
+}) {
+  const rows = await listMatchingGeneratedFiles({
+    sql: input.sql,
+    knowledgeBaseId: input.knowledgeBaseId,
+    rootPublicId: input.rootPublicId,
+    query: input.query,
+    limit: input.limit + 1,
+    logicalPath: input.logicalPath,
+    recordId: input.recordId
+  });
+  const visibleRows = rows.slice(0, input.limit);
+  const generatedItems = visibleRows.map((row) =>
+    toGeneratedFileSearchItem(row, input.knowledgeBaseId)
+  );
+  if (rows.length > input.limit) {
+    const last = visibleRows.at(-1)!;
+    return {
+      items: generatedItems,
+      nextCursor: encodeTreeSearchCursor(generatedFilePhaseCursor(
+        input.scope,
+        last.logical_path,
+        last.record_id
+      ))
+    };
+  }
+
+  const remaining = input.limit - generatedItems.length;
+  if (remaining === 0) {
+    const probe = await input.search.search({
+      knowledgeBaseId: input.knowledgeBaseId,
+      query: input.query,
+      kinds: ["file"],
+      limit: 1,
+      cursor: null
+    });
+    return {
+      items: generatedItems,
+      nextCursor: probe.items.length > 0
+        ? encodeTreeSearchCursor(filePhaseCursor(input.scope, null))
+        : null
+    };
+  }
+
+  const sourcePage = await searchFilePage({
+    search: input.search,
+    catalog: input.catalog,
+    knowledgeBaseId: input.knowledgeBaseId,
+    query: input.query,
+    limit: remaining,
+    cursor: null,
+    scope: input.scope
+  });
+  return {
+    items: [...generatedItems, ...sourcePage.items],
+    nextCursor: sourcePage.nextCursor
+  };
+}
+
 async function searchFilePage(input: {
   search: StorageVnextSearchQueryPort;
   catalog: StorageVnextCatalogReadPort;
@@ -486,11 +651,13 @@ async function searchFilePage(input: {
   });
   const revisions = new Map(sources.map((source) => [source.publicId, source.revision]));
   return {
-    items: page.items.map((item) => toSearchItem(
-      item,
-      revisions.get(item.sourceFilePublicId) ?? null,
-      input.knowledgeBaseId
-    )),
+    items: page.items
+      .filter((item) => revisions.has(item.sourceFilePublicId))
+      .map((item) => toSearchItem(
+        item,
+        revisions.get(item.sourceFilePublicId)!,
+        input.knowledgeBaseId
+      )),
     nextCursor: page.nextCursor
       ? encodeTreeSearchCursor(filePhaseCursor(input.scope, page.nextCursor))
       : null
@@ -545,6 +712,21 @@ function filePhaseCursor(scope: string, fileCursor: string | null): TreeSearchCu
   };
 }
 
+function generatedFilePhaseCursor(
+  scope: string,
+  logicalPath: string | null,
+  recordId: string | null
+): TreeSearchCursor {
+  return {
+    version: 1,
+    scope,
+    phase: "generated-files",
+    logicalPath,
+    recordId,
+    fileCursor: null
+  };
+}
+
 function encodeTreeSearchCursor(cursor: TreeSearchCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
@@ -570,6 +752,17 @@ function decodeTreeSearchCursor(value: string | null, scope: string): TreeSearch
       && typeof parsed.recordId === "string"
       && parsed.recordId.length > 0
       && parsed.fileCursor === null;
+    const validGeneratedFileCursor = parsed.phase === "generated-files"
+      && (
+        (parsed.logicalPath === null && parsed.recordId === null)
+        || (
+          typeof parsed.logicalPath === "string"
+          && parsed.logicalPath.length > 0
+          && typeof parsed.recordId === "string"
+          && parsed.recordId.length > 0
+        )
+      )
+      && parsed.fileCursor === null;
     const validFileCursor = parsed.phase === "files"
       && parsed.logicalPath === null
       && parsed.recordId === null
@@ -577,7 +770,7 @@ function decodeTreeSearchCursor(value: string | null, scope: string): TreeSearch
     if (
       parsed.version !== 1
       || parsed.scope !== scope
-      || (!validDirectoryCursor && !validFileCursor)
+      || (!validDirectoryCursor && !validGeneratedFileCursor && !validFileCursor)
     ) throw new Error("Invalid storage vNext tree search cursor");
     return parsed;
   } catch {

@@ -41,6 +41,10 @@ export function createStorageVnextDeletionWorker(input: {
   clock(): string;
   webhooks?: Pick<WebhookDispatcher, "dispatch">;
   onWebhookError?: (error: unknown) => void;
+  onAttemptError?: (input: {
+    work: StorageVnextLiveWork;
+    error: unknown;
+  }) => void;
 }) {
   validateConfiguration(input);
   return {
@@ -88,6 +92,7 @@ export function createStorageVnextDeletionWorker(input: {
         completedAt
       });
     } catch (error) {
+      observeAttemptError(input.onAttemptError, { work: preparedWork, error });
       return retryOrFail({
         work: preparedWork,
         completedAt,
@@ -182,6 +187,7 @@ export function createStorageVnextDeletionWorker(input: {
       checkpoint: request.checkpoint
     });
     const continuationAt = request.reasonCode === "DELETION_SEARCH_PROVIDER_REQUIRED"
+      || request.reasonCode === "DELETION_SEMANTIC_WORK_DRAINING"
       ? nextAttemptAt(
           request.completedAt,
           retryDelay(request.work.attempt)
@@ -263,9 +269,22 @@ export function createStorageVnextDeletionWorker(input: {
   }
 }
 
+function observeAttemptError(
+  observer: ((input: { work: StorageVnextLiveWork; error: unknown }) => void) | undefined,
+  input: { work: StorageVnextLiveWork; error: unknown }
+): void {
+  try {
+    observer?.(input);
+  } catch {
+    // Failure diagnostics must never change deletion convergence.
+    return;
+  }
+}
+
 function isContinuationReason(reasonCode: string | null): reasonCode is string {
   return reasonCode === "DELETION_SCOPE_PAGE_REMAINING"
     || reasonCode === "DELETION_SEMANTIC_PAGE_REMAINING"
+    || reasonCode === "DELETION_SEMANTIC_WORK_DRAINING"
     || reasonCode === "DELETION_SEARCH_TASK_PAGE_REMAINING"
     || reasonCode === "DELETION_SEARCH_PROVIDER_REQUIRED";
 }

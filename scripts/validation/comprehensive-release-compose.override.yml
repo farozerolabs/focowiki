@@ -1,0 +1,106 @@
+services:
+  admin:
+    image: focowiki-admin:clr-b648eb2f
+
+  api:
+    image: focowiki-api:clr-b648eb2f
+    env_file: !override
+      - .env.dev.example
+    environment:
+      TRUSTED_PROXY_MODE: ${FOCOWIKI_COMPREHENSIVE_TRUSTED_PROXY_MODE-false}
+      GENERATED_CONTENT_MAX_BYTES: ${FOCOWIKI_COMPREHENSIVE_GENERATED_CONTENT_MAX_BYTES-10485760}
+    volumes: !override
+      - comprehensive-logs:/app/logs
+      - comprehensive-runtime-secrets:/app/runtime-secrets
+
+  source-worker:
+    image: focowiki-source-worker:clr-b648eb2f
+    env_file: !override
+      - .env.dev.example
+    volumes: !override
+      - comprehensive-logs:/app/logs
+      - comprehensive-runtime-secrets:/app/runtime-secrets
+
+  publication-worker:
+    image: focowiki-api:clr-b648eb2f
+    env_file: !override
+      - .env.dev.example
+    volumes: !override
+      - comprehensive-logs:/app/logs
+      - comprehensive-runtime-secrets:/app/runtime-secrets
+
+  maintenance-worker:
+    image: focowiki-api:clr-b648eb2f
+    env_file: !override
+      - .env.dev.example
+    volumes: !override
+      - comprehensive-logs:/app/logs
+      - comprehensive-runtime-secrets:/app/runtime-secrets
+
+  search-init:
+    image: focowiki-api:clr-b648eb2f
+    volumes: !override
+      - comprehensive-runtime-secrets:/app/runtime-secrets
+
+  migrate:
+    image: focowiki-api:clr-b648eb2f
+    env_file: !override
+      - .env.dev.example
+    volumes: !override
+      - comprehensive-logs:/app/logs
+      - comprehensive-runtime-secrets:/app/runtime-secrets
+
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - compute_query_id=on
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.track_planning=on
+      - -c
+      - pg_stat_statements.max=10000
+    ports:
+      - "127.0.0.1:${FOCOWIKI_COMPREHENSIVE_POSTGRES_PORT-55432}:5432"
+    volumes: !override
+      - comprehensive-postgres:/var/lib/postgresql
+
+  redis:
+    ports:
+      - "127.0.0.1:${FOCOWIKI_COMPREHENSIVE_REDIS_PORT-56379}:6379"
+    volumes: !override
+      - comprehensive-redis:/data
+
+  minio:
+    ports:
+      - "127.0.0.1:${FOCOWIKI_COMPREHENSIVE_S3_PORT-59000}:9000"
+    volumes: !override
+      - comprehensive-minio:/data
+
+  meilisearch:
+    ports:
+      - "127.0.0.1:${MEILI_PORT-57700}:7700"
+    volumes: !override
+      - comprehensive-meilisearch:/meili_data
+      - comprehensive-meilisearch-tmp:/meili_data/tmp
+      - comprehensive-meilisearch-snapshots:/meili_snapshots
+      - comprehensive-meilisearch-dumps:/meili_dumps
+
+  opensearch:
+    volumes: !override
+      - comprehensive-opensearch:/usr/share/opensearch/data
+
+volumes:
+  comprehensive-logs:
+  comprehensive-runtime-secrets:
+  comprehensive-postgres:
+  comprehensive-redis:
+  comprehensive-minio:
+  comprehensive-meilisearch:
+  comprehensive-meilisearch-tmp:
+  comprehensive-meilisearch-snapshots:
+  comprehensive-meilisearch-dumps:
+  comprehensive-opensearch:

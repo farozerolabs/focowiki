@@ -33,6 +33,7 @@ import type {
 } from "@/lib/admin-api";
 import type { SourceFileListFilters } from "@/lib/source-file-list-filters";
 import { getSelectableSourceFileIds } from "@/lib/source-file-task-deletion";
+import { indexMaintenanceStageLabel } from "@/lib/index-maintenance-presentation";
 
 type SourceFileProgressPanelProps = {
   sourceFiles: SourceFileRecord[];
@@ -327,8 +328,10 @@ function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
   const lexicalRebuild = summary.maintenanceProgress.lexicalRebuild;
   const projectionRepair = summary.maintenanceProgress.projectionRepair;
   const compaction = summary.maintenanceProgress.compaction.active;
+  const indexMaintenance = summary.indexMaintenance;
   const latestUpdate = latestMaintenanceUpdate(summary);
-  const failedCode = projectionRepair?.safeErrorCode
+  const failedCode = indexMaintenance.safeErrorCode
+    ?? projectionRepair?.safeErrorCode
     ?? compaction?.safeErrorCode
     ?? lexicalRebuild?.safeErrorCode
     ?? migration?.safeErrorCode;
@@ -339,6 +342,26 @@ function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
         label={t("tasks.summary.maintenance")}
         value={t("tasks.summary.maintenanceFailed")}
         detail={failedCode}
+      />
+    );
+  }
+
+  if (indexMaintenance.active) {
+    const details = [] as string[];
+    if (indexMaintenance.stage) {
+      details.push(indexMaintenanceStageLabel(indexMaintenance.stage, t));
+    }
+    if (indexMaintenance.expectedCount > 0) {
+      details.push(t("indexMaintenance.progressValue", {
+        completed: indexMaintenance.completedCount,
+        expected: indexMaintenance.expectedCount
+      }));
+    }
+    return (
+      <SummaryItem
+        label={t("tasks.summary.maintenance")}
+        value={t(`indexMaintenance.states.${indexMaintenance.state}`)}
+        detail={details.join(" · ") || t("indexMaintenance.preparing")}
       />
     );
   }
@@ -485,7 +508,9 @@ function latestMaintenanceUpdate(summary: ProcessingSummary): string | null {
     summary.maintenanceProgress.migration?.updatedAt,
     summary.maintenanceProgress.lexicalRebuild?.updatedAt,
     summary.maintenanceProgress.projectionRepair?.updatedAt,
-    summary.maintenanceProgress.compaction.latestCompleted?.updatedAt
+    summary.maintenanceProgress.compaction.latestCompleted?.updatedAt,
+    summary.indexMaintenance.lastProgressAt,
+    summary.indexMaintenance.lastCompletedAt
   ].filter((value): value is string => Boolean(value));
   if (timestamps.length === 0) return null;
   return timestamps.reduce((latest, current) => current > latest ? current : latest);

@@ -8,6 +8,7 @@ import type { RuntimeSettingsRepository } from "../src/runtime-settings/reposito
 import { createRuntimeSettingsService } from "../src/runtime-settings/service.js";
 import type {
   ModelConfigStatus,
+  RuntimeModelConfigDraft,
   RuntimeModelConfigPrivate,
   RuntimeSettingKey,
   RuntimeSettingRecord,
@@ -22,6 +23,92 @@ import {
   encryptRuntimeSecret,
   fingerprintRuntimeSecret
 } from "../src/runtime-settings/encryption.js";
+import { validateModelDraft } from "../src/runtime-settings/validation.js";
+
+function generationModelDraft(): RuntimeModelConfigDraft {
+  return {
+    displayName: "Generation model",
+    apiMode: "responses",
+    baseUrl: "https://generation.example/v1",
+    apiKey: "generation-secret",
+    modelName: "generation-model",
+    contextWindowTokens: 128_000,
+    requestMaxTimeoutMs: 300_000,
+    requestIdleTimeoutMs: 60_000,
+    suggestionConcurrency: 2,
+    transientRetryDelayMs: 1_000,
+    requestMinIntervalMs: 0,
+    isActive: true
+  };
+}
+
+describe("generation model configuration field contract", () => {
+  it("accepts supported API modes, URLs, boolean states, and numeric minima", () => {
+    expect(validateModelDraft(generationModelDraft())).toEqual([]);
+    expect(validateModelDraft({
+      ...generationModelDraft(), apiMode: undefined, isActive: false
+    })).toEqual([]);
+    expect(validateModelDraft({
+      ...generationModelDraft(), apiMode: "chat_completions", baseUrl: "http://127.0.0.1:11434/v1"
+    })).toEqual([]);
+  });
+
+  it.each([
+    ["contextWindowTokens", 1, 0],
+    ["requestMaxTimeoutMs", 1, 0],
+    ["requestIdleTimeoutMs", 1, 0],
+    ["suggestionConcurrency", 1, 0],
+    ["transientRetryDelayMs", 1, 0],
+    ["requestMinIntervalMs", 0, -1]
+  ] as const)("validates every %s numeric boundary", (field, minimum, below) => {
+    expect(validateModelDraft({
+      ...generationModelDraft(), [field]: minimum
+    })).toEqual([]);
+    expect(validateModelDraft({
+      ...generationModelDraft(), [field]: Number.MAX_SAFE_INTEGER
+    })).toEqual([]);
+    for (const value of [below, 1.5, "1", null, undefined]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), [field]: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field })
+      );
+    }
+  });
+
+  it("returns stable issues for every required text, URL, mode, and active field", () => {
+    for (const field of ["displayName", "baseUrl", "apiKey", "modelName"] as const) {
+      for (const value of [undefined, null, "", "   ", 42, {}]) {
+        expect(validateModelDraft({
+          ...generationModelDraft(), [field]: value
+        } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+          expect.objectContaining({ field })
+        );
+      }
+    }
+    for (const value of [null, "completions", 42, {}]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), apiMode: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field: "apiMode" })
+      );
+    }
+    for (const value of [undefined, null, "true", 1, {}]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), isActive: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field: "isActive" })
+      );
+    }
+    for (const value of ["not-a-url", "ftp://example.com/model", 42, null]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), baseUrl: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field: "baseUrl" })
+      );
+    }
+  });
+});
 
 describe("runtime settings service", () => {
   it("bootstraps settings and keeps model assistance optional", async () => {
@@ -132,6 +219,38 @@ describe("runtime settings service", () => {
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
     expect((await service.getSnapshot()).semantic).toEqual(updated.semantic);
+  });
+
+  it("rejects missing and non-integer values for every semantic settings field", async () => {
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository: new MemoryRuntimeSettingsRepository(),
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    for (const field of Object.keys(initial.semantic)) {
+      const missing = structuredClone(initial.semantic) as Record<string, unknown>;
+      delete missing[field];
+      await expect(service.updateSemantic({
+        actor: "admin",
+        value: missing as RuntimeSettingsSnapshot["semantic"]
+      }), `${field} missing`).rejects.toMatchObject({
+        code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+      });
+
+      const wrongType = {
+        ...initial.semantic,
+        [field]: String(initial.semantic[field as keyof typeof initial.semantic])
+      } as RuntimeSettingsSnapshot["semantic"];
+      await expect(service.updateSemantic({
+        actor: "admin",
+        value: wrongType
+      }), `${field} wrong type`).rejects.toMatchObject({
+        code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+      });
+    }
   });
 
   it("validates and persists bounded search settings", async () => {
@@ -634,10 +753,175 @@ describe("runtime settings service", () => {
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
     repository.runningModelInvocationCount = 0;
+    await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: [expect.objectContaining({ field: "model" })]
+    });
+    await expect(service.pauseModel({ id: model.id })).resolves.toMatchObject({
+      status: "paused",
+      isActive: false
+    });
     await expect(service.deleteModel({ id: model.id })).resolves.toMatchObject({
       id: model.id,
       status: "deleted"
     });
+  });
+
+  it("updates a generation model without replacing its encrypted API key", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
+    });
+    const model = await service.createModel({
+      displayName: "Generation model",
+      apiMode: "responses",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-generation-secret",
+      modelName: "generation-v1",
+      contextWindowTokens: 128_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 0,
+      isActive: false
+    });
+    const encryptedBefore = repository.models.get(model.id)?.apiKey;
+
+    const updated = await service.updateModel({
+      id: model.id,
+      actor: "admin",
+      value: {
+        displayName: "Generation model updated",
+        apiMode: "chat_completions",
+        baseUrl: "https://api.example.com/v2",
+        modelName: "generation-v2",
+        contextWindowTokens: 256_000,
+        requestMaxTimeoutMs: 300_000,
+        requestIdleTimeoutMs: 60_000,
+        suggestionConcurrency: 3,
+        transientRetryDelayMs: 30_000,
+        requestMinIntervalMs: 1_000
+      }
+    });
+
+    expect(updated).toMatchObject({
+      id: model.id,
+      displayName: "Generation model updated",
+      apiMode: "chat_completions",
+      modelName: "generation-v2",
+      apiKeyFingerprint: model.apiKeyFingerprint
+    });
+    expect(repository.models.get(model.id)?.apiKey).toBe(encryptedBefore);
+    expect(repository.auditLogs.at(-1)).toMatchObject({
+      settingKey: "model_configs",
+      action: "update"
+    });
+  });
+
+  it("updates a generation model through Admin API without returning its credential", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const redis = createTestRedisCoordinator();
+    const config = createConfig({ modelEnabled: false });
+    const app = createApiApp({
+      config,
+      redis,
+      runtimeSettings: createRuntimeSettingsService({
+        config,
+        repository,
+        redis,
+        deploymentSecretDirectory: createRuntimeSecretDirectory(),
+        resourceCapacity: createTestResourceCapacity()
+      })
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const createdResponse = await app.request("/admin/api/settings/models", {
+      method: "POST",
+      headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+      body: JSON.stringify({
+        displayName: "Generation API model",
+        apiMode: "responses",
+        baseUrl: "https://api.example.com/v1",
+        apiKey: "sk-generation-api-secret",
+        modelName: "generation-api-v1",
+        contextWindowTokens: 128_000,
+        requestMaxTimeoutMs: 600_000,
+        requestIdleTimeoutMs: 120_000,
+        suggestionConcurrency: 2,
+        transientRetryDelayMs: 60_000,
+        requestMinIntervalMs: 0,
+        isActive: false
+      })
+    });
+    const created = (await createdResponse.json()) as { model: RuntimeModelConfigPrivate };
+
+    const updatedResponse = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({
+          displayName: "Generation API model updated",
+          apiMode: "chat_completions",
+          baseUrl: "https://api.example.com/v2",
+          modelName: "generation-api-v2",
+          contextWindowTokens: 256_000,
+          requestMaxTimeoutMs: 300_000,
+          requestIdleTimeoutMs: 60_000,
+          suggestionConcurrency: 3,
+          transientRetryDelayMs: 30_000,
+          requestMinIntervalMs: 1_000
+        })
+      }
+    );
+    const updated = await updatedResponse.json();
+
+    expect(updatedResponse.status).toBe(200);
+    expect(updated).toMatchObject({
+      model: {
+        id: created.model.id,
+        displayName: "Generation API model updated",
+        apiKeyFingerprint: created.model.apiKeyFingerprint
+      }
+    });
+    expect(JSON.stringify(updated)).not.toContain("sk-generation-api-secret");
+
+    const nullRequired = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({ displayName: null })
+      }
+    );
+    expect(nullRequired.status).toBe(400);
+
+    const nullCredential = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({ apiKey: null })
+      }
+    );
+    expect(nullCredential.status).toBe(200);
+    await expect(nullCredential.json()).resolves.toMatchObject({
+      model: { apiKeyFingerprint: created.model.apiKeyFingerprint }
+    });
+
+    const wrongCredentialType = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({ apiKey: 42 })
+      }
+    );
+    expect(wrongCredentialType.status).toBe(400);
   });
 
   it("allows pausing but blocks deleting a generation model referenced by an active semantic contract", async () => {
@@ -1374,6 +1658,41 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
       deletedAt: null
     };
     this.models.set(model.id, model);
+    return model;
+  }
+
+  public async updateModel(input: {
+    id: string;
+    displayName: string;
+    apiMode: RuntimeModelConfigPrivate["apiMode"];
+    baseUrl: string;
+    encryptedApiKey: string;
+    apiKeyFingerprint: string;
+    modelName: string;
+    contextWindowTokens: number;
+    requestMaxTimeoutMs: number;
+    requestIdleTimeoutMs: number;
+    suggestionConcurrency: number;
+    transientRetryDelayMs: number;
+    requestMinIntervalMs: number;
+  }) {
+    const model = this.models.get(input.id);
+    if (!model) return null;
+    Object.assign(model, {
+      displayName: input.displayName,
+      apiMode: input.apiMode,
+      baseUrl: input.baseUrl,
+      apiKey: input.encryptedApiKey,
+      apiKeyFingerprint: input.apiKeyFingerprint,
+      modelName: input.modelName,
+      contextWindowTokens: input.contextWindowTokens,
+      requestMaxTimeoutMs: input.requestMaxTimeoutMs,
+      requestIdleTimeoutMs: input.requestIdleTimeoutMs,
+      suggestionConcurrency: input.suggestionConcurrency,
+      transientRetryDelayMs: input.transientRetryDelayMs,
+      requestMinIntervalMs: input.requestMinIntervalMs,
+      updatedAt: new Date().toISOString()
+    });
     return model;
   }
 

@@ -31,6 +31,7 @@ import {
   type RuntimeModelConfigDraft,
   type RuntimeModelConfigPrivate,
   type RuntimeModelConfigPublic,
+  type RuntimeModelConfigUpdate,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
   type RuntimeSemanticSettings,
@@ -110,6 +111,11 @@ export type RuntimeSettingsService = {
   }) => Promise<RuntimeSettingsSnapshot>;
   listModels: () => Promise<RuntimeModelConfigPublic[]>;
   createModel: (input: RuntimeModelConfigDraft & { actor?: string | null | undefined }) => Promise<RuntimeModelConfigPublic>;
+  updateModel: (input: {
+    id: string;
+    value: RuntimeModelConfigUpdate;
+    actor?: string | null | undefined;
+  }) => Promise<RuntimeModelConfigPublic | null>;
   activateModel: (input: { id: string; actor?: string | null | undefined }) => Promise<RuntimeModelConfigPublic | null>;
   pauseModel: (input: { id: string; actor?: string | null | undefined }) => Promise<RuntimeModelConfigPublic | null>;
   resumeModel: (input: { id: string; actor?: string | null | undefined }) => Promise<RuntimeModelConfigPublic | null>;
@@ -544,6 +550,92 @@ export function createRuntimeSettingsService(input: {
       const model = await createModelInternal(modelInput, modelInput.actor);
       return serializePublicModel(model);
     },
+    async updateModel({ id, value, actor }) {
+      await ensureBootstrapped();
+      const existing = await input.repository.getModel(id);
+      if (!existing || existing.status === "deleted") return null;
+      const existingApiKey = tryDecryptRuntimeModel(existing, deploymentSecret);
+      if (!existingApiKey) {
+        throw new RuntimeSettingsValidationError([{
+          field: "model",
+          message: "model api key is unrecoverable"
+        }]);
+      }
+      if (
+        value.apiKey !== undefined
+        && value.apiKey !== null
+        && typeof value.apiKey !== "string"
+      ) {
+        throw new RuntimeSettingsValidationError([{
+          field: "apiKey",
+          message: "apiKey is required"
+        }]);
+      }
+      const replacementApiKey = typeof value.apiKey === "string"
+        ? value.apiKey.trim() || null
+        : null;
+      const draft: RuntimeModelConfigDraft = {
+        displayName: value.displayName === undefined ? existing.displayName : value.displayName,
+        apiMode: value.apiMode === undefined ? existing.apiMode : value.apiMode,
+        baseUrl: value.baseUrl === undefined ? existing.baseUrl : value.baseUrl,
+        apiKey: replacementApiKey ?? existingApiKey,
+        modelName: value.modelName === undefined ? existing.modelName : value.modelName,
+        contextWindowTokens: value.contextWindowTokens === undefined
+          ? existing.contextWindowTokens
+          : value.contextWindowTokens,
+        requestMaxTimeoutMs: value.requestMaxTimeoutMs === undefined
+          ? existing.requestMaxTimeoutMs
+          : value.requestMaxTimeoutMs,
+        requestIdleTimeoutMs: value.requestIdleTimeoutMs === undefined
+          ? existing.requestIdleTimeoutMs
+          : value.requestIdleTimeoutMs,
+        suggestionConcurrency: value.suggestionConcurrency === undefined
+          ? existing.suggestionConcurrency
+          : value.suggestionConcurrency,
+        transientRetryDelayMs:
+          value.transientRetryDelayMs === undefined
+            ? existing.transientRetryDelayMs
+            : value.transientRetryDelayMs,
+        requestMinIntervalMs: value.requestMinIntervalMs === undefined
+          ? existing.requestMinIntervalMs
+          : value.requestMinIntervalMs,
+        isActive: existing.isActive
+      };
+      const issues = validateModelDraft(draft);
+      if (issues.length > 0) throw new RuntimeSettingsValidationError(issues);
+      if (existing.isActive) {
+        await validateActiveModelCapacity(draft.suggestionConcurrency);
+      }
+      const updated = await input.repository.updateModel({
+        id,
+        displayName: draft.displayName.trim(),
+        apiMode: normalizeModelApiMode(draft.apiMode),
+        baseUrl: draft.baseUrl.trim(),
+        encryptedApiKey: replacementApiKey
+          ? encryptRuntimeSecret({ value: replacementApiKey, secret: deploymentSecret })
+          : existing.apiKey,
+        apiKeyFingerprint: replacementApiKey
+          ? fingerprintRuntimeSecret(replacementApiKey)
+          : existing.apiKeyFingerprint,
+        modelName: draft.modelName.trim(),
+        contextWindowTokens: draft.contextWindowTokens,
+        requestMaxTimeoutMs: draft.requestMaxTimeoutMs,
+        requestIdleTimeoutMs: draft.requestIdleTimeoutMs,
+        suggestionConcurrency: draft.suggestionConcurrency,
+        transientRetryDelayMs: draft.transientRetryDelayMs,
+        requestMinIntervalMs: draft.requestMinIntervalMs
+      });
+      if (!updated) return null;
+      await writeAuditLog({
+        settingKey: "model_configs",
+        action: "update",
+        actor,
+        value: serializePublicModel(updated)
+      });
+      await bumpVersion();
+      cache = null;
+      return serializePublicModel(updated);
+    },
     async activateModel({ id, actor }) {
       await ensureBootstrapped();
       const existing = await input.repository.getModel(id);
@@ -581,6 +673,13 @@ export function createRuntimeSettingsService(input: {
 
       if (!existing) {
         return null;
+      }
+
+      if (existing.isActive) {
+        throw new RuntimeSettingsValidationError([{
+          field: "model",
+          message: "active model cannot be deleted"
+        }]);
       }
 
       await assertModelCanBeDeleted(id);

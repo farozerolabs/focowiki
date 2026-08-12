@@ -101,6 +101,7 @@ export class SourceResourceError extends Error {
       | "RESOURCE_DELETING"
       | "RESOURCE_BUSY"
       | "IDEMPOTENCY_CONFLICT"
+      | "INVALID_PAGINATION"
       | "INVALID_RESOURCE_MUTATION"
   ) {
     super(code);

@@ -40,6 +40,35 @@ describe("semantic adoption", () => {
     expect(fixture.createCandidate).toHaveBeenCalledOnce();
   });
 
+  it("clones predecessor graph facts once and plans only embedding work", async () => {
+    const fixture = createFixture();
+    const first = await fixture.service.planSourcePage({
+      ...planRequest(),
+      reusePredecessorFacts: true
+    });
+
+    expect(first.sourceCount).toBe(2);
+    expect(first.stageCount).toBe(4);
+    expect(fixture.cloneReusableFacts).toHaveBeenCalledOnce();
+    expect(fixture.cloneReusableFacts).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-1",
+      predecessorPublicId: "semantic-active",
+      candidatePublicId: expect.stringContaining("semantic-generation-")
+    });
+    expect(fixture.enqueued.flatMap((batch) => batch.items)
+      .map((item) => item.stageKind)).toEqual([
+        "embedding", "vector", "embedding", "vector"
+      ]);
+
+    const second = await fixture.service.planSourcePage({
+      ...planRequest(),
+      reusePredecessorFacts: true,
+      cursor: first.nextCursor
+    });
+    expect(second.stageCount).toBe(2);
+    expect(fixture.cloneReusableFacts).toHaveBeenCalledOnce();
+  });
+
   it("waits for bounded stage work, then validates and CAS-activates the candidate", async () => {
     const fixture = createFixture();
     await fixture.service.planSourcePage(planRequest());
@@ -155,13 +184,15 @@ function createFixture() {
     reusedArtifactCount: 0
   };
   const requestCancellation = vi.fn(async () => 15);
+  const cloneReusableFacts = vi.fn(async () => ({ sourceCount: 3, factCount: 30 }));
   const service = createSemanticAdoptionService({
     generations: {
       createCandidate,
       getCandidateByOperation: vi.fn(async () => candidate),
       transitionCandidate,
       activateCandidate,
-      adoptQueryPolicy: vi.fn(async () => true)
+      adoptQueryPolicy: vi.fn(async () => true),
+      cloneReusableFacts
     },
     stages: {
       async enqueue(input) {
@@ -173,9 +204,10 @@ function createFixture() {
     },
     catalog: {
       async listCurrentSources(input) {
-        const ids = input.cursor ? ["c"] : ["a", "b"];
         return {
-          items: ids.map((id) => currentSource(id)),
+          items: input.cursor
+            ? [currentSource("c")]
+            : [currentSource("a"), currentSource("b"), currentSource("failed", "failed")],
           nextCursor: input.cursor ? null : "page-2"
         };
       }
@@ -187,6 +219,7 @@ function createFixture() {
     transitionCandidate,
     activateCandidate,
     requestCancellation,
+    cloneReusableFacts,
     enqueued,
     summary
   };
@@ -205,6 +238,7 @@ function planRequest() {
     cursor: null,
     pageSize: 20,
     maximumAttempts: 3,
+    reusePredecessorFacts: false,
     enqueuedAt: NOW
   };
 }
@@ -229,7 +263,7 @@ function target(): SemanticMaintenanceTarget {
   };
 }
 
-function currentSource(id: string) {
+function currentSource(id: string, status: "ready" | "failed" = "ready") {
   return {
     sourceFile: {
       publicId: `file-${id}`,
@@ -240,9 +274,9 @@ function currentSource(id: string) {
       title: id,
       metadata: {},
       currentRevisionPublicId: `revision-${id}`,
-      status: "ready" as const,
-      safeErrorCode: null,
-      safeErrorMessage: null,
+      status,
+      safeErrorCode: status === "failed" ? "SEMANTIC_STAGE_FAILED" : null,
+      safeErrorMessage: status === "failed" ? "Semantic stage failed." : null,
       revision: 1,
       visibility: "current" as const
     },

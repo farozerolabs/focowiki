@@ -15,6 +15,21 @@ type PublicationIdentity = {
   candidatePublicId: string;
   operationPublicId: string;
   signal: AbortSignal;
+  beforeValidate?: () => Promise<
+    | { state: "ready" }
+    | { state: "pending" }
+  >;
+};
+
+type PublicationProcessorResult =
+  | { searchProjectionPublicId: string }
+  | { state: "pending" };
+type PublicationIdentityWithoutReadiness = Omit<
+  PublicationIdentity,
+  "beforeValidate"
+>;
+type PublicationIdentityWithReadiness = PublicationIdentityWithoutReadiness & {
+  beforeValidate: NonNullable<PublicationIdentity["beforeValidate"]>;
 };
 
 type PublicationProcessorInput = {
@@ -69,89 +84,100 @@ export function createStorageVnextPublicationProcessor(
   input: PublicationProcessorInput
 ) {
   validateConfiguration(input);
-  return {
-    async publish(request: PublicationIdentity): Promise<{
-      searchProjectionPublicId: string;
-    }> {
-      validateIdentity(request);
-      throwIfAborted(request.signal);
-      const activeSearchProjection = await input.activeSearchProjections
-        .getActiveProjection(request.knowledgeBaseId);
-      throwIfAborted(request.signal);
-      const retainActiveSearch = activeSearchProjection !== null
-        && activeSearchProjection.providerKind !== input.selectedSearchProviderKind;
-      const searchProjectionPublicId = retainActiveSearch
-        ? activeSearchProjection.publicId
-        : request.candidatePublicId;
-      const candidate = await input.releases.getCandidate({
+  return { publish };
+
+  function publish(
+    request: PublicationIdentityWithReadiness
+  ): Promise<PublicationProcessorResult>;
+  function publish(
+    request: PublicationIdentityWithoutReadiness
+  ): Promise<{ searchProjectionPublicId: string }>;
+  async function publish(
+    request: PublicationIdentity
+  ): Promise<PublicationProcessorResult> {
+    validateIdentity(request);
+    throwIfAborted(request.signal);
+    const activeSearchProjection = await input.activeSearchProjections
+      .getActiveProjection(request.knowledgeBaseId);
+    throwIfAborted(request.signal);
+    const retainActiveSearch = activeSearchProjection !== null
+      && activeSearchProjection.providerKind !== input.selectedSearchProviderKind;
+    const searchProjectionPublicId = retainActiveSearch
+      ? activeSearchProjection.publicId
+      : request.candidatePublicId;
+    const candidate = await input.releases.getCandidate({
+      knowledgeBaseId: request.knowledgeBaseId,
+      candidatePublicId: request.candidatePublicId,
+      operationPublicId: request.operationPublicId
+    });
+    if (!candidate) throw processorError("candidate_unavailable");
+    if (candidate.state === "ready") return { searchProjectionPublicId };
+    if (candidate.state === "validating") {
+      await input.releases.validate({
         knowledgeBaseId: request.knowledgeBaseId,
         candidatePublicId: request.candidatePublicId,
-        operationPublicId: request.operationPublicId
+        searchProjectionPublicId
       });
-      if (!candidate) throw processorError("candidate_unavailable");
-      if (candidate.state === "ready") return { searchProjectionPublicId };
-      if (candidate.state === "validating") {
-        await input.releases.validate({
-          knowledgeBaseId: request.knowledgeBaseId,
-          candidatePublicId: request.candidatePublicId,
-          searchProjectionPublicId
-        });
-        return { searchProjectionPublicId };
-      }
-      let search: StorageVnextSearchCandidateBuildResult | null = null;
-      if (!retainActiveSearch) {
-        await input.search.prepareCandidate({
-          knowledgeBaseId: request.knowledgeBaseId,
-          candidatePublicId: searchProjectionPublicId,
-          schemaChecksum: input.schemaChecksum,
-          settingsChecksum: input.settingsChecksum
-        });
-        throwIfAborted(request.signal);
-        search = await input.searchBuilder.build(request);
-        validateBuildResult(search);
-        throwIfAborted(request.signal);
-        await input.graph.reconcile({
-          ...request,
-          searchProjectionPublicId
-        });
-        throwIfAborted(request.signal);
-      }
-      await input.artifacts.publish({
+      return { searchProjectionPublicId };
+    }
+    let search: StorageVnextSearchCandidateBuildResult | null = null;
+    if (!retainActiveSearch) {
+      await input.search.prepareCandidate({
+        knowledgeBaseId: request.knowledgeBaseId,
+        candidatePublicId: searchProjectionPublicId,
+        schemaChecksum: input.schemaChecksum,
+        settingsChecksum: input.settingsChecksum
+      });
+      throwIfAborted(request.signal);
+      search = await input.searchBuilder.build(request);
+      validateBuildResult(search);
+      throwIfAborted(request.signal);
+      await input.graph.reconcile({
         ...request,
         searchProjectionPublicId
       });
       throwIfAborted(request.signal);
-      if (search) {
-        await input.search.validateCandidate({
-          candidatePublicId: searchProjectionPublicId,
-          expectedDocumentCount: search.documentCount,
-          documentChecksum: search.documentChecksum,
-          schemaChecksum: input.schemaChecksum,
-          settingsChecksum: input.settingsChecksum,
-          queryCases: input.queryCases.length > 0
-            ? input.queryCases
-            : search.queryCases,
-          maxP95ProcessingTimeMs: input.maxP95ProcessingTimeMs
-        });
-        throwIfAborted(request.signal);
-      }
-      const completedCandidate = await input.releases.getCandidate({
-        knowledgeBaseId: request.knowledgeBaseId,
-        candidatePublicId: request.candidatePublicId,
-        operationPublicId: request.operationPublicId
-      });
-      if (!completedCandidate || completedCandidate.state !== "building") {
-        throw processorError("candidate_changed");
-      }
-      await input.releases.validate({
-        knowledgeBaseId: request.knowledgeBaseId,
-        candidatePublicId: request.candidatePublicId,
-        searchProjectionPublicId,
-        expectedCandidateFactRevision: completedCandidate.factRevision
-      });
-      return { searchProjectionPublicId };
     }
-  };
+    await input.artifacts.publish({
+      ...request,
+      searchProjectionPublicId
+    });
+    throwIfAborted(request.signal);
+    if (search) {
+      await input.search.validateCandidate({
+        candidatePublicId: searchProjectionPublicId,
+        expectedDocumentCount: search.documentCount,
+        documentChecksum: search.documentChecksum,
+        schemaChecksum: input.schemaChecksum,
+        settingsChecksum: input.settingsChecksum,
+        queryCases: input.queryCases.length > 0
+          ? input.queryCases
+          : search.queryCases,
+        maxP95ProcessingTimeMs: input.maxP95ProcessingTimeMs
+      });
+      throwIfAborted(request.signal);
+    }
+    if (request.beforeValidate) {
+      const readiness = await request.beforeValidate();
+      throwIfAborted(request.signal);
+      if (readiness.state === "pending") return { state: "pending" as const };
+    }
+    const completedCandidate = await input.releases.getCandidate({
+      knowledgeBaseId: request.knowledgeBaseId,
+      candidatePublicId: request.candidatePublicId,
+      operationPublicId: request.operationPublicId
+    });
+    if (!completedCandidate || completedCandidate.state !== "building") {
+      throw processorError("candidate_changed");
+    }
+    await input.releases.validate({
+      knowledgeBaseId: request.knowledgeBaseId,
+      candidatePublicId: request.candidatePublicId,
+      searchProjectionPublicId,
+      expectedCandidateFactRevision: completedCandidate.factRevision
+    });
+    return { searchProjectionPublicId };
+  }
 }
 
 function validateConfiguration(input: PublicationProcessorInput): void {

@@ -308,7 +308,7 @@ export interface SearchProviderMaintenancePort {
     continuation: string | null;
   }>;
   deleteOwnedFinishedOperations?(input: {
-    indexUidPrefix: string;
+    indexUidPrefixes: readonly string[];
     beforeFinishedAt: string;
     continuation: string | null;
     limit: number;

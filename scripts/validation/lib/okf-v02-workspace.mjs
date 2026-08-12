@@ -105,23 +105,36 @@ export async function discoverOfficialOkfFixtures(checkoutRoot) {
 export async function discoverLegacyOkfFixtures(inputRoot, options = {}) {
   const root = path.resolve(inputRoot);
   const selectCount = options.selectCount ?? OKF_V01_COMPATIBILITY_COUNT;
+  const maximumBytes = options.maximumBytes ?? 10 * 1024 * 1024;
   if (!Number.isSafeInteger(selectCount) || selectCount < OKF_V01_COMPATIBILITY_COUNT) {
     throw new Error("The legacy compatibility selection count is invalid.");
   }
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    throw new Error("The legacy compatibility maximum file size is invalid.");
+  }
   const allFiles = await collectReadOnlyFiles(root, "legacy compatibility corpus");
-  const markdown = allFiles.filter((entry) => entry.relativePath.endsWith(".md"));
+  const markdown = allFiles.filter((entry) =>
+    entry.relativePath.endsWith(".md")
+      && entry.sizeBytes <= maximumBytes
+      && !isReservedGeneratedPath(entry.relativePath)
+  );
   if (markdown.length < selectCount) {
     throw new Error(`The legacy compatibility corpus must contain at least ${selectCount} safe Markdown files.`);
   }
   return markdown
-    .map((file) => ({
-      file,
-      order: createHash("sha256").update(file.relativePath).digest("hex")
-    }))
-    .sort((left, right) => left.order.localeCompare(right.order)
-      || left.file.relativePath.localeCompare(right.file.relativePath))
-    .slice(0, selectCount)
-    .map(({ file }) => file);
+    .sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+    .slice(0, selectCount);
+}
+
+function isReservedGeneratedPath(relativePath) {
+  return new Set([
+    "index.md",
+    "schema.md",
+    "log.md",
+    "pages/index.md",
+    "_index/index.md",
+    "_graph/index.md"
+  ]).has(relativePath);
 }
 
 export async function stageOkfV02Fixtures(input) {

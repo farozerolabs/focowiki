@@ -237,6 +237,18 @@ export function createPostgresStorageVnextPublicationSnapshot(
         WHERE shard.logical_kind = ${STORAGE_VNEXT_DIRECTORY_NAVIGATION_SHARD_KIND}
           AND shard.first_logical_path = ${request.directoryPath}
           AND shard.last_logical_path = ${request.directoryPath}
+          AND (
+            lineage.depth = 0
+            OR EXISTS (
+              SELECT 1
+              FROM candidate_scope scope
+              CROSS JOIN LATERAL focowiki.resolve_release_catalog(
+                scope.candidate_root_public_id
+              ) entry
+              WHERE entry.logical_path = ${`${request.directoryPath}/index.md`}
+                AND entry.entry_kind = 'directory'
+            )
+          )
         ORDER BY lineage.depth, attached.ordinal, shard.public_id COLLATE "C"
         LIMIT 65537
       `;

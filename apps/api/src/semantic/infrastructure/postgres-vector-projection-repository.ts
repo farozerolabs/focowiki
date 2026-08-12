@@ -25,9 +25,7 @@ export function createPostgresSemanticVectorProjectionRepository(
           AND vector.semantic_generation_public_id
             = ${input.semanticGenerationPublicId}
           AND vector.source_file_public_id = ${input.sourceFilePublicId}
-          AND vector.source_revision_public_id = ${input.sourceRevisionPublicId}
-          AND vector.deleted_at IS NULL
-          AND vector.state IN ('candidate', 'active')
+          AND vector.state IN ('candidate', 'active', 'deleted')
           AND (
             generation.generation_role = 'candidate'
               AND generation.state IN ('building', 'validating', 'ready')
@@ -163,10 +161,11 @@ export function createPostgresSemanticVectorProjectionRepository(
     async confirmImpacts(input) {
       assertTimestamp(input.confirmedAt);
       const ids = input.plan.desiredDocuments.map((document) => document.publicId);
-      const rows = await sql<Array<{ valid: boolean }>>`
+      return sql.begin(async (transaction) => {
+        const rows = await transaction<Array<{ valid: boolean }>>`
         WITH current_generation AS (
           SELECT generation_role,
-                 ${mutationCandidateSql(sql, input.plan)} AS mutation_candidate
+                 ${mutationCandidateSql(transaction, input.plan)} AS mutation_candidate
           FROM focowiki.semantic_generations generation
           WHERE generation.knowledge_base_id = ${input.plan.knowledgeBaseId}
             AND generation.public_id = ${input.plan.semanticGenerationPublicId}
@@ -209,7 +208,20 @@ export function createPostgresSemanticVectorProjectionRepository(
             )
         ) = ${ids.length} AS valid
       `;
-      return rows[0]?.valid === true;
+        if (rows[0]?.valid !== true) return false;
+        if (input.plan.providerDeleteDocumentIds.length > 0) {
+          await transaction`
+            DELETE FROM focowiki.semantic_vector_documents
+            WHERE knowledge_base_id = ${input.plan.knowledgeBaseId}
+              AND semantic_generation_public_id
+                = ${input.plan.semanticGenerationPublicId}
+              AND public_id = ANY(${input.plan.providerDeleteDocumentIds})
+              AND state = 'deleted'
+              AND deleted_at IS NOT NULL
+          `;
+        }
+        return true;
+      });
     }
   };
 }

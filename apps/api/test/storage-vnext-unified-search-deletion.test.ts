@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MeilisearchClientPort } from
   "../src/infrastructure/meilisearch/meilisearch-client-port.js";
-import type { SearchProviderKind } from
+import type { SearchProviderKind, SearchProviderRuntime } from
   "../src/application/ports/search-provider-runtime.js";
 import { createMeilisearchProviderRuntime } from
   "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
@@ -145,8 +145,12 @@ describe("storage vNext unified search deletion", () => {
     })).rejects.toMatchObject({ code: "invalid_input" });
   });
 
-  it("deletes at most the active and candidate identities for a whole knowledge base", async () => {
+  it("deletes active, candidate, and historical indexes for a whole knowledge base", async () => {
     const fixture = createFixture();
+    const familyPrefix = `unified_${createHash("sha256")
+      .update("kb-search-delete").digest("hex").slice(0, 16)}_`;
+    fixture.indexes.add(`${familyPrefix}historical_one`);
+    fixture.indexes.add(`${familyPrefix}historical_two`);
     const deletion = createDeletion(fixture);
 
     await expect(deletion.deleteKnowledgeBaseScope({
@@ -159,7 +163,7 @@ describe("storage vNext unified search deletion", () => {
       finishedBefore: "2026-08-01T05:59:00.000Z",
       taskFrom: null
     })).resolves.toEqual({
-      deletedIndexes: 2,
+      deletedIndexes: 4,
       deletedTasks: 0,
       nextTaskFrom: null,
       processedProviderKind: "meilisearch",
@@ -168,10 +172,77 @@ describe("storage vNext unified search deletion", () => {
     expect(fixture.transport.deleteIndex.mock.calls.map((call) => call[0]))
       .toEqual([
         "unified_kb_search_delete_active",
-        "unified_kb_search_delete_candidate"
+        "unified_kb_search_delete_candidate",
+        `${familyPrefix}historical_one`,
+        `${familyPrefix}historical_two`
       ]);
     expect(fixture.transport.deleteFinishedTasks).not.toHaveBeenCalled();
     expect(fixture.transport.deleteDocuments).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the provider cannot enumerate the owned index family", async () => {
+    const fixture = createFixture();
+    const { maintenance: _maintenance, ...providerWithoutMaintenance } = fixture.provider;
+    const deletion = createDeletion(fixture, providerWithoutMaintenance);
+
+    await expect(deletion.deleteKnowledgeBaseScope({
+      knowledgeBaseId: "kb-search-delete",
+      operationPublicId: "operation-search-delete",
+      activeProviderKind: null,
+      activeProviderIndexUid: null,
+      candidateProviderKind: null,
+      candidateProviderIndexUid: null,
+      finishedBefore: "2026-08-01T05:59:00.000Z",
+      taskFrom: null
+    })).rejects.toMatchObject({ code: "provider_contract_unavailable" });
+  });
+
+  it("rejects an out-of-family index returned by the provider", async () => {
+    const fixture = createFixture();
+    const provider = withOwnedIndexListing(fixture.provider, async () => ({
+      indexes: [{
+        indexUid: "unified_other_active",
+        updatedAt: "2026-08-01T05:00:00.000Z"
+      }],
+      continuation: null,
+      restartContinuation: "provider:restart"
+    }));
+    const deletion = createDeletion(fixture, provider);
+
+    await expect(deletion.deleteKnowledgeBaseScope({
+      knowledgeBaseId: "kb-search-delete",
+      operationPublicId: "operation-search-delete",
+      activeProviderKind: null,
+      activeProviderIndexUid: null,
+      candidateProviderKind: null,
+      candidateProviderIndexUid: null,
+      finishedBefore: "2026-08-01T05:59:00.000Z",
+      taskFrom: null
+    })).rejects.toMatchObject({ code: "provider_contract_unavailable" });
+    expect(fixture.indexes.has("unified_other_active")).toBe(true);
+  });
+
+  it("bounds a provider continuation that never converges", async () => {
+    const fixture = createFixture();
+    const listOwnedIndexes = vi.fn(async () => ({
+      indexes: [],
+      continuation: "provider:again",
+      restartContinuation: "provider:restart"
+    }));
+    const provider = withOwnedIndexListing(fixture.provider, listOwnedIndexes);
+    const deletion = createDeletion(fixture, provider);
+
+    await expect(deletion.deleteKnowledgeBaseScope({
+      knowledgeBaseId: "kb-search-delete",
+      operationPublicId: "operation-search-delete",
+      activeProviderKind: null,
+      activeProviderIndexUid: null,
+      candidateProviderKind: null,
+      candidateProviderIndexUid: null,
+      finishedBefore: "2026-08-01T05:59:00.000Z",
+      taskFrom: null
+    })).rejects.toMatchObject({ code: "provider_task_timeout" });
+    expect(listOwnedIndexes).toHaveBeenCalledTimes(2);
   });
 
   it("never sends an index owned by another provider to the selected provider", async () => {
@@ -301,17 +372,35 @@ describe("storage vNext unified search deletion", () => {
   });
 });
 
-function createDeletion(fixture: ReturnType<typeof createFixture>) {
+function createDeletion(
+  fixture: ReturnType<typeof createFixture>,
+  provider: SearchProviderRuntime = fixture.provider
+) {
   expect(factory).toBeTypeOf("function");
   if (!factory) throw new Error("Storage vNext unified search deletion is unavailable");
   return factory({
-    provider: fixture.provider,
+    provider,
     indexUidPrefix: "unified",
     maximumPollAttempts: 2,
     maximumSourceFiles: 3,
     taskPageSize: 10,
     sleep: async () => undefined
   });
+}
+
+function withOwnedIndexListing(
+  provider: SearchProviderRuntime,
+  listOwnedIndexes: NonNullable<
+    NonNullable<SearchProviderRuntime["maintenance"]>["listOwnedIndexes"]
+  >
+): SearchProviderRuntime {
+  return {
+    ...provider,
+    maintenance: {
+      ...provider.maintenance,
+      listOwnedIndexes
+    }
+  };
 }
 
 function createFixture() {
@@ -326,6 +415,15 @@ function createFixture() {
   const transport = {
     getIndex: vi.fn(async ({ indexUid }: { indexUid: string }) =>
       indexes.has(indexUid) ? { uid: indexUid, primaryKey: "id" } : null),
+    listIndexes: vi.fn(async ({ offset, limit }: { offset: number; limit: number }) => ({
+      indexes: [...indexes].sort().slice(offset, offset + limit).map((uid) => ({
+        uid,
+        createdAt: "2026-08-01T05:00:00.000Z",
+        updatedAt: "2026-08-01T05:00:00.000Z"
+      })),
+      total: indexes.size,
+      offset
+    })),
     deleteDocuments: vi.fn(async () => ({ taskUid: nextTaskUid++ })),
     deleteIndex: vi.fn(async (indexUid: string) => {
       indexes.delete(indexUid);

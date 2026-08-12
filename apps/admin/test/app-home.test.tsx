@@ -41,6 +41,7 @@ vi.mock("../src/lib/admin-api", () => ({
   }),
   checkAdminSession: vi.fn(async () => false),
   createRuntimeModel: vi.fn(),
+  updateRuntimeModel: vi.fn(),
   createKnowledgeBase: vi.fn(async () => ({
     knowledgeBase: {
       id: "kb-created",
@@ -110,6 +111,21 @@ vi.mock("../src/lib/admin-api", () => ({
       lexicalRebuild: null,
       projectionRepair: null,
       compaction: { active: null, latestCompleted: null }
+    },
+    indexMaintenance: {
+      requestId: null,
+      state: "idle",
+      trigger: null,
+      stage: null,
+      active: false,
+      completedCount: 0,
+      expectedCount: 0,
+      retryCount: 0,
+      lastProgressAt: null,
+      lastCompletedAt: null,
+      maintenanceRequired: false,
+      safeErrorCode: null,
+      safeErrorMessage: null
     },
     dirtySourceFiles: {
       count: 0,
@@ -279,6 +295,72 @@ describe("Admin knowledge base home", () => {
     expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
     expect(screen.queryByLabelText("Username")).toBeNull();
     expect(loginAdmin).not.toHaveBeenCalled();
+  });
+
+  it("recovers after the knowledge base list response is malformed", async () => {
+    vi.mocked(listKnowledgeBases)
+      .mockRejectedValueOnce(new SyntaxError("Unexpected token in JSON"))
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-recovered",
+            name: "Recovered docs",
+            description: "Loaded after retry",
+            activeGenerationId: null
+          }
+        ],
+        nextCursor: null
+      });
+
+    render(<App />);
+    await login();
+
+    expect(await screen.findByText("No knowledge bases yet")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Search knowledge bases"), {
+      target: { value: "recovered" }
+    });
+
+    expect(await screen.findByRole("button", { name: "Recovered docs" })).toBeTruthy();
+    expect(listKnowledgeBases).toHaveBeenLastCalledWith({ query: "recovered" });
+  });
+
+  it("keeps the knowledge base load pending until a slow response preserves its durable ID", async () => {
+    let resolvePage: ((page: {
+      items: Array<{
+        id: string;
+        name: string;
+        description: string;
+        activeGenerationId: null;
+      }>;
+      nextCursor: null;
+    }) => void) | undefined;
+    vi.mocked(listKnowledgeBases).mockReturnValueOnce(new Promise((resolve) => {
+      resolvePage = resolve;
+    }));
+
+    render(<App />);
+    await login();
+
+    expect(await screen.findByText("Loading")).toBeTruthy();
+
+    await act(async () => {
+      resolvePage?.({
+        items: [
+          {
+            id: "kb-slow-stable-id",
+            name: "Slow response docs",
+            description: "Resolved without client duplication",
+            activeGenerationId: null
+          }
+        ],
+        nextCursor: null
+      });
+    });
+
+    expect(await screen.findByRole("button", { name: "Slow response docs" })).toBeTruthy();
+    expect(screen.getByText("kb-slow-stable-id")).toBeTruthy();
+    expect(listKnowledgeBases).toHaveBeenCalledTimes(1);
   });
 
   it("restores a knowledge base detail view from the URL after refresh", async () => {

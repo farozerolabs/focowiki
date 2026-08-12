@@ -7,6 +7,7 @@ import {
   deleteRuntimeModel,
   fetchRuntimeSettings,
   updateMaintenanceSettings,
+  updateRuntimeModel,
   updatePublicationSettings,
   updateRateLimitSettings,
   updateSearchSettings,
@@ -25,6 +26,18 @@ globalThis.ResizeObserver = TestResizeObserver;
 vi.mock("@/lib/admin-api", () => ({
   activateRuntimeModel: vi.fn(),
   createRuntimeModel: vi.fn(),
+  updateRuntimeModel: vi.fn(async (modelId, value) => ({
+    model: {
+      id: modelId,
+      ...value,
+      apiKeyFingerprint: "key...test",
+      status: "active",
+      isActive: true,
+      createdAt: "2026-06-14T00:00:00.000Z",
+      updatedAt: "2026-06-14T00:01:00.000Z",
+      lastUsedAt: null
+    }
+  })),
   deleteRuntimeModel: vi.fn(async () => ({
     model: {
       id: "model-001",
@@ -253,6 +266,31 @@ describe("SettingsPanel", () => {
       expect(deleteRuntimeModel).toHaveBeenCalledWith("model-001");
     });
     expect(fetchRuntimeSettings).toHaveBeenCalled();
+  });
+
+  it("updates a generation model while leaving its credential input empty", async () => {
+    render(<SettingsPanel />);
+
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Models" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    const displayName = document.getElementById("model-display-name") as HTMLInputElement;
+    const apiKey = document.getElementById("model-api-key") as HTMLInputElement;
+    expect(displayName.value).toBe("Primary model");
+    expect(apiKey.value).toBe("");
+    fireEvent.change(displayName, { target: { value: "Primary model updated" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update model" }));
+
+    await waitFor(() => {
+      expect(updateRuntimeModel).toHaveBeenCalledWith(
+        "model-001",
+        expect.objectContaining({
+          displayName: "Primary model updated",
+          apiKey: ""
+        })
+      );
+    });
   });
 
   it("keeps the released settings page shell while removing only approved fields", async () => {

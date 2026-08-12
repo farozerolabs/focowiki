@@ -327,6 +327,53 @@ describe("folder upload session client", () => {
       sessionId: "upload-session-test"
     });
   });
+
+  it("stops an in-flight body transfer without retrying after the caller aborts", async () => {
+    vi.mocked(sealUploadManifest).mockResolvedValue({
+      session: uploadSession("manifest_sealed", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      sample: [],
+      nextCursor: null
+    });
+    vi.mocked(getUploadSession).mockResolvedValue({
+      session: uploadSession("uploading", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      entries: {
+        items: [uploadEntry("upload-entry-aborted", "handbook/aborted.md")],
+        nextCursor: null
+      }
+    });
+    let resolveFirstTransfer!: (value: { messageKey: string }) => void;
+    const firstTransfer = new Promise<{ messageKey: string }>((resolve) => {
+      resolveFirstTransfer = resolve;
+    });
+    vi.mocked(uploadSessionContent)
+      .mockImplementationOnce(async () => firstTransfer)
+      .mockResolvedValue({ messageKey: "errors.uploadFailed" });
+    const controller = new AbortController();
+
+    const resultPromise = runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Aborted", "handbook/aborted.md")],
+      onProgress: vi.fn(),
+      signal: controller.signal
+    } as Parameters<typeof runUploadSession>[0]);
+    await vi.waitFor(() => expect(uploadSessionContent).toHaveBeenCalledTimes(1));
+    controller.abort();
+    resolveFirstTransfer({ messageKey: "errors.uploadFailed" });
+
+    await expect(resultPromise).resolves.toEqual({
+      ok: false,
+      failure: { messageKey: "errors.uploadFailed" },
+      sessionId: null
+    });
+    expect(uploadSessionContent).toHaveBeenCalledTimes(1);
+    expect(cancelUploadSession).not.toHaveBeenCalled();
+  });
 });
 
 const uploadTransport = { manifestPageSize: 500, contentUploadConcurrency: 2 };

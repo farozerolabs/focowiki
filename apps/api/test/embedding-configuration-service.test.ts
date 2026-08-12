@@ -63,6 +63,8 @@ describe("embedding configuration application service", () => {
       .resolves.toMatchObject({ validationStatus: "valid", resolvedDimension: 3 });
     await expect(service.activate(created.publicId, 2, "admin-a"))
       .resolves.toMatchObject({ lifecycleStatus: "active", revision: 3 });
+    await expect(service.delete(created.publicId, 3, "admin-a"))
+      .rejects.toMatchObject({ code: "configuration_in_use" });
 
     const serialized = JSON.stringify({ events, values: await service.list() });
     expect(serialized).not.toContain("embedding-secret");
@@ -155,6 +157,20 @@ describe("embedding configuration application service", () => {
       .resolves.toMatchObject({ lifecycleStatus: "draft", revision: 3 });
     await expect(service.delete(created.publicId, 3, null)).resolves.toBe(true);
     await expect(service.get(created.publicId)).resolves.toBeNull();
+  });
+
+  it("reports a missing configuration before pause or resume revision checks", async () => {
+    const service = createEmbeddingConfigurationService({
+      repository: createMemoryRepository(),
+      transport: { embed: vi.fn() },
+      audit: { append: vi.fn(async () => undefined) },
+      deploymentSecret: "deployment-secret"
+    });
+
+    await expect(service.pause("embedding-config-missing", 1, null))
+      .rejects.toMatchObject({ code: "not_found" });
+    await expect(service.resume("embedding-config-missing", 1, null))
+      .rejects.toMatchObject({ code: "not_found" });
   });
 });
 

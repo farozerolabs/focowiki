@@ -21,6 +21,8 @@ import type { RerankerConfigurationService } from
   "../semantic/reranker/service.js";
 import type { StorageVnextSemanticAdoptionSnapshot } from
   "../storage-vnext/maintenance/ports.js";
+import type { createStorageVnextMaintenanceCancellationCleanup } from
+  "../storage-vnext/maintenance/cancellation-cleanup.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -61,4 +63,7 @@ export type ApiAppOptions = {
       requestedAt: string;
     }): Promise<unknown>;
   };
+  maintenanceCancellationCleanup?: ReturnType<
+    typeof createStorageVnextMaintenanceCancellationCleanup
+  >;
 };

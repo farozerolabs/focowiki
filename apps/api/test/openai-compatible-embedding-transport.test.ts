@@ -136,7 +136,7 @@ describe("OpenAI-compatible embedding transport", () => {
     expect(JSON.stringify(error)).not.toContain(secret);
   });
 
-  it("distinguishes caller cancellation from transport timeout", async () => {
+  it("maps caller embedding cancellation to aborted", async () => {
     const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
       return new Promise<Response>((_resolve, reject) => {
@@ -159,6 +159,16 @@ describe("OpenAI-compatible embedding transport", () => {
       maximumResponseBytes: 10_000,
       signal: controller.signal
     })).rejects.toMatchObject({ code: "aborted" });
+  });
+
+  it("maps an embedding transport deadline to timeout", async () => {
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      }));
+    const transport = createOpenAiCompatibleEmbeddingTransport({ fetch });
 
     await expect(transport.embed({
       baseUrl: "http://127.0.0.1:11434/v1",
@@ -172,4 +182,38 @@ describe("OpenAI-compatible embedding transport", () => {
       signal: null
     })).rejects.toMatchObject({ code: "timeout" });
   });
+
+  it("classifies embedding HTTP 429 as retryable rate limiting", async () => {
+    const transport = createOpenAiCompatibleEmbeddingTransport({
+      fetch: vi.fn(async () => new Response(null, { status: 429 }))
+    });
+    await expect(transport.embed(transportRequest())).rejects.toMatchObject({
+      code: "rate_limited",
+      retryable: true
+    });
+  });
+
+  it("classifies embedding HTTP 400 as a non-retryable invalid request", async () => {
+    const transport = createOpenAiCompatibleEmbeddingTransport({
+      fetch: vi.fn(async () => new Response(null, { status: 400 }))
+    });
+    await expect(transport.embed(transportRequest())).rejects.toMatchObject({
+      code: "invalid_request",
+      retryable: false
+    });
+  });
 });
+
+function transportRequest() {
+  return {
+    baseUrl: "https://embedding.example/v1",
+    authenticationMode: "none" as const,
+    apiKey: null,
+    modelName: "embedding-model",
+    requestedDimension: null,
+    inputs: ["probe"],
+    timeoutMs: 1_000,
+    maximumResponseBytes: 10_000,
+    signal: null
+  };
+}

@@ -11,7 +11,6 @@ export type SemanticVectorProjectionRepositoryPort = {
     knowledgeBaseId: string;
     semanticGenerationPublicId: string;
     sourceFilePublicId: string;
-    sourceRevisionPublicId: string;
     limit: number;
   }): Promise<readonly { publicId: string; ownerPublicId: string }[]>;
   prepareImpacts(input: {

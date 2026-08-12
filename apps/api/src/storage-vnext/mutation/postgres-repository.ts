@@ -63,6 +63,15 @@ type CurrentRevisionRow = {
   checksum_sha256: string;
 };
 
+type RollbackRevisionRow = {
+  public_id: string;
+  object_id: string;
+  byte_count: number | string;
+  content_type: string;
+  expires_at: Date;
+  revision_role: string;
+};
+
 type DirectoryRow = {
   public_id: string;
   parent_public_id: string | null;
@@ -133,7 +142,11 @@ export function createPostgresStorageVnextMutationRepository(
         `;
         if (candidates[0]) throw repositoryError("release_candidate_present");
         const work = await transaction<Array<{
-          checkpoint: { candidateRevisionPublicId?: string };
+          checkpoint: {
+            candidateRevisionPublicId?: string;
+            reusedRollbackRevision?: boolean;
+            rollbackRevisionExpiresAt?: string;
+          };
         }>>`
           SELECT work.checkpoint
           FROM focowiki.operation_work_items work
@@ -147,16 +160,29 @@ export function createPostgresStorageVnextMutationRepository(
           FOR UPDATE OF work, operation
         `;
         if (!work[0]) return false;
-        const candidateRevisionPublicId = work[0].checkpoint.candidateRevisionPublicId;
-        const releasedObjects = candidateRevisionPublicId
-          ? await transaction<Array<{ object_id: string }>>`
-              DELETE FROM focowiki.source_revisions
-              WHERE knowledge_base_id = ${input.knowledgeBaseId}
-                AND public_id = ${candidateRevisionPublicId}
-                AND revision_role = 'candidate'
-              RETURNING object_id
-            `
-          : [];
+        const checkpoint = work[0].checkpoint;
+        const candidateRevisionPublicId = checkpoint.candidateRevisionPublicId;
+        let releasedObjects: Array<{ object_id: string }> = [];
+        if (candidateRevisionPublicId && checkpoint.reusedRollbackRevision) {
+          const restored = await transaction<Array<{ public_id: string }>>`
+            UPDATE focowiki.source_revisions
+            SET revision_role = 'rollback',
+                expires_at = ${checkpoint.rollbackRevisionExpiresAt ?? null}
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND public_id = ${candidateRevisionPublicId}
+              AND revision_role = 'candidate'
+            RETURNING public_id
+          `;
+          if (restored.length !== 1) throw repositoryError("scope_conflict");
+        } else if (candidateRevisionPublicId) {
+          releasedObjects = await transaction<Array<{ object_id: string }>>`
+            DELETE FROM focowiki.source_revisions
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND public_id = ${candidateRevisionPublicId}
+              AND revision_role = 'candidate'
+            RETURNING object_id
+          `;
+        }
         await transaction`
           DELETE FROM focowiki.mutation_path_reservations
           WHERE knowledge_base_id = ${input.knowledgeBaseId}
@@ -440,6 +466,7 @@ async function createCandidateCheckpoint(
     throw repositoryError("content_unchanged");
   }
   await assertVerifiedObject(transaction, input);
+  const rollback = await readReusableRollbackRevision(transaction, input);
   const terminalFailureCode = input.normalizedCandidatePath
     && missingFileParent(input)
     ? "RESOURCE_PATH_CONFLICT"
@@ -460,13 +487,18 @@ async function createCandidateCheckpoint(
     currentRevisionPublicId: source.current_revision_public_id,
     candidateDirectoryPublicId: input.destinationDirectoryPublicId
       ?? source.directory_public_id,
-    candidateRevisionPublicId: input.candidateRevisionPublicId,
+    candidateRevisionPublicId: rollback?.public_id
+      ?? input.candidateRevisionPublicId,
     candidateTitle: input.candidateTitle,
     candidateMetadata: input.candidateMetadata,
-    objectId: input.objectId,
+    objectId: rollback?.object_id ?? input.objectId,
     checksumSha256: input.checksumSha256,
     byteCount: input.byteCount,
     contentType: input.contentType,
+    ...(rollback ? {
+      reusedRollbackRevision: true,
+      rollbackRevisionExpiresAt: rollback.expires_at.toISOString()
+    } : {}),
     ...(terminalFailureCode ? { terminalFailureCode } : {})
   };
 }
@@ -669,6 +701,32 @@ async function assertVerifiedObject(
   }
 }
 
+async function readReusableRollbackRevision(
+  transaction: TransactionSql,
+  input: Extract<StorageVnextNormalizedMutationRequest, { kind: "source_replace" }>
+): Promise<RollbackRevisionRow | null> {
+  const rows = await transaction<RollbackRevisionRow[]>`
+    SELECT public_id, object_id, byte_count, content_type,
+           expires_at, revision_role
+    FROM focowiki.source_revisions
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND source_file_public_id = ${input.targetPublicId}
+      AND checksum_sha256 = ${input.checksumSha256}
+    FOR UPDATE
+  `;
+  const revision = rows[0];
+  if (!revision) return null;
+  if (revision.revision_role !== "rollback") {
+    throw repositoryError("mutation_conflict");
+  }
+  if (Number(revision.byte_count) !== input.byteCount
+    || revision.content_type !== input.contentType
+    || !revision.expires_at) {
+    throw repositoryError("scope_conflict");
+  }
+  return revision;
+}
+
 async function insertAcceptedMutation(
   transaction: TransactionSql,
   input: StorageVnextNormalizedMutationRequest,
@@ -719,28 +777,50 @@ async function insertAcceptedMutation(
     `;
   }
   if (input.kind === "source_replace") {
-    await transaction`
-      INSERT INTO focowiki.source_revisions (
-        public_id, knowledge_base_id, source_file_public_id, object_id,
-        checksum_sha256, byte_count, content_type, revision_role,
-        expires_at, created_at
-      ) VALUES (
-        ${input.candidateRevisionPublicId}, ${input.knowledgeBaseId},
-        ${input.targetPublicId}, ${input.objectId}, ${input.checksumSha256},
-        ${input.byteCount}, ${input.contentType}, 'candidate',
-        ${input.expiresAt}, ${input.createdAt}
-      )
-    `;
-    await transaction`
-      INSERT INTO focowiki.object_owners (
-        public_id, knowledge_base_id, object_id, owner_kind,
-        source_revision_public_id
-      ) VALUES (
-        ${mutationIdentity("owner", input.knowledgeBaseId, input.candidateRevisionPublicId)},
-        ${input.knowledgeBaseId}, ${input.objectId}, 'source_revision',
-        ${input.candidateRevisionPublicId}
-      )
-    `;
+    const candidateRevisionPublicId = String(
+      checkpoint.candidateRevisionPublicId
+    );
+    if (checkpoint.reusedRollbackRevision === true) {
+      const promoted = await transaction<Array<{ public_id: string }>>`
+        UPDATE focowiki.source_revisions
+        SET revision_role = 'candidate', expires_at = ${input.expiresAt}
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND source_file_public_id = ${input.targetPublicId}
+          AND public_id = ${candidateRevisionPublicId}
+          AND checksum_sha256 = ${input.checksumSha256}
+          AND revision_role = 'rollback'
+        RETURNING public_id
+      `;
+      if (promoted.length !== 1) throw repositoryError("scope_conflict");
+    } else {
+      await transaction`
+        INSERT INTO focowiki.source_revisions (
+          public_id, knowledge_base_id, source_file_public_id, object_id,
+          checksum_sha256, byte_count, content_type, revision_role,
+          expires_at, created_at
+        ) VALUES (
+          ${candidateRevisionPublicId}, ${input.knowledgeBaseId},
+          ${input.targetPublicId}, ${input.objectId}, ${input.checksumSha256},
+          ${input.byteCount}, ${input.contentType}, 'candidate',
+          ${input.expiresAt}, ${input.createdAt}
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.object_owners (
+          public_id, knowledge_base_id, object_id, owner_kind,
+          source_revision_public_id
+        ) VALUES (
+          ${mutationIdentity("owner", input.knowledgeBaseId, candidateRevisionPublicId)},
+          ${input.knowledgeBaseId}, ${input.objectId}, 'source_revision',
+          ${candidateRevisionPublicId}
+        )
+      `;
+      await transaction`
+        UPDATE focowiki.object_registrations
+        SET zero_owner_since = NULL
+        WHERE object_id = ${input.objectId}
+      `;
+    }
   }
 }
 

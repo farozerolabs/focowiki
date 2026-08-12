@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { SourceResourceError } from "../domain/source-resource.js";
+import { SourcePathValidationError } from "../domain/source-path.js";
 import {
   deriveSourceFileLifecycle,
   type SourceFileLifecycleActionKind
@@ -146,7 +147,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
           targetId: context.req.param("directoryId"),
-          relativePath: body.relativePath as string
+          relativePath: readRequiredRelativePath(body.relativePath)
         }));
         return { operation: toOperationResponse(result.operation) };
       }, 202)
@@ -268,7 +269,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
           targetId: context.req.param("sourceFileId"),
-          relativePath: body.relativePath as string
+          relativePath: readRequiredRelativePath(body.relativePath)
         }));
         return { operation: toOperationResponse(result.operation) };
       }, 202)
@@ -526,6 +527,15 @@ function readOptionalName(value: unknown): string {
   return value.trim();
 }
 
+function readRequiredRelativePath(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw validationError("Relative path must be a non-empty string.", {
+      field: "relativePath"
+    });
+  }
+  return value;
+}
+
 function readOptionalDescription(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
@@ -537,8 +547,14 @@ function readOptionalDescription(value: unknown): string | null | undefined {
   return value.trim() || null;
 }
 
-function readNullableQuery(value: string | undefined): string | null {
-  if (!value || value === "root") return null;
+export function readNullableQuery(value: string | undefined): string | null {
+  if (value === undefined || value === "root") return null;
+  if (!value) {
+    throw validationError("Directory filter must be `root` or a non-empty identifier.");
+  }
+  if (value.length > 200) {
+    throw validationError("Directory filter must not exceed 200 characters.");
+  }
   return value;
 }
 
@@ -635,8 +651,14 @@ async function runSourceResourceMutation<T>(operation: () => Promise<T>): Promis
   try {
     return await operation();
   } catch (error) {
+    if (error instanceof SourcePathValidationError) {
+      throw validationError("Relative path is invalid.", { field: "relativePath" });
+    }
     if (!(error instanceof SourceResourceError)) throw error;
     if (error.code === "RESOURCE_NOT_FOUND") throw notFound();
+    if (error.code === "INVALID_PAGINATION") {
+      throw validationError("Cursor is invalid.", { field: "cursor" });
+    }
     if (error.code === "INVALID_RESOURCE_MUTATION") {
       throw validationError("Request headers or body are invalid.");
     }

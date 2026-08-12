@@ -55,6 +55,23 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
       }]
     }]
   });
+  const staleDirectoryState = createStorageVnextDirectoryNavigationShard({
+    directoryPath: "pages/removed",
+    ordinal: 0,
+    leaves: [{
+      id: "directory-leaf-removed",
+      previousLeafId: null,
+      nextLeafId: null,
+      revision: 1,
+      entries: [{
+        id: "directory:pages/removed/child",
+        sortKey: "child/directory:pages/removed/child",
+        name: "child",
+        targetPath: "pages/removed/child/index.md",
+        kind: "directory"
+      }]
+    }]
+  });
   const [extensionState] = createStorageVnextExtensionNavigationShards({
     directoryPath: "_index/links/v1",
     leaves: [{
@@ -85,6 +102,9 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
       async readVerified(input) {
         if (input.descriptor.checksum === directoryState.publicId.slice(-64)) {
           return directoryState.bytes;
+        }
+        if (input.descriptor.checksum === staleDirectoryState.publicId.slice(-64)) {
+          return staleDirectoryState.bytes;
         }
         if (input.descriptor.checksum === extensionState!.publicId.slice(-64)) {
           return extensionState!.bytes;
@@ -201,6 +221,16 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
       id: "directory-leaf-existing",
       revision: 3
     })]);
+  });
+
+  it("ignores inherited directory navigation after its catalog path was removed", async () => {
+    await expect(snapshot.readDirectoryLeaves({
+      knowledgeBaseId: "kb-publication",
+      candidatePublicId: "candidate-publication",
+      directoryPath: "pages/removed",
+      maximumBytes: 65_536,
+      signal: new AbortController().signal
+    })).resolves.toEqual([]);
   });
 
   it("reuses inherited extension navigation descriptors without reading object bodies", async () => {
@@ -666,6 +696,38 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
         ordinal: directoryState.ordinal
       }]
     });
+    const staleDirectoryStateChecksum = staleDirectoryState.publicId.slice(-64);
+    await sql`
+      INSERT INTO focowiki.object_registrations (
+        object_id, storage_key, checksum_sha256, byte_count, content_type,
+        object_format, state, write_attempt_public_id, verified_at, created_at
+      ) VALUES (
+        'object-stale-directory-state', 'run-owned/object-stale-directory-state',
+        ${staleDirectoryStateChecksum}, ${staleDirectoryState.bytes.byteLength},
+        'application/json; charset=utf-8', 'okf-generated-json-v1',
+        'verified', 'attempt-stale-directory-state', now(), now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.release_shards (
+        public_id, knowledge_base_id, logical_kind, first_logical_path,
+        last_logical_path, record_count, byte_count, checksum_sha256, object_id
+      ) VALUES (
+        ${staleDirectoryState.publicId}, 'kb-publication',
+        ${staleDirectoryState.logicalKind}, ${staleDirectoryState.firstLogicalPath},
+        ${staleDirectoryState.lastLogicalPath}, ${staleDirectoryState.recordCount},
+        ${staleDirectoryState.bytes.byteLength}, ${staleDirectoryStateChecksum},
+        'object-stale-directory-state'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.release_root_shards (
+        knowledge_base_id, release_root_public_id, release_shard_public_id, ordinal
+      ) VALUES (
+        'kb-publication', 'root-active', ${staleDirectoryState.publicId},
+        ${staleDirectoryState.ordinal}
+      )
+    `;
   }
 
   async function createObject(

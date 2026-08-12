@@ -31,7 +31,10 @@ export function createPostgresSemanticPublicationCoalescingReadiness(
            )
            AND generation.deleted_at IS NULL
           WHERE stage.knowledge_base_id = ${input.knowledgeBaseId}
-            AND stage.stage_kind = 'publication'
+            AND stage.stage_kind IN (
+              'extraction', 'reconciliation', 'community',
+              'embedding', 'vector', 'publication'
+            )
             AND stage.state IN ('queued', 'running', 'retry')
         ) AS pending
       `;

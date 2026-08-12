@@ -14,6 +14,8 @@ import {
   createStorageVnextMaintenanceCandidatePublicId,
   createStorageVnextMaintenanceRootPublicId
 } from "./identity.js";
+import { isStorageVnextStablePublicationSource } from
+  "../publication/source-eligibility.js";
 
 type PlannerCatalog = Pick<
   StorageVnextCatalogReadPort,
@@ -155,13 +157,16 @@ export function createStorageVnextMaintenanceProductionPlanner(input: {
           cursor: sourceCursor
         });
         assertPage(page.items.length, input.sourcePageSize);
+        const sources = page.items.filter((item) =>
+          isStorageVnextStablePublicationSource(item.sourceFile)
+        );
         const dependencies = dependencyClosure(request.knowledgeBaseId, {
-          sourceFilePublicIds: page.items.map((item) => item.sourceFile.publicId),
-          sourceLogicalPaths: page.items.map((item) => item.sourceFile.logicalPath),
+          sourceFilePublicIds: sources.map((item) => item.sourceFile.publicId),
+          sourceLogicalPaths: sources.map((item) => item.sourceFile.logicalPath),
           directoryLogicalPaths: []
         });
         await addDependencies(input, candidatePublicId, dependencies);
-        sourceCount += page.items.length;
+        sourceCount += sources.length;
         sourceCursor = advancingCursor(sourceCursor, page.nextCursor, "source");
       } while (sourceCursor !== null);
 

@@ -15,9 +15,14 @@ export type RerankerConfigurationDraft = {
 };
 
 export type RerankerConfigurationIssue = {
-  field: keyof RerankerConfigurationDraft;
+  field: string;
   code: string;
 };
+
+const RERANKER_CONFIGURATION_FIELDS = new Set([
+  "displayName", "authenticationMode", "baseUrl", "apiKey", "modelName",
+  "timeoutMs", "retryCount", "minimumIntervalMs", "concurrency"
+]);
 
 export type RerankerConfigurationPublic = Omit<
   RerankerConfigurationDraft,
@@ -43,37 +48,45 @@ export function validateRerankerConfigurationDraft(
   options: { apiKeyMayBeOmitted?: boolean } = {}
 ): RerankerConfigurationIssue[] {
   const issues: RerankerConfigurationIssue[] = [];
-  boundedText(issues, "displayName", input.displayName, 255);
-  if (!RERANKER_AUTHENTICATION_MODES.includes(input.authenticationMode as never)) {
+  const value = objectValue(input);
+  rejectUnknownFields(issues, value, RERANKER_CONFIGURATION_FIELDS);
+  boundedText(issues, "displayName", value.displayName, 255);
+  if (!RERANKER_AUTHENTICATION_MODES.includes(value.authenticationMode as never)) {
     issues.push({
       field: "authenticationMode",
       code: "invalid_authentication_mode"
     });
   }
-  validateBaseUrl(issues, input.baseUrl, input.authenticationMode);
-  if (input.authenticationMode === "api_key") {
+  validateBaseUrl(
+    issues,
+    value.baseUrl,
+    value.authenticationMode as RerankerAuthenticationMode
+  );
+  if (value.authenticationMode === "api_key") {
     if (
-      input.apiKey === null && !options.apiKeyMayBeOmitted
-      || input.apiKey !== null
-        && (!input.apiKey.trim() || Buffer.byteLength(input.apiKey) > 16_384)
+      value.apiKey === null || value.apiKey === undefined
+        ? !options.apiKeyMayBeOmitted
+        : typeof value.apiKey !== "string"
+          || !value.apiKey.trim()
+          || Buffer.byteLength(value.apiKey) > 16_384
     ) issues.push({ field: "apiKey", code: "api_key_required" });
-  } else if (input.apiKey !== null) {
+  } else if (value.apiKey !== null) {
     issues.push({ field: "apiKey", code: "api_key_forbidden" });
   }
-  boundedText(issues, "modelName", input.modelName, 255);
-  integer(issues, "timeoutMs", input.timeoutMs, 100, 300_000);
-  integer(issues, "retryCount", input.retryCount, 0, 10);
-  integer(issues, "minimumIntervalMs", input.minimumIntervalMs, 0, 60_000);
-  integer(issues, "concurrency", input.concurrency, 1, 64);
+  boundedText(issues, "modelName", value.modelName, 255);
+  integer(issues, "timeoutMs", value.timeoutMs, 100, 300_000);
+  integer(issues, "retryCount", value.retryCount, 0, 10);
+  integer(issues, "minimumIntervalMs", value.minimumIntervalMs, 0, 60_000);
+  integer(issues, "concurrency", value.concurrency, 1, 64);
   return issues;
 }
 
 function validateBaseUrl(
   issues: RerankerConfigurationIssue[],
-  value: string,
+  value: unknown,
   authenticationMode: RerankerAuthenticationMode
 ): void {
-  if (!value || Buffer.byteLength(value) > 2_048) {
+  if (typeof value !== "string" || !value || Buffer.byteLength(value) > 2_048) {
     issues.push({ field: "baseUrl", code: "invalid_base_url" });
     return;
   }
@@ -103,10 +116,10 @@ function isLocalHostname(value: string): boolean {
 function boundedText(
   issues: RerankerConfigurationIssue[],
   field: "displayName" | "modelName",
-  value: string,
+  value: unknown,
   maximumBytes: number
 ): void {
-  if (!value.trim() || Buffer.byteLength(value) > maximumBytes) {
+  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maximumBytes) {
     issues.push({ field, code: "invalid_text" });
   }
 }
@@ -114,11 +127,32 @@ function boundedText(
 function integer(
   issues: RerankerConfigurationIssue[],
   field: keyof RerankerConfigurationDraft,
-  value: number,
+  value: unknown,
   minimum: number,
   maximum: number
 ): void {
-  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+  if (
+    typeof value !== "number"
+    || !Number.isSafeInteger(value)
+    || value < minimum
+    || value > maximum
+  ) {
     issues.push({ field, code: "out_of_bounds" });
+  }
+}
+
+function objectValue(input: unknown): Record<string, unknown> {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+}
+
+function rejectUnknownFields(
+  issues: RerankerConfigurationIssue[],
+  value: Record<string, unknown>,
+  supported: ReadonlySet<string>
+): void {
+  for (const field of Object.keys(value)) {
+    if (!supported.has(field)) issues.push({ field, code: "unknown_field" });
   }
 }

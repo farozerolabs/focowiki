@@ -148,6 +148,135 @@ describe("semantic publication overlap with maintenance", () => {
     });
   });
 
+  it("appends large semantic closures to an existing candidate in bounded batches", async () => {
+    const addCandidateFacts = vi.fn(async (input: {
+      changedFacts: readonly unknown[];
+      dependencies: readonly unknown[];
+    }) => {
+      if (input.changedFacts.length > 1_000 || input.dependencies.length > 1_000) {
+        throw new Error("candidate_limit_exceeded");
+      }
+      return maintenanceCandidate();
+    });
+    const handoff = createStorageVnextSemanticPublicationHandoff({
+      catalog: {
+        getSourceFile: vi.fn(async () => ({
+          publicId: "file-large",
+          knowledgeBaseId: "kb-1",
+          logicalPath: "guides/large.md",
+          currentRevisionPublicId: "revision-large",
+          status: "ready" as const,
+          visibility: "current" as const
+        } as any))
+      },
+      releases: {
+        getActiveRoot: vi.fn(),
+        getLiveCandidate: vi.fn(async () => maintenanceCandidate()),
+        createCandidate: vi.fn(),
+        addCandidateFacts
+      },
+      workflow: { enqueue: vi.fn(), rescheduleQueued: vi.fn(async () => false) },
+      resultRetentionMilliseconds: 86_400_000
+    });
+
+    await expect(handoff.apply({
+      knowledgeBaseId: "kb-1",
+      sourceFilePublicId: "file-large",
+      operationPublicId: "operation-large",
+      closure: largeClosure(),
+      settingsRevisionPublicId: "settings-1",
+      publicationDelayMilliseconds: 0,
+      completedAt: "2026-08-08T00:00:00.000Z"
+    })).resolves.toEqual({ candidatePublicId: "maintenance-candidate" });
+
+    expect(addCandidateFacts).toHaveBeenCalledTimes(2);
+    expect(addCandidateFacts.mock.calls.every(([input]) =>
+      input.changedFacts.length <= 1_000 && input.dependencies.length <= 1_000
+    )).toBe(true);
+    expect(addCandidateFacts.mock.calls.reduce(
+      (total, [input]) => total + input.changedFacts.length,
+      0
+    )).toBeGreaterThan(1_000);
+    expect(addCandidateFacts.mock.calls.reduce(
+      (total, [input]) => total + input.dependencies.length,
+      0
+    )).toBeGreaterThan(1_000);
+  });
+
+  it("creates and completes a first large candidate through bounded fact batches", async () => {
+    const assertBounded = (input: {
+      changedFacts: readonly unknown[];
+      dependencies: readonly unknown[];
+    }) => {
+      if (input.changedFacts.length > 1_000 || input.dependencies.length > 1_000) {
+        throw new Error("candidate_limit_exceeded");
+      }
+    };
+    const createCandidate = vi.fn(async (input: any) => {
+      assertBounded(input);
+      return {
+        ...maintenanceCandidate(),
+        publicId: input.publicId,
+        operationPublicId: input.operationPublicId,
+        candidateRootPublicId: input.candidateRootPublicId,
+        expectedActiveRootPublicId: null,
+        expectedActiveRevision: 0
+      };
+    });
+    const addCandidateFacts = vi.fn(async (input: any) => {
+      assertBounded(input);
+      return maintenanceCandidate();
+    });
+    const handoff = createStorageVnextSemanticPublicationHandoff({
+      catalog: {
+        getSourceFile: vi.fn(async () => ({
+          publicId: "file-large",
+          knowledgeBaseId: "kb-1",
+          logicalPath: "guides/large.md",
+          currentRevisionPublicId: "revision-large",
+          status: "ready" as const,
+          visibility: "current" as const
+        } as any))
+      },
+      releases: {
+        getActiveRoot: vi.fn(async () => null),
+        getLiveCandidate: vi.fn(async () => null),
+        createCandidate,
+        addCandidateFacts
+      },
+      workflow: {
+        enqueue: vi.fn(async (work: any) => ({ type: "live" as const, work })),
+        rescheduleQueued: vi.fn(async () => false)
+      },
+      resultRetentionMilliseconds: 86_400_000
+    });
+
+    await expect(handoff.apply({
+      knowledgeBaseId: "kb-1",
+      sourceFilePublicId: "file-large",
+      operationPublicId: "operation-large",
+      closure: largeClosure(),
+      settingsRevisionPublicId: "settings-1",
+      publicationDelayMilliseconds: 0,
+      completedAt: "2026-08-08T00:00:00.000Z"
+    })).resolves.toEqual({ candidatePublicId: expect.any(String) });
+
+    expect(createCandidate).toHaveBeenCalledOnce();
+    expect(addCandidateFacts).toHaveBeenCalledOnce();
+    const calls = [createCandidate.mock.calls[0]![0], addCandidateFacts.mock.calls[0]![0]];
+    expect(calls.every((input) =>
+      input.changedFacts.length <= 1_000 && input.dependencies.length <= 1_000
+    )).toBe(true);
+    expect(calls.reduce(
+      (total, input) => total + input.changedFacts.length,
+      0
+    )).toBeGreaterThan(1_000);
+    expect(calls.reduce(
+      (total, input) => total + input.dependencies.length,
+      0
+    )).toBeGreaterThan(1_000);
+  });
+
   it("uses one target-contract publication identity during concurrent first handoff", async () => {
     let liveCandidate: StorageVnextCandidateDelta | null = null;
     const enqueuedOperationIds: string[] = [];
@@ -241,5 +370,29 @@ function maintenanceCandidate(): StorageVnextCandidateDelta {
     manifestChecksum: null,
     createdAt: "2026-08-08T00:00:00.000Z",
     updatedAt: "2026-08-08T00:00:00.000Z"
+  };
+}
+
+function largeClosure() {
+  return {
+    knowledgeBaseId: "kb-1",
+    sourceFilePublicIds: ["file-large"],
+    sourceRevisionPublicIds: ["revision-large"],
+    entityPublicIds: [],
+    relationshipPublicIds: [],
+    evidencePublicIds: [],
+    reverseReferencePublicIds: Array.from(
+      { length: 600 },
+      (_, index) => `reverse-${index}`
+    ),
+    vectorOwnerPublicIds: Array.from(
+      { length: 600 },
+      (_, index) => `vector-${index}`
+    ),
+    dirtyPartitionKeys: [],
+    affectedFileNeighborPublicIds: [],
+    generatedLogicalPaths: [],
+    graphShardPublicIds: [],
+    searchShardPublicIds: []
   };
 }

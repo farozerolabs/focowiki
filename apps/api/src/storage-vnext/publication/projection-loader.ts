@@ -54,6 +54,8 @@ import {
 } from "./profile.js";
 import type { SemanticSourcePresentationReadPort } from
   "../../semantic/presentation/source-context.js";
+import { isStorageVnextCandidatePublicationSource } from
+  "./source-eligibility.js";
 
 type ProjectionRequest = {
   knowledgeBaseId: string;
@@ -813,7 +815,7 @@ async function loadCandidateProcessingSources(
   }
   return sources.filter((source) =>
     source.visibility === "current"
-    && source.status === "processing"
+    && isStorageVnextCandidatePublicationSource(source)
     && source.currentRevisionPublicId !== null
     && plannedPaths.has(`pages/${source.logicalPath}`)
   ).sort((left, right) => compareUtf8(left.publicId, right.publicId));
@@ -1203,7 +1205,7 @@ function isPublishedSource(
     && (
       source.status === "ready"
       || (
-        source.status === "processing"
+        isStorageVnextCandidatePublicationSource(source)
         && candidateProcessingSourceIds.has(source.publicId)
       )
     )

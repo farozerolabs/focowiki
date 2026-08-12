@@ -339,11 +339,18 @@ function bestEdgeForCandidate(input: {
     ...strongSharedKeyPhrases
   ], normalization);
   const hasSuggestedPath = suggestedPaths.has(candidate.normalizedPath);
-  const hasExplicitReference = matchesExplicitReference(source, candidate);
-  const hasTitleMention =
-    !sameDocumentTitle &&
-    ((candidate.normalizedTitle.length > 0 && semanticBody.includes(candidate.normalizedTitle)) ||
-      (candidate.normalizedStem.length > 0 && semanticBody.includes(candidate.normalizedStem)));
+  const explicitReferences = matchingExplicitReferences(source, candidate);
+  const hasExplicitReference = explicitReferences.length > 0;
+  const titleMention = sameDocumentTitle
+    ? null
+    : candidate.normalizedTitle.length > 0
+      && semanticBody.includes(candidate.normalizedTitle)
+      ? candidate.node.title
+      : candidate.normalizedStem.length > 0
+        && semanticBody.includes(candidate.normalizedStem)
+        ? candidate.normalizedStem
+        : null;
+  const hasTitleMention = titleMention !== null;
   const hasContentOverlap =
     strongSharedSubjects.length > 0 ||
     strongSharedEntities.length > 0 ||
@@ -354,6 +361,7 @@ function bestEdgeForCandidate(input: {
   if (hasExplicitReference) {
     signals.push(
       createEdge(source.node, candidate.node, "direct_reference", 0.95, "The source explicitly references this file.", {
+        references: explicitReferences.slice(0, 16),
         targetPath: candidate.node.path,
         targetTitle: candidate.node.title,
         signal: "direct_reference"
@@ -402,6 +410,7 @@ function bestEdgeForCandidate(input: {
     signals.push(
       createEdge(source.node, candidate.node, "direct_reference", 0.7, "The source body mentions the related file title.", {
         title: candidate.node.title,
+        mention: titleMention,
         signal: "direct_reference"
       })
     );
@@ -656,18 +665,30 @@ function isStrongConfirmationPhrase(value: string): boolean {
   return normalized.length >= 8;
 }
 
-function matchesExplicitReference(
+function matchingExplicitReferences(
   source: GraphEdgeNodeProfile,
   candidate: GraphEdgeNodeProfile
-): boolean {
-  return source.explicitReferences.some((reference) => {
+): string[] {
+  const candidatePath = comparableReferencePath(candidate.normalizedPath);
+  return source.explicitReferences.filter((reference) => {
+    const referencePath = comparableReferencePath(reference.normalizedPath);
     return (
       reference.normalizedPath === candidate.normalizedPath ||
       reference.normalizedPath.endsWith(`/${candidate.normalizedPath}`) ||
+      (referencePath.length > 0 && candidatePath.length > 0
+        && (referencePath === candidatePath
+          || referencePath.endsWith(`/${candidatePath}`)
+          || candidatePath.endsWith(`/${referencePath}`))) ||
       (candidate.normalizedTitle.length > 0
         && reference.normalizedText.includes(candidate.normalizedTitle))
     );
-  });
+  }).map((reference) => reference.value);
+}
+
+function comparableReferencePath(value: string): string {
+  return value
+    .replace(/^(?:\.\.?\/)+/u, "")
+    .replace(/^pages\//u, "");
 }
 
 function removeVersionContext(body: string, normalizedVersionHints: string[]): string {

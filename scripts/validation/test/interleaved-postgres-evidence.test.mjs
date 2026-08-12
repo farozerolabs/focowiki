@@ -17,6 +17,8 @@ test("collects bounded storage vNext lifecycle evidence without storage keys or 
 
   assert.equal(snapshot.knowledgeBase.id, "kb-validation");
   assert.equal(snapshot.sourceFiles[0].resourceRevision, 2);
+  assert.equal(snapshot.semanticStages[0].stageKind, "vector");
+  assert.equal(snapshot.semanticStages[0].safeErrorCode, "SEARCH_PROVIDER_UNAVAILABLE");
   assert.equal(snapshot.sourceRevisions[0].revisionRole, "current");
   assert.equal(snapshot.releaseRoots[0].rootRole, "active");
   assert.equal(snapshot.activeSnapshots[0].releaseRootId, "root-2");
@@ -103,6 +105,7 @@ test("queries only current storage vNext evidence tables and preserves bounded s
     "operations",
     "operation_work_items",
     "operation_results",
+    "semantic_stage_work_items",
     "release_roots",
     "active_snapshots",
     "search_projections",
@@ -141,6 +144,15 @@ const fixtures = {
     objectId: "object-source",
     revisionRole: "current",
     checksumSha256: "b".repeat(64)
+  }],
+  semanticStages: [{
+    id: "semantic-stage-1",
+    sourceFileId: "source-1",
+    stageKind: "vector",
+    state: "retry",
+    attemptCount: 1,
+    maximumAttempts: 8,
+    safeErrorCode: "SEARCH_PROVIDER_UNAVAILABLE"
   }],
   releaseRoots: [{
     id: "root-2",

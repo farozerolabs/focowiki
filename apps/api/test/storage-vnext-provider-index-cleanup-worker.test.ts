@@ -35,7 +35,8 @@ describe("storage vNext provider index cleanup worker", () => {
   it("claims and deletes only exact indexes owned by the selected provider", async () => {
     const action = cleanupAction();
     const actions = {
-      claim: vi.fn(async () => [action]),
+      claim: vi.fn(async (input: { selector?: { domain?: string } }) =>
+        input.selector?.domain === "provider_adoption" ? [action] : []),
       complete: vi.fn(async () => true),
       releaseForRetry: vi.fn()
     };
@@ -79,6 +80,57 @@ describe("storage vNext provider index cleanup worker", () => {
     expect(actions.complete).toHaveBeenCalledWith({
       publicId: "cleanup-provider-index",
       owner: "provider-index-cleanup-worker"
+    });
+  });
+
+  it("prioritizes release-retirement cleanup without accepting another provider", async () => {
+    const action = {
+      ...cleanupAction(),
+      publicId: "cleanup-retired-release-index",
+      domain: "search_projection_retirement",
+      target: {
+        ...cleanupAction().target,
+        publicId: "focowiki_opensearch_retired_release"
+      },
+      checkpoint: {
+        providerIndexUid: "focowiki_opensearch_retired_release"
+      }
+    };
+    const actions = {
+      claim: vi.fn(async (input: { selector?: { domain?: string } }) =>
+        input.selector?.domain === "search_projection_retirement" ? [action] : []),
+      complete: vi.fn(async () => true),
+      releaseForRetry: vi.fn()
+    };
+    const deleteIndex = vi.fn(async () => ({ state: "completed" as const }));
+    const worker = createStorageVnextProviderIndexCleanupWorker({
+      actions,
+      provider: {
+        kind: "opensearch",
+        admin: { deleteIndex } as never,
+        operations: {} as never
+      },
+      maxPollAttempts: 3,
+      pollIntervalMs: 0,
+      retryDelayMs: 1_000
+    });
+
+    await expect(worker.runBatch({
+      owner: "provider-index-cleanup-worker",
+      limit: 10,
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+    })).resolves.toEqual({ claimed: 1, completed: 1, retried: 0 });
+
+    expect(actions.claim).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      selector: {
+        domain: "search_projection_retirement",
+        plane: "search",
+        resourceKind: "search_index",
+        searchProviderKind: "opensearch"
+      }
+    }));
+    expect(deleteIndex).toHaveBeenCalledWith({
+      indexUid: "focowiki_opensearch_retired_release"
     });
   });
 });

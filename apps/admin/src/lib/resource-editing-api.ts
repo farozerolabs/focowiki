@@ -1,4 +1,9 @@
-import { adminFetch, type ApiFailure, type KnowledgeBase } from "@/lib/admin-api";
+import {
+  adminFetch,
+  fetchSourceFile,
+  type ApiFailure,
+  type KnowledgeBase
+} from "@/lib/admin-api";
 
 export type SourceDirectory = {
   directoryId: string;
@@ -26,7 +31,11 @@ export type ResourceOperationState =
 export type ResourceOperation = {
   operationId: string;
   knowledgeBaseId: string;
-  kind: "source_file_move" | "source_directory_move" | "source_file_replace";
+  kind:
+    | "source_file_move"
+    | "source_directory_move"
+    | "source_file_replace"
+    | "source_file_delete";
   state: ResourceOperationState;
   expectedResourceRevision: number | null;
   targetKind: "source_file" | "source_directory" | "knowledge_base" | null;
@@ -142,6 +151,44 @@ export async function replaceSourceFileContent(input: {
     }
   );
   return readJsonResult(response, "errors.replaceSourceContentFailed");
+}
+
+export async function deleteSourceFile(input: {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  resourceRevision: number;
+}): Promise<{
+  operation: ResourceOperation;
+  deletion: { sourceFileId: string };
+} | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/source-files/${encodeURIComponent(input.sourceFileId)}`,
+    {
+      method: "DELETE",
+      headers: {
+        "idempotency-key": crypto.randomUUID(),
+        "if-match": String(input.resourceRevision)
+      }
+    }
+  );
+  return readJsonResult(response, "errors.deleteFailed");
+}
+
+export async function deleteCurrentSourceFile(input: {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+}): Promise<{
+  operation: ResourceOperation;
+  deletion: { sourceFileId: string };
+} | ApiFailure> {
+  const sourceFile = await fetchSourceFile(input);
+  if (!sourceFile?.resourceRevision) {
+    return { messageKey: "errors.invalidResourceRevision" };
+  }
+  return deleteSourceFile({
+    ...input,
+    resourceRevision: sourceFile.resourceRevision
+  });
 }
 
 export async function listActiveResourceOperations(input: {

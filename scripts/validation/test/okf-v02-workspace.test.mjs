@@ -81,6 +81,8 @@ test("legacy fixture discovery is read-only, safe, and requires 147 Markdown fil
     const selected = await discoverLegacyOkfFixtures(root);
     assert.equal(selected.length, 147);
     assert.equal(selected.every((entry) => entry.relativePath.endsWith(".md")), true);
+    assert.equal(selected[0].relativePath, "folder/file-000.md");
+    assert.equal(selected.at(-1).relativePath, "folder/file-146.md");
 
     await assert.rejects(discoverLegacyOkfFixtures(path.join(root, "missing")), /does not exist/u);
     await fs.symlink(path.join(root, "folder", "file-000.md"), path.join(root, "linked.md"));

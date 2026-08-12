@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConfig } from "../src/config.js";
+import { SourcePathValidationError } from "../src/domain/source-path.js";
 import {
   SourceResourceError,
   type ResourceOperationRecord
@@ -45,6 +46,28 @@ describe("Admin resource editing", () => {
       name: "Updated docs",
       description: "Updated description"
     });
+  });
+
+  it("maps invalid knowledge-base metadata fields to a stable validation error", async () => {
+    const context = await createApp();
+    const response = await context.app.request("/admin/api/knowledge-bases/kb-docs", {
+      method: "PATCH",
+      headers: withTrustedAdminOrigin({
+        cookie: context.cookie,
+        "content-type": "application/json",
+        "if-match": "2"
+      }),
+      body: JSON.stringify({ name: null })
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "VALIDATION_ERROR",
+        messageKey: "errors.invalidResourceMutation"
+      }
+    });
+    expect(context.application.updateKnowledgeBase).not.toHaveBeenCalled();
   });
 
   it("accepts file move through one vNext durable operation", async () => {
@@ -109,6 +132,63 @@ describe("Admin resource editing", () => {
     expect(new TextDecoder().decode(request.bytes)).toBe("# Updated");
   });
 
+  it("maps an unsafe replacement path to validation error", async () => {
+    const context = await createApp({
+      replaceSourceFileContent: vi.fn(async () => {
+        throw new SourcePathValidationError("traversal", "../escape.md");
+      })
+    });
+    const response = await context.app.request(
+      "/admin/api/knowledge-bases/kb-docs/source-files/source-file-intro/content",
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({
+          cookie: context.cookie,
+          "content-type": "text/markdown; charset=utf-8",
+          "if-match": "3",
+          "idempotency-key": "replace-unsafe",
+          "x-source-relative-path": "../escape.md"
+        }),
+        body: "# Updated"
+      }
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "VALIDATION_ERROR",
+        messageKey: "errors.invalidResourceMutation"
+      }
+    });
+  });
+
+  it("accepts file deletion by stable source identifier", async () => {
+    const context = await createApp();
+    const response = await context.app.request(
+      "/admin/api/knowledge-bases/kb-docs/source-files/source-file-intro",
+      {
+        method: "DELETE",
+        headers: withTrustedAdminOrigin({
+          cookie: context.cookie,
+          "if-match": "3",
+          "idempotency-key": "delete-intro"
+        })
+      }
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      operation: { operationId: "resource-operation-1", kind: "source_file_delete" },
+      deletion: { sourceFileId: "source-file-intro" }
+    });
+    expect(context.application.deleteSourceFile).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      sourceFileId: "source-file-intro",
+      expectedResourceRevision: 3,
+      idempotencyKey: "delete-intro"
+    });
+  });
+
   it("lists directories and accepts directory moves", async () => {
     const context = await createApp();
     const list = await context.app.request(
@@ -147,6 +227,75 @@ describe("Admin resource editing", () => {
     await expect(response.json()).resolves.toMatchObject({
       items: [{ operationId: "resource-operation-1", state: "processing" }],
       nextCursor: null
+    });
+  });
+
+  it("rejects an invalid resource operation state", async () => {
+    const context = await createApp();
+    const response = await context.app.request(
+      "/admin/api/knowledge-bases/kb-docs/operations?state=invalid",
+      { headers: { cookie: context.cookie } }
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "VALIDATION_ERROR",
+        messageKey: "errors.invalidResourceMutation"
+      }
+    });
+    expect(context.application.listOperations).not.toHaveBeenCalled();
+  });
+
+  it("uses the shared pagination error contract for invalid resource-list limits", async () => {
+    const context = await createApp();
+    for (const pathname of [
+      "/admin/api/knowledge-bases/kb-docs/operations?limit=0",
+      "/admin/api/knowledge-bases/kb-docs/source-directories?limit=0"
+    ]) {
+      const response = await context.app.request(pathname, {
+        headers: { cookie: context.cookie }
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "INVALID_PAGINATION" }
+      });
+    }
+    expect(context.application.listOperations).not.toHaveBeenCalled();
+    expect(context.application.listDirectories).not.toHaveBeenCalled();
+  });
+
+  it("maps a rejected operation cursor to the shared pagination error contract", async () => {
+    const context = await createApp({
+      listOperations: vi.fn(async () => {
+        throw new SourceResourceError("INVALID_PAGINATION");
+      })
+    });
+    const response = await context.app.request(
+      "/admin/api/knowledge-bases/kb-docs/operations?cursor=invalid",
+      { headers: { cookie: context.cookie } }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "INVALID_PAGINATION" }
+    });
+  });
+
+  it("maps a rejected directory cursor to the shared pagination error contract", async () => {
+    const context = await createApp({
+      listDirectories: vi.fn(async () => {
+        throw new SourceResourceError("INVALID_PAGINATION");
+      })
+    });
+    const response = await context.app.request(
+      "/admin/api/knowledge-bases/kb-docs/source-directories?cursor=invalid",
+      { headers: { cookie: context.cookie } }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "INVALID_PAGINATION" }
     });
   });
 

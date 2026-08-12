@@ -31,8 +31,16 @@ export async function acceptStorageVnextDeletion(input: {
   if (!knowledgeBase[0]) throw repositoryError("resource_missing");
   const replay = await readReplay(transaction, request);
   if (replay) return replay;
-  if (knowledgeBase[0].deleted_at) throw repositoryError("resource_missing");
-  const target = await lockTarget(transaction, request, knowledgeBase[0].revision);
+  const retryCommitted = await isRetriableCommittedDeletion(transaction, request);
+  if (knowledgeBase[0].deleted_at && !retryCommitted) {
+    throw repositoryError("resource_missing");
+  }
+  const target = await lockTarget(
+    transaction,
+    request,
+    knowledgeBase[0].revision,
+    retryCommitted
+  );
   if (target.revision !== request.expectedResourceRevision) {
     throw repositoryError("revision_conflict");
   }
@@ -54,7 +62,9 @@ export async function acceptStorageVnextDeletion(input: {
     target,
     candidateOperationPublicId: candidate.operationPublicId
   });
-  const visibility = await commitVisibility(transaction, request, target);
+  const visibility = retryCommitted
+    ? await readCommittedVisibility(transaction, request, target)
+    : await commitVisibility(transaction, request, target);
   await insertDeletionWork(transaction, request, target, visibility, {
     activeSearchProviderKind: activeSearch[0]?.provider_kind ?? null,
     activeSearchProviderIndexUid: activeSearch[0]?.provider_index_uid ?? null,
@@ -70,6 +80,59 @@ export async function acceptStorageVnextDeletion(input: {
   };
 }
 
+async function isRetriableCommittedDeletion(
+  transaction: StorageVnextDeletionTransaction,
+  request: StorageVnextNormalizedDeletionRequest
+): Promise<boolean> {
+  const rows = await transaction<Array<{ present: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM focowiki.operations operation
+      JOIN focowiki.operation_results result
+        ON result.public_id = operation.public_id
+       AND result.knowledge_base_id = operation.knowledge_base_id
+      WHERE operation.knowledge_base_id = ${request.knowledgeBaseId}
+        AND operation.operation_kind = 'deletion'
+        AND operation.state = 'failed'
+        AND operation.target_kind = ${request.targetKind}
+        AND operation.target_public_id = ${request.targetPublicId}
+        AND operation.expected_resource_revision = ${request.expectedResourceRevision}
+        AND result.terminal_state = 'failed'
+        AND result.result_code = 'DELETION_RETRY_EXHAUSTED'
+    ) AS present
+  `;
+  if (rows[0]?.present !== true) return false;
+  const targets = request.targetKind === "knowledge_base"
+    ? await transaction<Array<{ present: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM focowiki.knowledge_bases
+          WHERE public_id = ${request.knowledgeBaseId}
+            AND revision = ${request.expectedResourceRevision + 1}
+            AND deleted_at IS NOT NULL
+        ) AS present
+      `
+    : request.targetKind === "source_directory"
+      ? await transaction<Array<{ present: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1 FROM focowiki.source_directories
+            WHERE knowledge_base_id = ${request.knowledgeBaseId}
+              AND public_id = ${request.targetPublicId}
+              AND revision = ${request.expectedResourceRevision + 1}
+              AND deleted_at IS NOT NULL
+          ) AS present
+        `
+      : await transaction<Array<{ present: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1 FROM focowiki.source_files
+            WHERE knowledge_base_id = ${request.knowledgeBaseId}
+              AND public_id = ${request.targetPublicId}
+              AND revision = ${request.expectedResourceRevision + 1}
+              AND deleted_at IS NOT NULL
+          ) AS present
+        `;
+  return targets[0]?.present === true;
+}
+
 async function readReplay(
   transaction: StorageVnextDeletionTransaction,
   request: StorageVnextNormalizedDeletionRequest
@@ -77,15 +140,27 @@ async function readReplay(
   const rows = await transaction<Array<{
     request_hash: string;
     operation_public_id: string;
+    operation_kind: string | null;
+    target_kind: string | null;
+    target_public_id: string | null;
+    expected_resource_revision: number | string | null;
   }>>`
-    SELECT request_hash, operation_public_id
-    FROM focowiki.operation_idempotency
-    WHERE knowledge_base_id = ${request.knowledgeBaseId}
-      AND idempotency_key = ${request.idempotencyKey}
-    FOR UPDATE
+    SELECT replay.request_hash, replay.operation_public_id,
+      operation.operation_kind, operation.target_kind,
+      operation.target_public_id, operation.expected_resource_revision
+    FROM focowiki.operation_idempotency AS replay
+    LEFT JOIN focowiki.operations AS operation
+      ON operation.knowledge_base_id = replay.knowledge_base_id
+      AND operation.public_id = replay.operation_public_id
+    WHERE replay.knowledge_base_id = ${request.knowledgeBaseId}
+      AND replay.idempotency_key = ${request.idempotencyKey}
+    FOR UPDATE OF replay
   `;
   if (!rows[0]) return null;
-  if (rows[0].request_hash !== request.requestHash) {
+  if (
+    rows[0].request_hash !== request.requestHash
+    && !isSemanticallyEquivalentDeletion(rows[0], request)
+  ) {
     throw repositoryError("idempotency_conflict");
   }
   return {
@@ -96,16 +171,37 @@ async function readReplay(
   };
 }
 
+function isSemanticallyEquivalentDeletion(
+  row: {
+    operation_kind: string | null;
+    target_kind: string | null;
+    target_public_id: string | null;
+    expected_resource_revision: number | string | null;
+  },
+  request: StorageVnextNormalizedDeletionRequest
+): boolean {
+  return row.operation_kind === "deletion"
+    && row.target_kind === request.targetKind
+    && row.target_public_id === request.targetPublicId
+    && Number(row.expected_resource_revision) === request.expectedResourceRevision;
+}
+
 async function lockTarget(
   transaction: StorageVnextDeletionTransaction,
   request: StorageVnextNormalizedDeletionRequest,
-  knowledgeBaseRevision: number | string
+  knowledgeBaseRevision: number | string,
+  retryCommitted: boolean
 ): Promise<StorageVnextDeletionTarget> {
   if (request.targetKind === "knowledge_base") {
     if (request.targetPublicId !== request.knowledgeBaseId) {
       throw repositoryError("scope_conflict");
     }
-    return { revision: Number(knowledgeBaseRevision), normalizedPath: null };
+    return {
+      revision: retryCommitted
+        ? request.expectedResourceRevision
+        : Number(knowledgeBaseRevision),
+      normalizedPath: null
+    };
   }
   if (request.targetKind === "source_directory") {
     const rows = await transaction<Array<{
@@ -119,9 +215,17 @@ async function lockTarget(
         AND public_id = ${request.targetPublicId}
       FOR UPDATE
     `;
-    if (!rows[0] || rows[0].deleted_at) throw repositoryError("resource_missing");
+    if (!rows[0] || rows[0].deleted_at && !retryCommitted) {
+      throw repositoryError("resource_missing");
+    }
+    if (rows[0].deleted_at
+      && Number(rows[0].revision) !== request.expectedResourceRevision + 1) {
+      throw repositoryError("revision_conflict");
+    }
     return {
-      revision: Number(rows[0].revision),
+      revision: retryCommitted
+        ? request.expectedResourceRevision
+        : Number(rows[0].revision),
       normalizedPath: rows[0].normalized_path
     };
   }
@@ -136,10 +240,70 @@ async function lockTarget(
       AND public_id = ${request.targetPublicId}
     FOR UPDATE
   `;
-  if (!rows[0] || rows[0].deleted_at) throw repositoryError("resource_missing");
+  if (!rows[0] || rows[0].deleted_at && !retryCommitted) {
+    throw repositoryError("resource_missing");
+  }
+  if (rows[0].deleted_at
+    && Number(rows[0].revision) !== request.expectedResourceRevision + 1) {
+    throw repositoryError("revision_conflict");
+  }
   return {
-    revision: Number(rows[0].revision),
+    revision: retryCommitted
+      ? request.expectedResourceRevision
+      : Number(rows[0].revision),
     normalizedPath: rows[0].normalized_path
+  };
+}
+
+async function readCommittedVisibility(
+  transaction: StorageVnextDeletionTransaction,
+  request: StorageVnextNormalizedDeletionRequest,
+  target: StorageVnextDeletionTarget
+): Promise<StorageVnextDeletionVisibilityResult> {
+  if (request.targetKind === "knowledge_base") {
+    return { sourceFileCount: 0, directoryCount: 0 };
+  }
+  if (request.targetKind === "source_file") {
+    const rows = await transaction<Array<{ present: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM focowiki.source_files
+        WHERE knowledge_base_id = ${request.knowledgeBaseId}
+          AND public_id = ${request.targetPublicId}
+          AND deleted_at IS NOT NULL
+      ) AS present
+    `;
+    if (!rows[0]?.present) throw repositoryError("resource_missing");
+    return { sourceFileCount: 1, directoryCount: 0 };
+  }
+  const prefix = target.normalizedPath!;
+  const pattern = `${escapeLike(prefix)}/%`;
+  const rows = await transaction<Array<{
+    source_file_count: number | string;
+    directory_count: number | string;
+    target_present: boolean;
+  }>>`
+    SELECT
+      (SELECT count(*) FROM focowiki.source_files
+       WHERE knowledge_base_id = ${request.knowledgeBaseId}
+         AND normalized_path LIKE ${pattern} ESCAPE '\\'
+         AND deleted_at IS NOT NULL) AS source_file_count,
+      (SELECT count(*) FROM focowiki.source_directories
+       WHERE knowledge_base_id = ${request.knowledgeBaseId}
+         AND (normalized_path = ${prefix}
+           OR normalized_path LIKE ${pattern} ESCAPE '\\')
+         AND deleted_at IS NOT NULL) AS directory_count,
+      EXISTS (
+        SELECT 1 FROM focowiki.source_directories
+        WHERE knowledge_base_id = ${request.knowledgeBaseId}
+          AND public_id = ${request.targetPublicId}
+          AND deleted_at IS NOT NULL
+      ) AS target_present
+  `;
+  const row = rows[0];
+  if (!row?.target_present) throw repositoryError("resource_missing");
+  return {
+    sourceFileCount: Number(row.source_file_count),
+    directoryCount: Number(row.directory_count)
   };
 }
 

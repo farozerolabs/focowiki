@@ -9,6 +9,8 @@ import { sameSearchProviderVectorIndexDefinition } from
 import { mapWithConcurrency } from "../../runtime/bounded.js";
 import type { StorageVnextCatalogReadPort } from
   "../../storage-vnext/catalog/ports.js";
+import { isStorageVnextStablePublicationSource } from
+  "../../storage-vnext/publication/source-eligibility.js";
 import type {
   EmbeddingArtifactRepositoryPort,
   EmbeddingArtifactStorePort
@@ -26,8 +28,10 @@ export type SemanticProviderAdoptionRepository = {
   }): Promise<number>;
   activateProviderProjection(input: {
     knowledgeBaseId: string;
+    operationPublicId: string;
     semanticGenerationPublicId: string;
     expectedGenerationRevision: number;
+    cleanupNotBefore: string;
     target: SemanticMaintenanceTarget;
   }): Promise<boolean>;
 };
@@ -86,8 +90,10 @@ export function createSemanticProviderAdoptionService(input: {
         limit: request.pageSize,
         cursor: request.cursor
       });
+      const sources = page.items.filter(({ sourceFile }) =>
+        isStorageVnextStablePublicationSource(sourceFile));
       let documentCount = 0;
-      for (const source of page.items) {
+      for (const source of sources) {
         throwIfAborted(request.signal);
         const references = await input.artifacts.listSourceReferences({
           knowledgeBaseId: request.knowledgeBaseId,
@@ -169,7 +175,7 @@ export function createSemanticProviderAdoptionService(input: {
         documentCount += documents.length;
       }
       return {
-        sourceCount: page.items.length,
+        sourceCount: sources.length,
         documentCount,
         nextCursor: page.nextCursor,
         candidateIndexUid: indexUid
@@ -202,10 +208,13 @@ export function createSemanticProviderAdoptionService(input: {
 
     async activate(request: {
       knowledgeBaseId: string;
+      operationPublicId: string;
       semanticGenerationPublicId: string;
       expectedGenerationRevision: number;
+      cleanupNotBefore: string;
       target: SemanticMaintenanceTarget;
     }) {
+      assertActivationRequest(request);
       if (!await input.repository.activateProviderProjection(request)) {
         throw providerAdoptionError("semantic_provider_activation_stale");
       }
@@ -253,6 +262,25 @@ function assertRequest(input: {
     || !Number.isSafeInteger(input.pageSize)
     || input.pageSize < 1
     || input.pageSize > 100
+  ) throw providerAdoptionError("semantic_provider_request_invalid");
+}
+
+function assertActivationRequest(input: {
+  knowledgeBaseId: string;
+  operationPublicId: string;
+  semanticGenerationPublicId: string;
+  expectedGenerationRevision: number;
+  cleanupNotBefore: string;
+  target: SemanticMaintenanceTarget;
+}): void {
+  if (
+    !input.knowledgeBaseId
+    || !input.operationPublicId
+    || !input.semanticGenerationPublicId
+    || input.target.knowledgeBaseId !== input.knowledgeBaseId
+    || !Number.isSafeInteger(input.expectedGenerationRevision)
+    || input.expectedGenerationRevision < 0
+    || !Number.isFinite(Date.parse(input.cleanupNotBefore))
   ) throw providerAdoptionError("semantic_provider_request_invalid");
 }
 

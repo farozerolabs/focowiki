@@ -323,7 +323,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
           idempotencyKeyHeader(),
           expectedResourceRevisionHeader()
         ],
-        requestSchema: ref("MoveSourceResourceRequest"),
+        requestSchema: ref("MoveSourceFileRequest"),
         requestExample: requestExamples.moveSourceFile,
         successStatus: 202,
         successSchema: ref("ResourceOperationResponse"),
@@ -463,7 +463,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
           idempotencyKeyHeader(),
           expectedResourceRevisionHeader()
         ],
-        requestSchema: ref("MoveSourceResourceRequest"),
+        requestSchema: ref("MoveSourceDirectoryRequest"),
         requestExample: requestExamples.moveSourceDirectory,
         successStatus: 202,
         successSchema: ref("ResourceOperationResponse"),

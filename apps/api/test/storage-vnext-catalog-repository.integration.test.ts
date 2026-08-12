@@ -181,7 +181,8 @@ describeOwnedDatabase("storage vNext current catalog repository", () => {
     await insertObject(sql, {
       objectId: "object-revision-a",
       checksum: "a".repeat(64),
-      byteCount: 12
+      byteCount: 12,
+      zeroOwnerSince: "2026-08-01T00:00:00.000Z"
     });
     const revision = revisionFact({
       publicId: "revision-a",
@@ -198,6 +199,11 @@ describeOwnedDatabase("storage vNext current catalog repository", () => {
       ...revision,
       checksum: "b".repeat(64)
     })).rejects.toMatchObject({ code: "immutable_revision_conflict" });
+    await expect(sql<Array<{ zero_owner_since: Date | null }>>`
+      SELECT zero_owner_since
+      FROM focowiki.object_registrations
+      WHERE object_id = 'object-revision-a'
+    `).resolves.toEqual([{ zero_owner_since: null }]);
 
     const selected = await repository.compareAndSetCurrentRevision({
       knowledgeBaseId: "kb-revision",
@@ -734,15 +740,22 @@ function revisionFact(input: {
 
 async function insertObject(
   sql: ReturnType<typeof postgres>,
-  input: { objectId: string; checksum: string; byteCount: number }
+  input: {
+    objectId: string;
+    checksum: string;
+    byteCount: number;
+    zeroOwnerSince?: string;
+  }
 ): Promise<void> {
   await sql`
     INSERT INTO focowiki.object_registrations
       (object_id, storage_key, checksum_sha256, byte_count, content_type,
-       object_format, state, write_attempt_public_id, verified_at)
+       object_format, state, write_attempt_public_id, verified_at,
+       zero_owner_since)
     VALUES (${input.objectId}, ${`owned/source/${input.objectId}`}, ${input.checksum},
       ${input.byteCount}, 'text/markdown; charset=utf-8', 'source-markdown-v1',
-      'verified', ${`write-${input.objectId}`}, now())
+      'verified', ${`write-${input.objectId}`}, now(),
+      ${input.zeroOwnerSince ?? null})
   `;
 }
 

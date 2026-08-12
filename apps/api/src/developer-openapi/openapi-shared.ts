@@ -126,6 +126,10 @@ export function operation(input: {
   additionalErrorStatuses?: AdditionalErrorStatus[];
   extraResponses?: Record<string, ResponseObject>;
 }): OperationObject {
+  const errorStatuses = [
+    ...(input.additionalErrorStatuses ?? []),
+    ...(input.requestSchema || input.requestBody ? [413 as const] : [])
+  ].filter((status, index, values) => values.indexOf(status) === index);
   return {
     tags: [input.tag],
     operationId: input.operationId,
@@ -163,7 +167,7 @@ export function operation(input: {
             input.successSchema,
             input.successExample
           ),
-      ...standardErrorResponses(input.additionalErrorStatuses),
+      ...standardErrorResponses(errorStatuses),
       ...input.extraResponses
     }
   };
@@ -343,7 +347,11 @@ export function filePathQueryParameter(required: boolean): ParameterObject {
     in: "query",
     required,
     description: "Published knowledge-base file path returned by tree, search, or file APIs. Parent traversal, backslashes, and storage paths are rejected.",
-    schema: { type: "string", minLength: 1 }
+    schema: {
+      type: "string",
+      pattern: "\\.(?:md|json)$",
+      example: "index.md"
+    }
   };
 }
 

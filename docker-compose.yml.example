@@ -269,6 +269,7 @@ services:
       bootstrap.memory_lock: "true"
       OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS-}
       DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: "true"
       plugins.security.allow_default_init_securityindex: true
       plugins.security.ssl.transport.pemcert_filepath: focowiki-security/node.pem
       plugins.security.ssl.transport.pemkey_filepath: focowiki-security/node-key.pem

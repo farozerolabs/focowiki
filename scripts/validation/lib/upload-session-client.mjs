@@ -69,15 +69,38 @@ export async function uploadMarkdownFilesWithSession(input) {
       if (!file) {
         throw new Error(`Upload entry has no matching local file: ${entry.relativePath}`);
       }
-      await requestEntryContentWithRetry(
-        input.request,
-        `${input.routeBase}/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entry.id)}/content`,
-        {
-          method: "PUT",
-          headers: { "content-type": "text/markdown; charset=utf-8" },
-          rawBody: file.bytes
-        }
-      );
+      const startedAt = Date.now();
+      try {
+        const transfer = await requestEntryContentWithRetry(
+          input.request,
+          `${input.routeBase}/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entry.id)}/content`,
+          {
+            method: "PUT",
+            headers: { "content-type": "text/markdown; charset=utf-8" },
+            rawBody: file.bytes
+          }
+        );
+        const finishedAt = Date.now();
+        await input.onFileTransfer?.({
+          relativePath: entry.relativePath,
+          status: "completed",
+          attempts: transfer.attempts,
+          startedAt,
+          finishedAt,
+          elapsedMs: finishedAt - startedAt
+        });
+      } catch (error) {
+        const finishedAt = Date.now();
+        await input.onFileTransfer?.({
+          relativePath: entry.relativePath,
+          status: "failed",
+          attempts: CONTENT_UPLOAD_MAX_ATTEMPTS,
+          startedAt,
+          finishedAt,
+          elapsedMs: finishedAt - startedAt
+        });
+        throw error;
+      }
       }
     );
     cursor = page.entries?.nextCursor ?? null;
@@ -236,7 +259,10 @@ async function requestEntryContentWithRetry(request, pathname, options) {
   let lastFailure = null;
   for (let attempt = 1; attempt <= CONTENT_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
     try {
-      return await requestData(request, pathname, options);
+      return {
+        value: await requestData(request, pathname, options),
+        attempts: attempt
+      };
     } catch (error) {
       lastFailure = error;
     }

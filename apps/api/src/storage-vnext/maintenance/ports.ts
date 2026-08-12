@@ -7,7 +7,7 @@ import type { SemanticStageSettingsSnapshot } from
   "../../semantic/application/stage-orchestration.js";
 
 export type StorageVnextSemanticAdoptionSnapshot = {
-  mode: "full" | "provider_only" | "query_policy_only";
+  mode: "full" | "embedding_only" | "provider_only" | "query_policy_only";
   target: SemanticMaintenanceTarget;
   stageSettings: SemanticStageSettingsSnapshot;
   expectedPredecessorPublicId: string | null;

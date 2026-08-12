@@ -40,6 +40,7 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
       cursor: string | null;
       pageSize: number;
       maximumAttempts: number;
+      reusePredecessorFacts: boolean;
       enqueuedAt: string;
     }): Promise<{
       sourceCount: number;
@@ -86,8 +87,10 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
     }): Promise<unknown>;
     activate(input: {
       knowledgeBaseId: string;
+      operationPublicId: string;
       semanticGenerationPublicId: string;
       expectedGenerationRevision: number;
+      cleanupNotBefore: string;
       target: SemanticMaintenanceTarget;
     }): Promise<void>;
   };
@@ -314,6 +317,7 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
             cursor: request.checkpoint.cursor,
             pageSize: semanticSnapshot.sourcePageSize,
             maximumAttempts: request.checkpoint.maxAttempts,
+            reusePredecessorFacts: semanticSnapshot.mode === "embedding_only",
             enqueuedAt: request.checkpoint.startedAt
           });
           return semantic.nextCursor
@@ -331,7 +335,10 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
         }
         case "search_rebuild": {
           const semanticSnapshot = request.checkpoint.semanticAdoption ?? null;
-          if (semanticSnapshot?.mode === "full") {
+          if (
+            semanticSnapshot?.mode === "full"
+            || semanticSnapshot?.mode === "embedding_only"
+          ) {
             if (!input.semanticAdoption) {
               throw phaseError("semantic_adoption_unavailable");
             }
@@ -458,10 +465,15 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
               ) throw phaseError("semantic_provider_adoption_unavailable");
               await input.semanticProviderAdoption.activate({
                 knowledgeBaseId: request.knowledgeBaseId,
+                operationPublicId: request.operationPublicId,
                 semanticGenerationPublicId:
                   semanticSnapshot.expectedPredecessorPublicId,
                 expectedGenerationRevision:
                   semanticSnapshot.expectedPredecessorRevision,
+                cleanupNotBefore: addMilliseconds(
+                  input.clock(),
+                  input.rollbackRetentionMilliseconds
+                ),
                 target: semanticSnapshot.target
               });
             } else if (!input.semanticAdoption) {

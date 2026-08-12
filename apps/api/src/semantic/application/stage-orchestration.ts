@@ -38,7 +38,7 @@ export function planSemanticSourceStages(input: {
   dirtyCommunityPartitionKeys: readonly string[];
   includeValidation: boolean;
   includePublication?: boolean;
-  resumeFromStage?: "publication";
+  resumeFromStage?: "embedding" | "publication";
   deletion?: boolean;
   maximumAttempts: number;
 }): SemanticStageWorkItem[] {
@@ -72,11 +72,12 @@ export function planSemanticSourceStages(input: {
         ? [{ stageKind: "validation" as const, partitionKey: input.sourceFilePublicId }]
         : [])
     ];
-  const selectedStages = input.resumeFromStage === "publication"
-    ? stages.filter(({ stageKind }) => (
-        stageKind === "publication" || stageKind === "validation"
-      ))
-    : stages;
+  const resumeIndex = input.resumeFromStage
+    ? ORDER.indexOf(input.resumeFromStage)
+    : -1;
+  const selectedStages = resumeIndex < 0
+    ? stages
+    : stages.filter(({ stageKind }) => ORDER.indexOf(stageKind) >= resumeIndex);
   const snapshot = Object.freeze({ ...input.settingsSnapshot });
   return selectedStages.map(({ stageKind, partitionKey }) => ({
     publicId: `semantic-stage-${hash(

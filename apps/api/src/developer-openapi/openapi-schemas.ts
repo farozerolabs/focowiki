@@ -46,12 +46,19 @@ const SEMANTIC_SEARCH_SAFE_CODES = [
 const RERANKER_SEARCH_SAFE_CODES = [
   "RERANKER_DISABLED",
   "RERANKER_RETRIEVAL_UNAVAILABLE",
+  "RERANKER_ABORTED",
+  "RERANKER_AUTHENTICATION_FAILED",
   "RERANKER_INVALID_REQUEST",
+  "RERANKER_INVALID_RESPONSE",
   "RERANKER_CONFIGURATION_UNAVAILABLE",
   "RERANKER_NOT_CONFIGURED",
   "RERANKER_NOT_ACTIVE",
   "RERANKER_NO_CANDIDATES",
   "RERANKER_PAYLOAD_TOO_LARGE",
+  "RERANKER_PROVIDER_UNAVAILABLE",
+  "RERANKER_RATE_LIMITED",
+  "RERANKER_RESPONSE_TOO_LARGE",
+  "RERANKER_TIMEOUT",
   "RERANKER_UNAVAILABLE"
 ] as const;
 
@@ -391,13 +398,30 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       ["sourceFile", "retry"]
     ),
     SourceResourceFileListResponse: pageSchema(ref("SourceResourceFile")),
-    MoveSourceResourceRequest: objectSchema(
+    MoveSourceFileRequest: objectSchema(
+      {
+        relativePath: {
+          type: "string",
+          minLength: 4,
+          maxLength: 2_048,
+          pattern: "^(?:[^/]{1,240}/)*[^/]{1,237}\\.md$",
+          example: "handbook/setup/install.md",
+          description:
+            "Target Markdown path inside the knowledge base. Its parent directory must already exist, except when moving the file to the root directory."
+        }
+      },
+      ["relativePath"]
+    ),
+    MoveSourceDirectoryRequest: objectSchema(
       {
         relativePath: {
           type: "string",
           minLength: 1,
+          maxLength: 2_048,
+          pattern: "^(?:[^/]{1,240}/)*[^/]{1,240}$",
+          example: "handbook/archive",
           description:
-            "Target path inside the knowledge base. Its parent directory must already exist, except when moving the item to the root directory."
+            "Target directory path inside the knowledge base. Its parent directory must already exist, except when moving the directory to the root."
         }
       },
       ["relativePath"]

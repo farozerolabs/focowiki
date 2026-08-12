@@ -21,7 +21,9 @@ describe("semantic provider-only adoption", () => {
       catalog: {
         async listCurrentSources(input) {
           return {
-            items: [currentSource(input.cursor ? "b" : "a")],
+            items: input.cursor
+              ? [currentSource("b")]
+              : [currentSource("a"), currentSource("failed", "failed")],
             nextCursor: input.cursor ? null : "source-b"
           };
         }
@@ -98,6 +100,8 @@ describe("semantic provider-only adoption", () => {
       pageSize: 20
     });
     expect(first.documentCount).toBe(1);
+    expect(first.sourceCount).toBe(1);
+    expect(second.sourceCount).toBe(1);
     expect(second.nextCursor).toBeNull();
     expect(createIndex).toHaveBeenCalledOnce();
     expect(writeDocuments).toHaveBeenCalledTimes(2);
@@ -118,8 +122,10 @@ describe("semantic provider-only adoption", () => {
     })).resolves.toMatchObject({ expectedDocumentCount: 2 });
     await service.activate({
       knowledgeBaseId: "kb-1",
+      operationPublicId: "maintenance-provider",
       semanticGenerationPublicId: "semantic-active",
       expectedGenerationRevision: 4,
+      cleanupNotBefore: "2026-08-15T00:00:00.000Z",
       target: target()
     });
     expect(activateProviderProjection).toHaveBeenCalledWith(expect.objectContaining({
@@ -251,8 +257,10 @@ describe("semantic provider-only adoption", () => {
     });
     await firstService.activate({
       knowledgeBaseId: "kb-1",
+      operationPublicId: "maintenance-opensearch",
       semanticGenerationPublicId: "semantic-active",
       expectedGenerationRevision: 4,
+      cleanupNotBefore: "2026-08-15T00:00:00.000Z",
       target: firstTarget
     });
     const second = await secondService.planSourcePage({
@@ -269,8 +277,10 @@ describe("semantic provider-only adoption", () => {
     });
     await secondService.activate({
       knowledgeBaseId: "kb-1",
+      operationPublicId: "maintenance-meilisearch",
       semanticGenerationPublicId: "semantic-active",
       expectedGenerationRevision: 5,
+      cleanupNotBefore: "2026-08-15T00:00:00.000Z",
       target: secondTarget
     });
 
@@ -318,7 +328,7 @@ function target(
   };
 }
 
-function currentSource(id: string) {
+function currentSource(id: string, status: "ready" | "failed" = "ready") {
   return {
     sourceFile: {
       publicId: `file-${id}`,
@@ -329,9 +339,9 @@ function currentSource(id: string) {
       title: id,
       metadata: {},
       currentRevisionPublicId: `revision-${id}`,
-      status: "ready" as const,
-      safeErrorCode: null,
-      safeErrorMessage: null,
+      status,
+      safeErrorCode: status === "failed" ? "SEMANTIC_STAGE_FAILED" : null,
+      safeErrorMessage: status === "failed" ? "Semantic stage failed." : null,
       revision: 1,
       visibility: "current" as const
     },

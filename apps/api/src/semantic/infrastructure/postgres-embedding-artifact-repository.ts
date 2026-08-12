@@ -78,7 +78,7 @@ export function createPostgresEmbeddingArtifactRepository(
           AND artifact.normalization = ${identity.normalization}
           AND artifact.dimension = ${identity.dimension}
           AND artifact.artifact_schema_version = ${identity.artifactSchemaVersion}
-          AND artifact.state = 'verified'
+          AND artifact.state IN ('verified', 'orphaned')
           AND artifact.deleted_at IS NULL
         LIMIT 1
       `;
@@ -172,12 +172,20 @@ export function createPostgresEmbeddingArtifactRepository(
             ON object.object_id = artifact.object_id
           WHERE artifact.public_id = ${input.artifact.publicId}
             AND artifact.knowledge_base_id = ${input.artifact.knowledgeBaseId}
-            AND artifact.state = 'verified'
+            AND artifact.state IN ('verified', 'orphaned')
             AND artifact.deleted_at IS NULL
             AND object.state = 'verified'
           FOR UPDATE OF artifact, object
         `;
         const artifact = requireArtifact(rows[0]);
+        if (artifact.state === "orphaned") {
+          await transaction`
+            UPDATE focowiki.embedding_artifacts
+            SET state = 'verified', deleted_at = NULL
+            WHERE public_id = ${artifact.public_id}
+              AND state = 'orphaned'
+          `;
+        }
         await attachSemanticOwnerAndReference(transaction, {
           artifact,
           semanticGenerationPublicId: input.semanticGenerationPublicId,
@@ -647,6 +655,11 @@ async function attachObjectOwner(
       'embedding_artifact', ${artifact.public_id}, ${createdAt}
     )
     ON CONFLICT (object_id, owner_kind, owner_public_id) DO NOTHING
+  `;
+  await sql`
+    UPDATE focowiki.object_registrations
+    SET zero_owner_since = NULL
+    WHERE object_id = ${artifact.object_id}
   `;
 }
 

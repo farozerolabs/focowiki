@@ -14,7 +14,10 @@ import {
 import {
   StorageVnextActiveSearchInputError
 } from "./active-search.js";
-import type { StorageVnextSearchHydrationPort } from "./search-hydration.js";
+import type {
+  StorageVnextSearchHydrationPort,
+  StorageVnextSearchHydrationRecord
+} from "./search-hydration.js";
 import type {
   StorageVnextSearchQueryPort,
   StorageVnextSearchResult,
@@ -50,7 +53,28 @@ type SemanticItem = {
   explanations: readonly string[];
 };
 
-type Cursor = { version: 1; scopeHash: string; offset: number };
+type LegacyCursor = { version: 1; scopeHash: string; offset: number };
+
+export type StorageVnextSemanticPaginationState = {
+  version: 1;
+  seenSourceFilePublicIds: string[];
+  scanLimit: number;
+};
+
+export type StorageVnextSemanticPaginationPort = {
+  read(
+    scopeHash: string,
+    cursor: string
+  ): Promise<StorageVnextSemanticPaginationState | null>;
+  write(
+    scopeHash: string,
+    state: StorageVnextSemanticPaginationState
+  ): Promise<string>;
+};
+
+type DecodedCursor =
+  | { kind: "legacy"; value: LegacyCursor }
+  | { kind: "snapshot"; value: StorageVnextSemanticPaginationState };
 
 export function createStorageVnextSemanticSearch(input: {
   semanticGenerations: {
@@ -103,6 +127,7 @@ export function createStorageVnextSemanticSearch(input: {
   };
   fallback: StorageVnextSearchQueryPort;
   hydration: StorageVnextSearchHydrationPort;
+  pagination?: StorageVnextSemanticPaginationPort;
   providerKind: SearchProviderKind;
   vectorIndexPrefix: string;
   maxPageSize: number;
@@ -187,9 +212,22 @@ export function createStorageVnextSemanticSearch(input: {
         mappingFingerprintSha256: projection.mappingFingerprintSha256,
         lexicalIndexUid: lexicalProjection?.providerIndexUid ?? null
       });
-      const cursor = decodeCursor(request.cursor, scopeHash);
+      const cursor = await decodeCursor({
+        value: request.cursor,
+        scopeHash,
+        pageSize: request.limit,
+        pagination: input.pagination
+      });
       const settings = await input.resolveRuntimeSettings();
-      const semanticLimit = Math.min(1_000, cursor.offset + request.limit);
+      const semanticLimit = Math.min(
+        1_000,
+        cursor.kind === "legacy"
+          ? cursor.value.offset + request.limit
+          : Math.max(
+              cursor.value.scanLimit,
+              cursor.value.seenSourceFilePublicIds.length + request.limit
+            )
+      );
       try {
         const result = await input.semantic.search({
           knowledgeBaseId: request.knowledgeBaseId,
@@ -251,8 +289,16 @@ export function createStorageVnextSemanticSearch(input: {
             ? [{ item, source }]
             : [];
         });
-        const selected = valid.slice(cursor.offset, cursor.offset + request.limit);
-        const nextOffset = cursor.offset + selected.length;
+        const pagination = await paginateSemanticResults({
+          cursor,
+          valid,
+          requestLimit: request.limit,
+          semanticLimit,
+          providerHasMore: result.hasMore === true,
+          scopeHash,
+          pagination: input.pagination
+        });
+        const selected = pagination.selected;
         return {
           items: selected.map(({ item, source }): StorageVnextSearchResult => ({
             publicId: source.sourceFilePublicId,
@@ -268,10 +314,7 @@ export function createStorageVnextSemanticSearch(input: {
             evidenceTypes: [...item.evidenceTypes],
             sourceExcerpt: item.sourceExcerpt
           })),
-          nextCursor: (valid.length > nextOffset || result.hasMore === true)
-            && nextOffset < 1_000
-            ? encodeCursor({ version: 1, scopeHash, offset: nextOffset })
-            : null,
+          nextCursor: pagination.nextCursor,
           semanticStatus: result.semanticStatus,
           evidenceStatus: result.evidenceStatus ?? {
             completedFamilies: [],
@@ -395,23 +438,111 @@ function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function encodeCursor(value: Cursor): string {
+function encodeCursor(value: LegacyCursor): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
-function decodeCursor(value: string | null, scopeHash: string): Cursor {
-  if (!value) return { version: 1, scopeHash, offset: 0 };
+async function decodeCursor(input: {
+  value: string | null;
+  scopeHash: string;
+  pageSize: number;
+  pagination: StorageVnextSemanticPaginationPort | undefined;
+}): Promise<DecodedCursor> {
+  if (!input.value) {
+    return input.pagination
+      ? {
+          kind: "snapshot",
+          value: {
+            version: 1,
+            seenSourceFilePublicIds: [],
+            scanLimit: input.pageSize
+          }
+        }
+      : {
+          kind: "legacy",
+          value: { version: 1, scopeHash: input.scopeHash, offset: 0 }
+        };
+  }
+  if (input.pagination) {
+    const state = await input.pagination.read(input.scopeHash, input.value);
+    if (isPaginationState(state)) return { kind: "snapshot", value: state };
+  }
   try {
-    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor;
+    const decoded = JSON.parse(
+      Buffer.from(input.value, "base64url").toString("utf8")
+    ) as LegacyCursor;
     if (
       decoded.version !== 1
-      || decoded.scopeHash !== scopeHash
+      || decoded.scopeHash !== input.scopeHash
       || !Number.isSafeInteger(decoded.offset)
       || decoded.offset < 1
       || decoded.offset > 1_000
     ) throw new Error("invalid");
-    return decoded;
+    return { kind: "legacy", value: decoded };
   } catch {
     throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_CURSOR");
   }
+}
+
+async function paginateSemanticResults(input: {
+  cursor: DecodedCursor;
+  valid: readonly { item: SemanticItem; source: StorageVnextSearchHydrationRecord }[];
+  requestLimit: number;
+  semanticLimit: number;
+  providerHasMore: boolean;
+  scopeHash: string;
+  pagination: StorageVnextSemanticPaginationPort | undefined;
+}) {
+  if (input.cursor.kind === "legacy") {
+    const offset = input.cursor.value.offset;
+    const selected = input.valid.slice(offset, offset + input.requestLimit);
+    const nextOffset = offset + selected.length;
+    return {
+      selected,
+      nextCursor: (input.valid.length > nextOffset || input.providerHasMore)
+        && nextOffset < 1_000
+        ? encodeCursor({ version: 1, scopeHash: input.scopeHash, offset: nextOffset })
+        : null
+    };
+  }
+  if (!input.pagination) {
+    throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_CURSOR");
+  }
+  const seen = new Set(input.cursor.value.seenSourceFilePublicIds);
+  const unseen = input.valid.filter(({ item }) => !seen.has(item.sourceFilePublicId));
+  const selected = unseen.slice(0, input.requestLimit);
+  const nextSeen = [
+    ...input.cursor.value.seenSourceFilePublicIds,
+    ...selected.map(({ item }) => item.sourceFilePublicId)
+  ];
+  const hasMore = nextSeen.length < 1_000 && (
+    unseen.length > selected.length
+    || input.providerHasMore && input.semanticLimit < 1_000
+  );
+  if (!hasMore) return { selected, nextCursor: null };
+  const nextCursor = await input.pagination.write(input.scopeHash, {
+    version: 1,
+    seenSourceFilePublicIds: nextSeen,
+    scanLimit: Math.min(1_000, Math.max(
+      input.semanticLimit + input.requestLimit,
+      nextSeen.length + input.requestLimit
+    ))
+  });
+  return { selected, nextCursor };
+}
+
+function isPaginationState(value: unknown): value is StorageVnextSemanticPaginationState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const state = value as StorageVnextSemanticPaginationState;
+  return state.version === 1
+    && Array.isArray(state.seenSourceFilePublicIds)
+    && state.seenSourceFilePublicIds.length <= 1_000
+    && new Set(state.seenSourceFilePublicIds).size
+      === state.seenSourceFilePublicIds.length
+    && state.seenSourceFilePublicIds.every((id) =>
+      typeof id === "string" && id.length > 0 && Buffer.byteLength(id) <= 255)
+    && Number.isSafeInteger(state.scanLimit)
+    && state.scanLimit >= 1
+    && state.scanLimit <= 1_000
+    && state.scanLimit >= state.seenSourceFilePublicIds.length;
 }

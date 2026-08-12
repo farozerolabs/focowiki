@@ -18,7 +18,6 @@ export function createStorageVnextMutationRequestHash(input: {
     targetKind: input.targetKind,
     targetPublicId: request.targetPublicId,
     expectedResourceRevision: request.expectedResourceRevision,
-    settingsRevisionPublicId: request.settingsRevisionPublicId,
     candidateLogicalPath: input.candidateLogicalPath ?? null,
     normalizedCandidatePath: input.normalizedCandidatePath ?? null,
     mutation: mutationPayload(request)

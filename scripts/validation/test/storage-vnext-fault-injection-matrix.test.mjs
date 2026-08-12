@@ -10,16 +10,28 @@ import {
   LIVE_FAULT_INJECTION_CASES,
   assertStorageVnextFaultInjectionCoverage,
   buildFaultInjectionSuites,
-  faultInjectionTestFiles
+  faultInjectionTestFiles,
+  selectLiveFaultInjectionCases
 } from "../lib/storage-vnext-fault-injection-matrix.mjs";
 
 test("covers every required component, failure type, and durable boundary", () => {
-  assert.deepEqual(assertStorageVnextFaultInjectionCoverage(FAULT_INJECTION_CASES), {
-    caseCount: 25,
+  const coverage = assertStorageVnextFaultInjectionCoverage(FAULT_INJECTION_CASES);
+  assert.deepEqual(coverage, {
+    caseCount: 35,
     components: [...FAULT_COMPONENTS],
     faultTypes: [...FAULT_TYPES],
     boundaries: [...FAULT_BOUNDARIES]
   });
+  assert.equal(coverage.components.includes("opensearch"), true);
+  assert.equal(coverage.components.includes("postgres"), true);
+  assert.equal(
+    FAULT_INJECTION_CASES.filter((item) => item.component === "postgres").length,
+    2
+  );
+  assert.equal(
+    FAULT_INJECTION_CASES.filter((item) => item.component === "opensearch").length,
+    6
+  );
 });
 
 test("binds every fault case to a real named test", () => {
@@ -103,6 +115,25 @@ test("reserves real runtime disruption for local dependencies and processes", ()
       component: "meilisearch",
       faultType: "refusal",
       boundary: "pre_activation"
+    },
+    {
+      id: "live-opensearch-refusal-pre-activation",
+      component: "opensearch",
+      faultType: "refusal",
+      boundary: "pre_activation"
     }
   ]);
+});
+
+test("selects only the active provider for live Docker disruption", () => {
+  assert.deepEqual(
+    selectLiveFaultInjectionCases("opensearch").map((item) => item.id),
+    [
+      "live-api-restart-pre-write",
+      "live-redis-refusal-post-write",
+      "live-s3-refusal-pre-write",
+      "live-worker-restart-post-write",
+      "live-opensearch-refusal-pre-activation"
+    ]
+  );
 });

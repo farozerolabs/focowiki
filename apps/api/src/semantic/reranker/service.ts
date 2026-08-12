@@ -162,6 +162,7 @@ export function createRerankerConfigurationService(input: {
       expectedRevision: number,
       actorPublicId: string | null
     ) {
+      await requireConfiguration(input.repository, configurationPublicId);
       const updated = await input.repository.setLifecycle({
         configurationPublicId,
         status: "paused",
@@ -177,6 +178,7 @@ export function createRerankerConfigurationService(input: {
       expectedRevision: number,
       actorPublicId: string | null
     ) {
+      await requireConfiguration(input.repository, configurationPublicId);
       const updated = await input.repository.setLifecycle({
         configurationPublicId,
         status: "draft",
@@ -287,7 +289,7 @@ function resolveUpdatedEncryptedApiKey(
   deploymentSecret: string
 ): string | null {
   if (draft.authenticationMode === "none") return null;
-  if (draft.apiKey !== null) {
+  if (draft.apiKey !== null && draft.apiKey !== undefined) {
     return encryptRuntimeSecret({ value: draft.apiKey, secret: deploymentSecret });
   }
   if (existing.authenticationMode === "api_key" && existing.encryptedApiKey) {

@@ -10,6 +10,10 @@ type CleanupActions = Pick<
 >;
 
 const MAXIMUM_CLEANUP_ACTION_CLAIM = 100;
+const CLEANUP_DOMAINS = [
+  "search_projection_retirement",
+  "provider_adoption"
+] as const;
 
 export function createStorageVnextProviderIndexCleanupWorker(input: {
   actions: CleanupActions;
@@ -30,16 +34,22 @@ export function createStorageVnextProviderIndexCleanupWorker(input: {
       leaseExpiresAt: string;
     }): Promise<{ claimed: number; completed: number; retried: number }> {
       validateRequest(request);
-      const actions = await input.actions.claim({
-        ...request,
-        limit: Math.min(request.limit, MAXIMUM_CLEANUP_ACTION_CLAIM),
-        selector: {
-          domain: "provider_adoption",
-          plane: "search",
-          resourceKind: "search_index",
-          searchProviderKind: input.provider.kind
-        }
-      });
+      const claimLimit = Math.min(request.limit, MAXIMUM_CLEANUP_ACTION_CLAIM);
+      const actions = [] as Awaited<ReturnType<CleanupActions["claim"]>>[number][];
+      for (const domain of CLEANUP_DOMAINS) {
+        const remaining = claimLimit - actions.length;
+        if (remaining === 0) break;
+        actions.push(...await input.actions.claim({
+          ...request,
+          limit: remaining,
+          selector: {
+            domain,
+            plane: "search",
+            resourceKind: "search_index",
+            searchProviderKind: input.provider.kind
+          }
+        }));
+      }
       let completed = 0;
       let retried = 0;
       for (const action of actions) {
@@ -88,7 +98,7 @@ function assertOwnedAction(
   providerKind: SearchProviderRuntime["kind"]
 ): void {
   if (
-    action.domain !== "provider_adoption"
+    !CLEANUP_DOMAINS.includes(action.domain as typeof CLEANUP_DOMAINS[number])
     || action.searchProviderKind !== providerKind
     || action.target.plane !== "search"
     || action.target.resourceKind !== "search_index"

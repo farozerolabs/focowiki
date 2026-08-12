@@ -73,6 +73,21 @@ vi.mock("../src/lib/admin-api", () => ({
       projectionRepair: null,
       compaction: { active: null, latestCompleted: null }
     },
+    indexMaintenance: {
+      requestId: null,
+      state: "idle",
+      trigger: null,
+      stage: null,
+      active: false,
+      completedCount: 0,
+      expectedCount: 0,
+      retryCount: 0,
+      lastProgressAt: null,
+      lastCompletedAt: null,
+      maintenanceRequired: false,
+      safeErrorCode: null,
+      safeErrorMessage: null
+    },
     dirtySourceFiles: {
       count: 0,
       oldestDirtyAt: null
@@ -456,10 +471,12 @@ describe("Admin upload file picker", () => {
 
   it("ignores a stale upload completion after the user cancels", async () => {
     let resolveUpload: ((result: ReturnType<typeof createCompletedUploadResult>) => void) | null = null;
+    let uploadSignal: AbortSignal | undefined;
     vi.mocked(cancelFolderUpload).mockResolvedValueOnce(undefined);
     vi.mocked(runUploadSession).mockImplementationOnce(
       (input) =>
         new Promise((resolve) => {
+          uploadSignal = (input as typeof input & { signal?: AbortSignal }).signal;
           input.onSessionReady?.("upload-session-cancel", createUploadTransport());
           resolveUpload = resolve;
         })
@@ -479,6 +496,8 @@ describe("Admin upload file picker", () => {
         knowledgeBaseId: "kb-docs",
         sessionId: "upload-session-cancel"
       });
+      expect(uploadSignal).toBeInstanceOf(AbortSignal);
+      expect(uploadSignal?.aborted).toBe(true);
       expect(screen.getByText("No Markdown files selected")).toBeTruthy();
     });
     await act(async () => {
