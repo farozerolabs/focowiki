@@ -118,7 +118,8 @@ export function validateReviewedOkfV02OpenApi(document, manifest) {
   const failures = [];
   const reviewedChangeIds = [
     "align-google-okf-v0-2-trust-signals",
-    "add-general-purpose-graphrag-search"
+    "add-general-purpose-graphrag-search",
+    "validate-comprehensive-large-scale-release"
   ];
   if (JSON.stringify(manifest?.reviewedChangeIds) !== JSON.stringify(reviewedChangeIds)) {
     failures.push("The reviewed OpenAPI continuity change ID is invalid.");

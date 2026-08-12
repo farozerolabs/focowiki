@@ -17,6 +17,7 @@ const KNOWLEDGE_BASE_QUERY_NAMES = Object.freeze([
   "sourceDirectories",
   "sourceFiles",
   "sourceRevisions",
+  "semanticStages",
   "graphNodes",
   "graphEdges",
   "graphEvidenceRefs",
@@ -295,6 +296,20 @@ function createQueryExecutor(sql) {
           FROM focowiki.source_revisions
           WHERE knowledge_base_id = ${knowledgeBaseId}
           ORDER BY source_file_public_id, created_at, public_id
+          LIMIT 50000
+        `;
+      case "semanticStages":
+        return sql`
+          SELECT public_id AS id, source_file_public_id AS "sourceFileId",
+                 source_revision_public_id AS "sourceRevisionId",
+                 stage_kind AS "stageKind", state,
+                 attempt_count AS "attemptCount",
+                 maximum_attempts AS "maximumAttempts",
+                 safe_error_code AS "safeErrorCode",
+                 next_attempt_at AS "nextAttemptAt", updated_at AS "updatedAt"
+          FROM focowiki.semantic_stage_work_items
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY updated_at, public_id
           LIMIT 50000
         `;
       case "graphNodes":

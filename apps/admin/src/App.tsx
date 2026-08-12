@@ -95,7 +95,17 @@ export function App() {
       setIsLoadingKnowledgeBases(true);
 
       const initialPageState = createInitialCursorPageState();
-      const page = await listKnowledgeBases({});
+      let page;
+      try {
+        page = await listKnowledgeBases({});
+      } catch (error) {
+        console.error("Failed to restore the knowledge base list.", error);
+        if (isActive) {
+          setIsLoadingKnowledgeBases(false);
+          await restoreAdminView();
+        }
+        return;
+      }
 
       if (!isActive) {
         return;
@@ -210,18 +220,25 @@ export function App() {
     const loadId = knowledgeBaseLoadIdRef.current + 1;
     knowledgeBaseLoadIdRef.current = loadId;
     setIsLoadingKnowledgeBases(true);
-    const page = await listKnowledgeBases({
-      ...(pageState.currentCursor ? { cursor: pageState.currentCursor } : {}),
-      ...(normalizedQuery ? { query: normalizedQuery } : {})
-    });
+    try {
+      const page = await listKnowledgeBases({
+        ...(pageState.currentCursor ? { cursor: pageState.currentCursor } : {}),
+        ...(normalizedQuery ? { query: normalizedQuery } : {})
+      });
 
-    if (loadId !== knowledgeBaseLoadIdRef.current) {
-      return;
+      if (loadId !== knowledgeBaseLoadIdRef.current) {
+        return;
+      }
+
+      setKnowledgeBases(page.items);
+      setKnowledgeBasePageState(completeCursorPageRequest(pageState, page.nextCursor));
+    } catch (error) {
+      console.error("Failed to load the knowledge base list.", error);
+    } finally {
+      if (loadId === knowledgeBaseLoadIdRef.current) {
+        setIsLoadingKnowledgeBases(false);
+      }
     }
-
-    setKnowledgeBases(page.items);
-    setKnowledgeBasePageState(completeCursorPageRequest(pageState, page.nextCursor));
-    setIsLoadingKnowledgeBases(false);
   }
 
   async function handleKnowledgeBaseQueryChange(query: string) {

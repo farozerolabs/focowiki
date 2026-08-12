@@ -29,8 +29,10 @@ export function registerAdminPublicUrlRoutes(
       }
       const knowledgeBase = result.value;
 
-      if (!knowledgeBase?.activeVersionId) {
-        return notFound(context);
+      if (!knowledgeBase) return notFound(context);
+
+      if (!knowledgeBase.activeVersionId) {
+        return context.json({ publicUrls: null });
       }
 
       return context.json({

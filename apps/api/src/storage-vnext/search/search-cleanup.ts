@@ -104,7 +104,10 @@ export function createStorageVnextSearchCleanup(config: CleanupConfig) {
         ?.deleteOwnedFinishedOperations;
       if (!deleteFinished) return { deleted: 0, continuation: null };
       const result = await deleteFinished({
-        indexUidPrefix: ownedPrefix,
+        indexUidPrefixes: [
+          ownedPrefix,
+          `${config.indexUidPrefix}-semantic-`
+        ],
         beforeFinishedAt: input.finishedBefore,
         continuation: input.continuation,
         limit: Math.min(config.taskPageSize, config.maxDeletesPerRun)

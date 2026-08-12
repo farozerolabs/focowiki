@@ -15,6 +15,8 @@ import { createRuntimeSearchProvider } from
   "../../runtime/search-provider.js";
 import { createSemanticDeletionService } from
   "../../semantic/application/deletion-service.js";
+import { createSemanticVectorDocumentCleanupWorker } from
+  "../../semantic/application/vector-document-cleanup-worker.js";
 import { createPostgresSemanticDeletionRepository } from
   "../../semantic/infrastructure/postgres-semantic-deletion-repository.js";
 import { createSemanticAdoptionService } from
@@ -29,6 +31,8 @@ import { createPostgresSemanticProviderAdoptionRepository } from
   "../../semantic/infrastructure/postgres-provider-adoption-repository.js";
 import { createPostgresEmbeddingArtifactRepository } from
   "../../semantic/infrastructure/postgres-embedding-artifact-repository.js";
+import { createPostgresSemanticPublicationReadinessHooks } from
+  "../../semantic/infrastructure/postgres-publication-readiness.js";
 import { createS3EmbeddingArtifactStore } from
   "../../semantic/infrastructure/s3-embedding-artifact-store.js";
 import {
@@ -219,7 +223,18 @@ export async function runStorageVnextMaintenanceWorker(
     const resourceBudgetReporter = createResourceBudgetReporter({ logger });
     const catalog = createPostgresStorageVnextCatalogRepository(sql);
     const graph = createPostgresStorageVnextGraphRepository(sql);
-    const releases = createPostgresStorageVnextReleaseRepository(sql);
+    const semanticReadinessHooks =
+      createPostgresSemanticPublicationReadinessHooks();
+    const releases = createPostgresStorageVnextReleaseRepository(sql, {
+      lifecycleHooks: semanticReadinessHooks,
+      onValidationMismatch(mismatch) {
+        logger.error("publication_candidate.validation_mismatch", {
+          candidatePublicId: mismatch.candidatePublicId,
+          fields: mismatch.fields.join(","),
+          ...(mismatch.diagnostics ?? {})
+        });
+      }
+    });
     const ownership = createPostgresStorageVnextOwnershipRepository(sql, {
       zeroOwnerGraceMilliseconds: () => quarantineGraceMilliseconds
     });
@@ -240,7 +255,9 @@ export async function runStorageVnextMaintenanceWorker(
       catalog
     });
     const semanticProviderAdoptionRepository =
-      createPostgresSemanticProviderAdoptionRepository(sql);
+      createPostgresSemanticProviderAdoptionRepository(sql, {
+        indexPrefix: searchConfig.indexPrefix
+      });
     const embeddingArtifacts = createPostgresEmbeddingArtifactRepository(sql);
     const embeddingArtifactStore = createS3EmbeddingArtifactStore({
       client: s3,
@@ -351,6 +368,8 @@ export async function runStorageVnextMaintenanceWorker(
       `candidate-object-cleanup-worker-${randomUUID()}`;
     const providerIndexCleanupWorkerId =
       `provider-index-cleanup-worker-${randomUUID()}`;
+    const semanticVectorCleanupWorkerId =
+      `semantic-vector-cleanup-worker-${randomUUID()}`;
     const deletionWorkerId = `deletion-worker-${randomUUID()}`;
     const webhookWorkerId = `webhook-worker-${randomUUID()}`;
     let lastRetentionAt = 0;
@@ -422,7 +441,8 @@ export async function runStorageVnextMaintenanceWorker(
         processor: pipeline.createProcessor(),
         clock: now,
         rollbackRetentionMilliseconds: resultRetentionMilliseconds(snapshot),
-        resultRetentionMilliseconds: resultRetentionMilliseconds(snapshot)
+        resultRetentionMilliseconds: resultRetentionMilliseconds(snapshot),
+        maximumAttempts: snapshot.worker.hardDeleteMaxAttempts
       });
       const deletionWorker = createStorageVnextDeletionWorker({
         workflow,
@@ -482,6 +502,15 @@ export async function runStorageVnextMaintenanceWorker(
           logger.warn("deletion_worker.webhook_enqueue_failed", {
             errorClass: error instanceof Error ? error.name : "UnknownError"
           });
+        },
+        onAttemptError({ work, error }) {
+          logger.error("deletion_worker.item_failed", {
+            operationPublicId: work.publicId,
+            knowledgeBaseId: work.knowledgeBaseId,
+            attempt: work.attempt,
+            errorClass: error instanceof Error ? error.name : "UnknownError",
+            errorMessage: error instanceof Error ? error.message : String(error)
+          });
         }
       });
       const webhookWorker = createStorageVnextWebhookWorker({
@@ -513,6 +542,19 @@ export async function runStorageVnextMaintenanceWorker(
       const providerIndexCleanup = createStorageVnextProviderIndexCleanupWorker({
         actions: cleanupActions,
         provider: pipeline.searchProvider,
+        maxPollAttempts: Math.max(1, Math.ceil(
+          snapshot.search.taskTimeoutMs / snapshot.search.taskPollIntervalMs
+        )),
+        pollIntervalMs: snapshot.search.taskPollIntervalMs,
+        retryDelayMs: snapshot.search.retryDelayMs
+      });
+      const semanticVectorCleanup = createSemanticVectorDocumentCleanupWorker({
+        actions: cleanupActions,
+        provider: {
+          kind: searchProvider.kind,
+          vector: requireSemanticVectorProvider(searchProvider)
+        },
+        indexPrefix: searchConfig.indexPrefix,
         maxPollAttempts: Math.max(1, Math.ceil(
           snapshot.search.taskTimeoutMs / snapshot.search.taskPollIntervalMs
         )),
@@ -682,6 +724,19 @@ export async function runStorageVnextMaintenanceWorker(
         logger[
           providerIndexCleanupOutcome.retried > 0 ? "warn" : "info"
         ]("maintenance_worker.provider_index_cleanup", providerIndexCleanupOutcome);
+      }
+      const semanticVectorCleanupOutcome = await semanticVectorCleanup.runBatch({
+        owner: semanticVectorCleanupWorkerId,
+        limit: cleanupPageSize(snapshot),
+        leaseExpiresAt: nextLeaseExpiresAt()
+      });
+      if (semanticVectorCleanupOutcome.claimed > 0) {
+        logger[
+          semanticVectorCleanupOutcome.retried > 0 ? "warn" : "info"
+        ](
+          "maintenance_worker.semantic_vector_document_cleanup",
+          semanticVectorCleanupOutcome
+        );
       }
       const deletionOutcomes = await deletionWorker.runBatch({
         leaseExpiresAt: nextLeaseExpiresAt()

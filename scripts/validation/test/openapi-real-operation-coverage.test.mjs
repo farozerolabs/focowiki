@@ -73,3 +73,84 @@ test("rejects requests that do not match the released contract", () => {
     authorization: "authenticated"
   }), /does not match a released OpenAPI operation/u);
 });
+
+test("fails closed when an operation is missing required cold, warm, or concurrent measurements", () => {
+  const coverage = createOpenApiOperationCoverage(openApiDocument);
+  const pathname = "/openapi/v2/health";
+
+  coverage.record({
+    method: "GET",
+    pathname,
+    status: 200,
+    authorization: "authenticated",
+    measurementPhase: "cold",
+    durationMs: 20
+  });
+  coverage.record({
+    method: "GET",
+    pathname,
+    status: 200,
+    authorization: "authenticated",
+    measurementPhase: "warm",
+    durationMs: 10
+  });
+
+  const summary = coverage.summary({
+    requirePerformanceMeasurements: true,
+    concurrentApplicableOperationIds: ["getDeveloperOpenApiHealth"]
+  });
+  const health = summary.operations.find(
+    (entry) => entry.operationId === "getDeveloperOpenApiHealth"
+  );
+
+  assert.equal(summary.performanceComplete, false);
+  assert.equal(
+    summary.missingPerformance.includes("getDeveloperOpenApiHealth:concurrent"),
+    true
+  );
+  assert.equal(health.performance.cold.count, 1);
+  assert.equal(health.performance.cold.p95Ms, 20);
+  assert.equal(health.performance.warm.p95Ms, 10);
+  assert.equal(health.performance.concurrent, null);
+});
+
+test("summarizes explicit per-operation performance phases and concurrent throughput", () => {
+  const coverage = createOpenApiOperationCoverage(openApiDocument);
+  const pathname = "/openapi/v2/health";
+
+  for (const measurement of [
+    { measurementPhase: "cold", durationMs: 20 },
+    { measurementPhase: "warm", durationMs: 10 },
+    {
+      measurementPhase: "concurrent",
+      durationMs: 12,
+      measurementWindowMs: 15
+    },
+    {
+      measurementPhase: "concurrent",
+      durationMs: 14,
+      measurementWindowMs: 15
+    }
+  ]) {
+    coverage.record({
+      method: "GET",
+      pathname,
+      status: 200,
+      authorization: "authenticated",
+      ...measurement
+    });
+  }
+
+  const summary = coverage.summary({
+    concurrentApplicableOperationIds: ["getDeveloperOpenApiHealth"]
+  });
+  const health = summary.operations.find(
+    (entry) => entry.operationId === "getDeveloperOpenApiHealth"
+  );
+
+  assert.equal(health.performance.concurrent.count, 2);
+  assert.equal(health.performance.concurrent.p50Ms, 12);
+  assert.equal(health.performance.concurrent.p95Ms, 14);
+  assert.equal(health.performance.concurrent.errorRate, 0);
+  assert.equal(health.performance.concurrent.throughputPerSecond, 133.333);
+});

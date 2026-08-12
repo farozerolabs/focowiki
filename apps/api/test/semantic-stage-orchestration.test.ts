@@ -58,6 +58,26 @@ describe("durable semantic stage orchestration", () => {
     ]);
   });
 
+  it("resumes from embedding without repeating extraction or graph construction", () => {
+    const plan = planSemanticSourceStages({
+      knowledgeBaseId: "kb-main",
+      operationPublicId: "operation-embedding-only",
+      semanticGenerationPublicId: "generation-candidate",
+      sourceFilePublicId: "file-main",
+      sourceRevisionPublicId: "revision-main",
+      extractionContractVersion: "extract-v1",
+      embeddingConfigurationRevisionPublicId: "embedding-revision-2",
+      settingsSnapshot: { graphSchemaVersion: "graph-v1" },
+      dirtyCommunityPartitionKeys: [],
+      includeValidation: false,
+      includePublication: false,
+      resumeFromStage: "embedding",
+      maximumAttempts: 3
+    });
+
+    expect(plan.map((item) => item.stageKind)).toEqual(["embedding", "vector"]);
+  });
+
   it("enforces independent bounded queues while allowing different knowledge bases progress", async () => {
     const budgets = createSemanticStageBudgetManager({
       generation: { concurrency: 1, maximumBacklog: 2 },

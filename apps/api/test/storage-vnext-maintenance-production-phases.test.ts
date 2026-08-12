@@ -389,6 +389,78 @@ describe("storage vNext maintenance production phases", () => {
     });
   });
 
+  it("reuses predecessor facts and validates embedding-only adoption", async () => {
+    const candidatePublicId = createStorageVnextMaintenanceCandidatePublicId({
+      knowledgeBaseId: "kb-maintenance",
+      operationPublicId: "operation-maintenance"
+    });
+    const planSourcePage = vi.fn(async () => ({
+      sourceCount: 2,
+      stageCount: 4,
+      nextCursor: null
+    }));
+    const validateCandidate = vi.fn(async () => ({
+      outcome: "ready" as const,
+      summary: { totalCount: 4, completedCount: 4 }
+    }));
+    const pipeline = pipelineFixture();
+    pipeline.buildSearchCandidate.mockResolvedValue({
+      sourceCount: 2,
+      graphSeedCount: 0,
+      documentCount: 2,
+      batchCount: 1,
+      compressedBytes: 64,
+      documentChecksum: "c".repeat(64),
+      queryCases: []
+    });
+    const phases = createStorageVnextMaintenanceProductionPhases({
+      semanticAdoption: {
+        planSourcePage,
+        validateCandidate,
+        activateCandidate: vi.fn()
+      },
+      planner: { plan: vi.fn(async () => ({
+        candidatePublicId,
+        candidateRootPublicId: "root-candidate",
+        sourceCount: 2,
+        directoryCount: 0
+      })) },
+      catalog: { getKnowledgeBase: vi.fn() },
+      releases: {
+        hasCandidateCatalogEntries: vi.fn(),
+        getActiveRoot: vi.fn(),
+        getLiveCandidate: vi.fn(),
+        activateCandidate: vi.fn()
+      },
+      pipeline,
+      objectReconciliation: { runPage: vi.fn() },
+      candidateObjectCleanup: { runPage: vi.fn() },
+      clock: () => "2026-08-02T00:00:00.000Z",
+      rollbackRetentionMilliseconds: 1,
+      resultRetentionMilliseconds: 1
+    });
+    const semanticAdoption = {
+      ...semanticAdoptionSnapshot(),
+      mode: "embedding_only" as const
+    };
+
+    await phases.runPhase(phaseRequest({
+      ...checkpoint("planning"),
+      semanticAdoption
+    }));
+    await phases.runPhase(phaseRequest({
+      ...checkpoint("search_rebuild"),
+      semanticAdoption
+    }));
+
+    expect(planSourcePage).toHaveBeenCalledWith(expect.objectContaining({
+      expectedPredecessorPublicId: "semantic-active",
+      reusePredecessorFacts: true
+    }));
+    expect(validateCandidate).toHaveBeenCalledOnce();
+    expect(pipeline.buildSearchCandidate).toHaveBeenCalledOnce();
+  });
+
   it("adopts a provider by rebuilding and activating only search", async () => {
     const planner = { plan: vi.fn() };
     const prepareCandidate = vi.fn();
@@ -538,8 +610,10 @@ describe("storage vNext maintenance production phases", () => {
     expect(planProviderPage).toHaveBeenCalledOnce();
     expect(validateProvider).toHaveBeenCalledOnce();
     expect(activateProviderProjection).toHaveBeenCalledWith(expect.objectContaining({
+      operationPublicId: "operation-maintenance",
       semanticGenerationPublicId: "semantic-active",
-      expectedGenerationRevision: 3
+      expectedGenerationRevision: 3,
+      cleanupNotBefore: "2026-08-02T00:00:00.001Z"
     }));
     expect(semanticAdoption.planSourcePage).not.toHaveBeenCalled();
     expect(semanticAdoption.validateCandidate).not.toHaveBeenCalled();

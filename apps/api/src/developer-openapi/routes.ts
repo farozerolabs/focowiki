@@ -10,6 +10,7 @@ import {
 import { createDeveloperOpenApiDocument } from "./openapi-document.js";
 import { registerDeveloperOpenApiFileSearchRoutes } from "./file-search-routes.js";
 import { registerDeveloperOpenApiGraphExpansionRoutes } from "./graph-expansion-routes.js";
+import { createDeveloperOpenApiBodyLimit } from "./security.js";
 import { registerDeveloperOpenApiUploadSessionRoutes } from "./upload-session-routes.js";
 import {
   registerDeveloperOpenApiSourceResourceRoutes,
@@ -38,6 +39,7 @@ export function registerDeveloperOpenApiRoutes(
   });
 
   app.use("/openapi/v2/*", requireAuth);
+  app.use("/openapi/v2/*", createDeveloperOpenApiBodyLimit(services.config));
 
   app.get("/openapi/v2/health", (context) =>
     context.json({

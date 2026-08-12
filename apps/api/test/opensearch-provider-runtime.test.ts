@@ -178,6 +178,48 @@ describe("OpenSearch provider runtime", () => {
     })).resolves.toEqual({ state: "completed" });
   });
 
+  it("lists only owned indexes in bounded stable pages for cleanup", async () => {
+    const client = createClient();
+    vi.mocked(client.indices.getSettings).mockResolvedValue({
+      body: {
+        owned_candidate_b: indexSettings("1767225601000"),
+        outside_candidate: indexSettings("1767225602000"),
+        owned_candidate_a: indexSettings("1767225600000")
+      }
+    });
+    const provider = createProvider(client);
+    const listOwnedIndexes = provider.maintenance?.listOwnedIndexes;
+
+    expect(listOwnedIndexes).toBeTypeOf("function");
+    const first = await listOwnedIndexes!({
+      indexUidPrefix: "owned_",
+      continuation: null,
+      limit: 1
+    });
+    expect(first.indexes).toEqual([{
+      indexUid: "owned_candidate_a",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }]);
+    expect(first.continuation).toEqual(expect.any(String));
+    await expect(listOwnedIndexes!({
+      indexUidPrefix: "owned_",
+      continuation: first.continuation,
+      limit: 1
+    })).resolves.toMatchObject({
+      indexes: [{
+        indexUid: "owned_candidate_b",
+        updatedAt: "2026-01-01T00:00:01.000Z"
+      }],
+      continuation: null
+    });
+    expect(client.indices.getSettings).toHaveBeenCalledWith({
+      index: "owned_*",
+      allow_no_indices: true,
+      expand_wildcards: "open,hidden",
+      filter_path: "*.settings.index.creation_date"
+    });
+  });
+
   it("maps least-privilege denial without exposing provider details", async () => {
     const client = createClient();
     vi.mocked(client.indices.create).mockRejectedValueOnce(providerError(403));
@@ -283,6 +325,10 @@ function mappingResponse(indexUid: string) {
       }
     }
   };
+}
+
+function indexSettings(creationDate: string) {
+  return { settings: { index: { creation_date: creationDate } } };
 }
 
 function searchResponse(hits: unknown[]) {

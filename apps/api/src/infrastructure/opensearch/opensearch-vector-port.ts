@@ -77,31 +77,15 @@ export function createOpenSearchVectorPort(input: {
       return structuredClone(definition);
     },
     async writeDocuments(request) {
-      let pending = [...request.documents];
-      for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
-        const body = pending.flatMap((document) => [
-          { index: { _index: request.indexUid, _id: document.id } },
-          serializeDocument(document)
-        ]);
-        if (Buffer.byteLength(JSON.stringify(body), "utf8") > maximumBulkBytes) {
-          throw mappingError();
-        }
-        try {
-          const response = await execute(() => input.client.bulk({ body }, {
-            maxRetries: 0,
-            requestTimeout: 30_000
-          }));
-          pending = retryableBulkDocuments(response.body, pending);
-        } catch (error) {
-          if (!(error instanceof SearchProviderError) || !error.retryable) throw error;
-        }
-        if (pending.length === 0) return { state: "completed" };
-        if (attempt === maximumAttempts) {
-          throw new SearchProviderError("SEARCH_ENGINE_OVERLOADED", true);
-        }
-        await sleep(retryDelayMs * attempt);
+      const batches = splitBulkDocuments(
+        request.indexUid,
+        request.documents,
+        maximumBulkBytes
+      );
+      for (const batch of batches) {
+        await writeBatch(request.indexUid, batch);
       }
-      throw requestError();
+      return { state: "completed" };
     },
     async deleteDocuments(request) {
       const response = await execute(() => input.client.deleteByQuery({
@@ -224,6 +208,66 @@ export function createOpenSearchVectorPort(input: {
     }
   };
   return Object.freeze(port);
+
+  async function writeBatch(
+    indexUid: string,
+    documents: readonly SearchProviderVectorDocument[]
+  ): Promise<void> {
+    let pending = [...documents];
+    for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+      const body = bulkBody(indexUid, pending);
+      try {
+        const response = await execute(() => input.client.bulk({ body }, {
+          maxRetries: 0,
+          requestTimeout: 30_000
+        }));
+        pending = retryableBulkDocuments(response.body, pending);
+      } catch (error) {
+        if (!(error instanceof SearchProviderError) || !error.retryable) throw error;
+      }
+      if (pending.length === 0) return;
+      if (attempt === maximumAttempts) {
+        throw new SearchProviderError("SEARCH_ENGINE_OVERLOADED", true);
+      }
+      await sleep(retryDelayMs * attempt);
+    }
+    throw requestError();
+  }
+}
+
+function splitBulkDocuments(
+  indexUid: string,
+  documents: readonly SearchProviderVectorDocument[],
+  maximumBulkBytes: number
+): SearchProviderVectorDocument[][] {
+  const batches: SearchProviderVectorDocument[][] = [];
+  let batch: SearchProviderVectorDocument[] = [];
+  let batchBytes = 2;
+  for (const document of documents) {
+    const pair = bulkBody(indexUid, [document]);
+    const pairBytes = Buffer.byteLength(JSON.stringify(pair), "utf8");
+    if (pairBytes > maximumBulkBytes) throw mappingError();
+    const addedBytes = pairBytes - 2 + (batch.length === 0 ? 0 : 1);
+    if (batch.length > 0 && batchBytes + addedBytes > maximumBulkBytes) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 2;
+    }
+    batch.push(document);
+    batchBytes += pairBytes - 2 + (batch.length === 1 ? 0 : 1);
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+function bulkBody(
+  indexUid: string,
+  documents: readonly SearchProviderVectorDocument[]
+): unknown[] {
+  return documents.flatMap((document) => [
+    { index: { _index: indexUid, _id: document.id } },
+    serializeDocument(document)
+  ]);
 }
 
 function createVectorIndexBody(definition: SearchProviderVectorIndexDefinition) {

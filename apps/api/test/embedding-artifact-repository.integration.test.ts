@@ -277,6 +277,82 @@ describeOwnedDatabase("embedding artifact PostgreSQL repository", () => {
     `;
   });
 
+  it("reclaims an orphaned compatible artifact while its object is verified", async () => {
+    const encoded = encodeVectorArtifact({
+      vector: [0.3, 0.4, 0.5], normalization: "l2"
+    });
+    const descriptor = descriptorFor(encoded, "orphan-reuse");
+    const identity = createEmbeddingArtifactIdentity({
+      knowledgeBaseId: "kb-artifact",
+      ownerKind: "content",
+      ownerPublicId: "content-orphan-reuse",
+      sourceRevisionPublicId: "revision-artifact",
+      canonicalInputSha256: "4".repeat(64),
+      embeddingConfigurationRevisionPublicId: "embedding-revision-artifact",
+      normalization: "l2",
+      dimension: 3,
+      inputKind: "content"
+    });
+    await repository.reserveObject({
+      descriptor,
+      writeAttemptPublicId: "write-orphan-reuse",
+      createdAt: "2026-08-08T00:00:00.000Z"
+    });
+    await repository.commitVerified({
+      identity,
+      artifactPublicId: identity.artifactPublicId,
+      descriptor,
+      writeAttemptPublicId: "write-orphan-reuse",
+      vectorChecksumSha256: encoded.checksumSha256,
+      semanticGenerationPublicId: "generation-artifact-a",
+      operationPublicId: "operation-artifact-a",
+      sourceFilePublicId: "file-artifact",
+      sourceExcerpt: "Source-grounded orphan reuse excerpt.",
+      retentionKind: "active",
+      verifiedAt: "2026-08-08T00:00:01.000Z"
+    });
+    await expect(repository.releaseReferences({
+      knowledgeBaseId: "kb-artifact",
+      semanticGenerationPublicId: "generation-artifact-a",
+      ownerPublicIds: [identity.ownerPublicId],
+      releasedAt: "2026-08-08T00:00:02.000Z"
+    })).resolves.toBe(1);
+
+    const orphaned = await repository.findCompatible(identity);
+    expect(orphaned).toMatchObject({
+      publicId: identity.artifactPublicId,
+      state: "orphaned"
+    });
+    await repository.attachReference({
+      artifact: orphaned!,
+      semanticGenerationPublicId: "generation-artifact-a",
+      operationPublicId: "operation-artifact-a",
+      sourceFilePublicId: "file-artifact",
+      sourceExcerpt: "Source-grounded orphan reuse excerpt.",
+      retentionKind: "active"
+    });
+    await expect(repository.findCompatible(identity)).resolves.toMatchObject({
+      state: "verified"
+    });
+    await expect(repository.releaseReferences({
+      knowledgeBaseId: "kb-artifact",
+      semanticGenerationPublicId: "generation-artifact-a",
+      ownerPublicIds: [identity.ownerPublicId],
+      releasedAt: "2026-08-08T00:00:03.000Z"
+    })).resolves.toBe(1);
+    const cleanup = await repository.claimOrphaned({
+      knowledgeBaseId: "kb-artifact",
+      artifactPublicId: identity.artifactPublicId,
+      claimedAt: "2026-08-08T00:00:04.000Z"
+    });
+    await expect(repository.completeOrphanDeletion({
+      knowledgeBaseId: "kb-artifact",
+      artifactPublicId: identity.artifactPublicId,
+      descriptor: cleanup?.descriptor ?? null,
+      completedAt: "2026-08-08T00:00:05.000Z"
+    })).resolves.toBe(true);
+  });
+
   it("registers object, artifact ownership, and reference atomically", async () => {
     const encoded = encodeVectorArtifact({ vector: [0.6, 0.8, 0], normalization: "l2" });
     const descriptor = {

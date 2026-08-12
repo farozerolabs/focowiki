@@ -155,6 +155,11 @@ export function createPostgresStorageVnextUploadRepository(
           )
           ON CONFLICT (object_id, owner_kind, owner_public_id) DO NOTHING
         `;
+        await transaction`
+          UPDATE focowiki.object_registrations
+          SET zero_owner_since = NULL
+          WHERE object_id = ${input.objectId}
+        `;
         const updated = await transaction<UploadEntryRow[]>`
           UPDATE focowiki.upload_entries
           SET object_id = ${input.objectId}, checksum_sha256 = ${input.checksumSha256},

@@ -9,9 +9,7 @@ import { KnowledgeBaseMaintenancePanel } from "@/components/knowledge-base-maint
 import { UploadSourceDialog } from "@/components/upload-source-dialog";
 import { SourceDirectoryDeleteDialog } from "@/components/source-directory-delete-dialog";
 import { SourceFileDeleteDialog } from "@/components/source-file-delete-dialog";
-import {
-  SourceResourceEditor
-} from "@/components/source-resource-editor";
+import { SourceResourceEditor } from "@/components/source-resource-editor";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -32,7 +30,6 @@ import {
   type SourceFileRefreshSnapshot
 } from "@/lib/source-file-refresh";
 import {
-  deleteKnowledgeBaseFile,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBaseProcessingSummary,
@@ -45,6 +42,7 @@ import {
   type SourceFilePage,
   type SourceFileRecord
 } from "@/lib/admin-api";
+import { deleteCurrentSourceFile } from "@/lib/resource-editing-api";
 import { useSourceDirectoryDeletion } from "@/hooks/use-source-directory-deletion";
 import { useFileTreeSearch } from "@/hooks/use-file-tree-search";
 import {
@@ -268,7 +266,7 @@ export function KnowledgeBaseDetailPage({
       return next;
     });
 
-    if (open && !treePages[node.logicalPath]) {
+    if (open) {
       await loadFileTree({ parentPath: node.logicalPath, replace: true });
     }
   }
@@ -454,7 +452,8 @@ export function KnowledgeBaseDetailPage({
       ...Array.from(parentPaths).map((parentPath) =>
         loadFileTree({ parentPath, replace: true })
       ),
-      loadPublicUrls()
+      loadPublicUrls(),
+      fileTreeSearch.refresh()
     ]);
   }
 
@@ -502,14 +501,19 @@ export function KnowledgeBaseDetailPage({
       return;
     }
 
+    if (!target.sourceFileId) {
+      setDeleteFileError("errors.invalidResourceRevision");
+      return;
+    }
+
     setDeleteFileError("");
     setSourceFileError("");
     setActiveView("processing");
     setDeleteFileTarget(null);
     setIsDeletingFile(true);
-    const result = await deleteKnowledgeBaseFile({
+    const result = await deleteCurrentSourceFile({
       knowledgeBaseId: knowledgeBase.id,
-      path: target.logicalPath
+      sourceFileId: target.sourceFileId
     });
     setIsDeletingFile(false);
 
@@ -522,6 +526,7 @@ export function KnowledgeBaseDetailPage({
       clearSelectedFile();
     }
 
+    resourceEditing.track(result.operation);
     await loadFirstSourceFilePage();
     await refreshGeneratedFiles();
   }

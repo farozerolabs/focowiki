@@ -168,6 +168,32 @@ describe("storage vNext search candidate validation", () => {
       filter.includes("okfSignals.staleAfterEpochDay <= 20672"))).toBe(true);
   });
 
+  it("validates Han content through the shared Jieba evidence lane", async () => {
+    const fixture = createFixture();
+    const queryIndex = vi.spyOn(fixture.provider.query, "query");
+    const input = validationInput();
+    input.queryCases = input.queryCases.map((item) => item.kind === "content"
+      ? { ...item, query: "终止条款-01" }
+      : item);
+
+    await validateStorageVnextSearchCandidate({
+      repository: fixture.repository,
+      provider: fixture.provider,
+      hydration: fixture.hydration,
+      settings,
+      documentPageSize: 2,
+      input
+    });
+
+    const contentRequests = queryIndex.mock.calls
+      .map(([request]) => request)
+      .filter((request) => request.query === "终止条款-01");
+    expect(contentRequests).toHaveLength(2);
+    expect(contentRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceFamilies: ["jieba", "text"] })
+    ]));
+  });
+
   it("fails a candidate containing a deleted or stale hydration identity", async () => {
     const fixture = createFixture();
     fixture.hydration.hydrateCurrentSources.mockResolvedValue([]);

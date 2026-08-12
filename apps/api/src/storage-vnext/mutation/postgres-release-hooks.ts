@@ -14,6 +14,8 @@ import { enqueueSemanticStagesInTransaction } from
   "../../semantic/infrastructure/postgres-stage-repository.js";
 import { activateSemanticSourceRevision } from
   "../../semantic/infrastructure/postgres-source-revision-activation.js";
+import { enqueueSemanticVectorDocumentCleanupActions } from
+  "../../semantic/infrastructure/postgres-vector-document-cleanup-actions.js";
 import { createOkfSearchSignals } from "../search/okf-signals.js";
 
 type MutationOperationRow = {
@@ -43,6 +45,8 @@ export type MutationCheckpoint = {
   candidateDirectoryPublicId?: string | null;
   candidateParentPublicId?: string | null;
   candidateRevisionPublicId?: string;
+  reusedRollbackRevision?: boolean;
+  rollbackRevisionExpiresAt?: string;
   candidateName?: string;
   candidateDescription?: string | null;
   candidateTitle?: string;
@@ -994,6 +998,12 @@ async function discardCandidate(
   }
 ): Promise<void> {
   if (input.checkpoint.candidateRevisionPublicId) {
+    await enqueueSemanticVectorDocumentCleanupActions(transaction, {
+      knowledgeBaseId: input.knowledgeBaseId,
+      operationPublicId: input.operationPublicId,
+      sourceRevisionPublicId: input.checkpoint.candidateRevisionPublicId,
+      notBefore: input.completedAt
+    });
     if (input.checkpoint.semanticState === "ready"
       && input.checkpoint.currentRevisionPublicId
       && input.checkpoint.currentRevisionPublicId
@@ -1011,18 +1021,31 @@ async function discardCandidate(
         activatedAt: input.completedAt
       });
     }
-    const released = await transaction<Array<{ object_id: string }>>`
-      DELETE FROM focowiki.source_revisions
-      WHERE knowledge_base_id = ${input.knowledgeBaseId}
-        AND public_id = ${input.checkpoint.candidateRevisionPublicId}
-        AND revision_role = 'candidate'
-      RETURNING object_id
-    `;
-    await markZeroOwnerObjects(
-      transaction,
-      released.map((row) => row.object_id),
-      input.completedAt
-    );
+    if (input.checkpoint.reusedRollbackRevision) {
+      const restored = await transaction<Array<{ public_id: string }>>`
+        UPDATE focowiki.source_revisions
+        SET revision_role = 'rollback',
+            expires_at = ${input.checkpoint.rollbackRevisionExpiresAt ?? null}
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND public_id = ${input.checkpoint.candidateRevisionPublicId}
+          AND revision_role = 'candidate'
+        RETURNING public_id
+      `;
+      requireOne(restored);
+    } else {
+      const released = await transaction<Array<{ object_id: string }>>`
+        DELETE FROM focowiki.source_revisions
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND public_id = ${input.checkpoint.candidateRevisionPublicId}
+          AND revision_role = 'candidate'
+        RETURNING object_id
+      `;
+      await markZeroOwnerObjects(
+        transaction,
+        released.map((row) => row.object_id),
+        input.completedAt
+      );
+    }
   }
   await transaction`
     DELETE FROM focowiki.mutation_path_reservations

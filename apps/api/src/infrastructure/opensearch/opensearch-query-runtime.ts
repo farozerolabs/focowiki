@@ -267,17 +267,20 @@ function buildExecutionQuery(
   const maximumCodePoints = /\p{Script=Han}/u.test(query)
     ? MAXIMUM_HAN_EXECUTION_CODE_POINTS
     : MAXIMUM_OTHER_EXECUTION_CODE_POINTS;
-  const sourceTerms = tokenizeQuery(tokenizer, query);
+  const sourceTerms = prioritizeMixedScriptTerms(
+    tokenizeQuery(tokenizer, query),
+    query
+  );
   const terms: string[] = [];
   let codePoints = 0;
   for (const sourceTerm of sourceTerms) {
     if (terms.length >= MAXIMUM_EXECUTION_TERMS) break;
     const remaining = maximumCodePoints - codePoints;
     if (remaining <= 0) break;
-    const term = Array.from(sourceTerm).slice(0, remaining).join("");
-    if (!term) continue;
-    terms.push(term);
-    codePoints += Array.from(term).length;
+    const sourceTermCodePoints = Array.from(sourceTerm).length;
+    if (sourceTermCodePoints > remaining) continue;
+    terms.push(sourceTerm);
+    codePoints += sourceTermCodePoints;
   }
   if (terms.length === 0) {
     const fallback = Array.from(query).slice(0, maximumCodePoints).join("").trim();
@@ -285,6 +288,23 @@ function buildExecutionQuery(
     return { query: fallback, terms: [fallback] };
   }
   return { query: terms.join(" "), terms };
+}
+
+function prioritizeMixedScriptTerms(
+  terms: readonly string[],
+  query: string
+): string[] {
+  if (!/\p{Script=Han}/u.test(query) || !/\p{Script=Latin}/u.test(query)) {
+    return [...terms];
+  }
+  const firstHan = terms.find((term) => /\p{Script=Han}/u.test(term));
+  const latinTerms = terms.filter((term) => /\p{Script=Latin}/u.test(term));
+  if (!firstHan || latinTerms.length === 0) return [...terms];
+  const prioritized = /\p{Script=Han}/u.test(terms[0] ?? "")
+    ? [firstHan, ...latinTerms]
+    : [...latinTerms, firstHan];
+  const prioritizedSet = new Set(prioritized);
+  return [...prioritized, ...terms.filter((term) => !prioritizedSet.has(term))];
 }
 
 function parseResult(

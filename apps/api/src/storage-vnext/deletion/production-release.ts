@@ -65,6 +65,7 @@ export function createStorageVnextDeletionProductionRelease(input: {
   clock(): string;
   rollbackRetentionMilliseconds: number;
   resultRetentionMilliseconds: number;
+  maximumAttempts: number;
   maximumChangedFacts?: number;
   maximumDependencies?: number;
 }) {
@@ -76,7 +77,8 @@ export function createStorageVnextDeletionProductionRelease(input: {
     maximumChangedFacts,
     maximumDependencies,
     rollbackRetentionMilliseconds: input.rollbackRetentionMilliseconds,
-    resultRetentionMilliseconds: input.resultRetentionMilliseconds
+    resultRetentionMilliseconds: input.resultRetentionMilliseconds,
+    maximumAttempts: input.maximumAttempts
   });
   const handoff = createStorageVnextDeletionReleaseHandoff(input.releases);
 
@@ -189,7 +191,8 @@ export function createStorageVnextDeletionProductionRelease(input: {
         );
       } catch (error) {
         const live = await input.releases.getLiveCandidate(work.knowledgeBaseId);
-        if (live?.publicId === candidate.publicId
+        if (work.attempt >= input.maximumAttempts
+          && live?.publicId === candidate.publicId
           && live.operationPublicId === work.publicId) {
           const terminatedAt = input.clock();
           assertTimestamp(terminatedAt);
@@ -258,6 +261,7 @@ function validateConfiguration(input: {
   maximumDependencies: number;
   rollbackRetentionMilliseconds: number;
   resultRetentionMilliseconds: number;
+  maximumAttempts: number;
 }): void {
   if (
     !Number.isSafeInteger(input.maximumChangedFacts)
@@ -270,6 +274,9 @@ function validateConfiguration(input: {
     || input.rollbackRetentionMilliseconds < 1
     || !Number.isSafeInteger(input.resultRetentionMilliseconds)
     || input.resultRetentionMilliseconds < 1
+    || !Number.isSafeInteger(input.maximumAttempts)
+    || input.maximumAttempts < 1
+    || input.maximumAttempts > 10_000
   ) throw productionReleaseError("invalid_configuration");
 }
 

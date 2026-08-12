@@ -36,6 +36,15 @@ export function normalizeMeilisearchQuery(input: {
       matchingStrategy: input.request.matchingStrategy
     };
   }
+  const blended = BLENDED_EVIDENCE_FAMILIES.every((family) =>
+    input.request.evidenceFamilies.includes(family)
+  );
+  if (/\p{Script=Han}/u.test(input.request.query) && !blended) {
+    return {
+      query: input.request.query,
+      matchingStrategy: blended ? "last" : input.request.matchingStrategy
+    };
+  }
   const terms = removeNegatedHanBaseTerms(
     input.request.query,
     tokenize(input.tokenizer, input.request.query)
@@ -52,9 +61,6 @@ export function normalizeMeilisearchQuery(input: {
     ? meaningful
     : withoutSubsumedNumbers;
   const query = boundExecutionTerms(executionTerms, input.request.query);
-  const blended = BLENDED_EVIDENCE_FAMILIES.every((family) =>
-    input.request.evidenceFamilies.includes(family)
-  );
   return {
     query,
     matchingStrategy: blended ? "last" : input.request.matchingStrategy

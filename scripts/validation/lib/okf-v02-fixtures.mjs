@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 export const OKF_V02_PINNED_REVISION =
   "930b65fc3f5619d5d0591f88c72ebae8b848d60d";
 export const OKF_V02_MARKDOWN_COUNT = 78;
@@ -50,14 +48,8 @@ export function selectOkfV01CompatibilityFiles(files, count = OKF_V01_COMPATIBIL
     throw new Error(`The compatibility corpus must contain at least ${count} safe Markdown files.`);
   }
   return normalized
-    .map((file) => ({
-      file,
-      order: createHash("sha256").update(file.relativePath).digest("hex")
-    }))
-    .sort((left, right) => left.order.localeCompare(right.order)
-      || left.file.relativePath.localeCompare(right.file.relativePath))
-    .slice(0, count)
-    .map(({ file }) => file);
+    .sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+    .slice(0, count);
 }
 
 export function buildOkfV02FixtureManifest(input) {

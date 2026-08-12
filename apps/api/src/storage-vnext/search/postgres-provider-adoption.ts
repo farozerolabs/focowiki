@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
 import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   isSearchProviderKind,
   type SearchProviderKind
 } from "../../application/ports/search-provider-runtime.js";
+import { enqueueStorageVnextRetiredSearchIndexCleanup } from
+  "./postgres-retired-index-cleanup.js";
 
 type KnowledgeBaseRow = {
   revision: number | string;
@@ -15,6 +16,7 @@ type ActiveProjectionRow = {
   search_projection_public_id: string;
   provider_kind: SearchProviderKind;
   provider_index_uid: string;
+  document_count: number | string;
 };
 
 type CandidateRow = {
@@ -98,10 +100,12 @@ export function createPostgresStorageVnextSearchProviderAdoption(
         `;
         if (!ownership[0]) return result("stale");
 
-        await enqueueRetiredIndexCleanup(transaction, {
+        await enqueueStorageVnextRetiredSearchIndexCleanup(transaction, {
           ...request,
+          domain: "provider_adoption",
           providerKind: active.provider_kind,
-          providerIndexUid: active.provider_index_uid
+          providerIndexUid: active.provider_index_uid,
+          documentCount: toNonnegativeInteger(active.document_count)
         });
         const snapshots = await transaction<Array<{ knowledge_base_id: string }>>`
           UPDATE focowiki.active_snapshots
@@ -166,7 +170,8 @@ async function readActiveProjection(
 ): Promise<ActiveProjectionRow | null> {
   const rows = await sql<ActiveProjectionRow[]>`
     SELECT snapshot.search_projection_public_id,
-           projection.provider_kind, projection.provider_index_uid
+           projection.provider_kind, projection.provider_index_uid,
+           projection.document_count
     FROM focowiki.active_snapshots snapshot
     JOIN focowiki.search_projections projection
       ON projection.knowledge_base_id = snapshot.knowledge_base_id
@@ -190,43 +195,6 @@ async function readCandidate(
     FOR UPDATE
   `;
   return rows[0] ?? null;
-}
-
-async function enqueueRetiredIndexCleanup(
-  sql: TransactionSql,
-  input: {
-    operationPublicId: string;
-    knowledgeBaseId: string;
-    cleanupNotBefore: string;
-    providerKind: SearchProviderKind;
-    providerIndexUid: string;
-  }
-): Promise<void> {
-  const digest = createHash("sha256")
-    .update("storage-vnext-provider-adoption-cleanup-v1")
-    .update("\0")
-    .update(input.operationPublicId)
-    .update("\0")
-    .update(input.providerKind)
-    .update("\0")
-    .update(input.providerIndexUid)
-    .digest("hex");
-  const publicId = `provider-adoption-cleanup-${digest}`;
-  await sql`
-    INSERT INTO focowiki.cleanup_actions (
-      public_id, operation_public_id, knowledge_base_id, action_kind,
-      cleanup_plane, search_provider_kind, resource_kind, resource_public_id,
-      required, sequence_number, idempotency_key, request_hash, checkpoint,
-      state, attempt_count, not_before
-    ) VALUES (
-      ${publicId}, ${input.operationPublicId}, ${input.knowledgeBaseId},
-      'provider_adoption', 'search', ${input.providerKind}, 'search_index',
-      ${input.providerIndexUid}, false, 0, ${publicId}, ${digest},
-      ${sql.json({ providerIndexUid: input.providerIndexUid })},
-      'queued', 0, ${input.cleanupNotBefore}
-    )
-    ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
-  `;
 }
 
 function result(
@@ -268,6 +236,10 @@ function validateRequest(input: {
 }
 
 function toRevision(value: number | string): number {
+  return toNonnegativeInteger(value);
+}
+
+function toNonnegativeInteger(value: number | string): number {
   const revision = Number(value);
   if (!Number.isSafeInteger(revision) || revision < 0) {
     throw adoptionError("invalid_persistence");

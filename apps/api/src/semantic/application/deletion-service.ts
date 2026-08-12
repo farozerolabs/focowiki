@@ -16,14 +16,35 @@ export type SemanticDeletionPage = {
 };
 
 export type SemanticDeletionRepositoryPort = {
+  cancelSourceWork(input: {
+    knowledgeBaseId: string;
+    sourceFilePublicIds: readonly string[];
+    requestedAt: string;
+  }): Promise<number>;
+  hasRunningSourceWork(input: {
+    knowledgeBaseId: string;
+    sourceFilePublicIds: readonly string[];
+  }): Promise<boolean>;
+  hasRunningKnowledgeBaseWork(input: {
+    knowledgeBaseId: string;
+  }): Promise<boolean>;
+  deferUnavailableSourceVectors(input: {
+    knowledgeBaseId: string;
+    operationPublicId: string;
+    sourceFilePublicIds: readonly string[];
+    selectedProviderKind: SearchProviderKind;
+    notBefore: string;
+  }): Promise<number>;
   listSourceVectorPage(input: {
     knowledgeBaseId: string;
     sourceFilePublicIds: readonly string[];
+    selectedProviderKind: SearchProviderKind;
     cursor: string | null;
     limit: number;
   }): Promise<SemanticDeletionPage>;
   listKnowledgeBaseGenerationPage(input: {
     knowledgeBaseId: string;
+    selectedProviderKind: SearchProviderKind;
     cursor: string | null;
     limit: number;
   }): Promise<{
@@ -33,6 +54,7 @@ export type SemanticDeletionRepositoryPort = {
       searchProviderKind: SearchProviderKind;
     }[];
     nextCursor: string | null;
+    remainingProviderKind: SearchProviderKind | null;
   }>;
   purgeSourceState(input: {
     knowledgeBaseId: string;
@@ -67,9 +89,28 @@ export function createSemanticDeletionService(input: {
       sourceFilePublicIds: readonly string[];
       cursor: string | null;
     }) {
+      await input.repository.cancelSourceWork({
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFilePublicIds: request.sourceFilePublicIds,
+        requestedAt: clock()
+      });
+      if (await input.repository.hasRunningSourceWork({
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFilePublicIds: request.sourceFilePublicIds
+      })) {
+        return { outcome: "blocked" as const, nextCursor: request.cursor };
+      }
+      await input.repository.deferUnavailableSourceVectors({
+        knowledgeBaseId: request.knowledgeBaseId,
+        operationPublicId: request.operationPublicId,
+        sourceFilePublicIds: request.sourceFilePublicIds,
+        selectedProviderKind: input.selectedProviderKind,
+        notBefore: clock()
+      });
       const page = await input.repository.listSourceVectorPage({
         knowledgeBaseId: request.knowledgeBaseId,
         sourceFilePublicIds: request.sourceFilePublicIds,
+        selectedProviderKind: input.selectedProviderKind,
         cursor: request.cursor,
         limit: input.pageSize
       });
@@ -100,9 +141,20 @@ export function createSemanticDeletionService(input: {
       knowledgeBaseId: string;
       operationPublicId: string;
       cursor: string | null;
+      completedProviderKind: SearchProviderKind | null;
     }) {
+      await input.repository.cancelKnowledgeBaseWork({
+        knowledgeBaseId: request.knowledgeBaseId,
+        requestedAt: clock()
+      });
+      if (await input.repository.hasRunningKnowledgeBaseWork({
+        knowledgeBaseId: request.knowledgeBaseId
+      })) {
+        return { outcome: "blocked" as const, nextCursor: request.cursor };
+      }
       const page = await input.repository.listKnowledgeBaseGenerationPage({
         knowledgeBaseId: request.knowledgeBaseId,
+        selectedProviderKind: input.selectedProviderKind,
         cursor: request.cursor,
         limit: Math.min(input.pageSize, 100)
       });
@@ -120,10 +172,17 @@ export function createSemanticDeletionService(input: {
       if (page.nextCursor !== null) {
         return { outcome: "continue" as const, nextCursor: page.nextCursor };
       }
-      await input.repository.cancelKnowledgeBaseWork({
-        knowledgeBaseId: request.knowledgeBaseId,
-        requestedAt: clock()
-      });
+      if (
+        page.remainingProviderKind !== null
+        && page.remainingProviderKind !== request.completedProviderKind
+      ) {
+        return {
+          outcome: "provider_required" as const,
+          nextCursor: null,
+          completedProviderKind: input.selectedProviderKind,
+          requiredProviderKind: page.remainingProviderKind
+        };
+      }
       return { outcome: "completed" as const, nextCursor: null };
     }
   };

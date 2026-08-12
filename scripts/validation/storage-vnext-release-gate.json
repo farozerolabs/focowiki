@@ -40,6 +40,7 @@
       "id": "PG-03",
       "disposition": "implemented",
       "focusedTests": [
+        "apps/api/test/storage-vnext-admin-maintenance-application.test.ts",
         "apps/api/test/storage-vnext-admin-processing-contract.test.ts",
         "apps/api/test/storage-vnext-admin-source-retry.test.ts",
         "apps/api/test/storage-vnext-cleanup-action-repository.integration.test.ts",
@@ -48,6 +49,7 @@
         "apps/api/test/storage-vnext-live-cleanup-contract.test.ts",
         "apps/api/test/storage-vnext-maintenance-authority-contract.test.ts",
         "apps/api/test/storage-vnext-maintenance-automatic-scheduler.test.ts",
+        "apps/api/test/storage-vnext-maintenance-cancellation-cleanup.test.ts",
         "apps/api/test/storage-vnext-maintenance-cleanup.test.ts",
         "apps/api/test/storage-vnext-maintenance-lifecycle-contract.test.ts",
         "apps/api/test/storage-vnext-maintenance-owner-contract.test.ts",
@@ -56,6 +58,7 @@
         "apps/api/test/storage-vnext-maintenance-production-phases.test.ts",
         "apps/api/test/storage-vnext-maintenance-production-planner.test.ts",
         "apps/api/test/storage-vnext-maintenance-repository.integration.test.ts",
+        "apps/api/test/storage-vnext-maintenance-search-rebuild.test.ts",
         "apps/api/test/storage-vnext-maintenance-status-contract.test.ts",
         "apps/api/test/storage-vnext-maintenance-worker-production-contract.test.ts",
         "apps/api/test/storage-vnext-mutation-terminal.test.ts",
@@ -161,6 +164,7 @@
         "apps/api/test/storage-vnext-operation-audit-boundary-contract.test.ts",
         "apps/api/test/storage-vnext-partition-contract.test.ts",
         "apps/api/test/storage-vnext-partition.integration.test.ts",
+        "apps/api/test/storage-vnext-postgres-operation-read.test.ts",
         "apps/api/test/storage-vnext-webhook-runtime.test.ts",
         "apps/api/test/storage-vnext-webhook.integration.test.ts",
         "apps/api/test/storage-vnext-workflow-audit-repository.integration.test.ts"
@@ -360,7 +364,8 @@
       "focusedTests": [
         "apps/api/test/storage-vnext-deletion-redis-visibility.test.ts",
         "apps/api/test/storage-vnext-redis-coordination.integration.test.ts",
-        "apps/api/test/storage-vnext-redis-durable-authority-contract.test.ts"
+        "apps/api/test/storage-vnext-redis-durable-authority-contract.test.ts",
+        "apps/api/test/storage-vnext-redis-semantic-pagination.test.ts"
       ],
       "codeTrace": [{"path":"apps/api/src/redis/coordination.ts","symbols":["createRedisCoordination"],"action":"Uses Redis only for TTL-bound coordination and owner-safe locks."},{"path":"apps/api/src/storage-vnext/deletion/redis-visibility.ts","symbols":["deleteStorageVnextRedisVisibility"],"action":"Removes knowledge-base visibility and coordination keys during deletion."}],
       "executableEvidence": [{"command":"pnpm --filter @focowiki/api exec vitest run test/storage-vnext-redis-coordination.integration.test.ts test/storage-vnext-redis-durable-authority-contract.test.ts test/storage-vnext-deletion-redis-visibility.test.ts","result":"passed","evidence":"TTL, ownership, lock renewal/release, outage, deletion visibility, and non-authoritative Redis contracts passed."}],
@@ -383,9 +388,7 @@
     "focusedTests": [
       "apps/api/test/storage-vnext-api-compatibility-contract.test.ts",
       "apps/api/test/storage-vnext-candidate-object-cleanup-worker.test.ts",
-      "apps/api/test/storage-vnext-cross-store-contract.test.ts",
       "apps/api/test/storage-vnext-deletion-lifecycle-contract.test.ts",
-      "apps/api/test/storage-vnext-deployment-lifecycle-contract.test.ts",
       "apps/api/test/storage-vnext-maintenance-candidate-object-cleanup.test.ts",
       "apps/api/test/storage-vnext-maintenance-rebuild-snapshot.test.ts",
       "apps/api/test/storage-vnext-openapi-application.test.ts",
@@ -414,8 +417,8 @@
     "scripts/validation/test/storage-vnext-state-capture.test.mjs",
         "scripts/validation/test/storage-vnext-scope-gate.test.mjs"
       ],
-      "codeTrace": [{"path":"apps/api/src/storage-vnext/api/admin-ports.ts","symbols":["StorageVnextAdminApplication"],"action":"Preserves Admin use cases behind storage-neutral ports."},{"path":"apps/api/src/storage-vnext/api/openapi-ports.ts","symbols":["StorageVnextOpenApiApplication"],"action":"Preserves Developer OpenAPI operations with public identifiers only."},{"path":"apps/api/src/storage-vnext/transactions/ports.ts","symbols":["StorageVnextTransactionBoundary"],"action":"Defines cross-store idempotency, visibility, compensation, and activation boundaries."}],
-      "executableEvidence": [{"command":"pnpm --filter @focowiki/api exec vitest run test/storage-vnext-api-compatibility-contract.test.ts test/storage-vnext-cross-store-contract.test.ts test/storage-vnext-public-continuity-contract.test.ts && node --test scripts/validation/test/storage-vnext-full-verification.test.mjs scripts/validation/test/storage-vnext-cross-store-terminal.test.mjs","result":"passed","evidence":"Admin/OpenAPI continuity, generated structure, cross-store ownership, failure/interleaving, full verification, scope, and cleanup suites passed."}],
+      "codeTrace": [{"path":"apps/api/src/storage-vnext/api/admin-ports.ts","symbols":["StorageVnextAdminApplication"],"action":"Preserves Admin use cases behind storage-neutral ports."},{"path":"apps/api/src/storage-vnext/api/openapi-application.ts","symbols":["DeveloperOpenApiApplication"],"action":"Preserves the connected Developer OpenAPI operations with public identifiers only."},{"path":"apps/api/src/storage-vnext/release/ports.ts","symbols":["activateCandidate"],"action":"Defines the active-snapshot cutover boundary after cross-store validation."}],
+      "executableEvidence": [{"command":"pnpm --filter @focowiki/api exec vitest run test/storage-vnext-api-compatibility-contract.test.ts test/storage-vnext-public-continuity-contract.test.ts test/storage-vnext-module-graph-contract.test.ts && node --test scripts/validation/test/storage-vnext-full-verification.test.mjs scripts/validation/test/storage-vnext-cross-store-terminal.test.mjs","result":"passed","evidence":"Admin/OpenAPI continuity, current module graph, generated structure, cross-store ownership, failure/interleaving, full verification, scope, and cleanup suites passed."}],
       "measuredResult": {"status":"passed","before":"One logical revision/fact crossed PostgreSQL, S3, Meilisearch, workflows, Redis, logs, and manifests without one explicit owner boundary","after":"All five store controls passed, 29,736 sources closed, one unified index was active, all live work converged, and generated logical path sets matched","target":"Explicit authorities, typed ports, run-owned writes, compensation/inverse flows, unchanged UI/copy, and unchanged generated knowledge-base structure","evidence":"Full-corpus verifier, 11 live flow groups, 214-file black-box/white-box/UI suite, and scope gate passed; total physical size/resource gates remain explicit 27.4/28.8 blockers."}, "rejectionEvidence": []
     }
   ]

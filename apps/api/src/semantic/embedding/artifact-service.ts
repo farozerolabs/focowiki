@@ -106,7 +106,10 @@ export function createEmbeddingArtifactService(input: {
         prepared,
         configuration.concurrency,
         async (item) => {
-          if (item.compatible?.state !== "verified") {
+          if (
+            item.compatible?.state !== "verified"
+            && item.compatible?.state !== "orphaned"
+          ) {
             missing.push(item);
             return;
           }
@@ -223,7 +226,13 @@ export function createEmbeddingArtifactService(input: {
       sourceExcerpt: request.sourceExcerpt,
       retentionKind: request.retentionKind
     });
-    return { artifact: compatible, vector, reused: true };
+    return {
+      artifact: compatible.state === "orphaned"
+        ? { ...compatible, state: "verified" }
+        : compatible,
+      vector,
+      reused: true
+    };
   }
 
   async function attachResolvedReference(

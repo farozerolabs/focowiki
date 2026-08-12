@@ -44,6 +44,8 @@ describe("reranker configuration application service", () => {
       .resolves.toMatchObject({ validationStatus: "valid" });
     await expect(service.activate(created.publicId, 2, "admin-a"))
       .resolves.toMatchObject({ lifecycleStatus: "active" });
+    await expect(service.delete(created.publicId, 3, "admin-a"))
+      .rejects.toMatchObject({ code: "configuration_in_use" });
     expect(maintenance).not.toHaveBeenCalled();
 
     const serialized = JSON.stringify({
@@ -55,6 +57,20 @@ describe("reranker configuration application service", () => {
     expect(serialized).not.toContain("limit");
     expect(serialized).not.toContain("rerankTopK");
     expect(serialized).not.toContain("rerankScoreThreshold");
+  });
+
+  it("reports a missing configuration before pause or resume revision checks", async () => {
+    const service = createRerankerConfigurationService({
+      repository: memoryRepository(),
+      transport: { rerank: vi.fn() },
+      audit: { append: vi.fn(async () => undefined) },
+      deploymentSecret: "deployment-secret"
+    });
+
+    await expect(service.pause("reranker-config-missing", 1, null))
+      .rejects.toMatchObject({ code: "not_found" });
+    await expect(service.resume("reranker-config-missing", 1, null))
+      .rejects.toMatchObject({ code: "not_found" });
   });
 });
 

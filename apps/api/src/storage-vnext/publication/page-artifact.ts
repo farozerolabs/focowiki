@@ -22,6 +22,8 @@ import type {
 } from "../shared/types.js";
 import { renderStorageVnextPageArtifact } from "./rendering.js";
 import type { StorageVnextPublicationArtifact } from "./types.js";
+import { isStorageVnextCandidatePublicationSource } from
+  "./source-eligibility.js";
 
 export function assembleStorageVnextPageArtifact(input: {
   current: StorageVnextCurrentSourceFact;
@@ -104,7 +106,10 @@ function validateInput(input: {
     || input.relatedFileLimit < 1
     || input.relatedFileLimit > 1_000
     || sourceFile.visibility !== "current"
-    || (sourceFile.status !== "ready" && sourceFile.status !== "processing")
+    || (
+      sourceFile.status !== "ready"
+      && !isStorageVnextCandidatePublicationSource(sourceFile)
+    )
     || sourceFile.currentRevisionPublicId !== sourceRevision.publicId
     || sourceFile.publicId !== sourceRevision.sourceFilePublicId
     || sourceFile.knowledgeBaseId !== sourceRevision.knowledgeBaseId

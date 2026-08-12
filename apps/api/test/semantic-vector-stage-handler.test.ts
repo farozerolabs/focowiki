@@ -9,6 +9,9 @@ describe("semantic vector stage handler", () => {
     const encoded = encodeVectorArtifact({ vector: [1, 0, 0], normalization: "l2" });
     const applyPlan = vi.fn(async (plan: any) => plan.counters);
     const releaseSupersededSourceReferences = vi.fn(async () => 2);
+    const listSourceDocuments = vi.fn(async () => [{
+      publicId: "semantic-vector-stale", ownerPublicId: "entity-stale"
+    }]);
     const handler = createSemanticVectorStageHandler({
       artifacts: {
         listSourceReferences: async () => [{
@@ -37,11 +40,7 @@ describe("semantic vector stage handler", () => {
       },
       cleanup: { releaseSupersededSourceReferences },
       store: { readVerified: async () => encoded.bytes },
-      projections: {
-        listSourceDocuments: async () => [{
-          publicId: "semantic-vector-stale", ownerPublicId: "entity-stale"
-        }]
-      },
+      projections: { listSourceDocuments },
       applyPlan,
       indexPrefix: "focowiki"
     });
@@ -66,6 +65,12 @@ describe("semantic vector stage handler", () => {
     });
     expect(plan.providerDeleteDocumentIds).toEqual(["semantic-vector-stale"]);
     expect(plan.fullCorpusRewriteAllowed).toBe(false);
+    expect(listSourceDocuments).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-a",
+      semanticGenerationPublicId: "generation-a",
+      sourceFilePublicId: "file-a",
+      limit: 10_000
+    });
     expect(releaseSupersededSourceReferences).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-a",
       semanticGenerationPublicId: "generation-a",

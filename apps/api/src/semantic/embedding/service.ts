@@ -174,6 +174,7 @@ export function createEmbeddingConfigurationService(input: {
       expectedRevision: number,
       actorPublicId: string | null
     ) {
+      await requireConfiguration(input.repository, configurationPublicId);
       await assertNotReferenced(input.repository, configurationPublicId);
       const updated = await input.repository.setLifecycle({
         configurationPublicId,
@@ -189,6 +190,7 @@ export function createEmbeddingConfigurationService(input: {
       expectedRevision: number,
       actorPublicId: string | null
     ) {
+      await requireConfiguration(input.repository, configurationPublicId);
       const updated = await input.repository.setLifecycle({
         configurationPublicId,
         status: "draft",
@@ -203,8 +205,11 @@ export function createEmbeddingConfigurationService(input: {
       expectedRevision: number,
       actorPublicId: string | null
     ) {
-      await assertNotReferenced(input.repository, configurationPublicId);
       const existing = await requireConfiguration(input.repository, configurationPublicId);
+      if (existing.lifecycleStatus === "active") {
+        throw serviceError("configuration_in_use");
+      }
+      await assertNotReferenced(input.repository, configurationPublicId);
       const deleted = await input.repository.delete({
         configurationPublicId,
         expectedConfigurationRevision: expectedRevision,
@@ -307,7 +312,7 @@ function resolveUpdatedEncryptedApiKey(
   deploymentSecret: string
 ): string | null {
   if (draft.authenticationMode === "none") return null;
-  if (draft.apiKey !== null) {
+  if (draft.apiKey !== null && draft.apiKey !== undefined) {
     return encryptRuntimeSecret({ value: draft.apiKey, secret: deploymentSecret });
   }
   if (existing.authenticationMode === "api_key" && existing.encryptedApiKey) {

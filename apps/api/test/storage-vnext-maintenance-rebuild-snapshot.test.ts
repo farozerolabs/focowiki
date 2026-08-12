@@ -7,6 +7,19 @@ import type {
 } from "../src/storage-vnext/publication/projection-loader.js";
 
 describe("storage vNext maintenance rebuild snapshot", () => {
+  it("forces a complete navigation rebuild before maintenance severs the base root", async () => {
+    const snapshot = fixtureSnapshot({
+      readBaseNavigationProfile: vi.fn(async () => 1)
+    });
+    const rebuild = createStorageVnextMaintenanceRebuildSnapshot(snapshot);
+
+    await expect(rebuild.readBaseNavigationProfile({
+      knowledgeBaseId: "kb-one",
+      candidatePublicId: "candidate-one"
+    })).resolves.toBe(0);
+    expect(snapshot.readBaseNavigationProfile).not.toHaveBeenCalled();
+  });
+
   it("uses an empty generated baseline when inherited object bytes are missing", async () => {
     const missing = Object.assign(new Error("missing"), { code: "object_missing" });
     const snapshot = fixtureSnapshot({

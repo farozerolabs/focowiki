@@ -108,13 +108,15 @@ export function createStorageVnextUnifiedSearchDeletion(input: {
           : null
       ].filter((value): value is string => Boolean(value)));
       if (providerIndexUids.length > 2) throw deletionError("invalid_input");
-      createStorageVnextSearchKnowledgeBaseIndexUidPrefix({
+      const familyPrefix = createStorageVnextSearchKnowledgeBaseIndexUidPrefix({
         indexUidPrefix: input.indexUidPrefix,
         knowledgeBaseId: request.knowledgeBaseId
       });
       const indexDeletion = await deleteIndexes(providerIndexUids);
+      const historicalIndexDeletion = await deleteOwnedIndexFamily(familyPrefix);
       return {
-        deletedIndexes: indexDeletion.deletedIndexes,
+        deletedIndexes:
+          indexDeletion.deletedIndexes + historicalIndexDeletion.deletedIndexes,
         deletedTasks: 0,
         nextTaskFrom: null,
         processedProviderKind: input.provider.kind,
@@ -137,6 +139,38 @@ export function createStorageVnextUnifiedSearchDeletion(input: {
       deleted += 1;
     }
     return { deletedIndexes: deleted };
+  }
+
+  async function deleteOwnedIndexFamily(indexUidPrefix: string): Promise<{
+    deletedIndexes: number;
+  }> {
+    const listOwnedIndexes = input.provider.maintenance?.listOwnedIndexes;
+    if (!listOwnedIndexes) throw deletionError("provider_contract_unavailable");
+    let continuation: string | null = null;
+    let deletedIndexes = 0;
+    for (let attempt = 1; attempt <= input.maximumPollAttempts; attempt += 1) {
+      const page = await listOwnedIndexes({
+        indexUidPrefix,
+        continuation,
+        limit: input.taskPageSize
+      });
+      if (
+        page.indexes.length > input.taskPageSize
+        || page.indexes.some((item) => !item.indexUid.startsWith(indexUidPrefix))
+      ) throw deletionError("provider_contract_unavailable");
+      if (page.indexes.length > 0) {
+        const result = await deleteIndexes(unique(
+          page.indexes.map((item) => item.indexUid)
+        ));
+        deletedIndexes += result.deletedIndexes;
+        continuation = page.restartContinuation;
+      } else if (page.continuation !== null) {
+        continuation = page.continuation;
+      } else {
+        return { deletedIndexes };
+      }
+    }
+    throw deletionError("provider_task_timeout");
   }
 
   async function pollOperation(

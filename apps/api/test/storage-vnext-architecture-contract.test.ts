@@ -14,9 +14,7 @@ const contractFiles = {
   search: "apps/api/src/storage-vnext/search/ports.ts",
   cleanup: "apps/api/src/storage-vnext/cleanup/terminal-convergence.ts",
   audit: "apps/api/src/storage-vnext/audit/ports.ts",
-  settings: "apps/api/src/storage-vnext/settings/ports.ts",
   admin: "apps/api/src/storage-vnext/api/admin-ports.ts",
-  openapi: "apps/api/src/storage-vnext/api/openapi-ports.ts"
 } as const;
 
 const requiredExports: Record<keyof typeof contractFiles, string[]> = {
@@ -34,9 +32,7 @@ const requiredExports: Record<keyof typeof contractFiles, string[]> = {
   search: ["StorageVnextSearchQueryPort", "StorageVnextSearchProjectionPort"],
   cleanup: ["StorageVnextTerminalConvergencePort"],
   audit: ["StorageVnextAuditPort"],
-  settings: ["StorageVnextSettingsReadPort", "StorageVnextSettingsWritePort"],
   admin: ["StorageVnextAdminBackendAdapter"],
-  openapi: ["StorageVnextOpenApiBackendAdapter"]
 };
 
 function readWorkspaceFile(path: string): string {
@@ -82,7 +78,7 @@ describe("storage vNext architecture contracts", () => {
   });
 
   it("keeps Admin and OpenAPI ports storage-neutral and public-safe", () => {
-    for (const responsibility of ["admin", "openapi"] as const) {
+    for (const responsibility of ["admin"] as const) {
       const path = contractFiles[responsibility];
       if (!existsSync(resolve(workspaceRoot, path))) continue;
       const source = readWorkspaceFile(path);

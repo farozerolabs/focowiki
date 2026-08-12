@@ -15,13 +15,19 @@ import {
   safe
 } from "../src/developer-openapi/route-helpers.js";
 import {
+  readNullableQuery,
   registerDeveloperOpenApiSourceResourceRoutes
 } from "../src/developer-openapi/source-resource-routes.js";
+import { createDeveloperOpenApiBodyLimit } from
+  "../src/developer-openapi/security.js";
+import { hasNonEmptyMarkdownBody } from
+  "../src/developer-openapi/upload-session-routes.js";
 import type { DeveloperOpenApiRouteServices } from
   "../src/developer-openapi/routes.js";
 import type { DeveloperOpenApiApplication } from
   "../src/developer-openapi/services.js";
 import { SourceResourceError } from "../src/domain/source-resource.js";
+import { SourcePathValidationError } from "../src/domain/source-path.js";
 
 describe("Developer OpenAPI diagnostics", () => {
   it("rejects JSON request bodies with invalid UTF-8 bytes", async () => {
@@ -73,6 +79,80 @@ describe("Developer OpenAPI diagnostics", () => {
     });
   });
 
+  it("rejects JSON bodies sent with an undocumented media type", async () => {
+    const app = new Hono();
+    app.post("/openapi/v2/knowledge-bases", (context) =>
+      safe(context, async () => ({
+        body: await readDeveloperJsonObjectBody(context.req.raw, ["name", "description"])
+      }))
+    );
+
+    const response = await app.request("/openapi/v2/knowledge-bases", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ name: "Handbook" })
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        httpStatus: 422,
+        message: "An application/json request body is required."
+      }
+    });
+  });
+
+  it("rejects a Developer OpenAPI body above the configured source byte ceiling", async () => {
+    const app = new Hono();
+    app.use("/openapi/v2/*", createDeveloperOpenApiBodyLimit({
+      pagination: {
+        generatedContentMaxBytes: 16
+      }
+    }));
+    app.post("/openapi/v2/knowledge-bases", (context) => context.json({ accepted: true }));
+
+    const response = await app.request("/openapi/v2/knowledge-bases", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Handbook" })
+    });
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "PAYLOAD_TOO_LARGE",
+        httpStatus: 413
+      }
+    });
+  });
+
+  it("treats a zero-length Markdown request stream as an empty upload body", () => {
+    const request = new Request("http://openapi.local/upload", {
+      method: "PUT",
+      headers: {
+        "content-type": "text/markdown",
+        "content-length": "0"
+      },
+      body: new ReadableStream({
+        start(controller) {
+          controller.close();
+        }
+      }),
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+
+    expect(hasNonEmptyMarkdownBody(request)).toBe(false);
+  });
+
+  it("rejects an empty directory query instead of treating it as the documented root token", () => {
+    expect(readNullableQuery(undefined)).toBeNull();
+    expect(readNullableQuery("root")).toBeNull();
+    expect(readNullableQuery("x".repeat(200))).toBe("x".repeat(200));
+    expect(() => readNullableQuery("")).toThrowError("Directory filter must be `root` or a non-empty identifier.");
+    expect(() => readNullableQuery("x".repeat(201))).toThrowError("Directory filter must not exceed 200 characters.");
+  });
+
   it("returns a conflict when a concurrent knowledge-base update is busy", async () => {
     const app = new Hono();
     registerDeveloperOpenApiSourceResourceRoutes(
@@ -103,6 +183,88 @@ describe("Developer OpenAPI diagnostics", () => {
         code: "CONFLICT",
         httpStatus: 409,
         message: "RESOURCE_BUSY"
+      }
+    });
+  });
+
+  it.each([
+    [
+      "/openapi/v2/knowledge-bases/kb/source-directories/directory",
+      "moveSourceDirectory"
+    ],
+    [
+      "/openapi/v2/knowledge-bases/kb/source-files/source-file",
+      "moveSourceFile"
+    ]
+  ])("rejects a null move body before calling %s", async (pathname, methodName) => {
+    const mutation = vi.fn();
+    const app = new Hono();
+    registerDeveloperOpenApiSourceResourceRoutes(
+      app,
+      {
+        sourceApplication: {
+          available: () => true,
+          [methodName]: mutation
+        }
+      } as unknown as DeveloperOpenApiRouteServices,
+      {} as DeveloperOpenApiApplication
+    );
+
+    const response = await app.request(pathname, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "move-null-body",
+        "if-match": "1"
+      },
+      body: "null"
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        httpStatus: 422,
+        details: { field: "relativePath" }
+      }
+    });
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
+  it("maps source path validation failures to the documented move-file error", async () => {
+    const app = new Hono();
+    registerDeveloperOpenApiSourceResourceRoutes(
+      app,
+      {
+        sourceApplication: {
+          available: () => true,
+          moveSourceFile: vi.fn(async () => {
+            throw new SourcePathValidationError("extension", "x");
+          })
+        }
+      } as unknown as DeveloperOpenApiRouteServices,
+      {} as DeveloperOpenApiApplication
+    );
+
+    const response = await app.request(
+      "/openapi/v2/knowledge-bases/kb/source-files/source-file",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "invalid-file-path",
+          "if-match": "1"
+        },
+        body: JSON.stringify({ relativePath: "x" })
+      }
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        httpStatus: 422,
+        details: { field: "relativePath" }
       }
     });
   });

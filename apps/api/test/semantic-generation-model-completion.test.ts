@@ -97,6 +97,56 @@ describe("GraphRAG generation-model completion", () => {
     expect(create).toHaveBeenCalledOnce();
   });
 
+  it("retries one HTTP 429 generation failure", async () => {
+    const create = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+      .mockResolvedValueOnce({
+        status: "completed",
+        output_text: "retried tuples<|COMPLETE|>"
+      });
+    const completion = createGraphRagGenerationModelCompletion(
+      modelAssistance("responses", create)
+    );
+
+    await expect(completion.complete({
+      prompt: "Extract.",
+      signal: new AbortController().signal
+    })).resolves.toBe("retried tuples<|COMPLETE|>");
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries one retryable generation failure", async () => {
+    const create = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("temporary"), { retryable: true }))
+      .mockResolvedValueOnce({
+        status: "completed",
+        output_text: "retried tuples<|COMPLETE|>"
+      });
+    const completion = createGraphRagGenerationModelCompletion(
+      modelAssistance("responses", create)
+    );
+
+    await expect(completion.complete({
+      prompt: "Extract.",
+      signal: new AbortController().signal
+    })).resolves.toBe("retried tuples<|COMPLETE|>");
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a non-retryable generation failure", async () => {
+    const failure = Object.assign(new Error("invalid request"), { retryable: false });
+    const create = vi.fn().mockRejectedValue(failure);
+    const completion = createGraphRagGenerationModelCompletion(
+      modelAssistance("responses", create)
+    );
+
+    await expect(completion.complete({
+      prompt: "Extract.",
+      signal: new AbortController().signal
+    })).rejects.toBe(failure);
+    expect(create).toHaveBeenCalledOnce();
+  });
+
   it.each(["responses", "chat_completions"] as const)(
     "aborts and retries one timed-out %s request inside the same completion",
     async (apiMode) => {

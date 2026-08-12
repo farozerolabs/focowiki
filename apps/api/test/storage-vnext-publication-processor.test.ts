@@ -158,6 +158,58 @@ describe("storage vNext publication processor", () => {
     expect(artifacts.publish).not.toHaveBeenCalled();
   });
 
+  it("rechecks late readiness after artifact assembly and before freezing the candidate", async () => {
+    const readiness = vi.fn(async () => ({ state: "pending" as const }));
+    const releases = {
+      getCandidate: vi.fn(async () => ({
+        state: "building" as const,
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        factRevision: 4
+      })),
+      validate: vi.fn(async () => undefined)
+    };
+    const processor = createStorageVnextPublicationProcessor({
+      selectedSearchProviderKind: "meilisearch",
+      activeSearchProjections: {
+        getActiveProjection: vi.fn(async () => null)
+      },
+      search: {
+        prepareCandidate: vi.fn(async () => undefined),
+        validateCandidate: vi.fn(async () => undefined)
+      },
+      searchBuilder: {
+        build: vi.fn(async () => ({
+          sourceCount: 0,
+          graphSeedCount: 0,
+          documentCount: 0,
+          batchCount: 0,
+          compressedBytes: 0,
+          documentChecksum: "c".repeat(64),
+          queryCases: []
+        }))
+      },
+      graph: { reconcile: vi.fn(async () => undefined) },
+      artifacts: { publish: vi.fn(async () => undefined) },
+      releases,
+      schemaChecksum: "a".repeat(64),
+      settingsChecksum: "b".repeat(64),
+      queryCases: [],
+      maxP95ProcessingTimeMs: 1_000
+    });
+    const request = {
+      knowledgeBaseId: "kb-one",
+      candidatePublicId: "candidate-one",
+      operationPublicId: "publication-one",
+      signal: new AbortController().signal,
+      beforeValidate: readiness
+    };
+
+    await expect(processor.publish(request)).resolves.toEqual({ state: "pending" });
+
+    expect(readiness).toHaveBeenCalledOnce();
+    expect(releases.validate).not.toHaveBeenCalled();
+  });
+
   it("resumes release validation without rewriting a frozen candidate", async () => {
     const search = {
       prepareCandidate: vi.fn(),

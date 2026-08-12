@@ -22,19 +22,29 @@ describe("semantic adoption policy", () => {
     ["generation model", { generationModelConfigurationRevision: 2 }],
     ["prompt", { promptContractVersion: "prompt-v2" }],
     ["extraction schema", { extractionContractVersion: "extraction-v2" }],
-    ["graph schema", { graphSchemaVersion: "graph-v2" }],
-    ["dimension", { resolvedDimension: 6 }],
-    ["embedding model", {
-      embeddingConfigurationRevisionPublicId: "embedding-revision-2"
-    }],
-    ["artifact schema", { artifactSchemaVersion: "artifact-v2" }],
-    ["vector schema", { vectorSchemaVersion: "vector-v2" }]
+    ["graph schema", { graphSchemaVersion: "graph-v2" }]
   ])("requires full explicit adoption after a %s change", (_label, change) => {
     const current = target();
     expect(classifySemanticAdoption(
       active(current),
       { ...current, ...change }
     )).toBe("full");
+  });
+
+  it.each([
+    ["dimension", { resolvedDimension: 6 }],
+    ["embedding model", {
+      embeddingConfigurationRevisionPublicId: "embedding-revision-2"
+    }],
+    ["normalization", { normalization: "none" as const }],
+    ["artifact schema", { artifactSchemaVersion: "artifact-v2" }],
+    ["vector schema", { vectorSchemaVersion: "vector-v2" }]
+  ])("reuses extracted graph facts after a %s change", (_label, change) => {
+    const current = target();
+    expect(classifySemanticAdoption(
+      active(current),
+      { ...current, ...change }
+    )).toBe("embedding_only");
   });
 
   it.each([

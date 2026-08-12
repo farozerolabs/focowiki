@@ -5,6 +5,7 @@ import {
   type RuntimeGraphSettings,
   type RuntimeMaintenanceSettings,
   type RuntimeModelConfigDraft,
+  type RuntimeModelConfigUpdate,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
   type RuntimeSemanticSettings,
@@ -150,6 +151,28 @@ export function registerAdminRuntimeSettingsRoutes(
           actor: "admin"
         });
         return context.json({ model }, 201);
+      } catch (error) {
+        return writeSettingsError(context, error);
+      }
+    }
+  );
+
+  app.put(
+    "/admin/api/settings/models/:modelId",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
+      const service = requireRuntimeSettings(context, services.runtimeSettings);
+      if (service instanceof Response) return service;
+      try {
+        const model = await service.updateModel({
+          id: context.req.param("modelId"),
+          value: (await readJsonBody(context.req.raw)) as RuntimeModelConfigUpdate,
+          actor: "admin"
+        });
+        return model
+          ? context.json({ model })
+          : context.json({ error: { code: "NOT_FOUND" } }, 404);
       } catch (error) {
         return writeSettingsError(context, error);
       }

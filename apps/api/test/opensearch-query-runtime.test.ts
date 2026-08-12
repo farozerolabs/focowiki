@@ -297,6 +297,53 @@ describe("OpenSearch query runtime", () => {
     )).toBe(true);
   });
 
+  it("preserves complete Han and Latin terms within mixed-script execution limits", async () => {
+    const client = createClient();
+    const tokenizer: LexicalTokenizer = {
+      contractVersion: "lexical-tokenizer-v1-test",
+      tokenizeDocument: vi.fn(() => []),
+      tokenizeQuery: vi.fn(() => [
+        "中华", "华人", "人民", "共和", "共和国", "中华人民共和国",
+        "全国", "国人", "代表", "大会", "常务", "委员", "委员会",
+        "全国人民代表大会常务委员会", "议事", "规则", "议事规则",
+        "publicationdate"
+      ])
+    };
+    const query = createOpenSearchQueryPort({
+      client,
+      tokenizer,
+      maximumResultWindow: 2_000,
+      engineSearchCutoffMs: 1_000
+    });
+
+    await query.query(request({
+      query: "中华人民共和国全国人民代表大会常务委员会议事规则 publicationDate",
+      evidenceFamilies: ["text", "jieba"]
+    }));
+
+    const sent = vi.mocked(client.search).mock.calls[0]![0] as {
+      body: { query: { bool: { should: Array<Record<string, unknown>> } } };
+    };
+    const executionQueries = sent.body.query.bool.should.flatMap((clause) => {
+      const multiMatch = clause.multi_match as { query?: unknown } | undefined;
+      const jieba = clause.match as {
+        _focowikiJiebaText?: { query?: unknown };
+      } | undefined;
+      return [multiMatch?.query, jieba?._focowikiJiebaText?.query]
+        .filter((value): value is string => typeof value === "string");
+    });
+    expect(executionQueries.length).toBeGreaterThan(0);
+    expect(executionQueries.every((value) =>
+      value.split(" ").includes("publicationdate")
+    )).toBe(true);
+    expect(executionQueries.every((value) =>
+      !value.split(" ").includes("publicat")
+    )).toBe(true);
+    expect(executionQueries.every((value) =>
+      Array.from(value.replaceAll(" ", "")).length <= 64
+    )).toBe(true);
+  });
+
   it("rejects unknown fields and malformed responses safely", async () => {
     const client = createClient();
     const query = createOpenSearchQueryPort({
@@ -315,6 +362,27 @@ describe("OpenSearch query runtime", () => {
     const error = await query.query(request()).catch((caught: unknown) => caught);
     expect(error).toMatchObject({ retryable: false });
     expect(JSON.stringify(error)).not.toContain("secret");
+  });
+
+  it("maps query connection failures to retryable provider-safe errors", async () => {
+    const client = createClient();
+    const query = createOpenSearchQueryPort({
+      client,
+      tokenizer: createTokenizer(),
+      maximumResultWindow: 2_000,
+      engineSearchCutoffMs: 1_000
+    });
+    vi.mocked(client.search).mockRejectedValue(
+      new Error("connection refused by private-opensearch.internal")
+    );
+
+    const error = await query.query(request()).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "SEARCH_ENGINE_UNAVAILABLE",
+      retryable: true
+    });
+    expect(JSON.stringify(error)).not.toContain("private-opensearch.internal");
   });
 });
 

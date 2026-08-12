@@ -115,6 +115,7 @@ describe("storage vNext unified search cleanup", () => {
       listFinishedTasks: vi.fn(async () => ({
         tasks: [
           finishedTask(20, "owned_vnext_active"),
+          finishedTask(21, "owned_vnext-semantic-active"),
           finishedTask(19, "foreign_active"),
           finishedTask(18, null)
         ],
@@ -126,7 +127,7 @@ describe("storage vNext unified search cleanup", () => {
       finishedBefore: "2026-08-01T00:00:00.000Z",
       continuation: null
     })).resolves.toEqual({
-      deleted: 1,
+      deleted: 2,
       continuation: "meilisearch-task-from:17"
     });
 
@@ -136,7 +137,9 @@ describe("storage vNext unified search cleanup", () => {
       from: null,
       limit: 10
     });
-    expect(transport.deleteFinishedTasks).toHaveBeenCalledWith({ taskUids: [20] });
+    expect(transport.deleteFinishedTasks).toHaveBeenCalledWith({
+      taskUids: [20, 21]
+    });
   });
 
   it("compacts one idle active index after measured high-water and disk gates pass", async () => {

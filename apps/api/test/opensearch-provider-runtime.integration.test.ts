@@ -197,6 +197,26 @@ describeOwnedOpenSearch("OpenSearch provider runtime integration", () => {
     expect(partialBody.errors).toBe(true);
     expect(partialBody.items?.map((item) => item.index?.status)).toEqual([201, 400]);
 
+    const listOwnedIndexes = provider.maintenance?.listOwnedIndexes;
+    expect(listOwnedIndexes).toBeTypeOf("function");
+    const firstIndexPage = await listOwnedIndexes!({
+      indexUidPrefix: indexUid,
+      continuation: null,
+      limit: 1
+    });
+    expect(firstIndexPage.indexes).toHaveLength(1);
+    expect(firstIndexPage.indexes[0]?.indexUid.startsWith(indexUid)).toBe(true);
+    expect(Number.isFinite(Date.parse(firstIndexPage.indexes[0]!.updatedAt))).toBe(true);
+    expect(firstIndexPage.continuation).toEqual(expect.any(String));
+    await expect(listOwnedIndexes!({
+      indexUidPrefix: indexUid,
+      continuation: firstIndexPage.continuation,
+      limit: 1
+    })).resolves.toMatchObject({
+      indexes: [expect.objectContaining({ indexUid: partialFailureIndexUid })],
+      continuation: null
+    });
+
     await expect(provider.write.deleteDocuments({
       indexUid,
       documentIds: [documents[1]!.id],

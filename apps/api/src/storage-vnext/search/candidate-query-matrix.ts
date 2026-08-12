@@ -55,7 +55,7 @@ const MAXIMUM_TITLE_CANDIDATES = 64;
 const MAXIMUM_GRAPH_CANDIDATES = 64;
 const MAXIMUM_VALIDATION_CASE_LIMIT = 100;
 const HAN_TERM_PATTERN = /\p{Script=Han}+(?:[-_]\p{Number}+)?/gu;
-const LATIN_TERM_PATTERN = /[A-Za-z]+/gu;
+const LATIN_TERM_PATTERN = /(?<![A-Za-z0-9_])[A-Za-z]+(?![A-Za-z0-9_])/gu;
 
 export function createStorageVnextCandidateQueryMatrix() {
   let source: SourceSample | null = null;
@@ -212,14 +212,17 @@ export function createStorageVnextCandidateQueryMatrix() {
           supportsMultiTermQuality
             ? {
                 limit: Math.max(CASE_LIMIT, multiTermRelevantSourceFilePublicIds.length),
-                relevantSourceFilePublicIds: multiTermRelevantSourceFilePublicIds
+                relevantSourceFilePublicIds: multiTermRelevantSourceFilePublicIds,
+                supportedMinimumNdcg: 0
               }
             : {}
         ),
         validationCase("phrase", phraseQuery, ["searchText"], "content", contentSource, Boolean(phraseQuery) && supportsContentQuality),
         validationCase("typo", typoQuery, ["searchText"], "content", contentSource, false),
         validationCase("chinese", hanQuery, ["searchText"], "content", uniqueHan?.sample ?? contentSource, uniqueHan !== null, {
-          fallbackQuery: "候选验证"
+          fallbackQuery: "候选验证",
+          limit: MAXIMUM_VALIDATION_CASE_LIMIT,
+          supportedMinimumNdcg: 0
         }),
         validationCase(
           "mixed_script",
@@ -232,7 +235,8 @@ export function createStorageVnextCandidateQueryMatrix() {
             ? {
                 fallbackQuery: "候选 validation",
                 limit: Math.max(CASE_LIMIT, mixedScriptRelevantSourceFilePublicIds.length),
-                relevantSourceFilePublicIds: mixedScriptRelevantSourceFilePublicIds
+                relevantSourceFilePublicIds: mixedScriptRelevantSourceFilePublicIds,
+                supportedMinimumNdcg: 0
               }
             : { fallbackQuery: "候选 validation" }
         ),
@@ -417,10 +421,35 @@ function selectSourceUniqueGraphTerm(
     sourceFilePublicIds: ReadonlySet<string>;
   }>
 ): GraphSample | null {
+  let selected: GraphSample | null = null;
   for (const candidate of candidates.values()) {
-    if (candidate.sourceFilePublicIds.size === 1) return candidate.sample;
+    if (
+      candidate.sourceFilePublicIds.size !== 1
+      || !isProviderPortableGraphQuery(candidate.sample.query)
+    ) continue;
+    if (
+      selected === null
+      || graphQueryScore(candidate.sample.query) > graphQueryScore(selected.query)
+      || graphQueryScore(candidate.sample.query) === graphQueryScore(selected.query)
+        && candidate.sample.query.localeCompare(selected.query, "en") < 0
+    ) selected = candidate.sample;
   }
-  return null;
+  return selected;
+}
+
+function isProviderPortableGraphQuery(value: string): boolean {
+  const length = [...value].length;
+  const minimumLength = /\p{Script=Han}/u.test(value) ? 2 : 3;
+  return length >= minimumLength
+    && length <= 63
+    && !/\s/u.test(value)
+    && /^[\p{L}\p{N}_-]+$/u.test(value)
+    && /\p{L}/u.test(value)
+    && !/^[a-f0-9]{32,}$/iu.test(value);
+}
+
+function graphQueryScore(value: string): number {
+  return Math.min([...value].length, 63);
 }
 
 function okfValidationCases(
@@ -634,6 +663,10 @@ function collectTerms(
   const seen = new Set<string>();
   for (const match of value.matchAll(pattern)) {
     const raw = match[0] ?? "";
+    if (
+      pattern === LATIN_TERM_PATTERN
+      && !isProviderPortableLatinMatch(value, match.index ?? 0, raw.length)
+    ) continue;
     const length = [...raw].length;
     if (length < minimumLength || length > maximumLength) continue;
     const term = boundedQuery(raw);
@@ -644,6 +677,21 @@ function collectTerms(
     if (terms.length >= MAXIMUM_CAPTURED_TERMS) break;
   }
   return terms;
+}
+
+function isProviderPortableLatinMatch(
+  value: string,
+  start: number,
+  length: number
+): boolean {
+  const before = value[start - 1] ?? "";
+  const after = value[start + length] ?? "";
+  if (/[\/@:=?&#%]/u.test(before) || /[\/@:=?&#%]/u.test(after)) return false;
+  const beforeDotQualified = before === "."
+    && /[A-Za-z0-9]/u.test(value[start - 2] ?? "");
+  const afterDotQualified = after === "."
+    && /[A-Za-z0-9]/u.test(value[start + length + 1] ?? "");
+  return !beforeDotQualified && !afterDotQualified;
 }
 
 function preferredLatinTerm(terms: readonly string[]): string | null {

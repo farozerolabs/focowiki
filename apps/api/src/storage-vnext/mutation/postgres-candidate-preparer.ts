@@ -47,6 +47,7 @@ type SourceRow = {
 };
 
 type DirectoryRow = {
+  public_id: string;
   logical_path: string;
 };
 
@@ -84,6 +85,7 @@ export function createPostgresStorageVnextMutationCandidatePreparer(input: {
         ...(checkpoint.candidateRevisionPublicId
           ? { candidateRevisionPublicId: checkpoint.candidateRevisionPublicId }
           : {}),
+        directoryPublicIds: scope.directoryPublicIds,
         sourceFilePublicIds: scope.sources.map((source) => source.public_id),
         sourceLogicalPaths: scope.sources.map((source) => candidateSourcePath(
           checkpoint,
@@ -213,6 +215,7 @@ async function readMutationScope(
   checkpoint: MutationCheckpoint
 ): Promise<{
   sources: SourceRow[];
+  directoryPublicIds: string[];
   directoryPaths: string[];
   graphEdgePublicIds: string[];
 }> {
@@ -236,12 +239,9 @@ async function readMutationScope(
             AND public_id = ${checkpoint.targetPublicId}
             AND deleted_at IS NULL
         `;
-  if (checkpoint.kind !== "knowledge_base_metadata" && sources.length === 0) {
-    throw preparerError("mutation_target_missing");
-  }
   const directories = checkpoint.kind === "source_directory_move"
     ? await sql<DirectoryRow[]>`
-        SELECT logical_path
+        SELECT public_id, logical_path
         FROM focowiki.source_directories
         WHERE knowledge_base_id = ${work.knowledgeBaseId}
           AND deleted_at IS NULL
@@ -254,6 +254,10 @@ async function readMutationScope(
         ORDER BY normalized_path COLLATE "C"
       `
     : [];
+  const targetMissing = checkpoint.kind === "source_directory_move"
+    ? directories.length === 0
+    : checkpoint.kind !== "knowledge_base_metadata" && sources.length === 0;
+  if (targetMissing) throw preparerError("mutation_target_missing");
   const sourceIds = sources.map((source) => source.public_id);
   const graphEdges = sourceIds.length === 0
     ? []
@@ -280,6 +284,7 @@ async function readMutationScope(
   ]);
   return {
     sources,
+    directoryPublicIds: directories.map((directory) => directory.public_id),
     directoryPaths: stableUnique(directoryPaths),
     graphEdgePublicIds: graphEdges.map((edge) => edge.public_id)
   };

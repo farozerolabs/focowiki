@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { StorageVnextCatalogReadPort } from
   "../../storage-vnext/catalog/ports.js";
+import { isStorageVnextStablePublicationSource } from
+  "../../storage-vnext/publication/source-eligibility.js";
 import type { SemanticMaintenanceTarget } from "../domain/contracts.js";
 import { planSemanticSourceStages, type SemanticStageSettingsSnapshot } from
   "./stage-orchestration.js";
@@ -17,6 +19,7 @@ type GenerationPort = Pick<
   | "transitionCandidate"
   | "activateCandidate"
   | "adoptQueryPolicy"
+  | "cloneReusableFacts"
 >;
 
 type StagePort = Pick<
@@ -39,6 +42,7 @@ export function createSemanticAdoptionService(input: {
       cursor: string | null;
       pageSize: number;
       maximumAttempts: number;
+      reusePredecessorFacts: boolean;
       enqueuedAt: string;
     }) {
       assertPlanRequest(request);
@@ -54,12 +58,24 @@ export function createSemanticAdoptionService(input: {
       if (candidate.contractFingerprintSha256 !== fingerprint) {
         throw adoptionError("semantic_adoption_contract_conflict");
       }
+      if (request.reusePredecessorFacts && request.cursor === null) {
+        if (!request.expectedPredecessorPublicId) {
+          throw adoptionError("semantic_adoption_predecessor_missing");
+        }
+        await input.generations.cloneReusableFacts({
+          knowledgeBaseId: request.knowledgeBaseId,
+          predecessorPublicId: request.expectedPredecessorPublicId,
+          candidatePublicId: candidate.publicId
+        });
+      }
       const page = await input.catalog.listCurrentSources({
         knowledgeBaseId: request.knowledgeBaseId,
         limit: request.pageSize,
         cursor: request.cursor
       });
-      const plans = page.items.flatMap(({ sourceFile, sourceRevision }) =>
+      const sources = page.items.filter(({ sourceFile }) =>
+        isStorageVnextStablePublicationSource(sourceFile));
+      const plans = sources.flatMap(({ sourceFile, sourceRevision }) =>
         planSemanticSourceStages({
           knowledgeBaseId: request.knowledgeBaseId,
           operationPublicId: request.operationPublicId,
@@ -76,12 +92,15 @@ export function createSemanticAdoptionService(input: {
           dirtyCommunityPartitionKeys: [],
           includeValidation: false,
           includePublication: false,
+          ...(request.reusePredecessorFacts
+            ? { resumeFromStage: "embedding" as const }
+            : {}),
           maximumAttempts: request.maximumAttempts
         }));
       const stageCount = await enqueueBounded(input.stages, plans, request.enqueuedAt);
       return {
         candidate,
-        sourceCount: page.items.length,
+        sourceCount: sources.length,
         stageCount,
         nextCursor: page.nextCursor
       };
@@ -293,6 +312,7 @@ function assertPlanRequest(input: {
   target: SemanticMaintenanceTarget;
   pageSize: number;
   maximumAttempts: number;
+  reusePredecessorFacts: boolean;
   enqueuedAt: string;
 }): void {
   if (
@@ -305,6 +325,7 @@ function assertPlanRequest(input: {
     || !Number.isSafeInteger(input.maximumAttempts)
     || input.maximumAttempts < 1
     || input.maximumAttempts > 100
+    || typeof input.reusePredecessorFacts !== "boolean"
     || !Number.isFinite(Date.parse(input.enqueuedAt))
   ) throw adoptionError("semantic_adoption_invalid_request");
 }

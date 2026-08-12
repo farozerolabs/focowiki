@@ -32,7 +32,16 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     .replaceAll("-", "").slice(0, 10)}`;
   const admin = postgres(databaseConnectionUrl(connectionUrl, "postgres"), { max: 1 });
   const sql = postgres(databaseConnectionUrl(connectionUrl, databaseName), { max: 6 });
-  const releases = createPostgresStorageVnextReleaseRepository(sql);
+  const validationMismatches: Array<{
+    candidatePublicId: string;
+    fields: readonly string[];
+    diagnostics?: Readonly<Record<string, number | boolean>>;
+  }> = [];
+  const releases = createPostgresStorageVnextReleaseRepository(sql, {
+    onValidationMismatch(mismatch) {
+      validationMismatches.push(mismatch);
+    }
+  });
   let databaseCreated = false;
 
   beforeAll(async () => {
@@ -305,6 +314,23 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       ...validation,
       pathValidationPassed: false
     })).resolves.toBe(false);
+    const observerFailureReleases = createPostgresStorageVnextReleaseRepository(sql, {
+      onValidationMismatch() {
+        throw new Error("validation observer failed");
+      }
+    });
+    await expect(observerFailureReleases.recordCandidateValidation({
+      ...validation,
+      pathValidationPassed: false
+    })).resolves.toBe(false);
+    await expect(releases.recordCandidateValidation({
+      ...validation,
+      objectOwnerCount: 2
+    })).resolves.toBe(false);
+    expect(validationMismatches.at(-1)).toEqual({
+      candidatePublicId: "candidate-release-1",
+      fields: ["object_owner_count"]
+    });
     const unvalidatedProfile = await sql<Array<{
       navigation_profile_version: number;
     }>>`
@@ -653,6 +679,85 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     expect(searchCleanup[0]?.total).toBe("0");
   });
 
+  it("enqueues immediate provider cleanup for a replaced active search index", async () => {
+    const knowledgeBaseId = "kb-release-replaced-search";
+    const retiredSearchPublicId = "search-release-retired-old";
+    const activeSearchPublicId = "search-release-retired-new";
+    await createKnowledgeBase(knowledgeBaseId);
+    await createVerifiedObject(
+      "object-release-retired-old",
+      "3".repeat(64),
+      32
+    );
+    await createVerifiedObject(
+      "object-release-retired-new",
+      "4".repeat(64),
+      32
+    );
+
+    await createRetainedSearchRelease({
+      knowledgeBaseId,
+      sequence: 3,
+      objectId: "object-release-retired-old",
+      checksum: "3".repeat(64),
+      expectedActiveRootPublicId: null,
+      expectedActiveRevision: 0,
+      searchProjectionPublicId: retiredSearchPublicId,
+      createSearchProjection: true
+    });
+    await createRetainedSearchRelease({
+      knowledgeBaseId,
+      sequence: 4,
+      objectId: "object-release-retired-new",
+      checksum: "4".repeat(64),
+      expectedActiveRootPublicId: "root-release-retained-3",
+      expectedActiveRevision: 1,
+      searchProjectionPublicId: activeSearchPublicId,
+      createSearchProjection: true
+    });
+
+    const searchRows = await sql<Array<{
+      public_id: string;
+      projection_role: string;
+      provider_index_uid: string;
+    }>>`
+      SELECT public_id, projection_role, provider_index_uid
+      FROM focowiki.search_projections
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+      ORDER BY public_id
+    `;
+    expect(searchRows).toEqual([{
+      public_id: activeSearchPublicId,
+      projection_role: "active",
+      provider_index_uid: `index-${activeSearchPublicId}`
+    }]);
+    const cleanupActions = await sql<Array<{
+      operation_public_id: string;
+      action_kind: string;
+      search_provider_kind: string | null;
+      resource_kind: string;
+      resource_public_id: string;
+      state: string;
+      not_before: Date;
+    }>>`
+      SELECT operation_public_id, action_kind, search_provider_kind,
+             resource_kind, resource_public_id, state, not_before
+      FROM focowiki.cleanup_actions
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND resource_kind = 'search_index'
+      ORDER BY public_id
+    `;
+    expect(cleanupActions).toEqual([{
+      operation_public_id: "operation-release-retained-4",
+      action_kind: "search_projection_retirement",
+      search_provider_kind: "meilisearch",
+      resource_kind: "search_index",
+      resource_public_id: `index-${retiredSearchPublicId}`,
+      state: "queued",
+      not_before: new Date("2026-08-24T03:00:00.000Z")
+    }]);
+  });
+
   it("keeps maintenance active and rollback roots standalone while retiring old lineage", async () => {
     const knowledgeBaseId = "kb-release-maintenance-compact";
     await createKnowledgeBase(knowledgeBaseId);
@@ -880,6 +985,19 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       pathValidationPassed: true,
       validatedAt: "2026-08-01T03:01:00.000Z"
     })).resolves.toBe(false);
+    expect(validationMismatches.at(-1)).toMatchObject({
+      candidatePublicId: "candidate-fanout",
+      fields: ["object_fanout"],
+      diagnostics: {
+        activeSourceCount: 0,
+        candidateSourceCount: 1,
+        activeCount: 0,
+        candidateCount: overBudgetObjectCount,
+        maximumCandidateCount: overBudgetObjectCount - 1,
+        activePassed: false,
+        ratioPassed: true
+      }
+    });
     await expect(releases.markCandidateReady({
       candidatePublicId: "candidate-fanout",
       manifestChecksum: "8".repeat(64)
@@ -1385,6 +1503,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       FROM focowiki.cleanup_actions
       WHERE knowledge_base_id = ${knowledgeBaseId}
         AND operation_public_id = 'operation-sharing-9'
+        AND resource_kind = 'superseded_candidate_object'
       ORDER BY resource_public_id
     `;
     expect(compactionCleanup).toEqual(

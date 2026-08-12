@@ -19,6 +19,8 @@ import { segmentStorageVnextMarkdown } from "../search/markdown-segmentation.js"
 import { readStorageVnextGraphSeedProfile } from
   "../search/graph-seed-profile.js";
 import type { StorageVnextSearchProjectionPort } from "../search/ports.js";
+import { isStorageVnextStablePublicationSource } from
+  "../publication/source-eligibility.js";
 
 type SearchRebuildCursor = {
   version: 1;
@@ -83,9 +85,12 @@ async function rebuildSourcePage(
     limit: input.limits.sourcePageSize,
     cursor: sourceCursor
   });
+  const sources = page.items.filter((current) =>
+    isStorageVnextStablePublicationSource(current.sourceFile)
+  );
   const documents: StorageVnextSearchDocument[] = [];
   let processedBytes = 0;
-  for (const current of page.items) {
+  for (const current of sources) {
     assertCurrentSource(request.knowledgeBaseId, current);
     const logicalPath = generatedPagePath(current.sourceFile.logicalPath);
     documents.push(createStorageVnextContentDocument({
@@ -136,8 +141,8 @@ async function rebuildSourcePage(
   return {
     outcome: "progress" as const,
     cursor: next,
-    completedDelta: page.items.length,
-    expectedCount: page.items.length,
+    completedDelta: sources.length,
+    expectedCount: sources.length,
     processedBytesDelta: processedBytes,
     batchOrdinalDelta: batchCount
   };

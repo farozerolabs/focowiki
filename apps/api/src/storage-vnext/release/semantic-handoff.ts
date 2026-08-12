@@ -5,9 +5,12 @@ import {
   includeStorageVnextNavigationProfileUpgrade,
   includeStorageVnextSemanticDependencyClosure
 } from "./dependency-closure.js";
-import type {
-  StorageVnextReleaseReadPort,
-  StorageVnextReleaseWritePort
+import {
+  MAX_STORAGE_VNEXT_RELEASE_WRITE_BATCH,
+  type StorageVnextCandidateChangedFact,
+  type StorageVnextCandidateDependency,
+  type StorageVnextReleaseReadPort,
+  type StorageVnextReleaseWritePort
 } from "./ports.js";
 import type { StorageVnextWorkflowWritePort } from "../workflow/ports.js";
 import {
@@ -78,13 +81,13 @@ export function createStorageVnextSemanticPublicationHandoff(input: {
         semantic: request.closure,
         change: "updated"
       });
+      const existingFactBatches = createFactBatches(
+        changedFacts,
+        closure.dependencies
+      );
       const existing = await input.releases.getLiveCandidate(request.knowledgeBaseId);
       if (existing) {
-        await input.releases.addCandidateFacts({
-          candidatePublicId: existing.publicId,
-          changedFacts,
-          dependencies: closure.dependencies
-        });
+        await addFactBatches(input.releases, existing.publicId, existingFactBatches);
         await coalesceQueuedPublication({
           workflow: input.workflow,
           operationPublicId: existing.operationPublicId,
@@ -103,6 +106,7 @@ export function createStorageVnextSemanticPublicationHandoff(input: {
         navigationProfileVersion: active?.navigationProfileVersion ?? null,
         dependencies: closure.dependencies
       });
+      const creationFactBatches = createFactBatches(changedFacts, dependencies);
       const targetOperationPublicId =
         `semantic-publication-target:${request.settingsRevisionPublicId}`;
       const identity = createStorageVnextReleaseCandidateIdentity({
@@ -150,6 +154,7 @@ export function createStorageVnextSemanticPublicationHandoff(input: {
         throw handoffError("semantic_publication_work_terminal");
       }
       try {
+        const firstBatch = creationFactBatches[0]!;
         const candidate = await input.releases.createCandidate({
           publicId: identity.candidatePublicId,
           knowledgeBaseId: request.knowledgeBaseId,
@@ -157,21 +162,26 @@ export function createStorageVnextSemanticPublicationHandoff(input: {
           candidateRootPublicId: identity.candidateRootPublicId,
           expectedActiveRootPublicId,
           expectedActiveRevision,
-          changedFacts,
-          dependencies,
+          changedFacts: firstBatch.changedFacts,
+          dependencies: firstBatch.dependencies,
           idempotency: publication.idempotency,
           createdAt: request.completedAt
         });
+        await addFactBatches(
+          input.releases,
+          candidate.publicId,
+          creationFactBatches.slice(1)
+        );
         return { candidatePublicId: candidate.publicId };
       } catch (error) {
         if (!hasCode(error, "live_candidate_exists")) throw error;
         const winner = await input.releases.getLiveCandidate(request.knowledgeBaseId);
         if (!winner) throw error;
-        await input.releases.addCandidateFacts({
-          candidatePublicId: winner.publicId,
-          changedFacts,
-          dependencies: closure.dependencies
-        });
+        await addFactBatches(
+          input.releases,
+          winner.publicId,
+          existingFactBatches
+        );
         await coalesceQueuedPublication({
           workflow: input.workflow,
           operationPublicId: winner.operationPublicId,
@@ -184,6 +194,50 @@ export function createStorageVnextSemanticPublicationHandoff(input: {
       }
     }
   };
+}
+
+type FactBatch = {
+  changedFacts: readonly StorageVnextCandidateChangedFact[];
+  dependencies: readonly StorageVnextCandidateDependency[];
+};
+
+function createFactBatches(
+  changedFacts: readonly StorageVnextCandidateChangedFact[],
+  dependencies: readonly StorageVnextCandidateDependency[]
+): FactBatch[] {
+  const batches: FactBatch[] = [];
+  const length = Math.max(changedFacts.length, dependencies.length, 1);
+  for (
+    let offset = 0;
+    offset < length;
+    offset += MAX_STORAGE_VNEXT_RELEASE_WRITE_BATCH
+  ) {
+    batches.push({
+      changedFacts: changedFacts.slice(
+        offset,
+        offset + MAX_STORAGE_VNEXT_RELEASE_WRITE_BATCH
+      ),
+      dependencies: dependencies.slice(
+        offset,
+        offset + MAX_STORAGE_VNEXT_RELEASE_WRITE_BATCH
+      )
+    });
+  }
+  return batches;
+}
+
+async function addFactBatches(
+  releases: Pick<StorageVnextReleaseWritePort, "addCandidateFacts">,
+  candidatePublicId: string,
+  batches: readonly FactBatch[]
+): Promise<void> {
+  for (const batch of batches) {
+    await releases.addCandidateFacts({
+      candidatePublicId,
+      changedFacts: batch.changedFacts,
+      dependencies: batch.dependencies
+    });
+  }
 }
 
 async function coalesceQueuedPublication(input: {

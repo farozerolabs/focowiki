@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
 import { createPostgresStorageVnextAdminRead } from
   "../src/storage-vnext/api/postgres-admin-read.js";
@@ -12,6 +12,22 @@ import type { StorageVnextSearchQueryPort } from
   "../src/storage-vnext/search/ports.js";
 
 describe("PostgreSQL storage vNext Admin reads", () => {
+  it("rejects malformed resource cursors with the pagination domain error", async () => {
+    const sql = vi.fn(async () => []) as unknown as DatabaseClient;
+    const application = createPostgresStorageVnextAdminResourceRead(sql);
+
+    await expect(application.listDirectories({
+      knowledgeBaseId: "kb-resource-cursor",
+      parentDirectoryId: null,
+      limit: 20,
+      cursor: "invalid"
+    })).rejects.toMatchObject({
+      name: "SourceResourceError",
+      code: "INVALID_PAGINATION"
+    });
+    expect(sql).not.toHaveBeenCalled();
+  });
+
   it("keeps directory cursors valid when the next page changes its limit", async () => {
     const rows = [
       sourceDirectoryRow("directory-a", "archive"),
@@ -182,7 +198,11 @@ describe("PostgreSQL storage vNext Admin reads", () => {
 
   it("returns matching directory entries before unified-index file matches", async () => {
     const application = createPostgresStorageVnextAdminRead({
-      sql: (async () => [directoryRow("pages")]) as unknown as DatabaseClient,
+      sql: ((strings: TemplateStringsArray) => Promise.resolve(
+        strings.join("?").includes("resolve_release_directory_summaries")
+          ? [directoryRow("pages")]
+          : []
+      )) as unknown as DatabaseClient,
       catalog: {
         async getKnowledgeBase() {
           return {
@@ -239,6 +259,187 @@ describe("PostgreSQL storage vNext Admin reads", () => {
         }],
         nextCursor: null
       }
+    });
+  });
+
+  it("rejects malformed tree cursors before returning an empty unreleased tree", async () => {
+    const application = createPostgresStorageVnextAdminRead({
+      sql: (async () => []) as unknown as DatabaseClient,
+      catalog: {
+        async getKnowledgeBase() {
+          return {
+            publicId: "kb-unreleased",
+            name: "Unreleased",
+            description: null,
+            revision: 1,
+            visibility: "current",
+            createdAt: "2026-08-11T00:00:00.000Z",
+            updatedAt: "2026-08-11T00:00:00.000Z"
+          };
+        }
+      } as unknown as StorageVnextCatalogReadPort,
+      releases: {
+        async getActiveRoot() {
+          return null;
+        }
+      } as unknown as StorageVnextReleaseReadPort,
+      search: {
+        async search() {
+          return { items: [], nextCursor: null };
+        }
+      } as StorageVnextSearchQueryPort
+    });
+
+    await expect(application.listTree({
+      knowledgeBaseId: "kb-unreleased",
+      parentPath: "",
+      entryType: null,
+      query: null,
+      limit: 20,
+      cursor: "invalid"
+    })).resolves.toEqual({ ok: false, code: "INVALID_PAGINATION" });
+    await expect(application.searchFiles({
+      knowledgeBaseId: "kb-unreleased",
+      query: "boundary",
+      limit: 20,
+      cursor: "invalid"
+    })).resolves.toEqual({ ok: false, code: "INVALID_PAGINATION" });
+  });
+
+  it("returns generated file path matches before unified-index source matches", async () => {
+    let searchCalls = 0;
+    const sql = ((strings: TemplateStringsArray) => {
+      const query = strings.join("?");
+      if (query.includes("resolve_release_catalog")) {
+        return Promise.resolve([generatedFileRow("_graph/index.md", "graph")]);
+      }
+      return Promise.resolve([]);
+    }) as unknown as DatabaseClient;
+    const application = createPostgresStorageVnextAdminRead({
+      sql,
+      catalog: {
+        async getKnowledgeBase() {
+          return {
+            publicId: "kb-generated-search",
+            name: "Generated search",
+            description: null,
+            revision: 1,
+            visibility: "current",
+            createdAt: "2026-08-06T00:00:00.000Z",
+            updatedAt: "2026-08-06T00:00:00.000Z"
+          };
+        },
+        async listSourceFilesByPublicIds() {
+          return [];
+        }
+      } as unknown as StorageVnextCatalogReadPort,
+      releases: {
+        async getActiveRoot() {
+          return {
+            publicId: "root-generated-search",
+            knowledgeBaseId: "kb-generated-search",
+            role: "active",
+            manifestChecksum: "checksum",
+            revision: 1,
+            createdAt: "2026-08-06T00:00:00.000Z",
+            expiresAt: null
+          };
+        }
+      } as unknown as StorageVnextReleaseReadPort,
+      search: {
+        async search() {
+          searchCalls += 1;
+          return { items: [], nextCursor: null };
+        }
+      } as StorageVnextSearchQueryPort
+    });
+
+    const result = await application.searchFiles({
+      knowledgeBaseId: "kb-generated-search",
+      query: "_graph",
+      limit: 5,
+      cursor: null
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        items: [{
+          entry: {
+            logicalPath: "_graph/index.md",
+            entryType: "file",
+            fileKind: "graph_index",
+            deletable: false
+          },
+          ancestors: [{ logicalPath: "_graph", entryType: "directory" }]
+        }],
+        nextCursor: null
+      }
+    });
+    expect(searchCalls).toBe(1);
+  });
+
+  it("filters stale search-provider hits after their source ownership is deleted", async () => {
+    const application = createPostgresStorageVnextAdminRead({
+      sql: (async () => []) as unknown as DatabaseClient,
+      catalog: {
+        async getKnowledgeBase() {
+          return {
+            publicId: "kb-stale-search",
+            name: "Stale search",
+            description: null,
+            revision: 2,
+            visibility: "current",
+            createdAt: "2026-08-06T00:00:00.000Z",
+            updatedAt: "2026-08-06T00:00:00.000Z"
+          };
+        },
+        async listSourceFilesByPublicIds() {
+          return [];
+        }
+      } as unknown as StorageVnextCatalogReadPort,
+      releases: {
+        async getActiveRoot() {
+          return {
+            publicId: "root-stale-search",
+            knowledgeBaseId: "kb-stale-search",
+            role: "active",
+            manifestChecksum: "checksum",
+            revision: 2,
+            createdAt: "2026-08-06T00:00:00.000Z",
+            expiresAt: null
+          };
+        }
+      } as unknown as StorageVnextReleaseReadPort,
+      search: {
+        async search() {
+          return {
+            items: [{
+              publicId: "generated-stale",
+              sourceFilePublicId: "source-stale",
+              logicalPath: "pages/deleted.md",
+              title: "Deleted",
+              snippet: null,
+              score: 1,
+              kind: "file",
+              metadata: {}
+            }],
+            nextCursor: null
+          };
+        }
+      } as StorageVnextSearchQueryPort
+    });
+
+    const result = await application.searchFiles({
+      knowledgeBaseId: "kb-stale-search",
+      query: "deleted",
+      limit: 5,
+      cursor: null
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { items: [], nextCursor: null }
     });
   });
 
@@ -301,11 +502,12 @@ describe("PostgreSQL storage vNext Admin reads", () => {
       cursor: null
     });
 
-    expect(queries).toHaveLength(2);
-    for (const query of queries) {
+    expect(queries).toHaveLength(3);
+    for (const query of queries.slice(0, 2)) {
       expect(query).toContain("focowiki.public_generated_directory_id");
       expect(query).not.toContain("coalesce(summary.directory_public_id, 'directory:')");
     }
+    expect(queries[2]).toContain("focowiki.public_generated_file_id");
   });
 });
 
@@ -340,6 +542,22 @@ function directoryRow(logicalPath: string) {
     direct_file_count: 0,
     descendant_file_count: 200,
     resource_revision: 0
+  };
+}
+
+function generatedFileRow(logicalPath: string, entryKind: string) {
+  return {
+    record_id: "generated:record",
+    logical_path: logicalPath,
+    parent_path: logicalPath.slice(0, logicalPath.lastIndexOf("/")),
+    entry_type: "file" as const,
+    source_file_public_id: null,
+    source_directory_public_id: null,
+    entry_kind: entryKind,
+    direct_directory_count: 0,
+    direct_file_count: 0,
+    descendant_file_count: 0,
+    resource_revision: null
   };
 }
 

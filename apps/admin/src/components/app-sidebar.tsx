@@ -46,7 +46,8 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarRail,
-  SidebarSeparator
+  SidebarSeparator,
+  useSidebar
 } from "@/components/ui/sidebar";
 
 export type AdminSidebarTreeNode = {
@@ -155,9 +156,16 @@ export function AppSidebar({
   resizeRail,
   ...props
 }: AppSidebarProps) {
+  const { isMobile, setOpenMobile } = useSidebar();
   const runningSourceFiles = sourceFiles.filter(
     (file) => file.state === "queued" || file.state === "running"
   ).length;
+  const navigateFromSidebar = (action: () => void) => {
+    action();
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+  };
 
   return (
     <Sidebar {...props}>
@@ -165,14 +173,17 @@ export function AppSidebar({
         appName={appName}
         contextName={knowledgeBaseName}
         backLabel={labels.back}
-        onBack={onBack}
+        onBack={() => navigateFromSidebar(onBack)}
       />
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton isActive={activeView === "processing"} onClick={onOpenProcessing}>
+                <SidebarMenuButton
+                  isActive={activeView === "processing"}
+                  onClick={() => navigateFromSidebar(onOpenProcessing)}
+                >
                   <ListChecksIcon />
                   <span>{labels.uploadProgress}</span>
                 </SidebarMenuButton>
@@ -183,7 +194,7 @@ export function AppSidebar({
               <SidebarMenuItem>
                 <SidebarMenuButton
                   isActive={activeView === "settings"}
-                  onClick={onOpenSettings}
+                  onClick={() => navigateFromSidebar(onOpenSettings)}
                 >
                   <SettingsIcon />
                   <span>{labels.settings}</span>
@@ -235,7 +246,7 @@ export function AppSidebar({
                   key={node.id}
                   labels={labels}
                   node={node}
-                  onOpenFile={onOpenFile}
+                  onOpenFile={(node) => navigateFromSidebar(() => onOpenFile(node))}
                   onDeleteFile={onDeleteFile}
                   onDeleteDirectory={onDeleteDirectory}
                   onEditResource={onEditResource}
@@ -264,7 +275,12 @@ export function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
-        <Button type="button" variant="ghost" className="w-full justify-start" onClick={onLogout}>
+        <Button
+          type="button"
+          variant="ghost"
+          className="w-full justify-start"
+          onClick={() => navigateFromSidebar(onLogout)}
+        >
           <LogOutIcon data-icon="inline-start" />
           {labels.logout}
         </Button>

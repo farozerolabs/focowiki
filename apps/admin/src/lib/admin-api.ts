@@ -592,6 +592,21 @@ export type RuntimeModelConfig = {
   deletedAt: string | null;
 };
 
+export type RuntimeModelDraft = {
+  displayName: string;
+  apiMode: RuntimeModelConfig["apiMode"];
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+  contextWindowTokens: number;
+  requestMaxTimeoutMs: number;
+  requestIdleTimeoutMs: number;
+  suggestionConcurrency: number;
+  transientRetryDelayMs: number;
+  requestMinIntervalMs: number;
+  isActive: boolean;
+};
+
 export type RuntimeSettingsResponse = {
   settings: {
     rateLimits: RateLimitSettings;
@@ -1116,20 +1131,9 @@ async function writeRerankerConfiguration(
     : readFailure(body, "errors.rerankerConfigurationActionFailed");
 }
 
-export async function createRuntimeModel(input: {
-  displayName: string;
-  apiMode: RuntimeModelConfig["apiMode"];
-  baseUrl: string;
-  apiKey: string;
-  modelName: string;
-  contextWindowTokens: number;
-  requestMaxTimeoutMs: number;
-  requestIdleTimeoutMs: number;
-  suggestionConcurrency: number;
-  transientRetryDelayMs: number;
-  requestMinIntervalMs: number;
-  isActive: boolean;
-}): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+export async function createRuntimeModel(
+  input: RuntimeModelDraft
+): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
   const response = await adminFetch("/admin/api/settings/models", {
     method: "POST",
     headers: {
@@ -1144,6 +1148,26 @@ export async function createRuntimeModel(input: {
   }
 
   return body as { model: RuntimeModelConfig };
+}
+
+export async function updateRuntimeModel(
+  modelId: string,
+  input: Omit<RuntimeModelDraft, "isActive">
+): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/settings/models/${encodeURIComponent(modelId)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    }
+  );
+  const body = (await response.json()) as
+    | { model: RuntimeModelConfig }
+    | { error?: { messageKey?: string } };
+  return response.ok
+    ? body as { model: RuntimeModelConfig }
+    : readFailure(body, "errors.runtimeSettingsValidationFailed");
 }
 
 export async function activateRuntimeModel(
@@ -1279,6 +1303,7 @@ export async function createUploadSession(input: {
   idempotencyKey: string;
   declaredFileCount: number;
   declaredByteCount: number;
+  signal?: AbortSignal | undefined;
 }): Promise<{ session: UploadSession; transport: UploadSessionTransport } | ApiFailure> {
   return uploadSessionJsonRequest(
     uploadSessionBasePath(input.knowledgeBaseId),
@@ -1288,7 +1313,8 @@ export async function createUploadSession(input: {
       body: JSON.stringify({
         declaredFileCount: input.declaredFileCount,
         declaredByteCount: input.declaredByteCount
-      })
+      }),
+      ...(input.signal ? { signal: input.signal } : {})
     }
   );
 }
@@ -1297,19 +1323,25 @@ export async function addUploadManifestEntries(input: {
   knowledgeBaseId: string;
   sessionId: string;
   entries: Array<{ relativePath: string; declaredSize: number; checksumSha256?: string | null }>;
+  signal?: AbortSignal | undefined;
 }): Promise<{ session: UploadSession } | ApiFailure> {
   return uploadSessionJsonRequest(uploadSessionPath(input, "entries"), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ entries: input.entries })
+    body: JSON.stringify({ entries: input.entries }),
+    ...(input.signal ? { signal: input.signal } : {})
   });
 }
 
 export async function sealUploadManifest(input: {
   knowledgeBaseId: string;
   sessionId: string;
+  signal?: AbortSignal | undefined;
 }): Promise<{ session: UploadSession; sample: UploadSessionEntry[]; nextCursor: string | null } | ApiFailure> {
-  return uploadSessionJsonRequest(uploadSessionPath(input, "seal"), { method: "POST" });
+  return uploadSessionJsonRequest(uploadSessionPath(input, "seal"), {
+    method: "POST",
+    ...(input.signal ? { signal: input.signal } : {})
+  });
 }
 
 export async function getUploadSession(input: {
@@ -1318,6 +1350,7 @@ export async function getUploadSession(input: {
   transferState?: "missing" | "failed" | "uploaded";
   cursor?: string | null;
   limit?: number;
+  signal?: AbortSignal | undefined;
 }): Promise<{
   session: UploadSession;
   entries: { items: UploadSessionEntry[]; nextCursor: string | null };
@@ -1328,7 +1361,7 @@ export async function getUploadSession(input: {
   if (input.limit) params.set("limit", String(input.limit));
   return uploadSessionJsonRequest(
     `${uploadSessionPath(input)}${params.size ? `?${params.toString()}` : ""}`,
-    { method: "GET" }
+    { method: "GET", ...(input.signal ? { signal: input.signal } : {}) }
   );
 }
 
@@ -1337,13 +1370,15 @@ export async function uploadSessionContent(input: {
   sessionId: string;
   entryId: string;
   file: File;
+  signal?: AbortSignal | undefined;
 }): Promise<{ entry: UploadSessionEntry } | ApiFailure> {
   return uploadSessionJsonRequest(
     uploadSessionPath(input, `entries/${encodeURIComponent(input.entryId)}/content`),
     {
       method: "PUT",
       headers: { "content-type": "text/markdown; charset=utf-8" },
-      body: input.file
+      body: input.file,
+      ...(input.signal ? { signal: input.signal } : {})
     }
   );
 }
@@ -1351,15 +1386,23 @@ export async function uploadSessionContent(input: {
 export async function reconcileUploadSession(input: {
   knowledgeBaseId: string;
   sessionId: string;
+  signal?: AbortSignal | undefined;
 }): Promise<{ session: UploadSession } | ApiFailure> {
-  return uploadSessionJsonRequest(uploadSessionPath(input, "reconcile"), { method: "POST" });
+  return uploadSessionJsonRequest(uploadSessionPath(input, "reconcile"), {
+    method: "POST",
+    ...(input.signal ? { signal: input.signal } : {})
+  });
 }
 
 export async function finalizeUploadSession(input: {
   knowledgeBaseId: string;
   sessionId: string;
+  signal?: AbortSignal | undefined;
 }): Promise<{ session: UploadSession } | ApiFailure> {
-  return uploadSessionJsonRequest(uploadSessionPath(input, "finalize"), { method: "POST" });
+  return uploadSessionJsonRequest(uploadSessionPath(input, "finalize"), {
+    method: "POST",
+    ...(input.signal ? { signal: input.signal } : {})
+  });
 }
 
 export async function cancelUploadSession(input: {
@@ -1709,7 +1752,7 @@ export async function fetchKnowledgeBasePublicUrls(input: {
     return null;
   }
 
-  const body = (await response.json()) as { publicUrls: KnowledgeBasePublicUrls };
+  const body = (await response.json()) as { publicUrls: KnowledgeBasePublicUrls | null };
   return body.publicUrls;
 }
 

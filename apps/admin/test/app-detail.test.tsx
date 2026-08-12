@@ -4,21 +4,43 @@ import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
 import {
   cancelKnowledgeBaseIndexMaintenance,
-  deleteKnowledgeBaseFile,
   deleteKnowledgeBaseSourceDirectory,
   deleteKnowledgeBaseSourceFileTasks,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBaseProcessingSummary,
   fetchKnowledgeBasePublicUrls,
+  fetchSourceFile,
   listSourceFiles,
   loginAdmin,
   requestKnowledgeBaseIndexMaintenance,
   searchKnowledgeBaseFileTree,
+  adminFetch,
 } from "../src/lib/admin-api";
 
 vi.mock("../src/lib/admin-api", () => ({
-  adminFetch: vi.fn(async (path: string) => {
+  adminFetch: vi.fn(async (path: string, init?: RequestInit) => {
+    if (path.endsWith("/source-files/source-001") && init?.method === "DELETE") {
+      return new Response(JSON.stringify({
+        operation: {
+          operationId: "operation-delete-intro",
+          knowledgeBaseId: "kb-docs",
+          kind: "source_file_delete",
+          state: "accepted",
+          expectedResourceRevision: 2,
+          targetKind: "source_file",
+          targetId: "source-001",
+          candidateRelativePath: null,
+          result: null,
+          errorCode: null,
+          retryGuidance: null,
+          createdAt: "2026-06-14T00:00:00.000Z",
+          updatedAt: "2026-06-14T00:00:00.000Z",
+          completedAt: null
+        },
+        deletion: { sourceFileId: "source-001" }
+      }), { status: 202, headers: { "content-type": "application/json" } });
+    }
     if (path.includes("/operations")) {
       return new Response(JSON.stringify({ items: [], nextCursor: null }), {
         status: 200,
@@ -33,10 +55,6 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   createKnowledgeBase: vi.fn(),
   deleteKnowledgeBase: vi.fn(),
-  deleteKnowledgeBaseFile: vi.fn(async () => ({
-    deleted: true,
-    publicationQueued: true
-  })),
   deleteKnowledgeBaseSourceDirectory: vi.fn(async () => ({
     accepted: true,
     operationId: "operation-delete-handbook",
@@ -464,6 +482,23 @@ describe("Admin knowledge base detail", () => {
     });
   });
 
+  it("closes the mobile detail sidebar after selecting a primary destination", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390
+    });
+
+    await openDetail({ expectSidebarBackButton: false });
+    fireEvent.click(screen.getByRole("button", { name: "Toggle sidebar" }));
+    expect(await screen.findByRole("dialog", { name: "Sidebar" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Sidebar" })).toBeNull();
+      expect(screen.getByRole("heading", { name: "Index maintenance" })).toBeTruthy();
+    });
+  });
+
   it("lets long file tree labels use the available sidebar row width", async () => {
     const longName =
       "a-very-long-generated-markdown-file-name-with-date-status-and-source-id.md";
@@ -566,6 +601,68 @@ describe("Admin knowledge base detail", () => {
     expect(screen.queryByText("No active maintenance")).toBeNull();
   });
 
+  it("shows active index maintenance in the processing summary", async () => {
+    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
+      knowledgeBaseId: "kb-docs"
+    });
+    expect(currentSummary).not.toBeNull();
+    if (!currentSummary) throw new Error("Expected the processing summary fixture.");
+    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
+      ...currentSummary,
+      maintenanceProgress: {
+        migration: null,
+        lexicalRebuild: null,
+        projectionRepair: null,
+        compaction: { active: null, latestCompleted: null }
+      },
+      indexMaintenance: {
+        ...currentSummary.indexMaintenance,
+        requestId: "index-maintenance-active",
+        state: "running",
+        stage: "projection:tree",
+        active: true,
+        completedCount: 20,
+        expectedCount: 100,
+        lastProgressAt: "2026-07-20T00:00:04.000Z"
+      }
+    });
+
+    await openDetail();
+
+    expect(await screen.findByText("Updating file navigation and relationships · 20 / 100"))
+      .toBeTruthy();
+    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue(currentSummary);
+  });
+
+  it("shows the most recent completed index maintenance in the processing summary", async () => {
+    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
+      knowledgeBaseId: "kb-docs"
+    });
+    expect(currentSummary).not.toBeNull();
+    if (!currentSummary) throw new Error("Expected the processing summary fixture.");
+    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
+      ...currentSummary,
+      maintenanceProgress: {
+        migration: null,
+        lexicalRebuild: null,
+        projectionRepair: null,
+        compaction: { active: null, latestCompleted: null }
+      },
+      indexMaintenance: {
+        ...currentSummary.indexMaintenance,
+        state: "completed",
+        active: false,
+        lastCompletedAt: "2026-07-20T00:00:04.000Z"
+      }
+    });
+
+    await openDetail();
+
+    expect(await screen.findByText(/^updated /)).toBeTruthy();
+    expect(screen.queryByText("No maintenance history")).toBeNull();
+    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue(currentSummary);
+  });
+
   it("renders every processing summary card from the backend response", async () => {
     const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
       knowledgeBaseId: "kb-docs"
@@ -633,7 +730,7 @@ describe("Admin knowledge base detail", () => {
     expect(screen.getByText("building · 3/5 impacts")).toBeTruthy();
     expect(screen.getByText("Active generation")).toBeTruthy();
     expect(screen.getByText("Publication failed: RELEASE_VALIDATION_FAILED")).toBeTruthy();
-    expect(screen.getByText("Maintenance failed")).toBeTruthy();
+    expect(document.body.textContent).toContain("Maintenance failed");
     expect(screen.getByText("PROJECTION_REPAIR_FAILED")).toBeTruthy();
   });
 
@@ -754,7 +851,7 @@ describe("Admin knowledge base detail", () => {
       });
       expect(screen.getByText("Tasks deleted")).toBeTruthy();
     });
-    expect(deleteKnowledgeBaseFile).not.toHaveBeenCalled();
+    expect(deleteKnowledgeBaseSourceFileTasks).toHaveBeenCalledTimes(1);
     expect(document.querySelectorAll('[data-slot="toast-viewport"]')).toHaveLength(1);
   });
 
@@ -1309,10 +1406,13 @@ describe("Admin knowledge base detail", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
-      expect(deleteKnowledgeBaseFile).toHaveBeenCalledWith({
-        knowledgeBaseId: "kb-docs",
-        path: "pages/intro.md"
-      });
+      expect(adminFetch).toHaveBeenCalledWith(
+        "/admin/api/knowledge-bases/kb-docs/source-files/source-001",
+        expect.objectContaining({
+          method: "DELETE",
+          headers: expect.objectContaining({ "if-match": "2" })
+        })
+      );
       expect(screen.queryByRole("alertdialog", { name: "Delete Markdown file" })).toBeNull();
     });
     await waitFor(() => {
@@ -1326,6 +1426,77 @@ describe("Admin knowledge base detail", () => {
     expect(fetchKnowledgeBaseFileTree).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-docs",
       cursor: null
+    });
+  });
+
+  it("deletes a stale file-tree search result with the latest resource revision", async () => {
+    vi.mocked(searchKnowledgeBaseFileTree).mockResolvedValue({
+      items: [
+        {
+          entry: {
+            id: "tree-001",
+            name: "intro.md",
+            logicalPath: "pages/intro.md",
+            entryType: "file",
+            generatedFileId: "file-001",
+            sourceFileId: "source-001",
+            resourceRevision: 2,
+            fileKind: "page",
+            deletable: true
+          },
+          ancestors: [
+            {
+              id: "tree-pages",
+              name: "pages",
+              logicalPath: "pages",
+              entryType: "directory",
+              generatedFileId: null,
+              sourceFileId: null,
+              fileKind: null,
+              deletable: false
+            }
+          ]
+        }
+      ],
+      nextCursor: null
+    });
+    vi.mocked(fetchSourceFile).mockResolvedValueOnce({
+      id: "source-001",
+      name: "intro.md",
+      relativePath: "intro.md",
+      resourceRevision: 5,
+      state: "visible",
+      currentStage: "generation_activation",
+      failure: null,
+      actions: [],
+      createdAt: "2026-06-14T00:00:00.000Z"
+    });
+
+    await openDetail();
+    fireEvent.change(screen.getByPlaceholderText("Search files and folders"), {
+      target: { value: "intro" }
+    });
+    await waitFor(() => expect(searchKnowledgeBaseFileTree).toHaveBeenCalledTimes(1));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "File actions: intro.md" }), {
+      button: 0,
+      ctrlKey: false
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    fireEvent.click(
+      within(screen.getByRole("alertdialog", { name: "Delete Markdown file" }))
+        .getByRole("button", { name: "Delete" })
+    );
+
+    await waitFor(() => {
+      expect(adminFetch).toHaveBeenCalledWith(
+        "/admin/api/knowledge-bases/kb-docs/source-files/source-001",
+        expect.objectContaining({
+          method: "DELETE",
+          headers: expect.objectContaining({ "if-match": "5" })
+        })
+      );
+      expect(searchKnowledgeBaseFileTree).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1430,6 +1601,63 @@ describe("Admin knowledge base detail", () => {
 
     expect(await screen.findByRole("button", { name: "intro.md" })).toBeTruthy();
     expect(fetchKnowledgeBaseFileTree).toHaveBeenNthCalledWith(2, {
+      knowledgeBaseId: "kb-docs",
+      parentPath: "pages",
+      cursor: null
+    });
+  });
+
+  it("refreshes an already loaded directory when it is reopened", async () => {
+    vi.mocked(fetchKnowledgeBaseFileTree)
+      .mockResolvedValueOnce({
+        items: [{
+          id: "tree-pages",
+          name: "pages",
+          logicalPath: "pages",
+          entryType: "directory",
+          generatedFileId: null
+        }],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [{
+          id: "tree-intro",
+          name: "intro.md",
+          logicalPath: "pages/intro.md",
+          entryType: "file",
+          generatedFileId: "file-intro"
+        }],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "tree-intro",
+            name: "intro.md",
+            logicalPath: "pages/intro.md",
+            entryType: "file",
+            generatedFileId: "file-intro"
+          },
+          {
+            id: "tree-new",
+            name: "new.md",
+            logicalPath: "pages/new.md",
+            entryType: "file",
+            generatedFileId: "file-new"
+          }
+        ],
+        nextCursor: null
+      });
+
+    await openDetail();
+    const pages = await screen.findByRole("button", { name: "pages" });
+    fireEvent.click(pages);
+    expect(await screen.findByRole("button", { name: "intro.md" })).toBeTruthy();
+    fireEvent.click(pages);
+    fireEvent.click(pages);
+
+    expect(await screen.findByRole("button", { name: "new.md" })).toBeTruthy();
+    expect(fetchKnowledgeBaseFileTree).toHaveBeenNthCalledWith(3, {
       knowledgeBaseId: "kb-docs",
       parentPath: "pages",
       cursor: null

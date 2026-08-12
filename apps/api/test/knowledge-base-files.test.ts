@@ -357,6 +357,47 @@ describe("Knowledge base file Admin API", () => {
     });
     expect(response.status).toBe(200);
   });
+
+  it("returns an explicit empty public URL state before first publication", async () => {
+    const fixture = createFixture();
+    fixture.adminRead.getKnowledgeBase = async (request) => request.knowledgeBaseId === "kb-001"
+      ? {
+          ok: true,
+          value: {
+            id: "kb-001",
+            name: "Empty docs",
+            description: null,
+            activeVersionId: null,
+            catalogVersion: 0,
+            createdAt: "2026-06-14T00:00:00.000Z",
+            updatedAt: "2026-06-14T00:00:00.000Z"
+          }
+        }
+      : { ok: false, code: "NOT_FOUND" };
+    const { app, cookie } = await authenticate(fixture);
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/public-urls",
+      { headers: { cookie } }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ publicUrls: null });
+  });
+
+  it("returns not found when the Admin read backend resolves no knowledge base", async () => {
+    const fixture = createFixture();
+    fixture.adminRead.getKnowledgeBase = async () => ({ ok: true, value: null });
+    const { app, cookie } = await authenticate(fixture);
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-missing/public-urls",
+      { headers: { cookie } }
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "NOT_FOUND" }
+    });
+  });
 });
 
 async function createAuthenticatedFileApp() {

@@ -15,6 +15,18 @@ describe("Developer OpenAPI generation schema", () => {
     }
   });
 
+  it("documents the request-size error for every operation with a request body", () => {
+    const document = createDeveloperOpenApiDocument();
+    const bodyOperations = Object.values(document.paths).flatMap((pathItem) =>
+      Object.values(pathItem).filter((operation) => readObject(operation).requestBody)
+    );
+
+    expect(bodyOperations.length).toBeGreaterThan(0);
+    for (const operation of bodyOperations) {
+      expect(readObject(readObject(operation).responses)).toHaveProperty("413");
+    }
+  });
+
   it("describes file and directory changes without internal resource-operation labels", () => {
     const document = createDeveloperOpenApiDocument();
     for (const [path, operationId] of [
@@ -59,6 +71,21 @@ describe("Developer OpenAPI generation schema", () => {
     expect(parentPath).toMatchObject({
       in: "query",
       schema: { default: "pages" }
+    });
+  });
+
+  it("documents the public generated-file path suffix accepted by the runtime", () => {
+    const document = createDeveloperOpenApiDocument();
+    const operation = readOperation(
+      document,
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/content",
+      "get"
+    );
+
+    expect(readObject(readParameter(operation, "path").schema)).toMatchObject({
+      type: "string",
+      pattern: "\\.(?:md|json)$",
+      example: "index.md"
     });
   });
 
@@ -136,7 +163,16 @@ describe("Developer OpenAPI generation schema", () => {
       .toMatchObject({
         anyOf: expect.arrayContaining([
           expect.objectContaining({
-            enum: expect.arrayContaining(["RERANKER_DISABLED"])
+            enum: expect.arrayContaining([
+              "RERANKER_DISABLED",
+              "RERANKER_ABORTED",
+              "RERANKER_AUTHENTICATION_FAILED",
+              "RERANKER_INVALID_RESPONSE",
+              "RERANKER_PROVIDER_UNAVAILABLE",
+              "RERANKER_RATE_LIMITED",
+              "RERANKER_RESPONSE_TOO_LARGE",
+              "RERANKER_TIMEOUT"
+            ])
           })
         ])
       });
@@ -181,6 +217,27 @@ describe("Developer OpenAPI generation schema", () => {
     expect(readObject(schemas.UpdateKnowledgeBaseRequest)).toMatchObject({
       minProperties: 1
     });
+    expect(readObject(readObject(schemas.MoveSourceFileRequest).properties).relativePath)
+      .toMatchObject({
+        maxLength: 2_048,
+        pattern: "^(?:[^/]{1,240}/)*[^/]{1,237}\\.md$"
+      });
+    expect(readObject(readObject(schemas.MoveSourceDirectoryRequest).properties).relativePath)
+      .toMatchObject({
+        maxLength: 2_048,
+        pattern: "^(?:[^/]{1,240}/)*[^/]{1,240}$"
+      });
+    expect(schemas).not.toHaveProperty("MoveSourceResourceRequest");
+    expect(readRequestSchemaRef(
+      document,
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}",
+      "patch"
+    )).toBe("#/components/schemas/MoveSourceFileRequest");
+    expect(readRequestSchemaRef(
+      document,
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories/{directoryId}",
+      "patch"
+    )).toBe("#/components/schemas/MoveSourceDirectoryRequest");
     expect(readObject(schemas.UploadSession).required).toEqual(expect.arrayContaining([
       "errorCode",
       "completedAt",
@@ -394,6 +451,16 @@ function readParameter(
 ): Record<string, unknown> {
   const parameters = Array.isArray(operation.parameters) ? operation.parameters : [];
   return readObject(parameters.find((parameter) => readObject(parameter).name === name));
+}
+
+function readRequestSchemaRef(
+  document: ReturnType<typeof createDeveloperOpenApiDocument>,
+  path: string,
+  method: string
+): unknown {
+  const requestBody = readObject(readOperation(document, path, method).requestBody);
+  const content = readObject(requestBody.content);
+  return readObject(readObject(content["application/json"]).schema).$ref;
 }
 
 function readResponseSchemaRef(

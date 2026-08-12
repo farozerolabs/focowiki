@@ -78,7 +78,8 @@ function sqlFixture() {
       return [{
         search_projection_public_id: "search-meilisearch-active",
         provider_kind: "meilisearch",
-        provider_index_uid: "focowiki_meilisearch_active"
+        provider_index_uid: "focowiki_meilisearch_active",
+        document_count: "9"
       }];
     }
     if (source.includes("SELECT public_id, knowledge_base_id, projection_role")) {

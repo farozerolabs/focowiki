@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { RuntimeConfig } from "../config.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
@@ -9,7 +10,13 @@ import {
   type PublicOpenApiKeyService
 } from "../public-openapi/keys.js";
 import type { StorageVnextOpenApiAuditApplication } from "../storage-vnext/api/openapi-audit-application.js";
-import { rateLimited, repositoryUnavailable, unauthorized, writeDeveloperOpenApiError } from "./errors.js";
+import {
+  payloadTooLarge,
+  rateLimited,
+  repositoryUnavailable,
+  unauthorized,
+  writeDeveloperOpenApiError
+} from "./errors.js";
 
 export type DeveloperOpenApiSecurityServices = {
   config: RuntimeConfig;
@@ -59,6 +66,17 @@ export function requireDeveloperOpenApiAuth(
 
     await next();
   };
+}
+
+export function createDeveloperOpenApiBodyLimit(
+  config: {
+    pagination: Pick<RuntimeConfig["pagination"], "generatedContentMaxBytes">;
+  }
+): MiddlewareHandler {
+  return bodyLimit({
+    maxSize: config.pagination.generatedContentMaxBytes,
+    onError: (context) => writeDeveloperOpenApiError(context, payloadTooLarge())
+  });
 }
 
 async function checkDeveloperOpenApiRateLimit(

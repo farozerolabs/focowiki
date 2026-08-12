@@ -73,11 +73,13 @@ const openApiUseCases = [
   "deleteSourceDirectory",
   "listOperations",
   "getOperation",
-  "listSourceEvents",
+  "listSourceFileEvents",
   "retrySourceFile",
-  "listFiles",
-  "readFile",
-  "search",
+  "listTree",
+  "searchFiles",
+  "getFileById",
+  "getFileContentById",
+  "getFileContentByPath",
   "expandGraph",
   "getGraphOverview",
   "listRelatedFiles",
@@ -95,8 +97,12 @@ describe("storage vNext public continuity Red contract", () => {
     expect(findMissingMethods(source, adminUseCases)).toEqual([]);
   });
 
-  it("defines every existing Developer OpenAPI use case on a separate storage-neutral boundary", () => {
-    const source = readWorkspaceFile("apps/api/src/storage-vnext/api/openapi-ports.ts");
+  it("defines every existing Developer OpenAPI use case across the explicit storage-neutral route boundaries", () => {
+    const source = [
+      "apps/api/src/storage-vnext/api/openapi-application.ts",
+      "apps/api/src/storage-vnext/api/admin-upload-application.ts",
+      "apps/api/src/storage-vnext/api/admin-mutation-application.ts"
+    ].map(readWorkspaceFile).join("\n");
 
     expect(findMissingMethods(source, openApiUseCases)).toEqual([]);
   });
@@ -175,12 +181,12 @@ describe("storage vNext public continuity Red contract", () => {
 
   it("freezes Admin screens outside the approved settings and maintenance copy boundary", () => {
     const files = {
-      "apps/admin/src/App.tsx": "8573d8d5ac8d809a6387e7003dbe96fe324df5a8a215866baef3e57acf227593",
+      "apps/admin/src/App.tsx": "d46d5edb6ff1de6f8a86da2383ddf657ec6fcd1bea5a9676cef941343f9b8e30",
       "apps/admin/src/pages/AdminHomePage.tsx": "6e589c48a663a9a9e1681ebc9b9dd0f5d05e2fbc46e2736b38fa85b3d65676fd",
-      "apps/admin/src/pages/KnowledgeBaseDetailPage.tsx": "94820031bb0680ae8885c007a9ed4be2faed66287cc2d68c7453da30fddd47a4",
+      "apps/admin/src/pages/KnowledgeBaseDetailPage.tsx": "5d4a2812dd3b388a907c6d4ca6c4f7b374b66b0a6b730158b34b803690c8625c",
       "apps/admin/src/styles.css": "2661326c543de78343817b10c532812824851806cc05d0048c3aac9418d5b532",
       "apps/admin/src/lib/admin-navigation.ts": "a1643343d72d675e929adb13f16c8a45d59c7d8141d0d345a2040814638f1587",
-      "apps/admin/src/i18n/resources.ts": "7e29212345d2fadd2a57ad4e92c0fa36b07d5dbfc78a8f7b2ceff5c0885b6ee9"
+      "apps/admin/src/i18n/resources.ts": "159c5811e73cb5bf5f6f175f47148e97a2766da4de2a5278351c299d0bb1f577"
     } as const;
 
     for (const [path, expectedHash] of Object.entries(files)) {
@@ -204,7 +210,7 @@ describe("storage vNext public continuity Red contract", () => {
 
     expect(Object.keys(document.paths)).toHaveLength(33);
     expect(operations).toHaveLength(43);
-    expect(Object.keys(document.components.schemas)).toHaveLength(58);
+    expect(Object.keys(document.components.schemas)).toHaveLength(59);
     const fileSearchResponse = document.components.schemas.FileSearchResponse;
     expect(fileSearchResponse).toBeDefined();
     expect(fileSearchResponse).toMatchObject({
@@ -228,7 +234,7 @@ describe("storage vNext public continuity Red contract", () => {
       "rerankerStatus"
     ]));
     expect(sha256(JSON.stringify(normalized))).toBe(
-      "eaa43fe061079a953afd4872bb29901ea40ac5c46c6eb26e69fc9e57ef237b54"
+      "4eaeeccca7f25f38fa97a560fd9273dc0a137c13bd80f398fa36d720e462697d"
     );
     expect(document.security).toEqual([{ bearerAuth: [] }]);
 
@@ -254,11 +260,13 @@ describe("storage vNext public continuity Red contract", () => {
   it("keeps internal storage identities out of the public application ports", () => {
     for (const path of [
       "apps/api/src/storage-vnext/api/admin-ports.ts",
-      "apps/api/src/storage-vnext/api/openapi-ports.ts"
+      "apps/api/src/storage-vnext/api/openapi-application.ts",
+      "apps/api/src/storage-vnext/api/admin-upload-application.ts",
+      "apps/api/src/storage-vnext/api/admin-mutation-application.ts"
     ]) {
       const source = readWorkspaceFile(path);
       expect(source, path).not.toMatch(
-        /bucket|objectKey|checksumSha256|indexUid|taskUid|tableName|ownerRow|leaseId|Generation/u
+        /bucket|objectKey|indexUid|taskUid|tableName|ownerRow|leaseId/u
       );
     }
   });

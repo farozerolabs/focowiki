@@ -30,6 +30,8 @@ import { createPostgresStorageVnextAuditRepository } from "./storage-vnext/audit
 import { createPostgresStorageVnextActiveSearchProjectionRepository } from "./storage-vnext/search/postgres-active-projection.js";
 import { createPostgresStorageVnextSearchHydration } from "./storage-vnext/search/postgres-hydration.js";
 import { createStorageVnextActiveSearch } from "./storage-vnext/search/active-search.js";
+import { createRedisStorageVnextSemanticPagination } from
+  "./storage-vnext/search/redis-semantic-pagination.js";
 import { createStorageVnextSearchSettings } from
   "./storage-vnext/search/settings.js";
 import { createPostgresStorageVnextAdminRead } from "./storage-vnext/api/postgres-admin-read.js";
@@ -100,6 +102,8 @@ import { classifySemanticAdoption } from
   "./semantic/application/adoption-policy.js";
 import { createPostgresSemanticStageRepository } from
   "./semantic/infrastructure/postgres-stage-repository.js";
+import { createStorageVnextMaintenanceCancellationCleanup } from
+  "./storage-vnext/maintenance/cancellation-cleanup.js";
 
 loadLocalEnvFile();
 
@@ -210,6 +214,12 @@ async function runApi(): Promise<void> {
     stages: createPostgresSemanticStageRepository(sql),
     catalog: storageVnextCatalog
   });
+  const maintenanceCancellationCleanup =
+    createStorageVnextMaintenanceCancellationCleanup({
+      semanticTerminal: semanticGenerations,
+      releases: storageVnextReleases,
+      resultRetentionMilliseconds: completedWorkRetentionMilliseconds
+    });
   const storageVnextSearch = config.search && searchProvider && lexicalSearch
     ? createStorageVnextSemanticSearch({
         semanticGenerations,
@@ -227,6 +237,12 @@ async function runApi(): Promise<void> {
         }),
         fallback: lexicalSearch,
         hydration: storageVnextSearchHydration,
+        ...(redis ? {
+          pagination: createRedisStorageVnextSemanticPagination({
+            redis,
+            ttlSeconds: config.pagination.cursorTtlSeconds
+          })
+        } : {}),
         providerKind: config.search.provider,
         vectorIndexPrefix: config.search.indexPrefix,
         maxPageSize: config.pagination.maxPageSize,
@@ -452,6 +468,7 @@ async function runApi(): Promise<void> {
     storageVnextMaintenanceStatus: storageVnextMaintenance,
     semanticAdoption,
     semanticCancellation,
+    maintenanceCancellationCleanup,
     storageVnextAdminUpload,
     ...(storageVnextAdminMutation ? { storageVnextAdminMutation } : {}),
     ...(storageVnextAdminCore ? { storageVnextAdminCore } : {}),

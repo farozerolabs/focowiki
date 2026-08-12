@@ -48,6 +48,14 @@ export type SemanticGenerationRepositoryPort = {
   getActiveProjection(
     knowledgeBaseId: string
   ): Promise<SemanticActiveProjectionRecord | null>;
+  cloneReusableFacts(input: {
+    knowledgeBaseId: string;
+    predecessorPublicId: string;
+    candidatePublicId: string;
+  }): Promise<{
+    sourceCount: number;
+    factCount: number;
+  }>;
   adoptQueryPolicy(input: {
     knowledgeBaseId: string;
     semanticGenerationPublicId: string;

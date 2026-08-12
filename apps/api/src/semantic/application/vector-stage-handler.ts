@@ -129,7 +129,6 @@ export function createSemanticVectorStageHandler(input: {
       knowledgeBaseId: claim.knowledgeBaseId,
       semanticGenerationPublicId: claim.semanticGenerationPublicId,
       sourceFilePublicId: claim.sourceFilePublicId,
-      sourceRevisionPublicId: claim.sourceRevisionPublicId,
       limit: 10_000
     });
     const deletes = existing.filter((item) => !desiredIds.has(item.publicId));

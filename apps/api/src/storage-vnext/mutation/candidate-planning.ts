@@ -34,6 +34,7 @@ export function planStorageVnextMutationCandidate(input: {
   targetKind: "knowledge_base" | "source_file" | "source_directory";
   targetPublicId: string;
   candidateRevisionPublicId?: string;
+  directoryPublicIds?: readonly string[];
   sourceFilePublicIds: readonly string[];
   sourceLogicalPaths: readonly string[];
   previousSourceLogicalPaths: readonly string[];
@@ -144,6 +145,7 @@ export function createStorageVnextMutationReleaseHandoff(releases: ReleasePort) 
 function deriveChangedFacts(input: {
   targetKind: "knowledge_base" | "source_file" | "source_directory";
   targetPublicId: string;
+  directoryPublicIds?: readonly string[];
   sourceFilePublicIds: readonly string[];
   candidateRevisionPublicId?: string;
 }): StorageVnextCandidateChangedFact[] {
@@ -151,7 +153,12 @@ function deriveChangedFacts(input: {
   if (input.targetKind === "knowledge_base") {
     facts.push({ kind: "knowledge_base", publicId: input.targetPublicId, change: "updated" });
   } else if (input.targetKind === "source_directory") {
-    facts.push({ kind: "directory", publicId: input.targetPublicId, change: "updated" });
+    const directoryPublicIds = input.directoryPublicIds?.length
+      ? input.directoryPublicIds
+      : [input.targetPublicId];
+    for (const directoryPublicId of stableUnique(directoryPublicIds)) {
+      facts.push({ kind: "directory", publicId: directoryPublicId, change: "updated" });
+    }
   }
   for (const sourceFilePublicId of stableUnique(input.sourceFilePublicIds)) {
     facts.push({ kind: "source_file", publicId: sourceFilePublicId, change: "updated" });

@@ -126,6 +126,13 @@ describe("storage vNext deletion lifecycle contract", () => {
       operationPublicId: "operation-delete-contract"
     });
     await expect(coordinator.acceptDeletion(deletionRequest({
+      operationPublicId: "operation-delete-settings-replay",
+      settingsRevisionPublicId: "settings-delete-contract-next"
+    }))).resolves.toMatchObject({
+      outcome: "replayed",
+      operationPublicId: "operation-delete-contract"
+    });
+    await expect(coordinator.acceptDeletion(deletionRequest({
       targetPublicId: "file-delete-sibling"
     }))).rejects.toMatchObject({ code: "idempotency_conflict" });
     expect(fixture.deletionOperations).toHaveLength(1);

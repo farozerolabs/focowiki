@@ -5,6 +5,7 @@ import type {
   SourceResourceFileFilters,
   SourceResourceFileRecord
 } from "../../domain/source-resource.js";
+import { SourceResourceError } from "../../domain/source-resource.js";
 import type { SourceFileFailureStage } from
   "../../domain/source-file-lifecycle.js";
 
@@ -501,7 +502,7 @@ function decodeCursor(cursor: string | null, scope: string): ResourceCursor | nu
     ) throw new Error("invalid");
     return value as ResourceCursor;
   } catch {
-    throw new Error("Invalid storage vNext resource cursor");
+    throw new SourceResourceError("INVALID_PAGINATION");
   }
 }
 

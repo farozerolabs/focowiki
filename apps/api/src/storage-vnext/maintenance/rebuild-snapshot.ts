@@ -6,7 +6,9 @@ export function createStorageVnextMaintenanceRebuildSnapshot(
   snapshot: StorageVnextPublicationSnapshotPort
 ): StorageVnextPublicationSnapshotPort {
   return {
-    readBaseNavigationProfile: snapshot.readBaseNavigationProfile.bind(snapshot),
+    async readBaseNavigationProfile() {
+      return 0;
+    },
     readKnowledgeBaseCounts: snapshot.readKnowledgeBaseCounts.bind(snapshot),
     readDirectoryDescendantFileCounts:
       snapshot.readDirectoryDescendantFileCounts.bind(snapshot),

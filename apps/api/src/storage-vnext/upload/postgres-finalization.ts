@@ -298,6 +298,11 @@ async function insertAcceptedEntries(
       "source_revision_public_id"
     )}
   `;
+  await transaction`
+    UPDATE focowiki.object_registrations
+    SET zero_owner_since = NULL
+    WHERE object_id = ANY(${[...new Set(accepted.map((item) => item.sourceOwner.object_id))]})
+  `;
 }
 
 async function ensureDirectories(

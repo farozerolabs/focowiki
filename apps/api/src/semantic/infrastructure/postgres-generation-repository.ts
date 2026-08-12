@@ -5,6 +5,8 @@ import type {
   SemanticGenerationRecord,
   SemanticGenerationRepositoryPort
 } from "../application/ports.js";
+import { cloneSemanticGenerationFacts } from
+  "./postgres-generation-fact-cloner.js";
 
 type GenerationRow = {
   public_id: string;
@@ -38,6 +40,7 @@ type ActiveProjectionRow = GenerationRow & {
 export type SemanticGenerationRepositoryErrorCode =
   | "candidate_conflict"
   | "candidate_missing"
+  | "fact_clone_conflict"
   | "invalid_input"
   | "knowledge_base_missing"
   | "predecessor_conflict"
@@ -160,6 +163,54 @@ export function createPostgresSemanticGenerationRepository(
         LIMIT 1
       `;
       return rows[0] ? mapActiveProjection(rows[0]) : null;
+    },
+
+    async cloneReusableFacts(input) {
+      assertIdentity(input.knowledgeBaseId);
+      assertIdentity(input.predecessorPublicId);
+      assertIdentity(input.candidatePublicId);
+      if (input.predecessorPublicId === input.candidatePublicId) {
+        throw repositoryError("fact_clone_conflict");
+      }
+      return sql.begin(async (transaction) => {
+        await lockKnowledgeBase(transaction, input.knowledgeBaseId);
+        const compatible = await transaction<Array<{
+          candidate_public_id: string;
+        }>>`
+          SELECT candidate.public_id AS candidate_public_id
+          FROM focowiki.semantic_generations candidate
+          JOIN focowiki.semantic_generations predecessor
+            ON predecessor.knowledge_base_id = candidate.knowledge_base_id
+           AND predecessor.public_id = ${input.predecessorPublicId}
+           AND predecessor.generation_role = 'active'
+           AND predecessor.state = 'active'
+           AND predecessor.deleted_at IS NULL
+          WHERE candidate.knowledge_base_id = ${input.knowledgeBaseId}
+            AND candidate.public_id = ${input.candidatePublicId}
+            AND candidate.expected_predecessor_public_id
+              = predecessor.public_id
+            AND candidate.generation_role = 'candidate'
+            AND candidate.state = 'building'
+            AND candidate.deleted_at IS NULL
+            AND candidate.generation_model_configuration_public_id
+              = predecessor.generation_model_configuration_public_id
+            AND candidate.generation_model_configuration_revision
+              = predecessor.generation_model_configuration_revision
+            AND candidate.extraction_contract_version
+              = predecessor.extraction_contract_version
+            AND candidate.graph_schema_version = predecessor.graph_schema_version
+            AND candidate.prompt_contract_version
+              = predecessor.prompt_contract_version
+          FOR UPDATE OF candidate, predecessor
+        `;
+        if (!compatible[0]) throw repositoryError("fact_clone_conflict");
+        const result = await cloneSemanticGenerationFacts(transaction, input);
+        if (!result.complete) throw repositoryError("fact_clone_conflict");
+        return {
+          sourceCount: result.sourceCount,
+          factCount: result.factCount
+        };
+      }).catch(mapDatabaseError);
     },
 
     async adoptQueryPolicy(input) {

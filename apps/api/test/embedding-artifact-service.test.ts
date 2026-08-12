@@ -37,6 +37,31 @@ describe("embedding artifact service", () => {
     }));
   });
 
+  it("reclaims a compatible orphaned artifact without regenerating its vector", async () => {
+    const encoded = encodeVectorArtifact({
+      vector: [0.6, 0.8, 0], normalization: "l2"
+    });
+    const record = { ...artifactRecord(encoded), state: "orphaned" as const };
+    const attachReference = vi.fn(async () => undefined);
+    const repository = repositoryStub({
+      findCompatible: async () => record,
+      attachReference
+    });
+    const gateway = { embed: vi.fn() };
+    const service = createEmbeddingArtifactService({
+      gateway,
+      repository,
+      store: storeStub(encoded.bytes)
+    });
+
+    await expect(service.resolve(resolveRequest())).resolves.toMatchObject({
+      reused: true,
+      artifact: { publicId: record.publicId }
+    });
+    expect(gateway.embed).not.toHaveBeenCalled();
+    expect(attachReference).toHaveBeenCalledOnce();
+  });
+
   it("writes, verifies, owns, and references a new artifact in order", async () => {
     const events: string[] = [];
     const repository = repositoryStub({

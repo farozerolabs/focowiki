@@ -79,7 +79,10 @@ function searchRequest(
   return {
     indexUid: input.indexUid,
     query: validationCase.query,
-    evidenceFamilies: evidenceFamilies(validationCase.kind),
+    evidenceFamilies: evidenceFamilies(
+      validationCase.kind,
+      validationCase.query
+    ),
     filters: {
       kind: "and" as const,
       operands
@@ -139,17 +142,30 @@ function candidateIdentities(hits: Awaited<ReturnType<
   return [...unique.values()];
 }
 
+type ValidationEvidenceFamily =
+  | "exact" | "text" | "phrase" | "typo" | "jieba" | "graph";
+
 function evidenceFamilies(
-  kind: StorageVnextSearchValidationKind
-): readonly ("exact" | "text" | "phrase" | "typo" | "jieba" | "graph")[] {
+  kind: StorageVnextSearchValidationKind,
+  query: string
+): readonly ValidationEvidenceFamily[] {
   if (kind.startsWith("okf_")) return ["exact", "text"];
   if (kind === "exact" || kind === "title" || kind === "path") return ["exact"];
-  if (kind === "ranking") return ["exact", "text"];
-  if (kind === "phrase") return ["phrase", "text"];
-  if (kind === "typo") return ["typo", "text"];
-  if (kind === "chinese" || kind === "mixed_script") return ["jieba", "text"];
-  if (kind === "graph_seed") return ["graph", "text"];
-  return ["text"];
+  const families: readonly ValidationEvidenceFamily[] = kind === "ranking"
+    ? ["exact", "text"]
+    : kind === "phrase"
+      ? ["phrase", "text"]
+      : kind === "typo"
+        ? ["typo", "text"]
+        : kind === "chinese" || kind === "mixed_script"
+          ? ["jieba", "text"]
+          : kind === "graph_seed"
+            ? ["graph", "text"]
+            : ["text"];
+  if (/\p{Script=Han}/u.test(query) && !families.includes("jieba")) {
+    return ["jieba", ...families];
+  }
+  return families;
 }
 
 async function hydrateCandidates(

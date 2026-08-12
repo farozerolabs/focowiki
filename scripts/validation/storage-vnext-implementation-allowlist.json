@@ -28,7 +28,8 @@
   ],
   "allowedPackageScripts": {
     "compose:backup": "node scripts/deployment/storage-vnext-backup.mjs",
-    "compose:restore": "node scripts/deployment/storage-vnext-restore.mjs"
+    "compose:restore": "node scripts/deployment/storage-vnext-restore.mjs",
+    "test:validation": "pnpm docs:generate-api && node --test scripts/validation/test/*.test.mjs"
   },
   "deniedPrefixes": [
     ".github/",
@@ -56,7 +57,7 @@
   ],
   "settingsFieldFiles": {
     "apps/admin/src/components/settings-panel.tsx": {
-      "approvedPatchSha256": "3303db2c5b9b381957b109007687d202e6c92029a339fe26232bfab3fec45d4f",
+      "approvedPatchSha256": "80481b197ec36afd7349d77739a6ffb21b7bf07c6c97ea915d8d645b9ec5e115",
       "allowedSymbols": [
         "workerNumberFields",
         "workerBooleanFields",
@@ -79,7 +80,7 @@
       ]
     },
     "apps/admin/src/lib/admin-api.ts": {
-      "approvedPatchSha256": "c2dd396e72b28cb137b4cd1b32b6b669d825198a5e657d29cad4c49a5556688f",
+      "approvedPatchSha256": "2706a2a7effc11af4268b580a603adb8fa8604a79ae176c366e3120c8c85ebc0",
       "allowedSymbols": [
         "WorkerSettings",
         "PublicationSettings",
@@ -999,6 +1000,97 @@
       "approvalReference": "OpenSpec add-general-purpose-graphrag-search task 22.7 approved by the user",
       "reason": "Verify the documentation explorer renders the approved natural-language and reranker request fields",
       "preservedContract": "The test validates documented public fields without exposing internal graph or provider details"
+    },
+    {
+      "path": "apps/admin/src/App.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Apply the smallest owning fix for reproduced Admin lifecycle refresh and action-state defects",
+      "preservedContract": "The existing Admin information architecture, routes, styling, copy, and backend contracts remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/components/app-sidebar.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Apply the smallest owning fix for reproduced Admin navigation state defects",
+      "preservedContract": "The existing sidebar structure, styling, labels, and routes remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/components/source-file-filter-controls.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Apply the smallest owning fix for reproduced source-file filter behavior",
+      "preservedContract": "The existing filter layout, styling, labels, and backend field contract remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/components/task-progress-panel.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Apply the smallest owning fix for reproduced task progress and action-state defects",
+      "preservedContract": "The existing task panel structure, styling, copy, and lifecycle contract remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/components/upload-source-dialog.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Apply the smallest owning fix for reproduced upload control state behavior",
+      "preservedContract": "The existing upload dialog structure, styling, copy, and upload API contract remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/hooks/use-file-tree-search.ts",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Refresh active tree-search results after a verified resource mutation",
+      "preservedContract": "The existing search query, pagination, result, and UI presentation contracts remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/lib/index-maintenance-presentation.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Centralize the existing localized maintenance stage and failure presentation after reproduced state defects",
+      "preservedContract": "The existing i18n copy, visual presentation, maintenance actions, and backend contract remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/lib/resource-editing-api.ts",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Wire the existing revision-guarded source deletion contract after reproduced UI action failure",
+      "preservedContract": "The released resource identifiers, revision precondition, operation response, and safe error behavior remain unchanged"
+    },
+    {
+      "path": "apps/admin/src/pages/KnowledgeBaseDetailPage.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Apply the smallest owning fix for reproduced knowledge-base detail refresh and action behavior",
+      "preservedContract": "The existing page structure, styling, copy, tree, content, and API contracts remain unchanged"
+    },
+    {
+      "path": "apps/admin/test/app-home.test.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Protect the reproduced Admin lifecycle and navigation defects with focused regression coverage",
+      "preservedContract": "The tests verify current UI and API behavior without changing production presentation"
+    },
+    {
+      "path": "apps/admin/test/app-upload.test.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Protect the reproduced upload control-state defect with focused regression coverage",
+      "preservedContract": "The tests verify the current upload workflow without changing production presentation"
+    },
+    {
+      "path": "apps/admin/test/source-file-filter-controls.test.tsx",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Protect the reproduced source-file filter defect with focused regression coverage",
+      "preservedContract": "The tests verify current filter fields and callbacks without changing production presentation"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/route-helpers.ts",
+      "taskId": "23.2",
+      "approvalReference": "OpenSpec validate-comprehensive-large-scale-release task 23.2 approved by the user",
+      "reason": "Apply the smallest owning fix for reproduced non-JSON request-body validation drift",
+      "preservedContract": "The documented application/json request contract, validation envelope, routes, schemas, and successful responses remain unchanged"
     }
   ]
 }

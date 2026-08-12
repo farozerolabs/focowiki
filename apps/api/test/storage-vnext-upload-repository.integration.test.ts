@@ -115,6 +115,7 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       object_registrations: "1",
       source_owners: "2",
       live_owners: "0",
+      owned_with_zero_owner_since: "0",
       search_projections: "0"
     });
     const terminalResults = await sql<Array<{ result_summary: unknown }>>`
@@ -245,11 +246,12 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
     await sql`
       INSERT INTO focowiki.object_registrations (
         object_id, storage_key, checksum_sha256, byte_count, content_type,
-        object_format, state, write_attempt_public_id, verified_at
+        object_format, state, write_attempt_public_id, verified_at,
+        zero_owner_since
       ) VALUES (
         ${objectId}, 'run-owned/source/large-finalization.md', ${checksum}, 1,
         'text/markdown; charset=utf-8', 'source-markdown-v1', 'verified',
-        'write-large-finalization', now()
+        'write-large-finalization', now(), now()
       )
     `;
     await sql.begin(async (transaction) => {
@@ -319,7 +321,8 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       source_revisions: String(entryCount),
       current_revisions: String(entryCount),
       source_work: String(entryCount),
-      source_owners: String(entryCount)
+      source_owners: String(entryCount),
+      owned_with_zero_owner_since: "0"
     });
   }, 120_000);
 
@@ -759,6 +762,12 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
         (SELECT count(*) FROM focowiki.object_owners
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND owner_kind = 'live_reservation') AS live_owners,
+        (SELECT count(DISTINCT registration.object_id)
+         FROM focowiki.object_registrations registration
+         JOIN focowiki.object_owners owner ON owner.object_id = registration.object_id
+         WHERE owner.knowledge_base_id = ${knowledgeBaseId}
+           AND registration.zero_owner_since IS NOT NULL)
+          AS owned_with_zero_owner_since,
         (SELECT count(*) FROM focowiki.search_projections
          WHERE knowledge_base_id = ${knowledgeBaseId}) AS search_projections,
         (SELECT count(*) FROM focowiki.cleanup_actions
@@ -797,11 +806,13 @@ function createDatabaseBackedBodyWriter(sql: postgres.Sql) {
       const inserted = await sql<Array<{ object_id: string }>>`
         INSERT INTO focowiki.object_registrations (
           object_id, storage_key, checksum_sha256, byte_count, content_type,
-          object_format, state, write_attempt_public_id, verified_at, created_at
+          object_format, state, write_attempt_public_id, verified_at,
+          zero_owner_since, created_at
         ) VALUES (
           ${objectId}, ${`run-owned/source/${input.checksumSha256}.md`},
           ${input.checksumSha256}, ${input.byteCount}, ${input.contentType},
-          'source-markdown-v1', 'verified', ${input.writeAttemptPublicId}, now(), now()
+          'source-markdown-v1', 'verified', ${input.writeAttemptPublicId}, now(),
+          now(), now()
         )
         ON CONFLICT (object_id) DO NOTHING
         RETURNING object_id

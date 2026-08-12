@@ -192,11 +192,19 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
       id: created.id,
       status: "paused"
     });
-    expect(paused).toMatchObject({ status: "paused", isActive: false });
+    expect(paused).toMatchObject({
+      status: "paused",
+      isActive: false,
+      configurationRevision: created.configurationRevision
+    });
     expect(await repository.getActiveModel()).toBeNull();
 
     const activated = await repository.setActiveModel(created.id);
-    expect(activated).toMatchObject({ status: "active", isActive: true });
+    expect(activated).toMatchObject({
+      status: "active",
+      isActive: true,
+      configurationRevision: created.configurationRevision
+    });
 
     await sql`
       INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
@@ -223,6 +231,21 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
     expect(deleted?.deletedAt).not.toBeNull();
     expect(await repository.getModel(created.id)).toBeNull();
     expect(await repository.listModels()).toEqual([]);
+    const persistedDeletion = await sql<Array<{
+      status: string;
+      enabled: boolean;
+      row_count: number | string;
+    }>>`
+      SELECT config ->> 'status' AS status, enabled,
+             count(*) OVER () AS row_count
+      FROM focowiki.model_configs
+      WHERE public_id = ${created.id}
+    `;
+    expect(persistedDeletion).toEqual([expect.objectContaining({
+      status: "deleted",
+      enabled: false,
+      row_count: "1"
+    })]);
   });
 
   it("does not rewrite a pinned model revision when another model becomes active", async () => {

@@ -36,6 +36,7 @@ describe("storage vNext maintenance worker production contract", () => {
       "createStorageVnextMaintenanceCoordinator",
       "createStorageVnextMaintenanceProductionPlanner",
       "createStorageVnextMaintenanceProductionPhases",
+      "createPostgresSemanticPublicationReadinessHooks",
       "createStorageVnextProductionPublicationPipeline",
       "createStorageVnextMaintenanceObjectReconciliation",
       "createStorageVnextMaintenanceCandidateObjectCleanup",

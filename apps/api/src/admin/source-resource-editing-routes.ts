@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import type { RuntimeConfig } from "../config.js";
+import { SourcePathValidationError } from "../domain/source-path.js";
 import { SourceResourceError, type ResourceOperationRecord } from "../domain/source-resource.js";
 import { readPageLimit } from "./pagination.js";
 import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
@@ -25,10 +26,12 @@ export function registerAdminSourceResourceEditingRoutes(
     async (context) => {
       if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
-      const name = body.name === undefined ? undefined : readName(body.name);
-      const description = readDescription(body.description);
-      if (name === undefined && description === undefined) return invalid(context, "errors.invalidKnowledgeBase");
       try {
+        const name = body.name === undefined ? undefined : readName(body.name);
+        const description = readDescription(body.description);
+        if (name === undefined && description === undefined) {
+          return invalid(context, "errors.invalidKnowledgeBase");
+        }
         const result = await services.application.updateKnowledgeBase({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           expectedResourceRevision: readRevision(context.req.header("if-match")),
@@ -53,14 +56,18 @@ export function registerAdminSourceResourceEditingRoutes(
     async (context) => {
       if (!services.application.available()) return unavailable(context);
       const limit = readPageLimit(context.req.query("limit"), services.config);
-      if (!limit) return invalid(context, "errors.invalidPagination");
-      const page = await services.application.listDirectories({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        parentDirectoryId: readNullableId(context.req.query("parentDirectoryId")),
-        limit,
-        cursor: context.req.query("cursor") ?? null
-      });
-      return context.json({ items: page.items.map(directoryResponse), nextCursor: page.nextCursor });
+      if (!limit) return invalidPagination(context);
+      try {
+        const page = await services.application.listDirectories({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          parentDirectoryId: readNullableId(context.req.query("parentDirectoryId")),
+          limit,
+          cursor: context.req.query("cursor") ?? null
+        });
+        return context.json({ items: page.items.map(directoryResponse), nextCursor: page.nextCursor });
+      } catch (error) {
+        return mutationError(context, error);
+      }
     }
   );
 
@@ -201,24 +208,58 @@ export function registerAdminSourceResourceEditingRoutes(
     }
   );
 
+  app.delete(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
+      if (!services.application.available()) return unavailable(context);
+      try {
+        const sourceFileId = context.req.param("sourceFileId");
+        const result = await services.application.deleteSourceFile({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          sourceFileId,
+          idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
+          expectedResourceRevision: readRevision(context.req.header("if-match"))
+        });
+        await audit(context, services, "source_file_delete_accepted");
+        return context.json({
+          operation: operationResponse(result.operation),
+          deletion: { sourceFileId }
+        }, 202);
+      } catch (error) {
+        return mutationError(context, error);
+      }
+    }
+  );
+
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/operations",
     middlewares.requireAuth,
     async (context) => {
       if (!services.application.available()) return unavailable(context);
       const limit = readPageLimit(context.req.query("limit"), services.config);
-      if (!limit) return invalid(context, "errors.invalidPagination");
-      const state = readOperationState(context.req.query("state"));
+      if (!limit) return invalidPagination(context);
+      let state: ResourceOperationRecord["state"] | undefined;
+      try {
+        state = readOperationState(context.req.query("state"));
+      } catch (error) {
+        return mutationError(context, error);
+      }
       const activeStates: ResourceOperationRecord["state"][] = [
         "accepted", "validating", "processing", "publishing"
       ];
-      const page = await services.application.listOperations({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        states: state ? [state] : activeStates,
-        limit,
-        cursor: context.req.query("cursor") ?? null
-      });
-      return context.json({ items: page.items.map(operationResponse), nextCursor: page.nextCursor });
+      try {
+        const page = await services.application.listOperations({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          states: state ? [state] : activeStates,
+          limit,
+          cursor: context.req.query("cursor") ?? null
+        });
+        return context.json({ items: page.items.map(operationResponse), nextCursor: page.nextCursor });
+      } catch (error) {
+        return mutationError(context, error);
+      }
     }
   );
 
@@ -340,9 +381,13 @@ function readOperationState(value: string | undefined): ResourceOperationRecord[
 }
 
 function mutationError(context: Parameters<MiddlewareHandler>[0], error: unknown): Response {
+  if (error instanceof SourcePathValidationError) {
+    return invalid(context, "errors.invalidResourceMutation");
+  }
   if (!(error instanceof SourceResourceError)) {
     return context.json({ error: { code: "INTERNAL_ERROR", messageKey: "errors.editFailed" } }, 500);
   }
+  if (error.code === "INVALID_PAGINATION") return invalidPagination(context);
   if (error.code === "RESOURCE_NOT_FOUND") return notFound(context);
   if (error.code === "INVALID_RESOURCE_MUTATION") return invalid(context, "errors.invalidResourceMutation");
   return conflict(context, error.code);
@@ -361,6 +406,10 @@ function conflict(context: Parameters<MiddlewareHandler>[0], code: string): Resp
 
 function invalid(context: Parameters<MiddlewareHandler>[0], messageKey: string): Response {
   return context.json({ error: { code: "VALIDATION_ERROR", messageKey } }, 422);
+}
+
+function invalidPagination(context: Parameters<MiddlewareHandler>[0]): Response {
+  return context.json({ error: { code: "INVALID_PAGINATION" } }, 400);
 }
 
 function notFound(context: Parameters<MiddlewareHandler>[0]): Response {

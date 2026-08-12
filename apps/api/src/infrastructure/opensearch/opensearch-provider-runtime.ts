@@ -220,6 +220,62 @@ export function createOpenSearchProviderRuntime(input: {
         return null;
       }
     },
+    maintenance: {
+      async listOwnedIndexes(request) {
+        assertIndexUid(request.indexUidPrefix);
+        if (
+          !Number.isSafeInteger(request.limit)
+          || request.limit < 1
+          || request.limit > MAXIMUM_SCAN_PAGE_SIZE
+        ) throw requestError();
+        const offset = decodeIndexListContinuation(
+          request.continuation,
+          request.indexUidPrefix
+        );
+        let response: Awaited<ReturnType<OpenSearchClientPort["indices"]["getSettings"]>>;
+        try {
+          response = await input.client.indices.getSettings({
+            index: `${request.indexUidPrefix}*`,
+            allow_no_indices: true,
+            expand_wildcards: "open,hidden",
+            filter_path: "*.settings.index.creation_date"
+          });
+        } catch (error) {
+          if (openSearchStatusCode(error) === 404) {
+            return {
+              indexes: [],
+              restartContinuation: encodeIndexListContinuation(
+                request.indexUidPrefix,
+                0
+              ),
+              continuation: null
+            };
+          }
+          throw normalizeOpenSearchError(error);
+        }
+        const body = objectValue(response.body);
+        if (!body) throw requestError();
+        const owned = Object.entries(body)
+          .filter(([indexUid]) => indexUid.startsWith(request.indexUidPrefix))
+          .map(([indexUid, value]) => ({
+            indexUid,
+            updatedAt: readIndexCreationTimestamp(value)
+          }))
+          .sort((left, right) => left.indexUid.localeCompare(right.indexUid, "en"));
+        const indexes = owned.slice(offset, offset + request.limit);
+        const nextOffset = offset + indexes.length;
+        return {
+          indexes,
+          restartContinuation: encodeIndexListContinuation(
+            request.indexUidPrefix,
+            0
+          ),
+          continuation: nextOffset < owned.length
+            ? encodeIndexListContinuation(request.indexUidPrefix, nextOffset)
+            : null
+        };
+      }
+    },
     vector: createValidatedSearchProviderVectorPort(createOpenSearchVectorPort({
       client: input.client,
       maximumBulkBytes: input.bulkLimits.maximumBytes
@@ -298,6 +354,53 @@ function decodeContinuation(value: string | null, indexUid: string): string | nu
     if (error instanceof SearchProviderError) throw error;
     throw requestError();
   }
+}
+
+function encodeIndexListContinuation(indexUidPrefix: string, offset: number): string {
+  return Buffer.from(JSON.stringify({
+    v: CONTINUATION_VERSION,
+    provider: "opensearch",
+    indexUidPrefix,
+    offset
+  }), "utf8").toString("base64url");
+}
+
+function decodeIndexListContinuation(
+  value: string | null,
+  indexUidPrefix: string
+): number {
+  if (value === null) return 0;
+  if (!value || value.length > 4_096) throw requestError();
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const record = objectValue(decoded);
+    if (
+      record?.v !== CONTINUATION_VERSION
+      || record.provider !== "opensearch"
+      || record.indexUidPrefix !== indexUidPrefix
+      || !Number.isSafeInteger(record.offset)
+      || Number(record.offset) < 0
+      || Object.keys(record).length !== 4
+    ) throw requestError();
+    return Number(record.offset);
+  } catch (error) {
+    if (error instanceof SearchProviderError) throw error;
+    throw requestError();
+  }
+}
+
+function readIndexCreationTimestamp(value: unknown): string {
+  const settings = objectValue(objectValue(value)?.settings);
+  const index = objectValue(settings?.index);
+  const creationDate = index?.creation_date;
+  if (typeof creationDate !== "string" || !/^\d+$/u.test(creationDate)) {
+    throw requestError();
+  }
+  const milliseconds = Number(creationDate);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) throw requestError();
+  const timestamp = new Date(milliseconds);
+  if (!Number.isFinite(timestamp.getTime())) throw requestError();
+  return timestamp.toISOString();
 }
 
 function idsQuery(ids: readonly string[]) {

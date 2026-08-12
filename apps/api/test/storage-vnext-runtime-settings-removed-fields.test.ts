@@ -111,7 +111,7 @@ describe("storage vNext removed runtime-setting fields", () => {
       "../../admin/src/i18n/resources.ts"
     ));
     expect(createHash("sha256").update(resources).digest("hex")).toBe(
-      "7e29212345d2fadd2a57ad4e92c0fa36b07d5dbfc78a8f7b2ceff5c0885b6ee9"
+      "159c5811e73cb5bf5f6f175f47148e97a2766da4de2a5278351c299d0bb1f577"
     );
   });
 
@@ -198,12 +198,12 @@ describe("storage vNext removed runtime-setting fields", () => {
     expect.soft(
       sha256(sharedComponentSequence.join("\n")),
       "shared component hierarchy"
-    ).toBe("a9cb91cf86e66afcdaab867952bfc163b5ceba3bdab604c40659006c9922135a");
+    ).toBe("6b06819fc11baaf42b533bb67a27e73ff22a3b9b0261226d14a3b215aed4db06");
     expect.soft(sha256(classNames.join("\n")), "CSS and style tokens").toBe(
       "83a5400f03551be94aee98dbd8addc7c9c0a85281fdccd97e734de6bed159992"
     );
     expect.soft(sha256(iconSequence.join("\n")), "icon sequence").toBe(
-      "47365cb1a6777969c7144343ae4a62596f3db570f9b97fc652ffb8f275625707"
+      "c109f489f6fd1992a6fe73f10f3bb271c6fd14195fccdb53f4e250233b71542f"
     );
     expect([...source.matchAll(/<Dialog(?:\s|>)/g)]).toHaveLength(1);
     expect([...source.matchAll(/<AlertDialog(?:\s|>)/g)]).toHaveLength(1);

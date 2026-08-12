@@ -1,9 +1,11 @@
 export const FAULT_COMPONENTS = Object.freeze([
   "api",
   "worker",
+  "postgres",
   "redis",
   "s3",
   "meilisearch",
+  "opensearch",
   "model"
 ]);
 
@@ -54,6 +56,12 @@ export const LIVE_FAULT_INJECTION_CASES = Object.freeze([
     "meilisearch",
     "refusal",
     "pre_activation"
+  ),
+  liveFaultCase(
+    "live-opensearch-refusal-pre-activation",
+    "opensearch",
+    "refusal",
+    "pre_activation"
   )
 ]);
 
@@ -93,6 +101,24 @@ export const FAULT_INJECTION_CASES = Object.freeze([
     "api-repository",
     "apps/api/test/storage-vnext-workflow-audit-repository.integration.test.ts",
     "recovers one expired lease across worker and API restart without losing progress"
+  ),
+  faultCase(
+    "postgres-refusal-post-write",
+    "postgres",
+    "refusal",
+    "post_write",
+    "api-contract",
+    "apps/api/test/storage-vnext-source-role-runtime.test.ts",
+    "waits abortably after an idle claim and does not hide processing failures"
+  ),
+  faultCase(
+    "postgres-database-conflict-post-write",
+    "postgres",
+    "database_conflict",
+    "post_write",
+    "api-contract",
+    "apps/api/test/storage-vnext-failed-write-compensation.test.ts",
+    "compensates a database failure after provider verification"
   ),
   faultCase(
     "redis-refusal-pre-write",
@@ -147,6 +173,15 @@ export const FAULT_INJECTION_CASES = Object.freeze([
     "api-repository",
     "apps/api/test/storage-vnext-object-ownership.integration.test.ts",
     "recovers only unowned stale reservations after process termination"
+  ),
+  faultCase(
+    "s3-multipart-failure-post-write",
+    "s3",
+    "task_failure",
+    "post_write",
+    "api-contract",
+    "apps/api/test/storage-vnext-failed-write-compensation.test.ts",
+    "aborts multipart state, deletes provider bytes, and closes reserved or verified rows"
   ),
   faultCase(
     "model-timeout-pre-write",
@@ -275,6 +310,69 @@ export const FAULT_INJECTION_CASES = Object.freeze([
     "recovers the accepted task by durable correlation after a crash window"
   ),
   faultCase(
+    "meilisearch-query-failure-post-activation",
+    "meilisearch",
+    "refusal",
+    "post_activation",
+    "api-contract",
+    "apps/api/test/meilisearch-transport.test.ts",
+    "maps a missing active search index to retryable unavailability"
+  ),
+  faultCase(
+    "opensearch-refusal-pre-activation",
+    "opensearch",
+    "refusal",
+    "pre_activation",
+    "api-contract",
+    "apps/api/test/opensearch-client.test.ts",
+    "classifies readiness request failures safely"
+  ),
+  faultCase(
+    "opensearch-malformed-pre-activation",
+    "opensearch",
+    "malformed_response",
+    "pre_activation",
+    "api-contract",
+    "apps/api/test/opensearch-provider-runtime.test.ts",
+    "rejects malformed provider responses without exposing their bodies"
+  ),
+  faultCase(
+    "opensearch-task-failure-pre-activation",
+    "opensearch",
+    "task_failure",
+    "pre_activation",
+    "api-contract",
+    "apps/api/test/opensearch-bulk-writer.test.ts",
+    "fails terminal mapping and authentication item errors safely"
+  ),
+  faultCase(
+    "opensearch-timeout-pre-activation",
+    "opensearch",
+    "timeout",
+    "pre_activation",
+    "api-contract",
+    "apps/api/test/opensearch-bulk-writer.test.ts",
+    "stops retrying when the total deadline is exhausted"
+  ),
+  faultCase(
+    "opensearch-restart-pre-activation",
+    "opensearch",
+    "process_restart",
+    "pre_activation",
+    "api-contract",
+    "apps/api/test/opensearch-security-assets.test.ts",
+    "validates and reuses byte-identical assets on restart"
+  ),
+  faultCase(
+    "opensearch-query-failure-post-activation",
+    "opensearch",
+    "refusal",
+    "post_activation",
+    "api-contract",
+    "apps/api/test/opensearch-query-runtime.test.ts",
+    "maps query connection failures to retryable provider-safe errors"
+  ),
+  faultCase(
     "worker-cancellation-pre-activation",
     "worker",
     "cancellation",
@@ -316,6 +414,15 @@ export function assertStorageVnextFaultInjectionCoverage(cases) {
 
 export function faultInjectionTestFiles(cases) {
   return [...new Set(cases.map((item) => item.evidence.file))];
+}
+
+export function selectLiveFaultInjectionCases(provider) {
+  if (provider !== "meilisearch" && provider !== "opensearch") {
+    throw new Error(`Unsupported live fault provider: ${provider}`);
+  }
+  return LIVE_FAULT_INJECTION_CASES.filter((item) =>
+    !["meilisearch", "opensearch"].includes(item.component)
+      || item.component === provider);
 }
 
 export function buildFaultInjectionSuites(cases) {

@@ -313,6 +313,8 @@ export function createPostgresStorageVnextAdminUpload(input: {
         checksumSha256: stored.checksum,
         byteCount: stored.byteCount,
         contentType: stored.contentType
+      }).catch((error: unknown) => {
+        throw mapUploadContentCommitError(error);
       });
       return mapUploadEntry({
         ...row,
@@ -388,6 +390,20 @@ export function createPostgresStorageVnextAdminUpload(input: {
       return { ...session, state: "cancelled", updatedAt: completedAt, completedAt };
     }
   };
+}
+
+export function mapUploadContentCommitError(error: unknown): Error {
+  if (hasErrorCode(error, "entry_missing")) {
+    return new UploadSessionError("UPLOAD_ENTRY_NOT_FOUND");
+  }
+  if (hasErrorCode(error, "entry_conflict") || hasErrorCode(error, "session_missing")) {
+    return new UploadSessionError("UPLOAD_SESSION_STATE_CONFLICT");
+  }
+  return error instanceof Error ? error : new Error("Upload content commit failed");
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 async function requireKnowledgeBase(

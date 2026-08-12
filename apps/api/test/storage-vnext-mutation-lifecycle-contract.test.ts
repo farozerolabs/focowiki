@@ -141,6 +141,23 @@ describe("storage vNext mutation lifecycle contract", () => {
     expect(fixture.operations.size).toBe(1);
   });
 
+  it("replays the same client mutation after the runtime settings snapshot advances", async () => {
+    const fixture = createFixture();
+    const coordinator = createCoordinator(fixture);
+
+    await expect(coordinator.acceptMutation(moveRequest())).resolves.toMatchObject({
+      outcome: "queued"
+    });
+    await expect(coordinator.acceptMutation(moveRequest({
+      settingsRevisionPublicId: "settings-mutation-contract-next"
+    }))).resolves.toEqual({
+      outcome: "replayed",
+      operationPublicId: "operation-mutation-contract",
+      state: "queued"
+    });
+    expect(fixture.operations.size).toBe(1);
+  });
+
   it("replays a replacement when only internal candidate identities change", async () => {
     const fixture = createFixture();
     const coordinator = createCoordinator(fixture);

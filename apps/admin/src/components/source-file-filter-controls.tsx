@@ -244,8 +244,9 @@ export function SourceFileErrorFilterHeader({
         value: state,
         label: t(`tasks.filters.errorState.${state}`)
       }))}
-      onTextChange={(errorCodeQuery) => onFiltersChange({ ...filters, errorCodeQuery })}
-      onEnumChange={(errorState) => onFiltersChange({ ...filters, errorState })}
+      onChange={({ textValue: errorCodeQuery, enumValue: errorState }) =>
+        onFiltersChange({ ...filters, errorCodeQuery, errorState })
+      }
     />
   );
 }
@@ -296,15 +297,13 @@ function TextAndEnumFilterHeader<T extends string>({
   textValue,
   enumValue,
   options,
-  onTextChange,
-  onEnumChange
+  onChange
 }: {
   label: string;
   textValue: string;
   enumValue: T | null;
   options: Array<{ value: T; label: string }>;
-  onTextChange: (value: string) => void;
-  onEnumChange: (value: T | null) => void;
+  onChange: (value: { textValue: string; enumValue: T | null }) => void;
 }) {
   const { t } = useTranslation();
 
@@ -315,14 +314,20 @@ function TextAndEnumFilterHeader<T extends string>({
         <Input
           aria-label={t("tasks.filters.errorCode")}
           value={textValue}
-          onChange={(event) => onTextChange(event.target.value)}
+          onChange={(event) => onChange({
+            textValue: event.target.value,
+            enumValue
+          })}
           onKeyDown={(event) => event.stopPropagation()}
         />
       </div>
       <DropdownMenuSeparator />
       <DropdownMenuRadioGroup
         value={enumValue ?? ALL_VALUE}
-        onValueChange={(value) => onEnumChange(value === ALL_VALUE ? null : (value as T))}
+        onValueChange={(value) => onChange({
+          textValue,
+          enumValue: value === ALL_VALUE ? null : (value as T)
+        })}
       >
         <DropdownMenuRadioItem value={ALL_VALUE}>{t("tasks.filters.all")}</DropdownMenuRadioItem>
         {options.map((option) => (
@@ -334,10 +339,7 @@ function TextAndEnumFilterHeader<T extends string>({
       <DropdownMenuSeparator />
       <DropdownMenuItem
         disabled={!textValue.trim() && !enumValue}
-        onSelect={() => {
-          onTextChange("");
-          onEnumChange(null);
-        }}
+        onSelect={() => onChange({ textValue: "", enumValue: null })}
       >
         {t("tasks.filters.clear")}
       </DropdownMenuItem>

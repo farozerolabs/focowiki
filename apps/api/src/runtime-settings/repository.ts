@@ -52,7 +52,8 @@ type ModelConfigDocument = {
   suggestionConcurrency: number;
   transientRetryDelayMs: number;
   requestMinIntervalMs: number;
-  status: Exclude<ModelConfigStatus, "deleted">;
+  status: ModelConfigStatus;
+  deletedAt: string | null;
 };
 
 const MODEL_PROVIDER = "openai-compatible";
@@ -91,6 +92,21 @@ export type RuntimeSettingsRepository = {
     requestMinIntervalMs: number;
     isActive: boolean;
   }) => Promise<RuntimeModelConfigPrivate>;
+  updateModel: (input: {
+    id: string;
+    displayName: string;
+    apiMode: ModelApiMode;
+    baseUrl: string;
+    encryptedApiKey: string;
+    apiKeyFingerprint: string;
+    modelName: string;
+    contextWindowTokens: number;
+    requestMaxTimeoutMs: number;
+    requestIdleTimeoutMs: number;
+    suggestionConcurrency: number;
+    transientRetryDelayMs: number;
+    requestMinIntervalMs: number;
+  }) => Promise<RuntimeModelConfigPrivate | null>;
   setModelStatus: (input: {
     id: string;
     status: Exclude<ModelConfigStatus, "deleted">;
@@ -203,6 +219,7 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
                enabled, revision, created_at, updated_at
         FROM focowiki.model_configs
         WHERE knowledge_base_id IS NULL
+          AND config ->> 'status' <> 'deleted'
         ORDER BY enabled DESC, created_at DESC, public_id DESC
       `;
 
@@ -215,6 +232,7 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
         FROM focowiki.model_configs
         WHERE public_id = ${id}
           AND knowledge_base_id IS NULL
+          AND config ->> 'status' <> 'deleted'
         LIMIT 1
       `;
 
@@ -265,6 +283,33 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
 
       return toPrivateModel(rows[0]);
     },
+    async updateModel(input) {
+      const rows = await sql<ModelConfigRow[]>`
+        UPDATE focowiki.model_configs
+        SET model = ${input.modelName},
+            secret_reference = ${input.encryptedApiKey},
+            config = config || ${sql.json({
+              displayName: input.displayName,
+              apiMode: input.apiMode,
+              baseUrl: input.baseUrl,
+              apiKeyFingerprint: input.apiKeyFingerprint,
+              contextWindowTokens: input.contextWindowTokens,
+              requestMaxTimeoutMs: input.requestMaxTimeoutMs,
+              requestIdleTimeoutMs: input.requestIdleTimeoutMs,
+              suggestionConcurrency: input.suggestionConcurrency,
+              transientRetryDelayMs: input.transientRetryDelayMs,
+              requestMinIntervalMs: input.requestMinIntervalMs
+            })},
+            revision = revision + 1,
+            updated_at = now()
+        WHERE public_id = ${input.id}
+          AND knowledge_base_id IS NULL
+          AND config ->> 'status' <> 'deleted'
+        RETURNING public_id, provider, model, secret_reference, config,
+                  enabled, revision, created_at, updated_at
+      `;
+      return rows[0] ? toPrivateModel(rows[0]) : null;
+    },
     async setModelStatus(input) {
       const rows = await sql.begin(async (transaction) => {
         if (input.isActive) {
@@ -279,10 +324,10 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
           UPDATE focowiki.model_configs
           SET config = config || ${transaction.json({ status: input.status })},
               enabled = ${input.isActive ?? false},
-              revision = revision + 1,
               updated_at = now()
           WHERE public_id = ${input.id}
             AND knowledge_base_id IS NULL
+            AND config ->> 'status' <> 'deleted'
           RETURNING public_id, provider, model, secret_reference, config,
                     enabled, revision, created_at, updated_at
         `;
@@ -296,7 +341,9 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
         const target = await transaction<Array<{ public_id: string }>>`
           SELECT public_id
           FROM focowiki.model_configs
-          WHERE public_id = ${id} AND knowledge_base_id IS NULL
+          WHERE public_id = ${id}
+            AND knowledge_base_id IS NULL
+            AND config ->> 'status' <> 'deleted'
           FOR UPDATE
         `;
         if (!target[0]) return [] as ModelConfigRow[];
@@ -310,7 +357,9 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
           SET config = config || ${transaction.json({ status: "active" })},
               enabled = true,
               updated_at = now()
-          WHERE public_id = ${id} AND knowledge_base_id IS NULL
+          WHERE public_id = ${id}
+            AND knowledge_base_id IS NULL
+            AND config ->> 'status' <> 'deleted'
           RETURNING public_id, provider, model, secret_reference, config,
                     enabled, revision, created_at, updated_at
         `;
@@ -320,18 +369,22 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
     },
     async softDeleteModel(id) {
       const rows = await sql<ModelConfigRow[]>`
-        DELETE FROM focowiki.model_configs
+        UPDATE focowiki.model_configs
+        SET config = config || ${sql.json({
+          status: "deleted",
+          deletedAt: new Date().toISOString()
+        })},
+            enabled = false,
+            revision = revision + 1,
+            updated_at = now()
         WHERE public_id = ${id}
           AND knowledge_base_id IS NULL
+          AND config ->> 'status' <> 'deleted'
         RETURNING public_id, provider, model, secret_reference, config,
                   enabled, revision, created_at, updated_at
       `;
 
-      return rows[0] ? toPrivateModel(rows[0], {
-        status: "deleted",
-        isActive: false,
-        deletedAt: new Date().toISOString()
-      }) : null;
+      return rows[0] ? toPrivateModel(rows[0]) : null;
     },
     async countRunningModelInvocations(_modelConfigId) {
       const rows = await sql<Array<{ count: number | string }>>`
@@ -478,7 +531,8 @@ function createModelConfigDocument(
     suggestionConcurrency: input.suggestionConcurrency,
     transientRetryDelayMs: input.transientRetryDelayMs,
     requestMinIntervalMs: input.requestMinIntervalMs,
-    status: "active"
+    status: "active",
+    deletedAt: null
   };
 }
 
@@ -510,7 +564,7 @@ function toPrivateModel(
     isActive: override?.isActive ?? row.enabled,
     createdAt: timestamp(row.created_at),
     updatedAt: timestamp(row.updated_at),
-    deletedAt: override?.deletedAt ?? null
+    deletedAt: override?.deletedAt ?? config.deletedAt
   };
 }
 
@@ -519,7 +573,7 @@ function readModelConfigDocument(value: unknown): ModelConfigDocument {
     throw new Error("Runtime model config document is invalid");
   }
   const status = value.status;
-  if (status !== "active" && status !== "paused") {
+  if (status !== "active" && status !== "paused" && status !== "deleted") {
     throw new Error("Runtime model config status is invalid");
   }
   return {
@@ -533,8 +587,17 @@ function readModelConfigDocument(value: unknown): ModelConfigDocument {
     suggestionConcurrency: readModelNumber(value, "suggestionConcurrency"),
     transientRetryDelayMs: readModelNumber(value, "transientRetryDelayMs"),
     requestMinIntervalMs: readModelNumber(value, "requestMinIntervalMs"),
-    status
+    status,
+    deletedAt: readDeletedAt(value.deletedAt, status)
   };
+}
+
+function readDeletedAt(value: unknown, status: ModelConfigStatus): string | null {
+  if (status !== "deleted") return null;
+  if (typeof value !== "string" || !Number.isFinite(new Date(value).getTime())) {
+    throw new Error("Runtime model config deletedAt is invalid");
+  }
+  return value;
 }
 
 function readModelString(

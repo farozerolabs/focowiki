@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
@@ -94,6 +94,33 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
     await expect(coordinator.acceptDeletion(request)).resolves.toMatchObject({
       outcome: "replayed"
     });
+    const legacyRequestHash = createHash("sha256").update(JSON.stringify({
+      version: 1,
+      kind: request.kind,
+      knowledgeBaseId: request.knowledgeBaseId,
+      targetPublicId: request.targetPublicId,
+      expectedResourceRevision: request.expectedResourceRevision,
+      settingsRevisionPublicId: request.settingsRevisionPublicId
+    })).digest("hex");
+    await sql`
+      UPDATE focowiki.operation_idempotency
+      SET request_hash = ${legacyRequestHash}
+      WHERE knowledge_base_id = ${request.knowledgeBaseId}
+        AND idempotency_key = ${request.idempotencyKey}
+    `;
+    await expect(coordinator.acceptDeletion({
+      ...request,
+      operationPublicId: "operation-delete-settings-replay",
+      settingsRevisionPublicId: "settings-deletion-integration-next"
+    })).resolves.toMatchObject({
+      outcome: "replayed",
+      operationPublicId: request.operationPublicId
+    });
+    await expect(coordinator.acceptDeletion({
+      ...request,
+      operationPublicId: "operation-delete-collision",
+      targetPublicId: "file-deletion-collision"
+    })).rejects.toMatchObject({ code: "idempotency_conflict" });
     await expect(catalog.getSourceFile({
       knowledgeBaseId: "kb-deletion-file",
       publicId: "file-deletion-file"
@@ -186,6 +213,85 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
       "dir-deletion-sibling"
     ]);
     expect(await deletionOperationCount("kb-deletion-directory")).toBe(1);
+  });
+
+  it("queues a new cleanup attempt after a terminal deletion failure", async () => {
+    const knowledgeBaseId = "kb-deletion-retry";
+    const directoryPublicId = "dir-deletion-retry";
+    const first = deletionRequest({
+      kind: "source_directory",
+      knowledgeBaseId,
+      targetPublicId: directoryPublicId,
+      expectedResourceRevision: 4
+    });
+    await seedKnowledgeBase(knowledgeBaseId, 2);
+    await sql`
+      INSERT INTO focowiki.source_directories (
+        public_id, knowledge_base_id, parent_public_id, logical_path,
+        normalized_path, title, revision
+      ) VALUES (
+        ${directoryPublicId}, ${knowledgeBaseId}, NULL,
+        'Guides', 'guides', 'Guides', 4
+      )
+    `;
+    await seedSource({
+      knowledgeBaseId,
+      sourceFilePublicId: "file-deletion-retry",
+      logicalPath: "Guides/A.md",
+      directoryPublicId
+    });
+    await coordinator.acceptDeletion(first);
+    await sql`
+      DELETE FROM focowiki.operation_work_items
+      WHERE operation_public_id = ${first.operationPublicId}
+    `;
+    await sql`
+      UPDATE focowiki.operations
+      SET state = 'failed', updated_at = '2026-08-01T06:01:00.000Z',
+          completed_at = '2026-08-01T06:01:00.000Z'
+      WHERE public_id = ${first.operationPublicId}
+    `;
+    await sql`
+      INSERT INTO focowiki.operation_results (
+        public_id, knowledge_base_id, operation_kind, terminal_state,
+        result_code, safe_message, result_summary, correlation_public_id,
+        completed_at, expires_at
+      ) VALUES (
+        ${first.operationPublicId}, ${knowledgeBaseId}, 'deletion', 'failed',
+        'DELETION_RETRY_EXHAUSTED', NULL, '{}'::jsonb, NULL,
+        '2026-08-01T06:01:00.000Z', '2026-08-02T06:01:00.000Z'
+      )
+    `;
+    const retry = {
+      ...first,
+      operationPublicId: "operation-delete-retry-next",
+      idempotencyKey: "delete-integration-retry-next",
+      requestedAt: "2026-08-01T06:02:00.000Z"
+    };
+
+    await expect(coordinator.acceptDeletion(retry)).resolves.toMatchObject({
+      outcome: "queued",
+      operationPublicId: retry.operationPublicId,
+      visibilityCommitted: true
+    });
+    const target = await sql<Array<{ revision: number | string; deleted_at: Date | null }>>`
+      SELECT revision, deleted_at
+      FROM focowiki.source_directories
+      WHERE public_id = ${directoryPublicId}
+    `;
+    expect(target).toEqual([{
+      revision: "5",
+      deleted_at: new Date(first.requestedAt)
+    }]);
+    const retryWork = await sql<Array<{ checkpoint: Record<string, unknown> }>>`
+      SELECT checkpoint FROM focowiki.operation_work_items
+      WHERE operation_public_id = ${retry.operationPublicId}
+    `;
+    expect(retryWork[0]?.checkpoint).toMatchObject({
+      normalizedPath: "guides",
+      sourceFileCount: 1,
+      directoryCount: 1
+    });
   });
 
   it("directly hides a knowledge base, supersedes live work, and terminates one candidate", async () => {

@@ -52,7 +52,12 @@ describe("storage vNext maintenance production planner", () => {
               nextCursor: "source-next"
             }
           : {
-              items: [currentSource("source-b", "reference/b.md")],
+              items: [currentSource(
+                "source-b",
+                "reference/b.md",
+                "failed",
+                "semantic_generation_model_revision_mismatch"
+              )],
               nextCursor: null
             }),
         listDirectories: vi.fn(async () => ({
@@ -104,7 +109,7 @@ describe("storage vNext maintenance production planner", () => {
 
     expect(result).toMatchObject({
       candidatePublicId: expect.stringMatching(/^maintenance-candidate-/u),
-      sourceCount: 2,
+      sourceCount: 1,
       directoryCount: 1
     });
     expect(createCandidate).toHaveBeenCalledWith(expect.objectContaining({
@@ -118,15 +123,13 @@ describe("storage vNext maintenance production planner", () => {
     expect(new Set(dependencies.map((item) => `${item.kind}:${item.publicId}`)))
       .toEqual(expect.objectContaining(new Set([
         "path:pages/guides/a.md",
-        "path:pages/reference/b.md",
         "ancestor:pages/empty",
         "search:source-a",
-        "search:source-b",
         "graph:source-a",
-        "graph:source-b",
         "index:index.md",
         "index:pages/index.md"
       ])));
+    expect(dependencies.some((item) => item.publicId === "source-b")).toBe(false);
   });
 
   it("rejects a plan when the knowledge-base revision changed", async () => {
@@ -165,7 +168,12 @@ describe("storage vNext maintenance production planner", () => {
   });
 });
 
-function currentSource(publicId: string, logicalPath: string) {
+function currentSource(
+  publicId: string,
+  logicalPath: string,
+  status: "ready" | "failed" = "ready",
+  safeErrorCode: string | null = null
+) {
   return {
     sourceFile: {
       publicId,
@@ -176,9 +184,9 @@ function currentSource(publicId: string, logicalPath: string) {
       title: publicId,
       metadata: {},
       currentRevisionPublicId: `revision-${publicId}`,
-      status: "ready" as const,
-      safeErrorCode: null,
-      safeErrorMessage: null,
+      status,
+      safeErrorCode,
+      safeErrorMessage: safeErrorCode ? "Source processing failed." : null,
       revision: 1,
       visibility: "current" as const
     },

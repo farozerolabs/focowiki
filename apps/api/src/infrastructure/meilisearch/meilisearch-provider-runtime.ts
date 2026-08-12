@@ -226,6 +226,11 @@ export function createMeilisearchProviderRuntime(
         };
       },
       async deleteOwnedFinishedOperations(input) {
+        if (input.indexUidPrefixes.length < 1
+          || new Set(input.indexUidPrefixes).size !== input.indexUidPrefixes.length
+          || input.indexUidPrefixes.some((prefix) => !prefix)) {
+          throw requestError();
+        }
         const listFinishedTasks = transport.listFinishedTasks;
         const deleteFinishedTasks = transport.deleteFinishedTasks;
         if (!listFinishedTasks || !deleteFinishedTasks) throw capabilityError();
@@ -240,7 +245,9 @@ export function createMeilisearchProviderRuntime(
           limit: input.limit
         }));
         const taskUids = page.tasks
-          .filter((task) => task.indexUid?.startsWith(input.indexUidPrefix))
+          .filter((task) => task.indexUid
+            && input.indexUidPrefixes.some((prefix) =>
+              task.indexUid!.startsWith(prefix)))
           .map((task) => task.taskUid);
         return {
           deleted: taskUids.length,

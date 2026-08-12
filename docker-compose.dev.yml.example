@@ -325,6 +325,7 @@ services:
     environment:
       discovery.type: "single-node"
       DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: "true"
       OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS--Xms512m -Xmx512m}
     ports:
       - "127.0.0.1:${OPENSEARCH_PORT-59200}:9200"

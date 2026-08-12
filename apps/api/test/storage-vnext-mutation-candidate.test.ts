@@ -110,6 +110,7 @@ describe("storage vNext mutation changed-set candidate", () => {
       mutationKind: "move",
       targetKind: "source_directory",
       targetPublicId: "directory-plan",
+      directoryPublicIds: ["directory-plan", "directory-child"],
       sourceFilePublicIds: ["file-a", "file-b"],
       sourceLogicalPaths: ["Archive/A.md", "Archive/Nested/B.md"],
       previousSourceLogicalPaths: ["Guides/A.md", "Guides/Nested/B.md"],
@@ -121,6 +122,7 @@ describe("storage vNext mutation changed-set candidate", () => {
     });
 
     expect(plan.changedFacts).toEqual([
+      { kind: "directory", publicId: "directory-child", change: "updated" },
       { kind: "directory", publicId: "directory-plan", change: "updated" },
       { kind: "source_file", publicId: "file-a", change: "updated" },
       { kind: "source_file", publicId: "file-b", change: "updated" }

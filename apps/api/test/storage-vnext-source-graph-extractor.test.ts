@@ -164,6 +164,180 @@ describe("storage vNext source graph extractor", () => {
     ]);
   });
 
+  it("grounds resolved explicit-reference relationships in the original source text", async () => {
+    const body = "See ../datasets/transactions.md for the source table.";
+    const checksum = createHash("sha256").update(body).digest("hex");
+    const profile = {
+      summary: "Profiled content.",
+      subjects: [],
+      keywords: [],
+      entities: [],
+      explicitReferences: [
+        "../datasets/transactions.md",
+        "pages/datasets/transactions.md"
+      ],
+      relationshipHints: ["pages/datasets/transactions.md"],
+      definitions: [],
+      processHints: [],
+      versionHints: [],
+      evidencePhrases: [],
+      headingOutline: [],
+      language: "en",
+      profileVersion: "content-profile-v3",
+      profileSource: "deterministic",
+      tokenizerContractVersion: "nodejieba-v1"
+    };
+    const source: StorageVnextGraphNodeFact = {
+      publicId: "node-source-ungrounded",
+      knowledgeBaseId: "kb-graph",
+      sourceFilePublicId: "source-ungrounded",
+      sourceRevisionPublicId: "revision-ungrounded",
+      logicalPath: "pages/notes/source.md",
+      label: "Source record",
+      kind: "note",
+      metadata: { contentProfile: profile },
+      evidence: [],
+      revision: 1
+    };
+    const target: StorageVnextGraphNodeFact = {
+      ...source,
+      publicId: "node-target-ungrounded",
+      sourceFilePublicId: "target-ungrounded",
+      sourceRevisionPublicId: "target-revision-ungrounded",
+      logicalPath: "pages/datasets/transactions.md",
+      label: "Transaction table",
+      metadata: { contentProfile: { ...profile, explicitReferences: [] } }
+    };
+
+    const edges = await reconcileStorageVnextGraphEdges({
+      tokenizer: testLexicalTokenizer,
+      candidates: { findCandidates: vi.fn(async () => [target]) },
+      limits: {
+        maximumCandidateNodes: 20,
+        acceptedEdgeLimit: 20,
+        genericPhraseThreshold: 4
+      }
+    }, {
+      node: source,
+      checksum,
+      body,
+      signal: new AbortController().signal
+    });
+
+    expect(edges).toEqual([
+      expect.objectContaining({
+        relation: "direct_reference",
+        evidence: [expect.objectContaining({
+          sourceFilePublicId: "source-ungrounded",
+          sourceRevisionPublicId: "revision-ungrounded"
+        })]
+      })
+    ]);
+    const evidence = edges[0]!.evidence[0]!;
+    expect(body.slice(evidence.startOffset, evidence.endOffset))
+      .toBe("../datasets/transactions.md");
+  });
+
+  it("grounds normalized title mentions at their original source offsets", async () => {
+    const body = "See bitcoin   transactions-table for the source data.";
+    const checksum = createHash("sha256").update(body).digest("hex");
+    const source = {
+      ...candidateNode(),
+      publicId: "node-title-source",
+      sourceFilePublicId: "source-title-source",
+      sourceRevisionPublicId: "revision-title-source",
+      logicalPath: "pages/notes/title-source.md",
+      label: "Source record",
+      metadata: {},
+      evidence: []
+    };
+    const target = {
+      ...candidateNode(),
+      publicId: "node-title-target",
+      sourceFilePublicId: "source-title-target",
+      sourceRevisionPublicId: "revision-title-target",
+      logicalPath: "pages/datasets/transactions.md",
+      label: "Bitcoin Transactions Table"
+    };
+
+    const edges = await reconcileStorageVnextGraphEdges({
+      tokenizer: testLexicalTokenizer,
+      candidates: { findCandidates: vi.fn(async () => [target]) },
+      limits: {
+        maximumCandidateNodes: 20,
+        acceptedEdgeLimit: 20,
+        genericPhraseThreshold: 4
+      }
+    }, {
+      node: source,
+      checksum,
+      body,
+      signal: new AbortController().signal
+    });
+
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      relation: "direct_reference",
+      evidence: [expect.objectContaining({
+        sourceFilePublicId: "source-title-source",
+        sourceRevisionPublicId: "revision-title-source"
+      })]
+    });
+    const evidence = edges[0]!.evidence[0]!;
+    expect(body.slice(evidence.startOffset, evidence.endOffset))
+      .toBe("bitcoin   transactions-table");
+  });
+
+  it("grounds filename-stem title signals when the full title is absent", async () => {
+    const body = "SELECT * FROM `bigquery-public-data.crypto_bitcoin.transactions`;";
+    const checksum = createHash("sha256").update(body).digest("hex");
+    const source = {
+      ...candidateNode(),
+      publicId: "node-stem-source",
+      sourceFilePublicId: "source-stem-source",
+      sourceRevisionPublicId: "revision-stem-source",
+      logicalPath: "pages/notes/stem-source.md",
+      label: "Join path",
+      metadata: {},
+      evidence: []
+    };
+    const target = {
+      ...candidateNode(),
+      publicId: "node-stem-target",
+      sourceFilePublicId: "source-stem-target",
+      sourceRevisionPublicId: "revision-stem-target",
+      logicalPath: "pages/datasets/transactions.md",
+      label: "Bitcoin Transactions Table"
+    };
+
+    const edges = await reconcileStorageVnextGraphEdges({
+      tokenizer: testLexicalTokenizer,
+      candidates: { findCandidates: vi.fn(async () => [target]) },
+      limits: {
+        maximumCandidateNodes: 20,
+        acceptedEdgeLimit: 20,
+        genericPhraseThreshold: 4
+      }
+    }, {
+      node: source,
+      checksum,
+      body,
+      signal: new AbortController().signal
+    });
+
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      relation: "direct_reference",
+      evidence: [expect.objectContaining({
+        sourceFilePublicId: "source-stem-source",
+        sourceRevisionPublicId: "revision-stem-source"
+      })]
+    });
+    const evidence = edges[0]!.evidence[0]!;
+    expect(body.slice(evidence.startOffset, evidence.endOffset))
+      .toBe("transactions");
+  });
+
   it("deterministically bounds large graph profiles below the PostgreSQL JSONB limit", async () => {
     const body = Array.from({ length: 80 }, (_, index) => [
       `## 第${index + 1}项长期治理流程及适用范围`,

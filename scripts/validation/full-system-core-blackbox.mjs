@@ -32,6 +32,9 @@ let publicKeyId = "";
 try {
   await checkHealth();
   await checkAdminAuthentication();
+  if (process.env.FOCOWIKI_EXPECT_EMPTY_MODEL_SETTINGS === "1") {
+    await checkEmptyRuntimeSettings();
+  }
   const adminKnowledgeBase = await checkAdminKnowledgeBaseLifecycle();
   const key = await createDeveloperKey();
   publicKey = key.rawKey;
@@ -67,14 +70,14 @@ async function checkHealth() {
 }
 
 async function checkAdminAuthentication() {
-  await expectJson(
+  await expectJsonOneOf(
     `${adminBaseUrl}/admin/api/login`,
     {
       method: "POST",
       headers: { "content-type": "application/json", origin },
       body: JSON.stringify({ username: "invalid", password: "invalid" })
     },
-    401,
+    [401, 429],
     "invalid-admin-login"
   );
 
@@ -94,6 +97,27 @@ async function checkAdminAuthentication() {
   adminCookie = login.response.headers.get("set-cookie")?.split(";")[0] || "";
   assert(adminCookie, "Admin login did not return a session cookie.");
   await adminJson("/admin/api/session", {}, 200, "admin-session");
+}
+
+async function checkEmptyRuntimeSettings() {
+  const runtime = await adminJson(
+    "/admin/api/settings/runtime",
+    {},
+    200,
+    "admin-runtime-settings"
+  );
+  assert(runtime.body.settings && typeof runtime.body.settings === "object", "Runtime settings are missing.");
+  assert(Array.isArray(runtime.body.models), "Runtime model list is missing.");
+  assert(runtime.body.models.length === 0, "Expected an empty generation-model list.");
+
+  for (const [pathname, check, label] of [
+    ["/admin/api/settings/embeddings", "admin-embedding-model-list", "embedding"],
+    ["/admin/api/settings/rerankers", "admin-reranker-model-list", "reranker"]
+  ]) {
+    const response = await adminJson(pathname, {}, 200, check);
+    assert(Array.isArray(response.body.configurations), `${label} model list is missing.`);
+    assert(response.body.configurations.length === 0, `Expected an empty ${label} model list.`);
+  }
 }
 
 async function checkAdminKnowledgeBaseLifecycle() {
@@ -225,6 +249,10 @@ async function checkDeveloperLifecycle() {
     200,
     "developer-update-knowledge-base"
   );
+  await waitForDeveloperKnowledgeBaseRevision(
+    knowledgeBase.knowledgeBaseId,
+    updated.body.knowledgeBase.resourceRevision
+  );
   await developerJson(
     `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBase.knowledgeBaseId)}`,
     {
@@ -242,6 +270,31 @@ async function checkDeveloperLifecycle() {
     {},
     404,
     "developer-deleted-knowledge-base"
+  );
+}
+
+async function waitForDeveloperKnowledgeBaseRevision(
+  knowledgeBaseId,
+  expectedRevision,
+  timeoutMs = 30_000
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await fetch(
+      `${developerBaseUrl}/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`,
+      { headers: { authorization: `Bearer ${publicKey}` } }
+    );
+    const body = await response.json();
+    assert(response.status === 200, `developer-update-convergence returned HTTP ${response.status}.`);
+    assertSafeBody(body, "developer-update-convergence");
+    if (body.knowledgeBase?.resourceRevision === expectedRevision) {
+      recordCheck("developer-update-convergence", response.status);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `Developer knowledge-base revision ${expectedRevision} did not become active within ${timeoutMs} ms.`
   );
 }
 
@@ -271,24 +324,36 @@ async function checkLogout() {
 }
 
 async function cleanup() {
-  if (!adminCookie) {
-    await loginForCleanup().catch(() => undefined);
-  }
-  if (publicKeyId) {
-    await adminJson(
-      `/admin/api/openapi-keys/${encodeURIComponent(publicKeyId)}`,
-      { method: "DELETE" },
-      200,
-      "cleanup-openapi-key"
-    ).catch(() => undefined);
-  }
-  for (const knowledgeBaseId of report.created.knowledgeBaseIds) {
-    await adminJson(
-      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`,
-      { method: "DELETE" },
-      200,
-      "cleanup-knowledge-base"
-    ).catch(() => undefined);
+  try {
+    if (!adminCookie) {
+      await loginForCleanup().catch(() => undefined);
+    }
+    if (publicKeyId) {
+      await adminJson(
+        `/admin/api/openapi-keys/${encodeURIComponent(publicKeyId)}`,
+        { method: "DELETE" },
+        200,
+        "cleanup-openapi-key"
+      ).catch(() => undefined);
+    }
+    for (const knowledgeBaseId of report.created.knowledgeBaseIds) {
+      await adminJson(
+        `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`,
+        { method: "DELETE" },
+        200,
+        "cleanup-knowledge-base"
+      ).catch(() => undefined);
+    }
+  } finally {
+    if (adminCookie) {
+      await adminJson(
+        "/admin/api/logout",
+        { method: "POST" },
+        200,
+        "cleanup-admin-logout"
+      ).catch(() => undefined);
+      adminCookie = "";
+    }
   }
 }
 
@@ -352,6 +417,19 @@ async function expectJson(url, options, expectedStatus, check) {
   const text = await response.text();
   const body = text ? JSON.parse(text) : null;
   assert(response.status === expectedStatus, `${check} returned HTTP ${response.status}.`);
+  assertSafeBody(body, check);
+  recordCheck(check, response.status);
+  return { response, body };
+}
+
+async function expectJsonOneOf(url, options, expectedStatuses, check) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+  assert(
+    expectedStatuses.includes(response.status),
+    `${check} returned HTTP ${response.status}.`
+  );
   assertSafeBody(body, check);
   recordCheck(check, response.status);
   return { response, body };

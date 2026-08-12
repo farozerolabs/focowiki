@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadEnvFile } from "node:process";
+import { performance } from "node:perf_hooks";
 import {
   createOpenApiOperationCoverage
 } from "./lib/openapi-real-operation-coverage.mjs";
@@ -52,6 +53,9 @@ const openApiDocument = JSON.parse(
   fs.readFileSync("docs/public/openapi/focowiki-openapi.json", "utf8")
 );
 const operationCoverage = createOpenApiOperationCoverage(openApiDocument);
+const openApiPerformancePhase = optionalPerformancePhase(
+  process.env.FOCOWIKI_RESOURCE_LIFECYCLE_PERFORMANCE_PHASE
+);
 const responseValidator = createOpenApiRuntimeResponseValidator(openApiDocument);
 const report = {
   kind: "folder-aware-resource-lifecycle",
@@ -69,9 +73,10 @@ loadLocalEnv();
 const admin = createClient(`http://127.0.0.1:${process.env.ADMIN_API_PORT || "43000"}`);
 const publicOpenApiBaseUrl = `http://127.0.0.1:${process.env.PUBLIC_OPENAPI_PORT || "43200"}`;
 const developer = createClient(publicOpenApiBaseUrl, {
-  authorization: "authenticated",
-  coverage: operationCoverage,
-  responseValidator
+    authorization: "authenticated",
+    coverage: operationCoverage,
+  responseValidator,
+  performancePhase: openApiPerformancePhase
 });
 const unauthenticatedDeveloper = createClient(publicOpenApiBaseUrl, {
   authorization: "unauthenticated",
@@ -458,6 +463,7 @@ function createClient(baseUrl, tracking = null) {
     authorization: "",
     async request(pathname, options = {}) {
       for (let attempt = 0; ; attempt += 1) {
+        const startedAt = performance.now();
         const response = await fetch(`${this.baseUrl}${pathname}`, {
           ...options,
           headers: {
@@ -473,11 +479,18 @@ function createClient(baseUrl, tracking = null) {
           pathname,
           response
         });
+        const durationMs = performance.now() - startedAt;
         tracking?.coverage.record({
           method: options.method ?? "GET",
           pathname,
           status: response.status,
-          authorization: tracking.authorization
+          authorization: tracking.authorization,
+          ...(tracking.performancePhase && tracking.authorization === "authenticated"
+            ? {
+                measurementPhase: tracking.performancePhase,
+                durationMs
+              }
+            : {})
         });
         if (
           response.status !== 429
@@ -514,6 +527,15 @@ function createClient(baseUrl, tracking = null) {
       }
     }
   };
+}
+
+function optionalPerformancePhase(value) {
+  const phase = String(value ?? "").trim();
+  if (!phase) return null;
+  if (!["cold", "warm", "concurrent"].includes(phase)) {
+    throw new Error("FOCOWIKI_RESOURCE_LIFECYCLE_PERFORMANCE_PHASE is invalid");
+  }
+  return phase;
 }
 
 async function loginAdmin() {

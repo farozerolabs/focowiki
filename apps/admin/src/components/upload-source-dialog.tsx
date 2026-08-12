@@ -46,6 +46,7 @@ export function UploadSourceDialog({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadOperationEpochRef = useRef(0);
   const activeSessionIdRef = useRef<string | null>(null);
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadError, setUploadError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
@@ -78,9 +79,13 @@ export function UploadSourceDialog({
       return;
     }
 
+    const uploadAbortController = new AbortController();
+    uploadAbortControllerRef.current = uploadAbortController;
+
     const result = await runUploadSession({
       knowledgeBaseId,
       files: selectedFiles,
+      signal: uploadAbortController.signal,
       onProgress: setProgress,
       onSessionReady: (id) => {
         if (uploadOperationEpochRef.current === operationEpoch) {
@@ -96,6 +101,7 @@ export function UploadSourceDialog({
     if (uploadOperationEpochRef.current !== operationEpoch) {
       return;
     }
+    uploadAbortControllerRef.current = null;
 
     if (!result.ok) {
       setIsUploading(false);
@@ -154,6 +160,8 @@ export function UploadSourceDialog({
 
   async function handleCancelUpload() {
     uploadOperationEpochRef.current += 1;
+    uploadAbortControllerRef.current?.abort();
+    uploadAbortControllerRef.current = null;
     const sessionId = activeSessionIdRef.current;
     setIsUploading(false);
     resetSelection();

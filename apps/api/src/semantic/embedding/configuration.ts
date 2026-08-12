@@ -23,9 +23,16 @@ export type EmbeddingConfigurationDraft = {
 };
 
 export type EmbeddingConfigurationIssue = {
-  field: keyof EmbeddingConfigurationDraft;
+  field: string;
   code: string;
 };
+
+const EMBEDDING_CONFIGURATION_FIELDS = new Set([
+  "displayName", "authenticationMode", "baseUrl", "apiKey", "modelName",
+  "requestedDimension", "normalization", "maximumInputTokens", "batchSize",
+  "timeoutMs", "retryCount", "minimumIntervalMs", "concurrency",
+  "maximumResponseBytes", "minimumVectorRelevance"
+]);
 
 export type EmbeddingConfigurationPublic = Omit<
   EmbeddingConfigurationDraft,
@@ -54,37 +61,44 @@ export function validateEmbeddingConfigurationDraft(
   options: { apiKeyMayBeOmitted?: boolean } = {}
 ): EmbeddingConfigurationIssue[] {
   const issues: EmbeddingConfigurationIssue[] = [];
-  boundedText(issues, "displayName", input.displayName, 255);
-  if (!EMBEDDING_AUTHENTICATION_MODES.includes(input.authenticationMode as never)) {
+  const value = objectValue(input);
+  rejectUnknownFields(issues, value, EMBEDDING_CONFIGURATION_FIELDS);
+  boundedText(issues, "displayName", value.displayName, 255);
+  if (!EMBEDDING_AUTHENTICATION_MODES.includes(value.authenticationMode as never)) {
     issues.push({ field: "authenticationMode", code: "invalid_authentication_mode" });
   }
-  validateEndpoint(issues, input.baseUrl, input.authenticationMode);
-  if (input.authenticationMode === "api_key") {
+  validateEndpoint(
+    issues,
+    value.baseUrl,
+    value.authenticationMode as EmbeddingAuthenticationMode
+  );
+  if (value.authenticationMode === "api_key") {
     if (
-      input.apiKey === null
-      && !options.apiKeyMayBeOmitted
-      || input.apiKey !== null
-        && (!input.apiKey.trim() || Buffer.byteLength(input.apiKey) > 16_384)
+      value.apiKey === null || value.apiKey === undefined
+        ? !options.apiKeyMayBeOmitted
+        : typeof value.apiKey !== "string"
+          || !value.apiKey.trim()
+          || Buffer.byteLength(value.apiKey) > 16_384
     ) issues.push({ field: "apiKey", code: "api_key_required" });
-  } else if (input.apiKey !== null) {
+  } else if (value.apiKey !== null) {
     issues.push({ field: "apiKey", code: "api_key_forbidden" });
   }
-  boundedText(issues, "modelName", input.modelName, 255);
-  nullableInteger(issues, "requestedDimension", input.requestedDimension, 1, 65_536);
-  if (input.normalization !== "none" && input.normalization !== "l2") {
+  boundedText(issues, "modelName", value.modelName, 255);
+  nullableInteger(issues, "requestedDimension", value.requestedDimension, 1, 65_536);
+  if (value.normalization !== "none" && value.normalization !== "l2") {
     issues.push({ field: "normalization", code: "invalid_normalization" });
   }
-  integer(issues, "maximumInputTokens", input.maximumInputTokens, 1, 1_048_576);
-  integer(issues, "batchSize", input.batchSize, 1, 2_048);
-  integer(issues, "timeoutMs", input.timeoutMs, 100, 300_000);
-  integer(issues, "retryCount", input.retryCount, 0, 10);
-  integer(issues, "minimumIntervalMs", input.minimumIntervalMs, 0, 60_000);
-  integer(issues, "concurrency", input.concurrency, 1, 64);
-  integer(issues, "maximumResponseBytes", input.maximumResponseBytes, 1_024, 67_108_864);
+  integer(issues, "maximumInputTokens", value.maximumInputTokens, 1, 1_048_576);
+  integer(issues, "batchSize", value.batchSize, 1, 2_048);
+  integer(issues, "timeoutMs", value.timeoutMs, 100, 300_000);
+  integer(issues, "retryCount", value.retryCount, 0, 10);
+  integer(issues, "minimumIntervalMs", value.minimumIntervalMs, 0, 60_000);
+  integer(issues, "concurrency", value.concurrency, 1, 64);
+  integer(issues, "maximumResponseBytes", value.maximumResponseBytes, 1_024, 67_108_864);
   finiteNumber(
     issues,
     "minimumVectorRelevance",
-    input.minimumVectorRelevance,
+    value.minimumVectorRelevance,
     0,
     1
   );
@@ -93,10 +107,10 @@ export function validateEmbeddingConfigurationDraft(
 
 function validateEndpoint(
   issues: EmbeddingConfigurationIssue[],
-  value: string,
+  value: unknown,
   authenticationMode: EmbeddingAuthenticationMode
 ): void {
-  if (!value || Buffer.byteLength(value) > 2_048) {
+  if (typeof value !== "string" || !value || Buffer.byteLength(value) > 2_048) {
     issues.push({ field: "baseUrl", code: "invalid_base_url" });
     return;
   }
@@ -133,10 +147,10 @@ function isLocalHostname(value: string): boolean {
 function boundedText(
   issues: EmbeddingConfigurationIssue[],
   field: "displayName" | "modelName",
-  value: string,
+  value: unknown,
   maximumBytes: number
 ): void {
-  if (!value.trim() || Buffer.byteLength(value) > maximumBytes) {
+  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maximumBytes) {
     issues.push({ field, code: "invalid_text" });
   }
 }
@@ -144,7 +158,7 @@ function boundedText(
 function nullableInteger(
   issues: EmbeddingConfigurationIssue[],
   field: "requestedDimension",
-  value: number | null,
+  value: unknown,
   minimum: number,
   maximum: number
 ): void {
@@ -154,11 +168,16 @@ function nullableInteger(
 function integer(
   issues: EmbeddingConfigurationIssue[],
   field: keyof EmbeddingConfigurationDraft,
-  value: number,
+  value: unknown,
   minimum: number,
   maximum: number
 ): void {
-  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+  if (
+    typeof value !== "number"
+    || !Number.isSafeInteger(value)
+    || value < minimum
+    || value > maximum
+  ) {
     issues.push({ field, code: "out_of_bounds" });
   }
 }
@@ -166,11 +185,32 @@ function integer(
 function finiteNumber(
   issues: EmbeddingConfigurationIssue[],
   field: "minimumVectorRelevance",
-  value: number,
+  value: unknown,
   minimum: number,
   maximum: number
 ): void {
-  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+  if (
+    typeof value !== "number"
+    || !Number.isFinite(value)
+    || value < minimum
+    || value > maximum
+  ) {
     issues.push({ field, code: "invalid_number" });
+  }
+}
+
+function objectValue(input: unknown): Record<string, unknown> {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+}
+
+function rejectUnknownFields(
+  issues: EmbeddingConfigurationIssue[],
+  value: Record<string, unknown>,
+  supported: ReadonlySet<string>
+): void {
+  for (const field of Object.keys(value)) {
+    if (!supported.has(field)) issues.push({ field, code: "unknown_field" });
   }
 }

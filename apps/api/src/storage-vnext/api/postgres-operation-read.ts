@@ -4,6 +4,7 @@ import type {
   ResourceOperationRecord,
   ResourceOperationState
 } from "../../domain/source-resource.js";
+import { SourceResourceError } from "../../domain/source-resource.js";
 
 type OperationRow = {
   public_id: string;
@@ -387,6 +388,6 @@ function decodeCursor(cursor: string | null): OperationCursor | null {
     ) throw new Error("invalid");
     return value as OperationCursor;
   } catch {
-    throw new Error("Invalid storage vNext operation cursor");
+    throw new SourceResourceError("INVALID_PAGINATION");
   }
 }

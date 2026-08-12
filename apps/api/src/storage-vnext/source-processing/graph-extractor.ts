@@ -327,12 +327,10 @@ function createSemanticEvidence(input: {
   fallback: StorageVnextGraphEvidence | null;
 }): StorageVnextGraphEvidence[] {
   const match = evidenceStrings(input.edge.evidence)
-    .map((value) => ({ value, offset: input.request.sourceBody.indexOf(value) }))
-    .find((candidate) => candidate.offset >= 0);
-  const startOffset = match?.offset ?? input.fallback?.startOffset;
-  const endOffset = match
-    ? match.offset + match.value.length
-    : input.fallback?.endOffset;
+    .map((value) => findEvidenceRange(input.request.sourceBody, value))
+    .find((candidate) => candidate !== null);
+  const startOffset = match?.startOffset ?? input.fallback?.startOffset;
+  const endOffset = match?.endOffset ?? input.fallback?.endOffset;
   if (startOffset === undefined || endOffset === undefined) return [];
   return [{
     publicId: stableId("graph-evidence-v1", [
@@ -349,6 +347,53 @@ function createSemanticEvidence(input: {
     endOffset,
     checksum: input.request.checksum
   }];
+}
+
+function findEvidenceRange(body: string, value: string): {
+  startOffset: number;
+  endOffset: number;
+} | null {
+  const exactOffset = body.indexOf(value);
+  if (exactOffset >= 0) {
+    return { startOffset: exactOffset, endOffset: exactOffset + value.length };
+  }
+  const normalizedBody = normalizeEvidenceWithOffsets(body);
+  const normalizedValue = normalizeEvidenceWithOffsets(value).text;
+  if (!normalizedValue) return null;
+  const normalizedOffset = normalizedBody.text.indexOf(normalizedValue);
+  if (normalizedOffset < 0) return null;
+  const first = normalizedBody.offsets[normalizedOffset];
+  const last = normalizedBody.offsets[normalizedOffset + normalizedValue.length - 1];
+  return first && last
+    ? { startOffset: first.startOffset, endOffset: last.endOffset }
+    : null;
+}
+
+function normalizeEvidenceWithOffsets(value: string): {
+  text: string;
+  offsets: Array<{ startOffset: number; endOffset: number }>;
+} {
+  const characters: string[] = [];
+  const offsets: Array<{ startOffset: number; endOffset: number }> = [];
+  let sourceOffset = 0;
+  for (const sourceCharacter of value) {
+    const startOffset = sourceOffset;
+    sourceOffset += sourceCharacter.length;
+    for (const character of sourceCharacter.toLowerCase()) {
+      if (/^[\p{L}\p{N}]$/u.test(character)) {
+        characters.push(character);
+        offsets.push({ startOffset, endOffset: sourceOffset });
+      } else if (characters.length > 0 && characters.at(-1) !== " ") {
+        characters.push(" ");
+        offsets.push({ startOffset, endOffset: sourceOffset });
+      }
+    }
+  }
+  while (characters.at(-1) === " ") {
+    characters.pop();
+    offsets.pop();
+  }
+  return { text: characters.join(""), offsets };
 }
 
 function evidenceStrings(value: unknown): string[] {

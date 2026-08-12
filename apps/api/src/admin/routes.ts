@@ -492,6 +492,14 @@ function readKnowledgeBaseCreateInput(
     return null;
   }
 
+  if (
+    body.description !== undefined
+    && body.description !== null
+    && typeof body.description !== "string"
+  ) {
+    return null;
+  }
+
   const description =
     typeof body.description === "string" && body.description.trim()
       ? body.description.trim()

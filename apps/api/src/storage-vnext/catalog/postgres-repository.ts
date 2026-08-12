@@ -809,6 +809,11 @@ async function createImmutableRevision(
           ${stored.objectId}, 'source_revision', ${stored.publicId})
         ON CONFLICT (object_id, owner_kind, owner_public_id) DO NOTHING
       `;
+      await transaction`
+        UPDATE focowiki.object_registrations
+        SET zero_owner_since = NULL
+        WHERE object_id = ${stored.objectId}
+      `;
       return stored;
     } catch (error) {
       throw mapDatabaseError(error);

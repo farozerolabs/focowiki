@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createStorageVnextSemanticSearch } from
+import {
+  createStorageVnextSemanticSearch,
+  type StorageVnextSemanticPaginationState
+} from
   "../src/storage-vnext/search/semantic-search.js";
 
 describe("storage vNext optional semantic search", () => {
@@ -50,6 +53,88 @@ describe("storage vNext optional semantic search", () => {
     expect(second.items.map((item) => item.sourceFilePublicId)).toEqual(["file-c"]);
     expect(second.nextCursor).toBeNull();
     expect(semantic).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 4 }));
+  });
+
+  it("does not repeat a source when approximate semantic ordering drifts between pages", async () => {
+    let call = 0;
+    const orderings = [
+      ["a", "b", "c"],
+      ["b", "a", "c"],
+      ["c", "b", "a"]
+    ];
+    const semantic = vi.fn(async (input: { limit: number }) => ({
+      items: (orderings[Math.min(call++, orderings.length - 1)] ?? [])
+        .slice(0, input.limit)
+        .map((id) => semanticItem(id)),
+      semanticStatus: { state: "ready" as const, safeCode: null },
+      hasMore: input.limit < 3
+    }));
+    const pagination = paginationStore();
+    const search = createStorageVnextSemanticSearch({
+      semanticGenerations: generationRepository(),
+      semantic: { search: semantic },
+      fallback: fallback(),
+      hydration: hydration(),
+      pagination,
+      providerKind: "opensearch",
+      vectorIndexPrefix: "focowiki",
+      maxPageSize: 200,
+      resolveRuntimeSettings: async () => ({
+        requestTimeoutMs: 3000,
+        searchLaneCutoffMs: 1000
+      })
+    });
+
+    const first = await search.search({ ...request(), limit: 1 });
+    const second = await search.search({
+      ...request(), limit: 1, cursor: first.nextCursor
+    });
+    const third = await search.search({
+      ...request(), limit: 1, cursor: second.nextCursor
+    });
+
+    expect([
+      first.items[0]?.sourceFilePublicId,
+      second.items[0]?.sourceFilePublicId,
+      third.items[0]?.sourceFilePublicId
+    ]).toEqual(["file-a", "file-b", "file-c"]);
+    expect(third.nextCursor).toBeNull();
+    expect(pagination.write).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues a legacy inline cursor after Redis pagination is enabled", async () => {
+    const semantic = {
+      search: async () => ({
+        items: ["a", "b"].map((id) => semanticItem(id)),
+        semanticStatus: { state: "ready" as const, safeCode: null }
+      })
+    };
+    const common = {
+      semanticGenerations: generationRepository(),
+      semantic,
+      fallback: fallback(),
+      hydration: hydration(),
+      providerKind: "opensearch" as const,
+      vectorIndexPrefix: "focowiki",
+      maxPageSize: 200,
+      resolveRuntimeSettings: async () => ({
+        requestTimeoutMs: 3000,
+        searchLaneCutoffMs: 1000
+      })
+    };
+    const legacy = createStorageVnextSemanticSearch(common);
+    const first = await legacy.search({ ...request(), limit: 1 });
+    const current = createStorageVnextSemanticSearch({
+      ...common,
+      pagination: paginationStore()
+    });
+
+    await expect(current.search({
+      ...request(), limit: 1, cursor: first.nextCursor
+    })).resolves.toMatchObject({
+      items: [{ sourceFilePublicId: "file-b" }],
+      nextCursor: null
+    });
   });
 
   it("keeps lexical continuity when semantic adoption is unavailable or OKF filters apply", async () => {
@@ -373,5 +458,23 @@ function semanticItem(id: string) {
     evidenceTypes: ["content"],
     sourceExcerpt: null,
     explanations: []
+  };
+}
+
+function paginationStore() {
+  const values = new Map<string, StorageVnextSemanticPaginationState>();
+  let sequence = 0;
+  return {
+    read: vi.fn(async (scopeHash: string, cursor: string) =>
+      values.get(`${scopeHash}:${cursor}`) ?? null),
+    write: vi.fn(async (
+      scopeHash: string,
+      value: StorageVnextSemanticPaginationState
+    ) => {
+      sequence += 1;
+      const cursor = `search-cursor-${sequence}`;
+      values.set(`${scopeHash}:${cursor}`, value);
+      return cursor;
+    })
   };
 }

@@ -9,6 +9,7 @@ import { createPostgresCommunityPartitionRepository } from '../src/semantic/infr
 import { createPostgresCommunitySummaryArtifactRepository } from '../src/semantic/infrastructure/postgres-community-summary-artifacts.js';
 import { createPostgresSemanticStageRepository } from '../src/semantic/infrastructure/postgres-stage-repository.js';
 import { createPostgresSemanticVectorProjectionRepository } from '../src/semantic/infrastructure/postgres-vector-projection-repository.js';
+import { enqueueSemanticVectorDocumentCleanupActions } from '../src/semantic/infrastructure/postgres-vector-document-cleanup-actions.js';
 import { createPostgresSemanticDeletionRepository } from '../src/semantic/infrastructure/postgres-semantic-deletion-repository.js';
 import { createPostgresStorageVnextOperationRead } from '../src/storage-vnext/api/postgres-operation-read.js';
 import { createPostgresActiveVectorHitRepository } from '../src/semantic/infrastructure/postgres-active-vector-hit-repository.js';
@@ -16,6 +17,7 @@ import { createPostgresSemanticFileGraphEvidenceRepository } from '../src/semant
 import { createPostgresSemanticSourcePresentationRepository } from '../src/semantic/infrastructure/postgres-source-presentation-repository.js';
 import { createPostgresKnowledgeBaseCreation } from '../src/storage-vnext/api/postgres-knowledge-base-creation.js';
 import { createPostgresSemanticPublicationReadinessHooks } from '../src/semantic/infrastructure/postgres-publication-readiness.js';
+import { createPostgresSemanticPublicationCoalescingReadiness } from '../src/semantic/infrastructure/postgres-publication-coalescing-readiness.js';
 import { createPostgresStorageVnextReleaseRepository } from '../src/storage-vnext/release/postgres-repository.js';
 import { createPostgresStorageVnextAdminResourceRead } from '../src/storage-vnext/api/postgres-admin-resources.js';
 import {
@@ -165,6 +167,108 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
     `).resolves.toEqual([{ present: false }]);
   });
 
+  it('keeps coalesced publication pending for every current semantic source stage', async () => {
+    const knowledgeBaseId = 'kb-semantic-coalescing-readiness';
+    const operationPublicId = 'operation-semantic-coalescing-readiness';
+    const sourceFilePublicId = 'file-semantic-coalescing-readiness';
+    const sourceRevisionPublicId = 'revision-semantic-coalescing-readiness';
+    const creation = createPostgresKnowledgeBaseCreation({
+      sql,
+      resolveSemanticTarget: async (requestedKnowledgeBaseId) =>
+        target(requestedKnowledgeBaseId)
+    });
+    await creation.create({
+      publicId: knowledgeBaseId,
+      name: 'Semantic coalescing readiness',
+      description: null
+    });
+    await seedSource(knowledgeBaseId, sourceFilePublicId, sourceRevisionPublicId);
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state,
+        target_kind, target_public_id, completed_at
+      ) VALUES (
+        ${operationPublicId}, ${knowledgeBaseId}, 'source_processing',
+        'completed', 'source_file', ${sourceFilePublicId}, now()
+      )
+    `;
+    const active = await generations.getActiveProjection(knowledgeBaseId);
+    if (!active) throw new Error('Missing active semantic projection');
+    await stages.enqueue({
+      items: planSemanticSourceStages({
+        knowledgeBaseId,
+        operationPublicId,
+        semanticGenerationPublicId: active.publicId,
+        sourceFilePublicId,
+        sourceRevisionPublicId,
+        extractionContractVersion: active.extractionContractVersion,
+        embeddingConfigurationRevisionPublicId:
+          active.embeddingConfigurationRevisionPublicId,
+        settingsSnapshot: {
+          projectionContractPublicId: active.projectionContractPublicId
+        },
+        dirtyCommunityPartitionKeys: [],
+        includeValidation: true,
+        maximumAttempts: 3
+      }),
+      enqueuedAt: '2026-08-08T00:00:00.000Z'
+    });
+    await sql`
+      UPDATE focowiki.semantic_stage_work_items
+      SET state = 'completed', completed_at = now(), updated_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    const readiness = createPostgresSemanticPublicationCoalescingReadiness(sql);
+    const sourceStageKinds = [
+      'extraction', 'reconciliation', 'community',
+      'embedding', 'vector', 'publication'
+    ] as const;
+    const pendingStates = ['queued', 'running', 'retry'] as const;
+    for (const stageKind of sourceStageKinds) {
+      for (const state of pendingStates) {
+        await sql`
+          UPDATE focowiki.semantic_stage_work_items
+          SET state = ${state}, completed_at = NULL,
+              lease_owner = CASE WHEN ${state} = 'running'
+                THEN 'semantic-readiness-test' ELSE NULL END,
+              lease_expires_at = CASE WHEN ${state} = 'running'
+                THEN now() + interval '1 minute' ELSE NULL END,
+              execution_started_at = CASE WHEN ${state} = 'running'
+                THEN now() ELSE NULL END,
+              updated_at = now()
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND stage_kind = ${stageKind}
+        `;
+        await expect(readiness.inspect({ knowledgeBaseId })).resolves.toEqual({
+          state: 'pending'
+        });
+        await sql`
+          UPDATE focowiki.semantic_stage_work_items
+          SET state = 'completed', completed_at = now(),
+              lease_owner = NULL, lease_expires_at = NULL,
+              execution_started_at = NULL, updated_at = now()
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND stage_kind = ${stageKind}
+        `;
+      }
+    }
+    await sql`
+      UPDATE focowiki.semantic_stage_work_items
+      SET state = 'queued', completed_at = NULL, updated_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND stage_kind = 'validation'
+    `;
+    await expect(readiness.inspect({ knowledgeBaseId })).resolves.toEqual({
+      state: 'ready'
+    });
+    await sql`
+      UPDATE focowiki.semantic_stage_work_items
+      SET state = 'completed', completed_at = now(), updated_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND stage_kind = 'validation'
+    `;
+  });
+
   it('finalizes semantic validation and source readiness only at release activation', async () => {
     const knowledgeBaseId = 'kb-semantic-publication-ready';
     const sourceOperationPublicId = 'operation-semantic-source-ready';
@@ -181,6 +285,16 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
       description: null
     });
     await seedSource(knowledgeBaseId, 'file-semantic-ready', 'revision-semantic-ready');
+    await seedSource(
+      knowledgeBaseId,
+      'file-publication-recovery',
+      'revision-publication-recovery'
+    );
+    await seedSource(
+      knowledgeBaseId,
+      'file-model-failure',
+      'revision-model-failure'
+    );
     await sql`
       UPDATE focowiki.source_files
       SET status = 'processing',
@@ -193,6 +307,16 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
           model_invocation_error_code = NULL
       WHERE knowledge_base_id = ${knowledgeBaseId}
         AND public_id = 'file-semantic-ready'
+    `;
+    await sql`
+      UPDATE focowiki.source_files
+      SET status = 'failed', safe_error_code = CASE public_id
+            WHEN 'file-publication-recovery' THEN 'PUBLICATION_FAILED'
+            ELSE 'SOURCE_MODEL_FAILED'
+          END,
+          safe_error_message = NULL
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND public_id IN ('file-publication-recovery', 'file-model-failure')
     `;
     await sql`
       INSERT INTO focowiki.webhook_subscriptions (
@@ -284,11 +408,23 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
       candidateRootPublicId: 'root-semantic-publication-ready',
       expectedActiveRootPublicId: null,
       expectedActiveRevision: 0,
-      changedFacts: [{
-        kind: 'source_file',
-        publicId: 'file-semantic-ready',
-        change: 'updated'
-      }],
+      changedFacts: [
+        {
+          kind: 'source_file',
+          publicId: 'file-semantic-ready',
+          change: 'updated'
+        },
+        {
+          kind: 'source_file',
+          publicId: 'file-publication-recovery',
+          change: 'updated'
+        },
+        {
+          kind: 'source_file',
+          publicId: 'file-model-failure',
+          change: 'updated'
+        }
+      ],
       dependencies: [],
       idempotency: {
         key: 'semantic-publication-ready',
@@ -308,11 +444,36 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
     }))).rejects.toMatchObject({
       code: 'semantic_publication_barrier_incomplete'
     });
-    await expect(sql<Array<{ status: string }>>`
-      SELECT status FROM focowiki.source_files
+    await expect(sql<Array<{
+      public_id: string;
+      status: string;
+      safe_error_code: string | null;
+    }>>`
+      SELECT public_id, status, safe_error_code FROM focowiki.source_files
       WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND public_id = 'file-semantic-ready'
-    `).resolves.toEqual([{ status: 'processing' }]);
+        AND public_id IN (
+          'file-semantic-ready',
+          'file-publication-recovery',
+          'file-model-failure'
+        )
+      ORDER BY public_id COLLATE "C"
+    `).resolves.toEqual([
+      {
+        public_id: 'file-model-failure',
+        status: 'failed',
+        safe_error_code: 'SOURCE_MODEL_FAILED'
+      },
+      {
+        public_id: 'file-publication-recovery',
+        status: 'failed',
+        safe_error_code: 'PUBLICATION_FAILED'
+      },
+      {
+        public_id: 'file-semantic-ready',
+        status: 'processing',
+        safe_error_code: null
+      }
+    ]);
     await expect(sql<Array<{ event_count: number }>>`
       SELECT count(*)::integer AS event_count
       FROM focowiki.webhook_deliveries
@@ -328,6 +489,19 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
         AND operation_public_id = ${sourceOperationPublicId}
         AND stage_kind = 'publication'
     `;
+    await sql`
+      INSERT INTO focowiki.source_event_summaries (
+        public_id, knowledge_base_id, source_file_public_id,
+        source_revision_public_id, sequence_number, stage_key, message_key,
+        started_at, ended_at, severity, created_at, expires_at
+      ) VALUES (
+        'source-event-open-semantic-publication-ready', ${knowledgeBaseId},
+        'file-semantic-ready', 'revision-semantic-ready', 30,
+        'graphrag_processing', 'sourceFiles.phase.graphragProcessing',
+        '2026-08-08T00:00:20.000Z', NULL, 'info',
+        '2026-08-08T00:00:20.000Z', '2026-09-08T00:00:00.000Z'
+      )
+    `;
     await sql.begin((transaction) => hooks.beforeActivate!({
       transaction,
       knowledgeBaseId,
@@ -339,19 +513,68 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
     }));
 
     await expect(sql<Array<{
+      stage_key: string;
+      started_at: Date;
+      ended_at: Date | null;
+    }>>`
+      SELECT stage_key, started_at, ended_at
+      FROM focowiki.source_event_summaries
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND source_file_public_id = 'file-semantic-ready'
+      ORDER BY sequence_number, created_at, public_id
+    `).resolves.toEqual([
+      {
+        stage_key: 'graphrag_processing',
+        started_at: new Date('2026-08-08T00:00:20.000Z'),
+        ended_at: new Date('2026-08-08T00:01:00.000Z')
+      },
+      {
+        stage_key: 'generation_activation',
+        started_at: new Date('2026-08-08T00:01:00.000Z'),
+        ended_at: new Date('2026-08-08T00:01:00.000Z')
+      }
+    ]);
+
+    await expect(sql<Array<{
+      public_id: string;
       status: string;
+      safe_error_code: string | null;
       model_invocation_status: string | null;
       model_invocation_model_name: string | null;
     }>>`
-      SELECT status, model_invocation_status, model_invocation_model_name
+      SELECT public_id, status, safe_error_code,
+             model_invocation_status, model_invocation_model_name
       FROM focowiki.source_files
       WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND public_id = 'file-semantic-ready'
-    `).resolves.toEqual([{
-      status: 'ready',
-      model_invocation_status: 'completed',
-      model_invocation_model_name: 'test-generation'
-    }]);
+        AND public_id IN (
+          'file-semantic-ready',
+          'file-publication-recovery',
+          'file-model-failure'
+        )
+      ORDER BY public_id COLLATE "C"
+    `).resolves.toEqual([
+      {
+        public_id: 'file-model-failure',
+        status: 'failed',
+        safe_error_code: 'SOURCE_MODEL_FAILED',
+        model_invocation_status: null,
+        model_invocation_model_name: null
+      },
+      {
+        public_id: 'file-publication-recovery',
+        status: 'ready',
+        safe_error_code: null,
+        model_invocation_status: null,
+        model_invocation_model_name: null
+      },
+      {
+        public_id: 'file-semantic-ready',
+        status: 'ready',
+        safe_error_code: null,
+        model_invocation_status: 'completed',
+        model_invocation_model_name: 'test-generation'
+      }
+    ]);
     await expect(sql<Array<{
       event_public_id: string;
       event_type: string;
@@ -361,21 +584,207 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
       SELECT event_public_id, event_type, event_payload, state
       FROM focowiki.webhook_deliveries
       WHERE subscription_public_id = 'webhook-semantic-publication-ready'
-    `).resolves.toEqual([{
-      event_public_id: expect.stringMatching(/^event-source-completed-/u),
-      event_type: 'source_file.completed',
-      event_payload: {
-        knowledgeBaseId,
-        sourceFileId: 'file-semantic-ready',
-        sourceRevisionId: 'revision-semantic-ready'
+      ORDER BY event_payload ->> 'sourceFileId' COLLATE "C"
+    `).resolves.toEqual([
+      {
+        event_public_id: expect.stringMatching(/^event-source-completed-/u),
+        event_type: 'source_file.completed',
+        event_payload: {
+          knowledgeBaseId,
+          sourceFileId: 'file-publication-recovery',
+          sourceRevisionId: 'revision-publication-recovery'
+        },
+        state: 'queued'
       },
-      state: 'queued'
-    }]);
+      {
+        event_public_id: expect.stringMatching(/^event-source-completed-/u),
+        event_type: 'source_file.completed',
+        event_payload: {
+          knowledgeBaseId,
+          sourceFileId: 'file-semantic-ready',
+          sourceRevisionId: 'revision-semantic-ready'
+        },
+        state: 'queued'
+      }
+    ]);
     await expect(stages.summarizeOperation({
       knowledgeBaseId,
       operationPublicId: sourceOperationPublicId,
       semanticGenerationPublicId: active.publicId
     })).resolves.toMatchObject({ totalCount: 7, completedCount: 7, pendingCount: 0 });
+  });
+
+  it('restores only recoverable publication failures from maintenance dependencies', async () => {
+    const knowledgeBaseId = 'kb-semantic-maintenance-recovery';
+    const operationPublicId = 'operation-semantic-maintenance-recovery';
+    const sourceOperationPublicId = 'operation-semantic-maintenance-source';
+    const candidatePublicId = 'candidate-semantic-maintenance-recovery';
+    await createPostgresKnowledgeBaseCreation({
+      sql,
+      resolveSemanticTarget: async (requestedKnowledgeBaseId) =>
+        target(requestedKnowledgeBaseId)
+    }).create({
+      publicId: knowledgeBaseId,
+      name: 'Maintenance publication recovery',
+      description: null
+    });
+    await seedSource(
+      knowledgeBaseId,
+      'file-maintenance-publication-failure',
+      'revision-maintenance-publication-failure'
+    );
+    await seedSource(
+      knowledgeBaseId,
+      'file-maintenance-model-failure',
+      'revision-maintenance-model-failure'
+    );
+    await sql`
+      UPDATE focowiki.source_files
+      SET status = 'failed', safe_error_code = CASE public_id
+            WHEN 'file-maintenance-publication-failure' THEN 'PUBLICATION_FAILED'
+            ELSE 'SOURCE_MODEL_FAILED'
+          END,
+          safe_error_message = NULL
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state,
+        target_kind, target_public_id, completed_at
+      ) VALUES (
+        ${operationPublicId}, ${knowledgeBaseId}, 'maintenance',
+        'processing', 'knowledge_base', ${knowledgeBaseId}, NULL
+      ), (
+        ${sourceOperationPublicId}, ${knowledgeBaseId}, 'source_processing',
+        'completed', 'source_file', 'file-maintenance-publication-failure',
+        '2026-08-08T00:00:30.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.operation_idempotency (
+        public_id, knowledge_base_id, idempotency_key, request_hash,
+        operation_public_id, expires_at
+      ) VALUES (
+        'idempotency-semantic-maintenance-recovery', ${knowledgeBaseId},
+        'semantic-maintenance-recovery', ${'9'.repeat(64)},
+        ${operationPublicId}, '2027-08-08T00:00:00.000Z'
+      )
+    `;
+    const active = await generations.getActiveProjection(knowledgeBaseId);
+    if (!active) throw new Error('Missing active semantic projection');
+    await stages.enqueue({
+      items: planSemanticSourceStages({
+        knowledgeBaseId,
+        operationPublicId: sourceOperationPublicId,
+        semanticGenerationPublicId: active.publicId,
+        sourceFilePublicId: 'file-maintenance-publication-failure',
+        sourceRevisionPublicId: 'revision-maintenance-publication-failure',
+        extractionContractVersion: active.extractionContractVersion,
+        embeddingConfigurationRevisionPublicId:
+          active.embeddingConfigurationRevisionPublicId,
+        settingsSnapshot: {
+          projectionContractPublicId: active.projectionContractPublicId
+        },
+        dirtyCommunityPartitionKeys: [],
+        includeValidation: true,
+        maximumAttempts: 3
+      }),
+      enqueuedAt: '2026-08-08T00:00:00.000Z'
+    });
+    await sql`
+      UPDATE focowiki.semantic_stage_work_items
+      SET state = CASE WHEN stage_kind = 'validation' THEN 'failed' ELSE 'completed' END,
+          safe_error_code = CASE WHEN stage_kind = 'validation'
+            THEN 'PUBLICATION_FAILED' ELSE NULL END,
+          checkpoint = CASE WHEN stage_kind = 'publication'
+            THEN ${sql.json({ candidatePublicId: 'candidate-before-maintenance' })}
+            ELSE '{}'::jsonb END,
+          completed_at = '2026-08-08T00:00:30.000Z',
+          updated_at = '2026-08-08T00:00:30.000Z'
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND operation_public_id = ${sourceOperationPublicId}
+    `;
+    await createPostgresStorageVnextReleaseRepository(sql).createCandidate({
+      publicId: candidatePublicId,
+      knowledgeBaseId,
+      operationPublicId,
+      candidateRootPublicId: 'root-semantic-maintenance-recovery',
+      expectedActiveRootPublicId: null,
+      expectedActiveRevision: 0,
+      changedFacts: [{
+        kind: 'knowledge_base',
+        publicId: knowledgeBaseId,
+        change: 'updated'
+      }],
+      dependencies: [
+        {
+          kind: 'search',
+          publicId: 'file-maintenance-publication-failure',
+          reasonCode: 'search_document'
+        },
+        {
+          kind: 'search',
+          publicId: 'file-maintenance-model-failure',
+          reasonCode: 'search_document'
+        }
+      ],
+      idempotency: {
+        key: 'semantic-maintenance-recovery',
+        requestHash: '9'.repeat(64)
+      },
+      createdAt: '2026-08-08T00:00:00.000Z'
+    });
+
+    const hooks = createPostgresSemanticPublicationReadinessHooks();
+    await sql.begin((transaction) => hooks.beforeActivate!({
+      transaction,
+      knowledgeBaseId,
+      candidatePublicId,
+      operationPublicId,
+      rollbackExpiresAt: null,
+      eventExpiresAt: '2026-09-08T00:00:00.000Z',
+      activatedAt: '2026-08-08T00:01:00.000Z'
+    }));
+
+    await expect(sql<Array<{
+      public_id: string;
+      status: string;
+      safe_error_code: string | null;
+    }>>`
+      SELECT public_id, status, safe_error_code
+      FROM focowiki.source_files
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+      ORDER BY public_id COLLATE "C"
+    `).resolves.toEqual([
+      {
+        public_id: 'file-maintenance-model-failure',
+        status: 'failed',
+        safe_error_code: 'SOURCE_MODEL_FAILED'
+      },
+      {
+        public_id: 'file-maintenance-publication-failure',
+        status: 'ready',
+        safe_error_code: null
+      }
+    ]);
+    await expect(sql<Array<{
+      state: string;
+      safe_error_code: string | null;
+      checkpoint: Record<string, unknown>;
+    }>>`
+      SELECT state, safe_error_code, checkpoint
+      FROM focowiki.semantic_stage_work_items
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND operation_public_id = ${sourceOperationPublicId}
+        AND stage_kind = 'validation'
+    `).resolves.toEqual([{
+      state: 'completed',
+      safe_error_code: null,
+      checkpoint: {
+        releaseActivated: true,
+        releaseCandidatePublicId: candidatePublicId
+      }
+    }]);
   });
 
   it('runs the contracted upload lifecycle in order and keeps readiness behind publication', async () => {
@@ -988,6 +1397,136 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
       state: 'ready',
       revision: candidate.revision + 1
     });
+  });
+
+  it('clones reusable graph facts without copying vector or stage state', async () => {
+    const knowledgeBaseId = 'kb-semantic-fact-clone';
+    const activeOperationPublicId = 'operation-semantic-fact-clone-active';
+    const adoptionOperationPublicId = 'operation-semantic-fact-clone-adoption';
+    const activePublicId = 'semantic-fact-clone-active';
+    const candidatePublicId = 'semantic-fact-clone-candidate';
+    const sourceFilePublicId = 'file-fact-clone';
+    const sourceRevisionPublicId = 'revision-fact-clone';
+    await seedKnowledgeBase(knowledgeBaseId, [
+      activeOperationPublicId,
+      adoptionOperationPublicId
+    ]);
+    await seedSource(knowledgeBaseId, sourceFilePublicId, sourceRevisionPublicId);
+    const active = await generations.createCandidate({
+      operationPublicId: activeOperationPublicId,
+      candidatePublicId: activePublicId,
+      expectedPredecessorPublicId: null,
+      target: target(knowledgeBaseId),
+      contractFingerprintSha256: '1'.repeat(64)
+    });
+    await facts.replaceSourceFacts(desiredFacts(
+      knowledgeBaseId,
+      activePublicId,
+      sourceFilePublicId,
+      sourceRevisionPublicId
+    ));
+    await sql`
+      INSERT INTO focowiki.semantic_communities (
+        knowledge_base_id, semantic_generation_public_id, public_id,
+        source_partition_key, partition_key, level, title, revision
+      ) VALUES (
+        ${knowledgeBaseId}, ${activePublicId}, 'community-fact-clone',
+        'source-partition-fact-clone', 'partition-fact-clone', 0,
+        'Fact clone community', 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_community_memberships (
+        knowledge_base_id, semantic_generation_public_id,
+        community_public_id, entity_public_id, membership_weight
+      ) VALUES (
+        ${knowledgeBaseId}, ${activePublicId}, 'community-fact-clone',
+        'entity-fact-clone-a', 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_community_reports (
+        knowledge_base_id, semantic_generation_public_id, public_id,
+        community_public_id, input_graph_version, boundary_version,
+        summary, report_checksum_sha256
+      ) VALUES (
+        ${knowledgeBaseId}, ${activePublicId}, 'report-fact-clone',
+        'community-fact-clone', 'graph-v1', 'boundary-v1',
+        'Reusable community summary.', ${'2'.repeat(64)}
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_entity_partitions (
+        knowledge_base_id, semantic_generation_public_id,
+        entity_public_id, partition_key, input_version
+      ) VALUES (
+        ${knowledgeBaseId}, ${activePublicId}, 'entity-fact-clone-a',
+        'partition-fact-clone', 'graph-v1'
+      )
+    `;
+    await sql`
+      UPDATE focowiki.semantic_generations
+      SET state = 'ready', revision = revision + 1
+      WHERE public_id = ${activePublicId}
+    `;
+    await generations.activateCandidate({
+      knowledgeBaseId,
+      candidatePublicId: activePublicId,
+      expectedPredecessorPublicId: null,
+      expectedCandidateRevision: active.revision + 1,
+      activatedAt: '2027-08-08T00:00:00.000Z'
+    });
+    await generations.createCandidate({
+      operationPublicId: adoptionOperationPublicId,
+      candidatePublicId,
+      expectedPredecessorPublicId: activePublicId,
+      target: target(knowledgeBaseId),
+      contractFingerprintSha256: '3'.repeat(64)
+    });
+
+    const first = await generations.cloneReusableFacts({
+      knowledgeBaseId,
+      predecessorPublicId: activePublicId,
+      candidatePublicId
+    });
+    const second = await generations.cloneReusableFacts({
+      knowledgeBaseId,
+      predecessorPublicId: activePublicId,
+      candidatePublicId
+    });
+    expect(first).toEqual(second);
+    expect(first.sourceCount).toBe(1);
+    expect(first.factCount).toBeGreaterThan(0);
+
+    for (const tableName of [
+      'semantic_source_reconciliations',
+      'semantic_entities',
+      'semantic_entity_aliases',
+      'semantic_evidence',
+      'semantic_mentions',
+      'semantic_entity_observations',
+      'semantic_relationships',
+      'semantic_relationship_evidence',
+      'semantic_relationship_observations',
+      'semantic_reverse_references',
+      'semantic_communities',
+      'semantic_community_memberships',
+      'semantic_community_reports',
+      'semantic_entity_partitions'
+    ] as const) {
+      await expect(countGenerationRows(tableName, activePublicId))
+        .resolves.toBeGreaterThan(0);
+      await expect(countGenerationRows(tableName, candidatePublicId))
+        .resolves.toBe(await countGenerationRows(tableName, activePublicId));
+    }
+    for (const tableName of [
+      'semantic_stage_work_items',
+      'semantic_dirty_partitions',
+      'semantic_embedding_artifact_refs',
+      'semantic_vector_documents'
+    ] as const) {
+      await expect(countGenerationRows(tableName, candidatePublicId)).resolves.toBe(0);
+    }
   });
 
   it('discards one failed maintenance candidate and orphans only unowned artifacts', async () => {
@@ -1786,6 +2325,45 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
     await expect(countRows(
       'semantic_vector_documents', 'kb-semantic-vector'
     )).resolves.toBe(1);
+    await expect(vectors.listSourceDocuments({
+      knowledgeBaseId: 'kb-semantic-vector',
+      semanticGenerationPublicId: 'semantic-vector',
+      sourceFilePublicId: 'file-vector',
+      limit: 10
+    })).resolves.toEqual([{
+      publicId: 'vector-document-main',
+      ownerPublicId: 'entity-vector'
+    }]);
+    await expect(sql.begin((transaction) =>
+      enqueueSemanticVectorDocumentCleanupActions(transaction, {
+        knowledgeBaseId: 'kb-semantic-vector',
+        operationPublicId: 'operation-vector',
+        sourceRevisionPublicId: 'revision-vector',
+        notBefore: '2027-08-08T00:00:01.000Z'
+      }))).resolves.toBe(1);
+    await expect(sql<Array<{
+      action_kind: string;
+      cleanup_plane: string;
+      search_provider_kind: string;
+      resource_kind: string;
+      resource_public_id: string;
+      checkpoint: Record<string, unknown>;
+    }>>`
+      SELECT action_kind, cleanup_plane, search_provider_kind,
+             resource_kind, resource_public_id, checkpoint
+      FROM focowiki.cleanup_actions
+      WHERE operation_public_id = 'operation-vector'
+    `).resolves.toEqual([{
+      action_kind: 'semantic_vector_document_cleanup',
+      cleanup_plane: 'search',
+      search_provider_kind: 'opensearch',
+      resource_kind: 'semantic_vector_document',
+      resource_public_id: 'vector-document-main',
+      checkpoint: {
+        semanticGenerationPublicId: 'semantic-vector',
+        mappingFingerprintSha256: '7'.repeat(64)
+      }
+    }]);
     const unowned = planSemanticVectorProjection({
       indexPrefix: 'focowiki',
       knowledgeBaseId: 'kb-semantic-vector',
@@ -1815,6 +2393,38 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
     await expect(countRows(
       'semantic_vector_documents', 'kb-semantic-vector'
     )).resolves.toBe(1);
+    const deletion = planSemanticVectorProjection({
+      indexPrefix: 'focowiki',
+      knowledgeBaseId: 'kb-semantic-vector',
+      semanticGenerationPublicId: 'semantic-vector',
+      projectionContractPublicId: 'semantic-contract-semantic-vector',
+      embeddingConfigurationRevisionPublicId: 'embedding-revision',
+      dimension: 8,
+      mappingFingerprintSha256: '7'.repeat(64),
+      upserts: [],
+      deletes: [{
+        publicId: 'vector-document-main',
+        ownerPublicId: 'entity-vector'
+      }]
+    });
+    await expect(vectors.prepareImpacts({
+      plan: deletion, preparedAt: '2027-08-08T00:00:03.000Z'
+    })).resolves.toEqual({ prepared: 0, deleted: 1 });
+    await expect(vectors.listSourceDocuments({
+      knowledgeBaseId: 'kb-semantic-vector',
+      semanticGenerationPublicId: 'semantic-vector',
+      sourceFilePublicId: 'file-vector',
+      limit: 10
+    })).resolves.toEqual([{
+      publicId: 'vector-document-main',
+      ownerPublicId: 'entity-vector'
+    }]);
+    await expect(vectors.confirmImpacts({
+      plan: deletion, confirmedAt: '2027-08-08T00:00:04.000Z'
+    })).resolves.toBe(true);
+    await expect(countRows(
+      'semantic_vector_documents', 'kb-semantic-vector'
+    )).resolves.toBe(0);
   });
 
   it('claims, pages, checkpoints, and supersedes one bounded community partition', async () => {
@@ -1968,7 +2578,10 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
   });
 
   it('pages provider vectors before purging one source semantic scope', async () => {
-    await seedKnowledgeBase('kb-semantic-source-delete', ['operation-source-delete']);
+    await seedKnowledgeBase('kb-semantic-source-delete', [
+      'operation-source-delete',
+      'operation-source-delete-retired'
+    ]);
     await seedSource(
       'kb-semantic-source-delete',
       'file-source-delete',
@@ -2148,9 +2761,141 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
       limit: requestedVectorHits.length
     })).resolves.toEqual(['vector-source-delete']);
 
+    const deletionStagePlan = planSemanticSourceStages({
+      knowledgeBaseId: 'kb-semantic-source-delete',
+      operationPublicId: 'operation-source-delete',
+      semanticGenerationPublicId: 'semantic-source-delete',
+      sourceFilePublicId: 'file-source-delete',
+      sourceRevisionPublicId: 'revision-source-delete',
+      extractionContractVersion: 'extract-v1',
+      embeddingConfigurationRevisionPublicId: 'embedding-revision',
+      settingsSnapshot: {
+        projectionContractPublicId: 'semantic-contract-semantic-source-delete'
+      },
+      dirtyCommunityPartitionKeys: [],
+      includeValidation: true,
+      maximumAttempts: 3
+    });
+    await stages.enqueue({
+      items: deletionStagePlan,
+      enqueuedAt: '2027-08-08T00:00:00.000Z'
+    });
+    await sql`
+      UPDATE focowiki.semantic_stage_work_items
+      SET state = 'running', lease_owner = 'deletion-race-worker',
+          lease_expires_at = '2027-08-08T00:01:00.000Z',
+          execution_started_at = '2027-08-08T00:00:00.000Z'
+      WHERE knowledge_base_id = 'kb-semantic-source-delete'
+        AND source_file_public_id = 'file-source-delete'
+        AND stage_kind = 'vector'
+    `;
+    await expect(deletions.hasRunningSourceWork({
+      knowledgeBaseId: 'kb-semantic-source-delete',
+      sourceFilePublicIds: ['file-source-delete']
+    })).resolves.toBe(true);
+    await expect(deletions.hasRunningKnowledgeBaseWork({
+      knowledgeBaseId: 'kb-semantic-source-delete'
+    })).resolves.toBe(true);
+    await expect(deletions.cancelSourceWork({
+      knowledgeBaseId: 'kb-semantic-source-delete',
+      sourceFilePublicIds: ['file-source-delete'],
+      requestedAt: '2027-08-08T00:00:01.000Z'
+    })).resolves.toBe(deletionStagePlan.length);
+    await expect(deletions.hasRunningSourceWork({
+      knowledgeBaseId: 'kb-semantic-source-delete',
+      sourceFilePublicIds: ['file-source-delete']
+    })).resolves.toBe(true);
+    await sql`
+      UPDATE focowiki.semantic_stage_work_items
+      SET state = 'cancelled', lease_owner = NULL, lease_expires_at = NULL,
+          execution_started_at = NULL, completed_at = '2027-08-08T00:00:02.000Z'
+      WHERE knowledge_base_id = 'kb-semantic-source-delete'
+        AND source_file_public_id = 'file-source-delete'
+        AND state = 'running'
+    `;
+    await expect(deletions.hasRunningSourceWork({
+      knowledgeBaseId: 'kb-semantic-source-delete',
+      sourceFilePublicIds: ['file-source-delete']
+    })).resolves.toBe(false);
+    await expect(deletions.hasRunningKnowledgeBaseWork({
+      knowledgeBaseId: 'kb-semantic-source-delete'
+    })).resolves.toBe(false);
+    await sql`
+      UPDATE focowiki.semantic_vector_documents
+      SET provider_document_id = 'provider-vector-source-delete'
+      WHERE knowledge_base_id = 'kb-semantic-source-delete'
+        AND public_id = 'vector-source-delete'
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_generations (
+        public_id, knowledge_base_id, operation_public_id,
+        expected_predecessor_public_id, generation_role, state,
+        generation_model_configuration_public_id,
+        generation_model_configuration_revision, extraction_contract_version,
+        graph_schema_version, prompt_contract_version,
+        contract_fingerprint_sha256, revision, activated_at
+      )
+      SELECT 'semantic-source-delete-retired', knowledge_base_id,
+             'operation-source-delete-retired', NULL, 'historical', 'superseded',
+             generation_model_configuration_public_id,
+             generation_model_configuration_revision, extraction_contract_version,
+             graph_schema_version, prompt_contract_version,
+             contract_fingerprint_sha256, 2, activated_at
+      FROM focowiki.semantic_generations
+      WHERE public_id = 'semantic-source-delete'
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_projection_contracts (
+        public_id, knowledge_base_id, semantic_generation_public_id,
+        embedding_configuration_revision_public_id,
+        embedding_query_policy_revision_public_id, minimum_vector_relevance,
+        search_provider_kind, resolved_dimension, normalization,
+        artifact_schema_version, vector_schema_version,
+        mapping_fingerprint_sha256
+      )
+      SELECT 'semantic-contract-source-delete-retired', knowledge_base_id,
+             'semantic-source-delete-retired',
+             embedding_configuration_revision_public_id,
+             embedding_query_policy_revision_public_id, minimum_vector_relevance,
+             'meilisearch', resolved_dimension, normalization,
+             artifact_schema_version, vector_schema_version,
+             ${'6'.repeat(64)}
+      FROM focowiki.semantic_projection_contracts
+      WHERE public_id = 'semantic-contract-semantic-source-delete'
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_vector_documents (
+        knowledge_base_id, semantic_generation_public_id, public_id,
+        projection_contract_public_id,
+        embedding_configuration_revision_public_id, artifact_public_id,
+        vector_family, owner_public_id, source_file_public_id,
+        source_revision_public_id, evidence_target_path, dimension,
+        provider_document_id, state
+      )
+      SELECT knowledge_base_id, 'semantic-source-delete-retired',
+             'vector-source-delete-retired',
+             'semantic-contract-source-delete-retired',
+             embedding_configuration_revision_public_id, artifact_public_id,
+             vector_family, owner_public_id, source_file_public_id,
+             source_revision_public_id, evidence_target_path, dimension,
+             'provider-vector-source-delete-retired', 'active'
+      FROM focowiki.semantic_vector_documents
+      WHERE semantic_generation_public_id = 'semantic-source-delete'
+        AND public_id = 'vector-source-delete'
+    `;
+
+    await expect(deletions.deferUnavailableSourceVectors({
+      knowledgeBaseId: 'kb-semantic-source-delete',
+      operationPublicId: 'operation-source-delete',
+      sourceFilePublicIds: ['file-source-delete'],
+      selectedProviderKind: 'opensearch',
+      notBefore: '2027-08-08T00:00:02.000Z'
+    })).resolves.toBe(1);
+
     await expect(deletions.listSourceVectorPage({
       knowledgeBaseId: 'kb-semantic-source-delete',
       sourceFilePublicIds: ['file-source-delete'],
+      selectedProviderKind: 'opensearch',
       cursor: null,
       limit: 10
     })).resolves.toMatchObject({
@@ -2158,12 +2903,26 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
         semanticGenerationPublicId: 'semantic-source-delete',
         searchProviderKind: 'opensearch',
         documentIds: [
-          'vector-community-source-delete',
-          'vector-source-delete'
+          'provider-vector-source-delete',
+          'vector-community-source-delete'
         ]
       }],
       nextCursor: null
     });
+    await expect(sql<Array<{
+      search_provider_kind: string;
+      resource_public_id: string;
+      state: string;
+    }>>`
+      SELECT search_provider_kind, resource_public_id, state
+      FROM focowiki.cleanup_actions
+      WHERE operation_public_id = 'operation-source-delete'
+        AND action_kind = 'semantic_vector_document_cleanup'
+    `).resolves.toEqual([{
+      search_provider_kind: 'meilisearch',
+      resource_public_id: 'vector-source-delete-retired',
+      state: 'queued'
+    }]);
     await expect(deletions.purgeSourceState({
       knowledgeBaseId: 'kb-semantic-source-delete',
       sourceFilePublicIds: ['file-source-delete'],
@@ -2327,6 +3086,19 @@ describeOwnedDatabase('semantic PostgreSQL repositories', () => {
     const rows = await sql.unsafe<Array<{ count: string }>>(
       'SELECT count(*) AS count FROM focowiki.' + tableName + ' WHERE knowledge_base_id = $1',
       [knowledgeBaseId]
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  async function countGenerationRows(
+    tableName: string,
+    semanticGenerationPublicId: string
+  ): Promise<number> {
+    if (!/^[a-z_]+$/u.test(tableName)) throw new Error('Unsafe table name');
+    const rows = await sql.unsafe<Array<{ count: string }>>(
+      'SELECT count(*) AS count FROM focowiki.' + tableName
+        + ' WHERE semantic_generation_public_id = $1',
+      [semanticGenerationPublicId]
     );
     return Number(rows[0]?.count ?? 0);
   }

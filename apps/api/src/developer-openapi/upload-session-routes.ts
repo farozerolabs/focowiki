@@ -112,8 +112,9 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.put(`${prefix}/:uploadSessionId/entries/:entryId/content`, async (context) =>
     safe(context, async () => {
-      const body = context.req.raw.body;
-      if (!body || !isMarkdownContentType(context.req.header("content-type"))) {
+      const request = context.req.raw;
+      const body = request.body;
+      if (!body || !hasNonEmptyMarkdownBody(request)) {
         throw validationError("A text/markdown request body is required.");
       }
       const entry = await run(() =>
@@ -201,6 +202,15 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
 function isMarkdownContentType(value: string | undefined): boolean {
   return value?.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
+}
+
+export function hasNonEmptyMarkdownBody(request: Request): boolean {
+  const declaredLength = request.headers.get("content-length");
+  return Boolean(
+    request.body
+    && isMarkdownContentType(request.headers.get("content-type") ?? undefined)
+    && (declaredLength === null || Number(declaredLength) > 0)
+  );
 }
 
 async function run<T>(operation: () => Promise<T>, onInvalidPath?: () => Promise<void>): Promise<T> {
