@@ -91,7 +91,7 @@
     "docs:test:explorer": "node --import tsx --test scripts/docs/test/swagger-api-explorer.test.ts",
     "docs:validate:browser": "node scripts/docs/validate-swagger-api-explorer.mjs",
     "docs:validate": "pnpm openapi:check-docs-snapshot && pnpm docs:generate-api && pnpm docs:test:explorer && tsx scripts/docs/validate-docs.ts && vitepress build docs",
-    "test:validation": "tsx scripts/openapi/export-developer-openapi.ts && node --test scripts/validation/test/*.test.mjs"
+    "test:validation": "pnpm docs:generate-api && node --test scripts/validation/test/*.test.mjs"
   },
   "devDependencies": {
     "@redocly/cli": "2.35.1",

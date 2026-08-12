@@ -398,7 +398,7 @@ test("allows Admin API setting type fields and rejects unrelated symbols", () =>
   }).length, 2);
 });
 
-test("allows only storage-vNext validation scripts in the root package manifest", () => {
+test("allows only approved validation and deployment scripts in the root package manifest", () => {
   const baseline = {
     name: "focowiki",
     scripts: { test: "vitest" },
@@ -421,6 +421,24 @@ test("allows only storage-vNext validation scripts in the root package manifest"
     }
   };
   assert.deepEqual(validatePackageJsonScope(baseline, deploymentCommand), []);
+
+  const validationCommand = {
+    ...baseline,
+    scripts: {
+      ...baseline.scripts,
+      "test:validation": "pnpm docs:generate-api && node --test scripts/validation/test/*.test.mjs"
+    }
+  };
+  assert.deepEqual(validatePackageJsonScope(baseline, validationCommand), []);
+
+  const changedValidationCommand = {
+    ...validationCommand,
+    scripts: {
+      ...validationCommand.scripts,
+      "test:validation": "node --test scripts/validation/test/*.test.mjs"
+    }
+  };
+  assert.equal(validatePackageJsonScope(baseline, changedValidationCommand).length, 1);
 
   const changedDeploymentCommand = {
     ...deploymentCommand,
