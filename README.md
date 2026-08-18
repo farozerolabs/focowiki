@@ -97,8 +97,10 @@ Focowiki takes Markdown files and folders and turns them into a knowledge base t
 
 - **Upload documents and folders.** Add individual Markdown files or complete folder trees. Focowiki keeps their paths, names, metadata, links, and content.
 - **Browse organized knowledge.** Open documents from a file tree, move or rename files and folders, replace content, and remove outdated material.
-- **Find relevant documents.** Ask a complete natural-language question with default hybrid retrieval, browse directory indexes, follow related documents, and optionally rerank a limited number of source-grounded candidates. Search always returns readable source files; applications and Agents read the Markdown before using it as evidence. Once a knowledge base has a semantic contract, uploads and body replacements run GraphRAG and vector indexing automatically before becoming available.
-- **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow graph relationships, and manage document changes.
+- **Navigate an interconnected document collection.** Generated indexes, relationship views, and source pages use navigable document links, so readers can move between directories, related files, and supporting context instead of treating each document as an isolated item.
+- **Search, then read the complete source.** Ask a full natural-language question with hybrid retrieval and optional reranking. Focowiki uses search to locate relevant documents and always leads back to readable Markdown; it does not use traditional chunk-only RAG output as the final knowledge-reading mode.
+- **Give AI agents a native reading workflow.** Agents can browse indexes, open complete Markdown files, follow document links and relationships, search again, and compare source evidence through the Developer OpenAPI or the portable linked knowledge bundle.
+- **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow relationships, and manage document changes.
 - **Manage the system from the Admin UI.** Create knowledge bases, monitor file processing, configure models and runtime settings, and manage API keys.
 - **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, OpenSearch or Meilisearch, and S3-compatible storage.
 
