@@ -22,7 +22,7 @@
     "declares-fallback": 5,
     "defines-route": 68,
     "implemented-by": 12394,
-    "imports": 2607,
+    "imports": 2605,
     "presents": 181,
     "produces-output": 213,
     "queries-table": 512,
@@ -48,6 +48,6 @@
     "validation-only-module": 14
   },
   "nodeHash": "96a69b2ebdfe2e0702ac45a292802bc17810e182e5dd3d5c2ed2abcd27444829",
-  "edgeHash": "18f9f618e85057168af74fce6e97e2ad6e1c8c406049c8c735274f31b5cfc4ed",
+  "edgeHash": "edd521ec0058a15e8d64dd99577e216634e34e74514f8e7fad1aeff3de45c00b",
   "findingHash": "7325458a91dd42834edb7664f65b92d221f66df7312d62dd27dfa81b1e327e03"
 }

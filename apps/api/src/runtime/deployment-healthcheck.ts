@@ -15,10 +15,6 @@ import { assertDeploymentSecret } from "../security/runtime-secrets.js";
 import { createS3StorageAdapter } from "../storage/s3.js";
 import { createGraphRagRuntime } from
   "../semantic/graphrag/graph-rag-runtime.js";
-import { createRuntimeSettingsRepository } from
-  "../runtime-settings/repository.js";
-import { createPostgresEmbeddingConfigurationRepository } from
-  "../semantic/infrastructure/postgres-embedding-configuration-repository.js";
 
 type DeploymentHealthcheckRole =
   | "api"
@@ -41,6 +37,26 @@ type DeploymentDependencyHealthcheck = {
   checkWorkerRuntime?: (() => Promise<void>) | undefined;
   checkRole?: (() => Promise<void>) | undefined;
 };
+
+type WorkerRuntime = {
+  start: () => Promise<void>;
+  close: () => Promise<void>;
+};
+
+export async function runWorkerRuntimeHealthcheck(
+  createRuntime: () => WorkerRuntime = () => createGraphRagRuntime({
+    poolSize: 1,
+    maximumBacklog: 1,
+    maximumTasksPerChild: 1
+  })
+): Promise<void> {
+  const graphRag = createRuntime();
+  try {
+    await graphRag.start();
+  } finally {
+    await graphRag.close();
+  }
+}
 
 export async function runDeploymentDependencyHealthcheck(
   dependencies: DeploymentDependencyHealthcheck
@@ -132,26 +148,7 @@ export async function runRuntimeDeploymentHealthcheck(
     ...(options.role === "worker"
       ? {
           async checkWorkerRuntime() {
-            const [model, embeddings] = await Promise.all([
-              createRuntimeSettingsRepository(sql).getActiveModel(),
-              createPostgresEmbeddingConfigurationRepository(sql).list()
-            ]);
-            if (!model) {
-              throw new Error("Active generation model configuration is unavailable");
-            }
-            if (!embeddings.some((item) => item.lifecycleStatus === "active")) {
-              throw new Error("Active embedding model configuration is unavailable");
-            }
-            const graphRag = createGraphRagRuntime({
-              poolSize: 1,
-              maximumBacklog: 1,
-              maximumTasksPerChild: 1
-            });
-            try {
-              await graphRag.start();
-            } finally {
-              await graphRag.close();
-            }
+            await runWorkerRuntimeHealthcheck();
           }
         }
       : {}),
