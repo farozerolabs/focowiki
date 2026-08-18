@@ -72,7 +72,9 @@ describe("admin appearance defaults", () => {
     expect(homeSidebar).toContain("<SidebarMenuButton");
     expect(homeSidebar).toContain("<nav");
     expect(homeSidebar).toContain("<SettingsIcon");
+    expect(homeSidebar).toContain("<BotIcon");
     expect(homeSidebar).toContain('activeSection === "settings"');
+    expect(homeSidebar).toContain('activeSection === "model-settings"');
     expect(homeSidebar).toContain('aria-current={activeSection === "knowledge-bases" ? "page" : undefined}');
     expect(homePage).toContain("<SettingsPanel");
     expect(homePage).not.toContain("<SettingsIcon");

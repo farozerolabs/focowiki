@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { Hono } from "hono";
 import { createApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
+import { getClientIp } from "../src/security/request.js";
 import { createTestRedisCoordinator } from "./support/session.js";
 
 function createProductionConfig(): RuntimeConfig {
@@ -32,17 +34,12 @@ function createProductionConfig(): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+    generated: {
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     },
     pagination: {
       defaultPageSize: 50,
@@ -105,6 +102,47 @@ function createProductionConfig(): RuntimeConfig {
 }
 
 describe("production error responses", () => {
+  it("ignores client-supplied proxy IP headers when proxy trust is disabled", async () => {
+    const production = createProductionConfig();
+    const config = {
+      ...production,
+      security: {
+        ...production.security!,
+        trustedProxy: false
+      }
+    };
+    const app = new Hono();
+    app.get("/client-ip", (context) => context.json({
+      clientIp: getClientIp(config, context)
+    }));
+
+    const response = await app.request("/client-ip", {
+      headers: {
+        "x-forwarded-for": "198.51.100.70",
+        "x-real-ip": "198.51.100.71"
+      }
+    });
+
+    await expect(response.json()).resolves.toEqual({ clientIp: "local" });
+  });
+
+  it("uses the first forwarded client IP only when proxy trust is enabled", async () => {
+    const config = createProductionConfig();
+    const app = new Hono();
+    app.get("/client-ip", (context) => context.json({
+      clientIp: getClientIp(config, context)
+    }));
+
+    const response = await app.request("/client-ip", {
+      headers: {
+        "x-forwarded-for": "198.51.100.72, 198.51.100.73",
+        "x-real-ip": "198.51.100.74"
+      }
+    });
+
+    await expect(response.json()).resolves.toEqual({ clientIp: "198.51.100.72" });
+  });
+
   it("does not expose internal diagnostic details from uncaught runtime errors", async () => {
     const app = createApiApp({
       config: createProductionConfig(),

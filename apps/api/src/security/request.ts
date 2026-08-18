@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type { MiddlewareHandler } from "hono";
 import { resolveSecurityConfig, type RuntimeConfig } from "../config.js";
 
@@ -12,13 +13,26 @@ export function getClientIp(config: RuntimeConfig, context: RequestContext): str
     if (forwardedFor) {
       return forwardedFor;
     }
+
+    const realIp = context.req.header("x-real-ip")?.trim();
+    if (realIp) {
+      return realIp;
+    }
   }
 
-  return context.req.header("x-real-ip")?.trim() || "local";
+  return "local";
 }
 
 export function getRateLimitClientKey(config: RuntimeConfig, context: RequestContext): string {
   return getClientIp(config, context).replace(/[^a-zA-Z0-9:._-]/g, "_");
+}
+
+export function getAuditSourceIp(
+  config: RuntimeConfig,
+  context: RequestContext
+): string | null {
+  const clientIp = getClientIp(config, context);
+  return isIP(clientIp) ? clientIp : null;
 }
 
 export function getRequestOrigin(context: RequestContext): string | null {

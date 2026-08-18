@@ -49,14 +49,6 @@ export function createResilientRedisCoordinator(input: {
       run(() => coordinator.acquireSourceFileGraphLock(...arguments_), false),
     releaseSourceFileGraphLock: (...arguments_) =>
       run(() => coordinator.releaseSourceFileGraphLock(...arguments_), false),
-    recordSourceFileEvent: (...arguments_) =>
-      runVoid(() => coordinator.recordSourceFileEvent(...arguments_)),
-    recordSourceFileGraphState: (...arguments_) =>
-      runVoid(() => coordinator.recordSourceFileGraphState(...arguments_)),
-    acquireKnowledgeBasePublicationLock: (...arguments_) =>
-      run(() => coordinator.acquireKnowledgeBasePublicationLock(...arguments_), false),
-    releaseKnowledgeBasePublicationLock: (...arguments_) =>
-      run(() => coordinator.releaseKnowledgeBasePublicationLock(...arguments_), false),
     setPaginationCursor: (...arguments_) =>
       runVoid(() => coordinator.setPaginationCursor(...arguments_)),
     getPaginationCursor: (...arguments_) =>
@@ -83,6 +75,8 @@ export function createResilientRedisCoordinator(input: {
       runVoid(() => coordinator.setRuntimeSettingsVersion(...arguments_)),
     getRuntimeSettingsVersion: (...arguments_) =>
       run(() => coordinator.getRuntimeSettingsVersion(...arguments_), null),
+    notifyWorkerWork: (...arguments_) =>
+      run(() => coordinator.notifyWorkerWork(...arguments_), false),
     hitRateLimit: (scope, id, limit) =>
       run(() => coordinator.hitRateLimit(scope, id, limit), {
         allowed: true,

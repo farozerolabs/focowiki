@@ -1,4 +1,4 @@
-import { toBundleMarkdownHref } from "./public-bundle-path.js";
+import { portableMarkdownHref } from "./portable-bundle.js";
 
 export type OkfLogEntry = {
   occurredAt: string;
@@ -13,7 +13,7 @@ export type OkfLogEntry = {
 
 export type OkfLogMonthlySummary = {
   month: string;
-  publicationCount: number;
+  updateCount: number;
   changedFileCount: number;
 };
 
@@ -28,6 +28,8 @@ export const DEFAULT_OKF_LOG_LIMITS: OkfLogLimits = {
 };
 
 const FORBIDDEN_LOG_PATTERNS = [
+  /\b(?:s3)?object[\s_-]*(?:id|key|checksum)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+  /\b(?:storage[\s_-]*(?:key|prefix)|bucket(?:[\s_-]*name)?|(?:content|manifest)?checksum(?:[\s_-]*sha256)?|(?:meili(?:search)?[\s_-]*)?index[\s_-]*(?:uid|name)|(?:meili(?:search)?[\s_-]*)?task[\s_-]*(?:uid|name|id)|table[\s_-]*(?:name|id|identifier)|owner[\s_-]*row(?:[\s_-]*id)?|lease(?:[\s_-]*(?:id|token|owner|row))?|(?:legacy[\s_-]*)?generation[\s_-]*(?:details|history|kind|payload|row|state)|predecessor[\s_-]*generation[\s_-]*id|cleanup[\s_-]*(?:action[\s_-]*id|details|object[\s_-]*keys?)|deletion[\s_-]*intent[\s_-]*id)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
   /\bS3_PREFIX\b/gi,
   /\bs3:\/\/[^\s)]+/gi,
   /\b(?:release|task)-[a-z0-9-]+\b/gi,
@@ -92,7 +94,7 @@ function renderLogContent(entries: OkfLogEntry[], summaries: OkfLogMonthlySummar
     if (index === 0) {
       for (const summary of summaries) {
         lines.push(
-          `* **History summary**: ${summary.month} contains ${summary.publicationCount} publication events and ${summary.changedFileCount} changed files.`
+          `* **History summary**: ${summary.month} contains ${summary.updateCount} update events and ${summary.changedFileCount} changed files.`
         );
       }
     }
@@ -121,7 +123,8 @@ function renderLogEntryLine(entry: OkfLogEntry): string {
       path: cleanText(link.path)
     }))
     .filter((link) => link.title && isPublicBundlePath(link.path))
-    .map((link) => `[${escapeMarkdownLabel(link.title)}](${toBundleMarkdownHref(link.path)})`);
+    .map((link) => `[${escapeMarkdownLabel(link.title)}](${portableMarkdownHref(
+      "log.md", link.path)})`);
   const linkSuffix = links.length > 0 ? ` ${links.join(", ")}` : "";
 
   return `* **${escapeMarkdownLabel(action)}**: ${message}${linkSuffix}`;
@@ -141,12 +144,12 @@ function summarizeLogEntries(entries: OkfLogEntry[]): OkfLogMonthlySummary[] {
     const month = monthPart(entry.occurredAt);
     const existing = byMonth.get(month) ?? {
       month,
-      publicationCount: 0,
+      updateCount: 0,
       changedFileCount: 0
     };
     byMonth.set(month, {
       month,
-      publicationCount: existing.publicationCount + 1,
+      updateCount: existing.updateCount + 1,
       changedFileCount: existing.changedFileCount + (entry.changedFileCount ?? 0)
     });
   }
@@ -163,12 +166,12 @@ function combineMonthlySummaries(
   for (const summary of [...left, ...right]) {
     const existing = byMonth.get(summary.month) ?? {
       month: summary.month,
-      publicationCount: 0,
+      updateCount: 0,
       changedFileCount: 0
     };
     byMonth.set(summary.month, {
       month: summary.month,
-      publicationCount: existing.publicationCount + summary.publicationCount,
+      updateCount: existing.updateCount + summary.updateCount,
       changedFileCount: existing.changedFileCount + summary.changedFileCount
     });
   }
@@ -196,7 +199,7 @@ function monthPart(value: string): string {
 }
 
 function isPublicBundlePath(path: string): boolean {
-  return path === "index.md" || path === "log.md" || path === "schema.md" || path.startsWith("pages/");
+  return path === "index.md" || path === "log.md" || path.startsWith("pages/");
 }
 
 function cleanText(value: string | undefined): string {

@@ -1,32 +1,24 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
-  createUploadSessionService,
   UPLOAD_CONTENT_TRANSFER_CONCURRENCY,
-  UPLOAD_MANIFEST_PAGE_SIZE,
-  UPLOAD_SESSION_TTL_SECONDS
+  UPLOAD_MANIFEST_PAGE_SIZE
 } from "../application/upload-sessions.js";
-import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
 import {
   UploadSessionError,
   type UploadSessionEntryRecord
 } from "../domain/upload-session.js";
 import { SourcePathValidationError } from "../domain/source-path.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
-import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { ApplicationRuntime } from "../application/ports/runtime.js";
-import type { UploadSessionStoragePort } from "../application/ports/upload-session-storage.js";
-import { recordAdminAudit } from "./security.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
+import {
+  StorageVnextAdminUploadApplicationError,
+  type StorageVnextAdminUploadApplication
+} from "../storage-vnext/api/admin-upload-application.js";
 
 export function registerAdminUploadSessionRoutes(
   app: Hono,
   services: {
-    config: RuntimeConfig;
-    redis: RedisCoordinator | null;
-    repositories: AdminRepositories | null;
-    runtimeSettings: RuntimeSettingsService | null;
-    applicationRuntime: ApplicationRuntime;
-    uploadSessionStorage: UploadSessionStoragePort;
+    application: StorageVnextAdminUploadApplication;
+    audit: StorageVnextAdminAuditApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
@@ -37,10 +29,6 @@ export function registerAdminUploadSessionRoutes(
   const protectedRoute = [middlewares.requireAuth, middlewares.requireWriteProtection] as const;
 
   app.post(prefix, ...protectedRoute, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     const body = await readJson(context.req.raw);
     const idempotencyKey = context.req.header("idempotency-key")?.trim() ?? "";
     if (
@@ -51,13 +39,20 @@ export function registerAdminUploadSessionRoutes(
       return invalidRequest(context, "INVALID_UPLOAD_SESSION");
     }
     try {
-      const session = await environment.service.createSession({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const session = await services.application.createUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         idempotencyKey,
         declaredFileCount: body.declaredFileCount,
         declaredByteCount: body.declaredByteCount
       });
-      await recordUploadAudit(services, context, "upload_session_created", "success");
+      await recordUploadAudit(
+        services,
+        context,
+        "upload_session_created",
+        "success",
+        null,
+        session.id
+      );
       return context.json(
         {
           session,
@@ -74,10 +69,6 @@ export function registerAdminUploadSessionRoutes(
   });
 
   app.post(`${prefix}/:sessionId/entries`, ...protectedRoute, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     const body = await readJson(context.req.raw);
     if (!Array.isArray(body.entries) || body.entries.length > UPLOAD_MANIFEST_PAGE_SIZE) {
       await recordUploadAudit(services, context, "upload_session_invalid_path", "failure", "INVALID_UPLOAD_MANIFEST_PAGE");
@@ -89,8 +80,8 @@ export function registerAdminUploadSessionRoutes(
       return invalidRequest(context, "INVALID_UPLOAD_MANIFEST_ENTRY");
     }
     try {
-      const session = await environment.service.addManifestEntries({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const session = await services.application.addUploadEntries({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("sessionId") ?? "",
         entries: entries.filter(isDefined)
       });
@@ -104,26 +95,16 @@ export function registerAdminUploadSessionRoutes(
   });
 
   app.post(`${prefix}/:sessionId/seal`, ...protectedRoute, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     try {
-      const session = await environment.service.sealManifest({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const result = await services.application.sealUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("sessionId") ?? ""
       });
       await recordUploadAudit(services, context, "upload_session_sealed", "success");
-      const entries = await environment.service.listEntries({
-        knowledgeBaseId: environment.knowledgeBaseId,
-        sessionId: session.id,
-        limit: Math.min(UPLOAD_MANIFEST_PAGE_SIZE, 100),
-        cursor: null
-      });
       return context.json({
-        session,
-        sample: entries.items.map(toSafeEntry),
-        nextCursor: entries.nextCursor
+        session: result.session,
+        sample: result.entries.items.map(toSafeEntry),
+        nextCursor: result.entries.nextCursor
       });
     } catch (error) {
       return uploadSessionFailure(context, error);
@@ -131,17 +112,13 @@ export function registerAdminUploadSessionRoutes(
   });
 
   app.put(`${prefix}/:sessionId/entries/:entryId/content`, ...protectedRoute, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     const body = context.req.raw.body;
     if (!body || !isMarkdownContentType(context.req.header("content-type"))) {
       return invalidRequest(context, "INVALID_MARKDOWN_CONTENT");
     }
     try {
-      const entry = await environment.service.putEntryContent({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const entry = await services.application.writeUploadContent({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("sessionId") ?? "",
         entryId: context.req.param("entryId") ?? "",
         body
@@ -153,29 +130,24 @@ export function registerAdminUploadSessionRoutes(
   });
 
   app.get(`${prefix}/:sessionId`, middlewares.requireAuth, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     try {
-      const session = await environment.service.getSession({
-        knowledgeBaseId: environment.knowledgeBaseId,
-        sessionId: context.req.param("sessionId") ?? ""
-      });
       const transferState = readTransferState(context.req.query("transferState"));
       if (context.req.query("transferState") && !transferState) {
         return invalidRequest(context, "INVALID_UPLOAD_ENTRY_FILTER");
       }
-      const entries = await environment.service.listEntries({
-        knowledgeBaseId: environment.knowledgeBaseId,
-        sessionId: session.id,
+      const result = await services.application.getUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        sessionId: context.req.param("sessionId") ?? "",
         ...(transferState ? { transferState } : {}),
         limit: readLimit(context.req.query("limit"), UPLOAD_MANIFEST_PAGE_SIZE),
         cursor: context.req.query("cursor") ?? null
       });
       return context.json({
-        session,
-        entries: { items: entries.items.map(toSafeEntry), nextCursor: entries.nextCursor }
+        session: result.session,
+        entries: {
+          items: result.entries.items.map(toSafeEntry),
+          nextCursor: result.entries.nextCursor
+        }
       });
     } catch (error) {
       return uploadSessionFailure(context, error);
@@ -183,13 +155,9 @@ export function registerAdminUploadSessionRoutes(
   });
 
   app.post(`${prefix}/:sessionId/reconcile`, ...protectedRoute, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     try {
-      const session = await environment.service.reconcileReservations({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const session = await services.application.reconcileUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("sessionId") ?? ""
       });
       return context.json({ session });
@@ -199,13 +167,9 @@ export function registerAdminUploadSessionRoutes(
   });
 
   app.post(`${prefix}/:sessionId/finalize`, ...protectedRoute, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     try {
-      const session = await environment.service.finalizeSession({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const session = await services.application.finalizeUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("sessionId") ?? ""
       });
       await recordUploadAudit(services, context, "upload_session_finalized", "success");
@@ -216,13 +180,9 @@ export function registerAdminUploadSessionRoutes(
   });
 
   app.delete(`${prefix}/:sessionId`, ...protectedRoute, async (context) => {
-    const environment = await requireEnvironment(context, services);
-    if (environment instanceof Response) {
-      return environment;
-    }
     try {
-      const session = await environment.service.cancelSession({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const session = await services.application.cancelUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("sessionId") ?? ""
       });
       await recordUploadAudit(services, context, "upload_session_cancelled", "success");
@@ -231,29 +191,6 @@ export function registerAdminUploadSessionRoutes(
       return uploadSessionFailure(context, error);
     }
   });
-}
-
-async function requireEnvironment(
-  context: Context,
-  services: Parameters<typeof registerAdminUploadSessionRoutes>[1]
-) {
-  if (!services.repositories?.uploadSessions) {
-    return context.json({ error: { code: "SERVICE_UNAVAILABLE" } }, 503);
-  }
-  const knowledgeBaseId = context.req.param("knowledgeBaseId") ?? "";
-  const knowledgeBase = await services.repositories.knowledgeBases.getKnowledgeBase(knowledgeBaseId);
-  if (!knowledgeBase) {
-    return context.json({ error: { code: "NOT_FOUND" } }, 404);
-  }
-  return {
-    knowledgeBaseId,
-    service: createUploadSessionService({
-      repository: services.repositories.uploadSessions,
-      storage: services.uploadSessionStorage,
-      runtime: services.applicationRuntime,
-      sessionTtlSeconds: UPLOAD_SESSION_TTL_SECONDS
-    })
-  };
 }
 
 function isMarkdownContentType(value: string | undefined): boolean {
@@ -309,6 +246,12 @@ function uploadSessionFailure(
           : 409;
     return context.json({ error: { code: error.code } }, status);
   }
+  if (error instanceof StorageVnextAdminUploadApplicationError) {
+    return context.json(
+      { error: { code: error.code } },
+      error.code === "NOT_FOUND" ? 404 : 503
+    );
+  }
   throw error;
 }
 
@@ -317,15 +260,18 @@ async function recordUploadAudit(
   context: Context,
   eventType: string,
   result: "success" | "failure" | "blocked",
-  errorCode: string | null = null
+  errorCode: string | null = null,
+  targetPublicId: string | null = context.req.param("sessionId") ?? null
 ): Promise<void> {
-  await recordAdminAudit({
-    repositories: services.repositories,
-    config: services.config,
+  const knowledgeBaseId = context.req.param("knowledgeBaseId") ?? null;
+  await services.audit.record({
     context,
     eventType,
     result,
-    errorCode
+    errorCode,
+    knowledgeBaseId,
+    targetKind: targetPublicId ? "upload_session" : "knowledge_base",
+    targetPublicId: targetPublicId ?? knowledgeBaseId
   });
 }
 

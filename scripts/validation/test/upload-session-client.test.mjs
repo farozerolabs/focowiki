@@ -43,10 +43,18 @@ test("validation uploads use the complete nested upload-session lifecycle", asyn
       return { entry };
     }
     if (pathname.endsWith("/finalize")) {
-      entries.forEach((entry, index) => {
-        entry.sourceFileId = `source-file-${index + 1}`;
-      });
       return { session: { ...session, state: "completed" } };
+    }
+    if (pathname.endsWith("/source-files")) {
+      return {
+        items: entries.map((entry, index) => ({
+          sourceFileId: `source-file-${index + 1}`,
+          name: entry.name,
+          relativePath: entry.relativePath,
+          generatedPath: entry.generatedPath
+        })),
+        nextCursor: null
+      };
     }
     if (options.query?.transferState === "missing") {
       return {
@@ -80,6 +88,7 @@ test("validation uploads use the complete nested upload-session lifecycle", asyn
     200
   );
   assert.equal(calls.some((call) => call.options.formData), false);
+  assert.equal(calls.some((call) => call.pathname.endsWith("/source-files")), true);
   assert.deepEqual(result.transport, { manifestPageSize: 1 });
   assert.equal("limits" in result, false);
 });
@@ -158,6 +167,7 @@ test("validation uploads entry bodies with the advertised bounded concurrency", 
   }));
   let activeTransfers = 0;
   let maxActiveTransfers = 0;
+  const transferEvents = [];
   const request = async (pathname, options = {}) => {
     if (pathname.endsWith("/upload-sessions") && options.method === "POST") {
       return {
@@ -190,10 +200,70 @@ test("validation uploads entry bodies with the advertised bounded concurrency", 
   await uploadMarkdownFilesWithSession({
     request,
     routeBase: "/openapi/v2/knowledge-bases/kb-test/upload-sessions",
-    files: entries.map((entry) => ({ relativePath: entry.relativePath, bytes: Buffer.from("# Test") }))
+    files: entries.map((entry) => ({ relativePath: entry.relativePath, bytes: Buffer.from("# Test") })),
+    onFileTransfer: (event) => transferEvents.push(event)
   });
 
   assert.equal(maxActiveTransfers, 2);
+  assert.deepEqual(transferEvents.map((event) => event.relativePath).sort(),
+    entries.map((entry) => entry.relativePath).sort());
+  assert.equal(transferEvents.every((event) =>
+    event.status === "completed"
+      && event.attempts === 1
+      && event.elapsedMs >= 0
+      && event.finishedAt >= event.startedAt), true);
+});
+
+test("validation retries one transient entry-body transfer without restarting the session", async () => {
+  const entry = {
+    id: "entry-retry",
+    relativePath: "guides/retry.md",
+    name: "retry.md",
+    disposition: "upload_required",
+    transferState: "missing",
+    sourceFileId: "source-file-retry",
+    generatedPath: "pages/guides/retry.md"
+  };
+  let contentAttempts = 0;
+  const request = async (pathname, options = {}) => {
+    if (pathname.endsWith("/upload-sessions") && options.method === "POST") {
+      return {
+        session: { id: "upload-session-retry", state: "draft", counts: {} },
+        transport: { manifestPageSize: 10, contentUploadConcurrency: 2 }
+      };
+    }
+    if (pathname.endsWith("/entries")) return { session: { state: "manifest_building" } };
+    if (pathname.endsWith("/seal")) {
+      return {
+        session: {
+          state: "manifest_sealed",
+          counts: { waitingReservation: 0, rejectedDeleting: 0 }
+        }
+      };
+    }
+    if (pathname.endsWith("/entries/entry-retry/content")) {
+      contentAttempts += 1;
+      if (contentAttempts === 1) throw new Error("transient storage failure");
+      entry.transferState = "uploaded";
+      return { entry };
+    }
+    if (pathname.endsWith("/finalize")) {
+      return { session: { id: "upload-session-retry", state: "completed" } };
+    }
+    if (options.query?.transferState === "missing") {
+      return { session: { state: "uploading" }, entries: { items: [entry], nextCursor: null } };
+    }
+    return { session: { state: "completed" }, entries: { items: [entry], nextCursor: null } };
+  };
+
+  const result = await uploadMarkdownFilesWithSession({
+    request,
+    routeBase: "/openapi/v2/knowledge-bases/kb-test/upload-sessions",
+    files: [{ relativePath: entry.relativePath, bytes: Buffer.from("# Retry") }]
+  });
+
+  assert.equal(result.session.state, "completed");
+  assert.equal(contentAttempts, 2);
 });
 
 test("validation rejects the removed upload limits contract", async () => {

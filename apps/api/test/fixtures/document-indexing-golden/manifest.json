@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "focowiki-document-indexing-golden-v1",
+  "entries": [
+    {
+      "fixturePath": "root.md",
+      "logicalPath": "root.md",
+      "sha256": "7a64f67685cb4437eff42d736adaf2c9d76216f7ec952b97d7eb678904d679bf",
+      "roles": ["nested_navigation_root", "metadata_passthrough", "mutual_reference_source"]
+    },
+    {
+      "fixturePath": "nested/target.md",
+      "logicalPath": "nested/target.md",
+      "sha256": "c7d8b79466caf63920bbcc3e91eac5c0f375f6405975dce3e58e14d6962f1d77",
+      "roles": ["nested_path", "mutual_reference_target", "one_way_reference_target"]
+    },
+    {
+      "fixturePath": "one-way.md",
+      "logicalPath": "one-way.md",
+      "sha256": "5dc96b0feec304d060ab9d6ea87f19ec918647201e21895702630e381128a1ce",
+      "roles": ["one_way_reference_source"]
+    },
+    {
+      "fixturePath": "unresolved.md",
+      "logicalPath": "unresolved.md",
+      "sha256": "ec9ae29d9e9cede0920c1a602f8a23aaf376c71d5afa88cba56be72bf5ab2b1e",
+      "roles": ["unresolved_reference"]
+    },
+    {
+      "fixturePath": "duplicates/first.md",
+      "logicalPath": "duplicates/first.md",
+      "sha256": "535c7a722b74f9c50db13bff59a777369b5cf6182b3f85f1ac09bcb52bba903d",
+      "roles": ["duplicate_title", "duplicate_alias"]
+    },
+    {
+      "fixturePath": "duplicates/second.md",
+      "logicalPath": "duplicates/second.md",
+      "sha256": "5ed7597456aaf091a613982d317567b898d293bb1f0af1b55248f92581876731",
+      "roles": ["duplicate_title", "duplicate_alias"]
+    },
+    {
+      "fixturePath": "ambiguous-reference.md",
+      "logicalPath": "ambiguous-reference.md",
+      "sha256": "4e66ac7fb18d708f0860a166d3d6cb92c2715b96d54873a9a5ab3427af6373b8",
+      "roles": ["ambiguous_reference"]
+    },
+    {
+      "fixturePath": "unrelated.md",
+      "logicalPath": "unrelated.md",
+      "sha256": "c735f31d9a05039bb658201e599f2255c400a04d74bb003aa430c7bf43ccfdc2",
+      "roles": ["unrelated"]
+    },
+    {
+      "fixturePath": "semantic/selected.md",
+      "logicalPath": "semantic/selected.md",
+      "sha256": "00b287b491f64835ec086b6240a865c25936304a5a61708db5ec48509eec6acc",
+      "roles": ["graphrag_selected"],
+      "stableSampleBucket": 148
+    },
+    {
+      "fixturePath": "semantic/nonselected.md",
+      "logicalPath": "semantic/nonselected.md",
+      "sha256": "11a82e62a18f3c194daa582b2b76eaaa34af948b882153edb2128b4c94072248",
+      "roles": ["graphrag_nonselected"],
+      "stableSampleBucket": 4594
+    },
+    {
+      "fixturePath": "invalid/empty.md",
+      "logicalPath": "invalid/empty.md",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "roles": ["empty_body"]
+    },
+    {
+      "fixturePath": "invalid/frontmatter.md",
+      "logicalPath": "invalid/frontmatter.md",
+      "sha256": "aa13145b47dedf2c0da5ccd011591b5219db5ef3ee23095c88f2e8506a0a8335",
+      "roles": ["invalid_frontmatter"]
+    },
+    {
+      "fixturePath": "history/replacement-v1.md",
+      "logicalPath": "history/replacement.md",
+      "sha256": "9da53b2550e626e4baaec248013b7125595d472cea59c13015b5c3a357a70e20",
+      "roles": ["replacement_history_v1"],
+      "applyOrder": 1
+    },
+    {
+      "fixturePath": "history/replacement-v2.md",
+      "logicalPath": "history/replacement.md",
+      "sha256": "e592efafd8541e3e6391e9dff7f391f8b08462ffe551837da9fa352659f5415b",
+      "roles": ["replacement_history_v2"],
+      "applyOrder": 2
+    }
+  ]
+}

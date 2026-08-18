@@ -13,6 +13,9 @@ import {
 } from "./admin-api";
 import { fileRelativePath, normalizeUploadRelativePath } from "./upload-selection";
 
+const CONTENT_UPLOAD_MAX_ATTEMPTS = 3;
+const CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS = 25;
+
 export type UploadClientStage =
   | "hashing"
   | "manifest"
@@ -37,7 +40,10 @@ export async function runUploadSession(input: {
   files: File[];
   onProgress: (progress: UploadClientProgress) => void;
   onSessionReady?: (sessionId: string, transport: UploadSessionTransport) => void;
+  signal?: AbortSignal | undefined;
 }): Promise<UploadClientResult> {
+  if (input.signal?.aborted) return canceledUploadResult();
+  const idempotencyKey = crypto.randomUUID();
   const manifest = [] as Array<{
     relativePath: string;
     declaredSize: number;
@@ -60,7 +66,7 @@ export async function runUploadSession(input: {
   }
   const created = await createUploadSession({
     knowledgeBaseId: input.knowledgeBaseId,
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey,
     declaredFileCount: manifest.length,
     declaredByteCount: manifest.reduce((sum, entry) => sum + entry.declaredSize, 0)
   });
@@ -69,6 +75,13 @@ export async function runUploadSession(input: {
   }
   const sessionId = created.session.id;
   input.onSessionReady?.(sessionId, created.transport);
+  if (input.signal?.aborted) {
+    return cancelFailedUploadSession({
+      knowledgeBaseId: input.knowledgeBaseId,
+      sessionId,
+      failure: { messageKey: "errors.uploadCancelled" }
+    });
+  }
   try {
     const result = await continueUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
@@ -76,8 +89,16 @@ export async function runUploadSession(input: {
       manifest,
       sessionId,
       transport: created.transport,
-      onProgress: input.onProgress
+      onProgress: input.onProgress,
+      signal: input.signal
     });
+    if (input.signal?.aborted) {
+      return cancelFailedUploadSession({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sessionId,
+        failure: { messageKey: "errors.uploadCancelled" }
+      });
+    }
     if (result.ok) return result;
     return cancelFailedUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
@@ -88,7 +109,11 @@ export async function runUploadSession(input: {
     return cancelFailedUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
       sessionId,
-      failure: { messageKey: "errors.uploadFailed" }
+      failure: {
+        messageKey: input.signal?.aborted
+          ? "errors.uploadCancelled"
+          : "errors.uploadFailed"
+      }
     });
   }
 }
@@ -104,12 +129,14 @@ async function continueUploadSession(input: {
   sessionId: string;
   transport: UploadSessionTransport;
   onProgress: (progress: UploadClientProgress) => void;
+  signal?: AbortSignal | undefined;
 }): Promise<UploadClientResult> {
   for (let offset = 0; offset < input.manifest.length; offset += input.transport.manifestPageSize) {
     const response = await addUploadManifestEntries({
       knowledgeBaseId: input.knowledgeBaseId,
       sessionId: input.sessionId,
-      entries: input.manifest.slice(offset, offset + input.transport.manifestPageSize)
+      entries: input.manifest.slice(offset, offset + input.transport.manifestPageSize),
+      signal: input.signal
     });
     if (isFailure(response)) {
       return { ok: false, failure: response, sessionId: input.sessionId };
@@ -123,7 +150,8 @@ async function continueUploadSession(input: {
   }
   const sealed = await sealUploadManifest({
     knowledgeBaseId: input.knowledgeBaseId,
-    sessionId: input.sessionId
+    sessionId: input.sessionId,
+    signal: input.signal
   });
   if (isFailure(sealed)) {
     return { ok: false, failure: sealed, sessionId: input.sessionId };
@@ -145,7 +173,8 @@ async function continueUploadSession(input: {
   if (session.counts.waitingReservation > 0) {
     const reconciled = await reconcileUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
-      sessionId: input.sessionId
+      sessionId: input.sessionId,
+      signal: input.signal
     });
     if (isFailure(reconciled)) {
       return { ok: false, failure: reconciled, sessionId: input.sessionId };
@@ -165,7 +194,8 @@ async function continueUploadSession(input: {
     files: input.files,
     transport: input.transport,
     session,
-    onProgress: input.onProgress
+    onProgress: input.onProgress,
+    signal: input.signal
   });
   if (!uploaded.ok) {
     return uploaded;
@@ -178,7 +208,8 @@ async function continueUploadSession(input: {
   });
   const finalized = await finalizeUploadSession({
     knowledgeBaseId: input.knowledgeBaseId,
-    sessionId: input.sessionId
+    sessionId: input.sessionId,
+    signal: input.signal
   });
   if (isFailure(finalized)) {
     return { ok: false, failure: finalized, sessionId: input.sessionId };
@@ -197,10 +228,17 @@ async function cancelFailedUploadSession(input: {
   sessionId: string;
   failure: ApiFailure;
 }): Promise<UploadClientResult> {
-  await cancelUploadSession({
+  const cancellation = await cancelUploadSession({
     knowledgeBaseId: input.knowledgeBaseId,
     sessionId: input.sessionId
-  }).catch(() => undefined);
+  }).catch(() => ({ messageKey: "errors.uploadCleanupFailed" }));
+  if (isFailure(cancellation)) {
+    return {
+      ok: false,
+      failure: { messageKey: "errors.uploadCleanupFailed" },
+      sessionId: input.sessionId
+    };
+  }
   return {
     ok: false,
     failure: input.failure,
@@ -208,11 +246,20 @@ async function cancelFailedUploadSession(input: {
   };
 }
 
+function canceledUploadResult(): UploadClientResult {
+  return {
+    ok: false,
+    failure: { messageKey: "errors.uploadFailed" },
+    sessionId: null
+  };
+}
+
 export async function cancelFolderUpload(input: {
   knowledgeBaseId: string;
   sessionId: string;
-}): Promise<void> {
-  await cancelUploadSession(input);
+}): Promise<ApiFailure | null> {
+  const result = await cancelUploadSession(input);
+  return isFailure(result) ? result : null;
 }
 
 async function transferMissingEntries(input: {
@@ -222,6 +269,7 @@ async function transferMissingEntries(input: {
   transport: UploadSessionTransport;
   session: UploadSession;
   onProgress: (progress: UploadClientProgress) => void;
+  signal?: AbortSignal | undefined;
 }): Promise<UploadClientResult> {
   const fileByPath = new Map(
     input.files.map((file) => [normalizeUploadRelativePath(fileRelativePath(file)), file])
@@ -235,7 +283,8 @@ async function transferMissingEntries(input: {
       sessionId: input.sessionId,
       transferState: "missing",
       cursor,
-      limit: input.transport.manifestPageSize
+      limit: input.transport.manifestPageSize,
+      signal: input.signal
     });
     if (isFailure(page)) {
       return { ok: false, failure: page, sessionId: input.sessionId };
@@ -249,11 +298,12 @@ async function transferMissingEntries(input: {
         if (!file) {
           throw new Error("UPLOAD_SELECTION_CHANGED");
         }
-        const response = await uploadSessionContent({
+        const response = await uploadEntryContentWithRetry({
           knowledgeBaseId: input.knowledgeBaseId,
           sessionId: input.sessionId,
           entryId: entry.id,
-          file
+          file,
+          signal: input.signal
         });
         if (isFailure(response)) {
           return response;
@@ -284,6 +334,31 @@ async function transferMissingEntries(input: {
   return { ok: true, session };
 }
 
+async function uploadEntryContentWithRetry(input: {
+  knowledgeBaseId: string;
+  sessionId: string;
+  entryId: string;
+  file: File;
+  signal?: AbortSignal | undefined;
+}): Promise<Awaited<ReturnType<typeof uploadSessionContent>>> {
+  let lastFailure: ApiFailure = { messageKey: "errors.uploadFailed" };
+  for (let attempt = 1; attempt <= CONTENT_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    if (input.signal?.aborted) return lastFailure;
+    try {
+      const response = await uploadSessionContent(input);
+      if (!isFailure(response)) return response;
+      lastFailure = response;
+    } catch {
+      lastFailure = { messageKey: "errors.uploadFailed" };
+    }
+    if (input.signal?.aborted) return lastFailure;
+    if (attempt < CONTENT_UPLOAD_MAX_ATTEMPTS) {
+      await sleep(CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS * attempt);
+    }
+  }
+  return lastFailure;
+}
+
 function isFailure(value: unknown): value is ApiFailure {
   return Boolean(value && typeof value === "object" && "messageKey" in value);
 }
@@ -311,4 +386,8 @@ async function mapWithConcurrency<T, R>(
     Array.from({ length: Math.min(concurrency, values.length) }, () => worker())
   );
   return results;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

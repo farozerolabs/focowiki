@@ -34,6 +34,8 @@ Focowiki 把清洗后的 Markdown 文件生成 OKF-style 知识库，让人、�
 
 Focowiki 使用可阅读的 Markdown 作为核心知识表示。系统保留元数据，生成索引和图关系文件，记录关联链接，并让 Agent 围绕资料库组织 Loop：读取索引、打开文件、抽取线索、继续检索、比对证据，并基于来源回答。
 
+生成 bundle 中，`pages/` 是权威可读内容，`_index/` 保存按页面路径关联的索引，`_graph/` 保存按页面路径关联的关系。Markdown 使用相对链接，逐文件关系资源镜像页面路径，因此完整目录被复制后，无需服务或 API 仍可继续导航。
+
 <img src="./docs/public/images/focowiki-architecture.png" alt="Focowiki 架构图" width="880" />
 
 ## 快速启动
@@ -42,8 +44,8 @@ Focowiki 使用可阅读的 Markdown 作为核心知识表示。系统保留元�
 
 安装 Focowiki 前，请确认机器满足以下要求：
 
-- 最小配置：CPU >= 2 Core，RAM >= 4 GiB；运行后台处理任务时建议使用 6 GiB RAM
-- 推荐配置：CPU >= 4 Core，RAM >= 8 GiB 或更高
+- 最小配置：CPU >= 4 Core，RAM >= 8 GiB
+- 启用语义增强时推荐：CPU >= 6 Core，RAM >= 12 GiB 或更高
 
 ```bash
 git clone https://github.com/farozerolabs/focowiki.git && cd focowiki
@@ -68,9 +70,11 @@ https://github.com/farozerolabs/focowiki
 Docker Compose 模板默认使用 `latest`。若需固定版本，在 `.env` 中指定镜像 tag：
 
 ```env
-FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.1.0
-FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:<release-tag>
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:<release-tag>
 ```
+
+两个镜像必须固定为同一个发布版本。
 
 配置细节和运行命令见 [Docker Compose 部署文档](https://docs.focowiki.com/zh-CN/deployment/docker-compose)。
 
@@ -84,7 +88,7 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
 - [Developer OpenAPI](https://docs.focowiki.com/zh-CN/openapi/)
 - [Agent 接入](https://docs.focowiki.com/zh-CN/agent-integration/)
 - [Open Knowledge Format 指南](https://docs.focowiki.com/zh-CN/guide/open-knowledge-format)
-- [文件优先图关系指南](https://docs.focowiki.com/zh-CN/guide/file-first-graph)
+- [来源文件证据与图关系指南](https://docs.focowiki.com/zh-CN/guide/file-first-graph)
 - [文件清洗入库指南](https://docs.focowiki.com/zh-CN/guide/file-cleaning-ingestion)
 
 ## Focowiki 提供什么
@@ -93,10 +97,12 @@ Focowiki 将 Markdown 文件和文件夹生成可供用户、应用和 AI Agent 
 
 - **上传文档和文件夹。** 添加单个 Markdown 文件或完整的多层文件夹，并保留路径、名称、元数据、链接和正文。
 - **浏览结构化知识。** 通过文件树打开文档，移动或重命名文件和文件夹，替换正文并删除过时内容。
-- **查找相关文档。** 搜索文件内容、浏览目录索引、查看相关文档，并通过知识图谱继续探索关联内容。
-- **接入应用和 AI Agent。** 使用 Developer OpenAPI 上传内容、浏览文件树、读取完整 Markdown 文件、执行搜索、探索图关系并管理文档变更。
+- **在互联文档之间导航。** 生成的索引、关系视图和来源页面使用可导航的文档链接，让读者可以在目录、相关文件和上下文之间往返，不再把每份文档作为孤立内容读取。
+- **搜索后读取完整原文。** 使用完整自然语言问题执行混合检索，并可按需重排结果。Focowiki 使用搜索定位相关文档，最终始终回到可读取的 Markdown 原文，不使用传统的分块 RAG 输出作为最终知识读取模式。
+- **为 AI Agent 提供原生读取流程。** Agent 可以通过 Developer OpenAPI 或可移植的链接化知识包浏览索引、打开完整 Markdown、沿文档链接和关系继续探索、再次搜索并比对来源证据。
+- **接入应用和 AI Agent。** 使用 Developer OpenAPI 上传内容、浏览文件树、读取完整 Markdown 文件、执行搜索、探索关系并管理文档变更。
 - **通过 Admin UI 管理系统。** 创建知识库、查看文件处理进度、配置模型和运行参数，并管理 API key。
-- **部署到自己的基础设施。** 使用 Docker Compose、PostgreSQL、Redis 和 S3 兼容存储运行 Focowiki。
+- **部署到自己的基础设施。** 使用 Docker Compose、PostgreSQL、Redis、OpenSearch 或 Meilisearch，以及 S3 兼容存储运行 Focowiki。
 
 ## Admin UI 预览
 
@@ -114,24 +120,31 @@ Demo Agent 运行结果展示了第三方 Agent 通过 demo 后端和 Skill 读�
 
 ## 为什么文件优先
 
-[Google 的 Open Knowledge Format 公告](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) 描述了一种基于 Markdown 文件和 YAML frontmatter 的可移植知识表示方式。[固定版本的 OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) 定义了 metadata、Markdown pages、links、indexes 和 update logs。
+[Google 的 OKF 0.2 公告](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals) 描述了用于 Markdown 知识的可移植来源、验证、生命周期和 Attested Computation 信号。Focowiki 固定使用 [revision `930b65fc` 的 OKF 0.2 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md)。
 
 Focowiki 把这个模型实现为开源产品流程。团队上传清洗后的 Markdown 文件，Focowiki 解析文档信号，生成 OKF-style 知识库，保存每一个生成文件，并通过 Admin UI 和 Developer OpenAPI 暴露结果。
 
 ## Markdown 输入
 
-上传只接受 `.md` 文件。Markdown 文件可以包含 YAML frontmatter，后面跟 Markdown 正文。
+上传只接受 `.md` 文件。文件可以是普通 Markdown，也可以包含 YAML frontmatter。OKF 0.2 标准字段都是可选的产品输入；安全但缺失或格式错误的标准字段本身不会阻止上传或读取。
 
 ```md
 ---
-type: "page"
+okf_version: "0.2"
+type: "Guide"
 title: "Customer Support Playbook"
 description: "How the support team handles priority customer requests."
-resource: "https://example.com/docs/support-playbook"
 tags:
   - support
   - operations
-timestamp: "2026-06-16T00:00:00Z"
+sources:
+  - id: "support-handbook"
+    resource: "references/support-handbook.md"
+verified:
+  - by: "human:support-reviewer"
+    at: "2026-06-16T01:00:00Z"
+status: "stable"
+stale_after: "2026-12-16"
 ---
 
 # Customer Support Playbook
@@ -139,7 +152,7 @@ timestamp: "2026-06-16T00:00:00Z"
 Use this playbook when a priority customer request arrives.
 ```
 
-额外的安全 frontmatter 字段可以作为 pass-through metadata 保留。详细输入说明见 [项目介绍](https://docs.focowiki.com/zh-CN/)。
+额外的安全 frontmatter 字段会作为 pass-through metadata 保留。Developer OpenAPI 会暴露原始 frontmatter 和可为空的派生 `okfSignals`；文件搜索可以选择按规范化后的状态、可信等级或新鲜度筛选。详细输入说明见 [项目介绍](https://docs.focowiki.com/zh-CN/)。
 
 ## 本地开发
 
@@ -147,12 +160,17 @@ Focowiki 使用 pnpm、TypeScript、Vite、React、Hono、PostgreSQL、Redis 和
 
 ```bash
 pnpm install
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r apps/api/python/requirements.lock
 cp .env.dev.example .env
 cp docker-compose.local.yml.example docker-compose.local.yml
-docker compose -f docker-compose.local.yml up -d postgres redis
+docker compose -f docker-compose.local.yml up -d postgres redis minio minio-init opensearch
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
+
+`pnpm dev` 会启动 Admin UI、两个 API 监听端口和统一 Worker。开发运行期间需要保持 Python 虚拟环境处于激活状态。
 
 本地服务地址：
 
@@ -160,7 +178,7 @@ pnpm dev
 - Admin API：`http://127.0.0.1:43000`
 - Developer OpenAPI：`http://127.0.0.1:43200`
 
-真实上传解析需要在 `.env` 中配置 S3 兼容存储。
+本地环境模板默认选择 OpenSearch。需要使用模板内置的 Meilisearch 时，先解除 Compose 模板中完整 `meilisearch` 服务块的注释，将 `SEARCH_PROVIDER` 和 `COMPOSE_PROFILES` 都设置为 `meilisearch`，再在启动依赖的命令中用 `meilisearch search-init` 替换 `opensearch`。模板仅在回环地址暴露 Meilisearch，供宿主机开发运行时通过 `MEILI_PORT`（默认 `57700`）访问。
 
 ## License
 
@@ -168,8 +186,8 @@ Focowiki 使用 modified Apache License 2.0 发布。见 [LICENSE](./LICENSE)。
 
 ## References
 
-- [Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-- [OKF v0.1 specification 固定版本](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md)
+- [Open Knowledge Format 0.2 公告](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals)
+- [OKF 0.2 specification 固定版本](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md)
 - [Focowiki documentation](https://docs.focowiki.com)
 
 <p><sub><small>友情链接：<a href="https://linux.do/">linux.do</a> · <a href="https://www.v2ex.com/">V2EX</a></small></sub></p>

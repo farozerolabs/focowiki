@@ -6,18 +6,20 @@ title: Tools Design
 
 Use this page when developers control their own Agent client or runtime. In this mode, the Agent calls built-in tools registered by the developer.
 
-The Skill should describe only user-visible tool behavior and knowledge evidence rules.
+Keep the tool surface small and preserve the continuity fields returned by Developer OpenAPI. Do not reproduce search, graph, or document-state logic in the Agent runtime.
 
 ## Recommended Tools
 
 | Tool | Purpose | Required input | Main output |
 | --- | --- | --- | --- |
-| `list_tree` | Discover files in the configured knowledge base. | none | `items`, `nextCursor` |
-| `get_file` | Read safe metadata for one file. | `fileId` | file metadata |
-| `read_file` | Read one Markdown file. | `fileId` or `path` | Markdown content and metadata |
-| `read_related` | Read bounded related files for one generated page. | `fileId` | related file records |
-| `expand_graph` | Explore related files from a file or query. | `fileId` or `query` | relationship paths and file read actions |
-| `search_files` | Return candidate files for an Agent-generated search phrase. | `query` | `items`, `searchStatus`, `nextActions` |
+| `search_files` | Find current readable source candidates. | `query` | search state, candidates, read actions |
+| `read_file` | Read one current file. | exactly one of `fileId` or `path` | `{ file, content }` |
+| `list_tree` | Discover current files and folders. | optional `parentPath` | revision, `items`, `nextCursor` |
+| `get_file` | Read current metadata for one file. | `fileId` | file metadata and read actions |
+| `read_related` | Read bounded related files for one current source file. | `fileId` | related file records |
+| `expand_graph` | Explore related files from one readable file. | `fileId` | relationship paths and file read actions |
+
+`search_files` and `read_file` form the core question-answering loop. `list_tree` is the discovery fallback. The remaining tools are useful when the product needs metadata or relationship exploration.
 
 ## `list_tree`
 
@@ -35,20 +37,26 @@ Output:
 
 ```json
 {
+  "activeContentRevision": 42,
   "items": [
     {
-      "fileId": "file_123",
+      "fileId": "source-file-11111111-1111-4111-8111-111111111111",
+      "sourceFileId": "source-file-11111111-1111-4111-8111-111111111111",
       "path": "pages/example.md",
       "title": "Example",
-      "type": "page",
-      "description": "Short summary."
+      "entryType": "file",
+      "fileKind": "page",
+      "contentAvailable": true,
+      "readActions": {
+        "fileContentByPath": "/openapi/v2/knowledge-bases/knowledge-base-11111111-1111-4111-8111-111111111111/files/content?path=pages%2Fexample.md"
+      }
     }
   ],
   "nextCursor": null
 }
 ```
 
-Use `nextCursor` to continue pagination. Keep each request bounded by `limit`.
+Use `nextCursor` only with the same `parentPath`, `limit`, and `activeContentRevision`. Restart without a cursor if the API rejects a stale cursor.
 
 ## `get_file`
 
@@ -64,13 +72,19 @@ Output:
 
 ```json
 {
-  "fileId": "file_123",
+  "activeContentRevision": 42,
+  "fileId": "source-file-11111111-1111-4111-8111-111111111111",
+  "sourceFileId": "source-file-11111111-1111-4111-8111-111111111111",
   "path": "pages/example.md",
   "title": "Example",
-  "type": "page",
+  "fileKind": "page",
   "description": "Short summary.",
-  "metadata": {
+  "frontmatter": {
     "tags": ["example"]
+  },
+  "contentAvailable": true,
+  "readActions": {
+    "fileContentByPath": "/openapi/v2/knowledge-bases/knowledge-base-11111111-1111-4111-8111-111111111111/files/content?path=pages%2Fexample.md"
   }
 }
 ```
@@ -99,17 +113,26 @@ Output:
 
 ```json
 {
-  "fileId": "file_123",
-  "path": "pages/example.md",
-  "title": "Example",
-  "content": "# Example\n\nMarkdown content.",
-  "metadata": {
-    "tags": ["example"]
-  }
+  "file": {
+    "activeContentRevision": 42,
+    "fileId": "source-file-11111111-1111-4111-8111-111111111111",
+    "sourceFileId": "source-file-11111111-1111-4111-8111-111111111111",
+    "path": "pages/example.md",
+    "title": "Example",
+    "frontmatter": {
+      "tags": ["example"]
+    },
+    "readActions": {
+      "relatedFilesById": "/openapi/v2/knowledge-bases/knowledge-base-11111111-1111-4111-8111-111111111111/files/source-file-11111111-1111-4111-8111-111111111111/related"
+    }
+  },
+  "content": "# Example\n\nMarkdown content."
 }
 ```
 
-Use readable file IDs returned by tree, search, file detail, or a visible `generatedFileId` field when calling `read_file` by `fileId`. Use logical paths for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_index/catalog.json`, a returned `graphRef`, a visible `generatedFilePath`, or pages discovered from links.
+Return the OpenAPI `{ file, content }` shape unchanged. Use readable `fileId` or `path` values returned by tree, search, file detail, related files, graph expansion, or Markdown links. A source-backed page uses its stable `sourceFileId` as `fileId` after `generatedOutputStatus` becomes `current_available`.
+
+Use `pages/**` source-backed Markdown as answer evidence. `index.md`, directory indexes, `_index/**`, and `_graph/**` support discovery and traversal.
 
 ## `read_related`
 
@@ -144,11 +167,11 @@ Output:
 }
 ```
 
-This tool is optional. The Agent can also pass a returned `graphRef` to `read_file`. It should not construct that path from a generated `fileId`.
+This tool is optional. The Agent can also pass a returned `graphRef` to `read_file`. It must not construct `_graph` paths from IDs.
 
 ## `expand_graph`
 
-This tool is optional. Implement it when the Agent should use Developer OpenAPI graph expansion directly. It should accept exactly one seed.
+This tool is optional. Implement it when the Agent should use Developer OpenAPI graph expansion directly. The current operation accepts one required `fileId` seed.
 
 Input by file:
 
@@ -161,39 +184,30 @@ Input by file:
 }
 ```
 
-Input by query:
-
-```json
-{
-  "query": "renewal notice",
-  "depth": 1,
-  "fanout": 10,
-  "cursor": null
-}
-```
-
 Output:
 
 ```json
 {
-  "seed": {
-    "type": "file",
-    "fileId": "file_123",
+  "activeContentRevision": 42,
+  "seedFile": {
+    "fileId": "source-file-11111111-1111-4111-8111-111111111111",
     "path": "pages/example.md"
   },
   "relationships": [
     {
-      "fileId": "file_456",
+      "fileId": "source-file-22222222-2222-4222-8222-222222222222",
       "path": "pages/related.md",
       "title": "Related",
       "relationType": "same_specific_subject",
-      "confidence": 0.86,
+      "direction": "outgoing",
+      "weight": 0.86,
       "readActions": {
-        "contentByPath": "/files/content?path=pages/related.md",
-        "graphExpansionByFileId": "/graph/expand?fileId=file_456"
+        "fileContentByPath": "/openapi/v2/knowledge-bases/knowledge-base-11111111-1111-4111-8111-111111111111/files/content?path=pages%2Frelated.md",
+        "graphExpansionByFileId": "/openapi/v2/knowledge-bases/knowledge-base-11111111-1111-4111-8111-111111111111/graph/expand?fileId=source-file-22222222-2222-4222-8222-222222222222"
       }
     }
   ],
+  "graphPaths": ["_graph/by-file/example.json"],
   "nextCursor": null
 }
 ```
@@ -202,15 +216,19 @@ Use this tool after a promising file, search result, related-file entry, graph f
 
 ## `search_files`
 
-This tool is optional. Implement `search_files` when the Agent needs candidate lookup. A backend can call Focowiki Developer OpenAPI `searchGeneratedFiles`, read generated index files, or use its own read layer.
+Implement `search_files` as a thin adapter over `searchGeneratedFiles` for online Agent access. Static exported bundles can use `_index/**` for bounded navigation, but those files are not a replacement for online full-text and hybrid search.
 
-The Agent owns query planning. It should derive short phrases from the user question, the knowledge-base overview, schema hints, already-read files, and remaining evidence gaps. The tool should return candidates for one phrase at a time.
+The first request should contain the complete standalone user question and use default `hybrid` retrieval. The Agent may run at most two later searches, each derived from source Markdown already read. The tool returns source-file candidates, not answer evidence.
 
 Input:
 
 ```json
 {
-  "query": "renewal notice",
+  "query": "What does the knowledge base say about renewal notices?",
+  "mode": "hybrid",
+  "graphDepth": 1,
+  "graphFanout": 10,
+  "rerank": false,
   "cursor": null,
   "limit": 10
 }
@@ -220,33 +238,47 @@ Output:
 
 ```json
 {
+  "activeContentRevision": 42,
   "items": [
     {
-      "fileId": "file_123",
+      "fileId": "source-file-11111111-1111-4111-8111-111111111111",
+      "sourceFileId": "source-file-11111111-1111-4111-8111-111111111111",
       "path": "pages/example.md",
       "title": "Example",
       "description": "Short summary.",
       "score": 12,
-      "matchedFields": ["title", "description"]
+      "matchedFields": ["content"],
+      "evidenceTypes": ["content"],
+      "sourceExcerpt": "Bounded source-grounded excerpt.",
+      "contentAvailable": true,
+      "readActions": {
+        "fileContentById": "/openapi/v2/knowledge-bases/knowledge-base-11111111-1111-4111-8111-111111111111/files/source-file-11111111-1111-4111-8111-111111111111/content"
+      }
     }
   ],
   "searchStatus": "ok",
+  "searchMode": "hybrid",
+  "semanticStatus": { "state": "ready", "safeCode": null },
+  "rerankerStatus": { "state": "skipped", "safeCode": "RERANKER_DISABLED" },
   "message": null,
   "nextActions": [],
   "nextCursor": null
 }
 ```
 
-For direct questions, the Agent derives concise phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, it can derive new phrases and continue with `search_files`, `nextActions`, `list_tree`, links, graph files, `expand_graph`, and related files.
+Read the selected Markdown files before answering. Track `fileId` and `path` to avoid duplicate reads. Search snippets, machine-readable index records, relationship descriptions, and reranker output are discovery hints only. `searchStatus=no_candidates` is a successful empty result; `SEARCH_TIMEOUT` and `SEARCH_UNAVAILABLE` are errors and must remain distinguishable.
 
 ## Error Shape
 
 ```json
 {
-  "code": "file_not_found",
-  "message": "The requested file was not found.",
-  "requestId": "req_123"
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "The requested file was not found.",
+    "httpStatus": 404
+  },
+  "requestId": "req-11111111-1111-4111-8111-111111111111"
 }
 ```
 
-The Agent should report a useful answer when the knowledge base does not contain enough evidence.
+Preserve `requestId`. Honor `retryAfterSeconds` for `RATE_LIMITED`, restart a rejected cursor without the cursor, and never convert transport or dependency errors into empty results.

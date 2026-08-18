@@ -1,15 +1,12 @@
-import { randomUUID } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
-import { createPublicOpenApiKeyService } from "../public-openapi/keys.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
-import { recordAdminAudit } from "./security.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
+import type { StorageVnextAdminOpenApiKeyApplication } from "../storage-vnext/api/admin-openapi-key-application.js";
 
 type AdminOpenApiKeyRouteServices = {
   config: RuntimeConfig;
-  redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
+  application: StorageVnextAdminOpenApiKeyApplication;
+  audit: StorageVnextAdminAuditApplication;
 };
 
 type AdminOpenApiKeyRouteMiddleware = {
@@ -22,80 +19,50 @@ export function registerAdminOpenApiKeyRoutes(
   services: AdminOpenApiKeyRouteServices,
   middleware: AdminOpenApiKeyRouteMiddleware
 ): void {
-  const { config, redis, repositories } = services;
+  const { config, application, audit } = services;
   const { requireAuth, requireWriteProtection } = middleware;
 
   app.get("/admin/api/openapi-keys", requireAuth, async (context) => {
-    if (!repositories?.publicApiKeys || !redis) {
-      return missingRepositoryBackend(context);
-    }
-
     const limit = readPageLimit(context.req.query("limit"), config);
 
     if (!limit) {
       return invalidPagination(context);
     }
 
-    const cursorToken = context.req.query("cursor") ?? null;
-    const cursorScope = "public-openapi-keys";
-    const repositoryCursor = cursorToken
-      ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-      : null;
-
-    if (cursorToken && !repositoryCursor) {
-      return invalidPagination(context);
-    }
-
-    const service = createPublicOpenApiKeyService({
-      repository: repositories.publicApiKeys,
-      redis
-    });
-    const page = await service.listKeysWithBootstrap({
+    const result = await application.listKeys({
       limit,
-      cursor: repositoryCursor
+      cursor: context.req.query("cursor") ?? null
     });
-    const nextCursor = await writeOpaqueCursor({
-      redis,
-      scope: cursorScope,
-      cursor: page.nextCursor,
-      ttlSeconds: config.pagination.cursorTtlSeconds
-    });
-
-    if (page.oneTimeKey) {
-      await recordAdminAudit({
-        repositories,
-        config,
-        context,
-        eventType: "public_openapi_key_bootstrap",
-        result: "success"
-      });
+    if (!result.ok) {
+      return result.code === "INVALID_PAGINATION"
+        ? invalidPagination(context)
+        : missingRepositoryBackend(context);
     }
+    const page = result.value;
 
     return context.json({
       items: page.items,
-      nextCursor,
-      oneTimeKey: page.oneTimeKey
+      nextCursor: page.nextCursor
     });
   });
 
   app.post("/admin/api/openapi-keys", requireAuth, requireWriteProtection, async (context) => {
-    if (!repositories?.publicApiKeys || !redis) {
-      return missingRepositoryBackend(context);
-    }
-
     const input = readOpenApiKeyCreateInput(await readJsonBody(context.req.raw));
-    const service = createPublicOpenApiKeyService({
-      repository: repositories.publicApiKeys,
-      redis
-    });
-    const created = await service.createKey(input);
+    if (!input) {
+      return context.json({
+        error: { code: "VALIDATION_ERROR", messageKey: "errors.openapiKeyFailed" }
+      }, 422);
+    }
+    const result = await application.createKey(input);
+    if (!result.ok) return missingRepositoryBackend(context);
+    const created = result.value;
 
-    await recordAdminAudit({
-      repositories,
-      config,
+    await audit.record({
       context,
       eventType: "public_openapi_key_create",
-      result: "success"
+      result: "success",
+      targetKind: "public_openapi_key",
+      targetPublicId: created.key.id
     });
 
     return context.json(
@@ -115,26 +82,17 @@ export function registerAdminOpenApiKeyRoutes(
     requireAuth,
     requireWriteProtection,
     async (context) => {
-      if (!repositories?.publicApiKeys || !redis) {
-        return missingRepositoryBackend(context);
-      }
+      const result = await application.deleteKey({ keyId: context.req.param("keyId") });
+      if (!result.ok) return result.code === "NOT_FOUND"
+        ? notFound(context)
+        : missingRepositoryBackend(context);
 
-      const service = createPublicOpenApiKeyService({
-        repository: repositories.publicApiKeys,
-        redis
-      });
-      const deleted = await service.deleteKey(context.req.param("keyId"));
-
-      if (!deleted) {
-        return notFound(context);
-      }
-
-      await recordAdminAudit({
-        repositories,
-        config,
+      await audit.record({
         context,
         eventType: "public_openapi_key_delete",
-        result: "success"
+        result: "success",
+        targetKind: "public_openapi_key",
+        targetPublicId: context.req.param("keyId")
       });
 
       return context.json({ deleted: true });
@@ -151,8 +109,9 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   }
 }
 
-function readOpenApiKeyCreateInput(body: Record<string, unknown>): { name?: string } {
+function readOpenApiKeyCreateInput(body: Record<string, unknown>): { name?: string } | null {
   const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (name.length > 80) return null;
   return name ? { name } : {};
 }
 
@@ -172,26 +131,6 @@ function readPageLimit(rawLimit: string | undefined, config: RuntimeConfig): num
   }
 
   return limit;
-}
-
-async function writeOpaqueCursor(options: {
-  redis: RedisCoordinator;
-  scope: string;
-  cursor: string | null;
-  ttlSeconds: number;
-}): Promise<string | null> {
-  if (!options.cursor) {
-    return null;
-  }
-
-  const cursorId = `cursor-${randomUUID()}`;
-  await options.redis.setPaginationCursor(
-    options.scope,
-    cursorId,
-    options.cursor,
-    options.ttlSeconds
-  );
-  return cursorId;
 }
 
 function missingRepositoryBackend(context: Parameters<MiddlewareHandler>[0]): Response {

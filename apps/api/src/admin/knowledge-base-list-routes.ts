@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
+import type { StorageVnextAdminReadApplication } from "../storage-vnext/api/admin-read-application.js";
+import type { StorageVnextAdminKnowledgeBase } from "../storage-vnext/api/admin-ports.js";
 import { readPageLimit } from "./pagination.js";
-import { createKnowledgeBaseCursorScope } from "./knowledge-base-search-signature.js";
 import {
   readKnowledgeBaseSearchQueryFromQuery,
   type KnowledgeBaseSearchErrorCode
@@ -12,8 +10,7 @@ import {
 
 type AdminKnowledgeBaseListRouteServices = {
   config: RuntimeConfig;
-  redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
+  application: StorageVnextAdminReadApplication;
 };
 
 type AdminKnowledgeBaseListRouteMiddleware = {
@@ -25,14 +22,10 @@ export function registerAdminKnowledgeBaseListRoutes(
   services: AdminKnowledgeBaseListRouteServices,
   middleware: AdminKnowledgeBaseListRouteMiddleware
 ): void {
-  const { config, redis, repositories } = services;
+  const { config, application } = services;
   const { requireAuth } = middleware;
 
   app.get("/admin/api/knowledge-bases", requireAuth, async (context) => {
-    if (!repositories || !redis) {
-      return missingRepositoryBackend(context);
-    }
-
     const limit = readPageLimit(context.req.query("limit"), config);
 
     if (!limit) {
@@ -46,58 +39,18 @@ export function registerAdminKnowledgeBaseListRoutes(
     }
 
     const requestedCursor = context.req.query("cursor") ?? null;
-    const cursorScope = createKnowledgeBaseCursorScope(searchQuery.query);
-    const repositoryCursor = requestedCursor
-      ? await redis.getPaginationCursor<string>(cursorScope, requestedCursor)
-      : null;
-
-    if (requestedCursor && !repositoryCursor) {
-      return invalidPagination(context);
-    }
-
-    const page = await repositories.knowledgeBases.listKnowledgeBases({
+    const result = await application.listKnowledgeBases({
       limit,
-      cursor: repositoryCursor,
+      cursor: requestedCursor,
       query: searchQuery.query
     });
-    const nextCursor = page.nextCursor ? `cursor-${randomUUID()}` : null;
-
-    if (nextCursor && page.nextCursor) {
-      await redis.setPaginationCursor(
-        cursorScope,
-        nextCursor,
-        page.nextCursor,
-        config.pagination.cursorTtlSeconds
-      );
-    }
-
-    await redis.setPageCache(
-      cursorScope,
-      `page-${randomUUID()}`,
-      {
-        cursor: requestedCursor,
-        query: searchQuery.query,
-        itemIds: page.items.map((item) => item.id)
-      },
-      config.pagination.cursorTtlSeconds
-    );
+    if (!result.ok) return applicationError(context, result.code);
 
     return context.json({
-      items: page.items,
-      nextCursor
+      items: result.value.items.map(toReleasedKnowledgeBase),
+      nextCursor: result.value.nextCursor
     });
   });
-}
-
-function missingRepositoryBackend(context: Parameters<MiddlewareHandler>[0]): Response {
-  return context.json(
-    {
-      error: {
-        code: "DATABASE_REPOSITORY_UNAVAILABLE"
-      }
-    },
-    503
-  );
 }
 
 function invalidPagination(context: Parameters<MiddlewareHandler>[0]): Response {
@@ -109,6 +62,34 @@ function invalidPagination(context: Parameters<MiddlewareHandler>[0]): Response 
     },
     400
   );
+}
+
+function applicationError(
+  context: Parameters<MiddlewareHandler>[0],
+  code: "DATABASE_REPOSITORY_UNAVAILABLE" | "INVALID_PAGINATION" | "NOT_FOUND"
+): Response {
+  return context.json(
+    { error: { code } },
+    code === "DATABASE_REPOSITORY_UNAVAILABLE"
+      ? 503
+      : code === "NOT_FOUND"
+        ? 404
+        : 400
+  );
+}
+
+function toReleasedKnowledgeBase(knowledgeBase: StorageVnextAdminKnowledgeBase) {
+  return {
+    id: knowledgeBase.id,
+    name: knowledgeBase.name,
+    description: knowledgeBase.description,
+    activeContentRevision: knowledgeBase.catalogVersion,
+    ...(knowledgeBase.resourceRevision === undefined
+      ? {}
+      : { resourceRevision: knowledgeBase.resourceRevision }),
+    createdAt: knowledgeBase.createdAt,
+    updatedAt: knowledgeBase.updatedAt
+  };
 }
 
 function invalidKnowledgeBaseSearchQuery(

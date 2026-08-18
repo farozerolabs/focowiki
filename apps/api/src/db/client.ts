@@ -3,36 +3,43 @@ import type { RuntimeConfig } from "../config.js";
 
 export type DatabaseClient = Sql;
 
+type DatabaseRole =
+  | "api"
+  | "worker"
+  | "migration";
+
+const WORKER_IDLE_TIMEOUT_SECONDS = 5;
+
 export function createDatabaseClient(
   config: RuntimeConfig,
   options: {
-    role?:
-      | "api"
-      | "source-worker"
-      | "publication-worker"
-      | "projection-repair-worker"
-      | "lexical-rebuild-worker"
-      | "maintenance-worker"
-      | "migration";
+    role?: DatabaseRole;
   } = {}
 ): DatabaseClient {
-  const max = options.role === "source-worker"
-    ? config.database.sourceWorkerPoolMax ?? 6
-    : options.role === "publication-worker"
-      ? config.database.publicationWorkerPoolMax ?? 4
-      : options.role === "projection-repair-worker"
-        ? config.database.projectionRepairWorkerPoolMax ?? 8
-        : options.role === "lexical-rebuild-worker"
-          ? config.database.lexicalRebuildWorkerPoolMax ?? 8
-        : options.role === "maintenance-worker"
-          ? config.database.maintenanceWorkerPoolMax ?? 2
-          : config.database.poolMax ?? 10;
+  return postgres(
+    config.database.url,
+    createDatabaseClientOptions(config.database, options.role ?? "api")
+  );
+}
 
-  return postgres(config.database.url, {
+export function createDatabaseClientOptions(
+  database: Pick<
+    RuntimeConfig["database"],
+    | "poolMax"
+    | "workerPoolMax"
+  >,
+  role: DatabaseRole
+) {
+  const max = role === "worker"
+    ? database.workerPoolMax ?? 8
+    : database.poolMax ?? 10;
+  const worker = role === "worker";
+
+  return {
     max,
-    idle_timeout: 20,
+    idle_timeout: worker ? WORKER_IDLE_TIMEOUT_SECONDS : 20,
     connect_timeout: 10
-  });
+  };
 }
 
 export async function closeDatabaseClient(sql: DatabaseClient): Promise<void> {

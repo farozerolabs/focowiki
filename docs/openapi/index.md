@@ -4,7 +4,7 @@ title: Developer OpenAPI
 
 # Developer OpenAPI
 
-Developer OpenAPI gives applications programmatic access to Focowiki. A product can create knowledge bases, upload Markdown files and folders, observe processing, read files, explore relationships, maintain source content, and receive Webhook events.
+Developer OpenAPI gives applications programmatic access to Focowiki. A product can create knowledge bases, upload Markdown files and folders, observe processing, read files, explore relationships, manage uploaded content, and receive Webhook events.
 
 ## Connection
 
@@ -30,38 +30,42 @@ GET /openapi/v2/openapi.json
 
 The documentation site also provides a [contract snapshot](/openapi/focowiki-openapi.json) for the documented release. Use the runtime contract when generating a client for a specific deployment.
 
+Use the [API Explorer](./explorer.md) to filter operations, inspect examples, and review schemas from the same release contract in a read-only interface.
+
 ## Response Conventions
 
 Successful list responses contain `items` and `nextCursor`. Pass `nextCursor` back to the same endpoint with the same filters to read the next page.
 
-Errors use a stable envelope:
+Errors use the same JSON structure:
 
 ```json
 {
   "error": {
-    "code": "VALIDATION_FAILED",
+    "code": "VALIDATION_ERROR",
     "message": "The request failed validation.",
     "httpStatus": 422
   },
-  "requestId": "req_123"
+  "requestId": "req-11111111-1111-4111-8111-111111111111"
 }
 ```
 
-All operations can return `401 UNAUTHORIZED`, `429 RATE_LIMITED`, or `500 INTERNAL_ERROR`. A rate-limited response includes coarse retry guidance. Clients should wait for the suggested interval and retry the current operation.
+All operations can return `401 UNAUTHORIZED`, `429 RATE_LIMITED`, `500 INTERNAL_ERROR`, or `503 DATABASE_REPOSITORY_UNAVAILABLE`. A rate-limited response includes retry guidance. Clients should wait for the suggested interval and retry the current operation.
 
 ## Resource Identifiers
 
 Identifiers have distinct purposes and remain stable across related calls.
 
+A source file is the original Markdown file accepted by an upload or replacement request. The API uses `sourceFileId` for this uploaded file. A source directory is a folder preserved from the uploaded file path. A generated file is the current readable knowledge-base file produced from uploaded content or navigation data. `activeContentRevision` is the numeric revision of the current readable knowledge-base content; a knowledge base with no readable content reports `0`, while nullable read responses use `null`.
+
 | Identifier | Obtained from | Used for |
 | --- | --- | --- |
 | `knowledgeBaseId` | Knowledge-base create or list responses | Scope every knowledge-base operation. |
 | `uploadSessionId` | Upload-session create response | Resume, inspect, cancel, or complete an upload. |
-| `sourceFileId` | Upload and source-file responses | Read source state or content, retry, move, replace, and delete. |
-| `directoryId` | Source-directory and tree responses | Read, move, or delete a source directory. |
-| `operationId` | Move, replace, and delete responses | Observe an asynchronous resource change. |
-| `fileId` | Tree, search, related-file, and file responses | Read generated metadata, content, and relationships. |
-| `path` | Tree, search, links, and file responses | Read generated content by logical path. |
+| `sourceFileId` | Upload and uploaded-file responses | Read upload and processing status or content, retry, move, replace, and delete. |
+| `directoryId` | Uploaded-directory and tree responses | Read, move, or delete an uploaded directory. |
+| `operationId` | Upload-session and resource-change responses | Check progressive upload indexing or the result of a resource change. |
+| `fileId` | Tree, search, related-file, and file responses | Read current file metadata, content, and relationships. |
+| `path` | Tree, search, links, and file responses | Read a current file by its knowledge-base path. |
 
 Storage paths and local filesystem paths are not accepted.
 
@@ -69,15 +73,18 @@ Storage paths and local filesystem paths are not accepted.
 
 Uploads preserve relative folder paths. Every uploaded item must be a Markdown file.
 
+Before finalizing an upload, configure one active generation model and one active validated Embedding configuration in Admin. Finalization rejects an unconfigured knowledge base before creating document jobs; uploaded transfer data remains available so the configuration can be corrected and finalization retried.
+
 1. Create a knowledge base and keep its `knowledgeBaseId`.
 2. Create an upload session with the declared file and byte counts.
-3. Add manifest entries containing each file's relative path, size, and SHA-256 checksum.
-4. Confirm the manifest.
+3. Add each file's relative path and size to the upload file list. This list is named the upload manifest in API paths and schema names. A SHA-256 checksum can be included to verify the uploaded content.
+4. Confirm that the upload file list is complete.
 5. Upload content for entries whose disposition is `upload_required`.
-6. Complete the upload session.
-7. Observe each uploaded entry's `sourceFileId` until the file is readable.
+6. Complete the upload session and retain its `operationId` or `actions.operation` link.
+7. Poll the operation for progressive document counts. Each document with state `available` is immediately readable and searchable while sibling documents may still be processing.
+8. Use each file's `sourceFileId` to read its current status and content.
 
-Upload registration has no product-level file-count or byte quota. The session response provides a bounded manifest page size for transport. Upload each required Markdown body through its server-issued entry ID. Reusing an existing folder path adds new files. Existing files at the same relative path are skipped. Use the source-file replacement operation when content at an existing path must change.
+Upload registration has no product-level file-count or byte quota. The session response states how many file records can be added in one request. Upload each required Markdown body through the entry ID returned by the session. Reusing an existing folder path adds new files. Existing files at the same relative path are skipped. Use the uploaded-file replacement operation when content at an existing path must change.
 
 ### Minimal Example
 
@@ -133,17 +140,17 @@ curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_I
 
 ## Processing State
 
-Use the source-file detail operation to determine when content is ready.
+Use the uploaded-file detail operation to determine when content is ready.
 
 | Field | Values | Meaning |
 | --- | --- | --- |
-| `state` | `queued`, `running`, `pending_publication`, `visible`, `failed` | Backend-derived source-file lifecycle. |
-| `currentStage` | `upload_storage` through `generation_activation` | Current or terminal lifecycle stage. |
-| `failure` | object or `null` | Safe terminal failure details and retry kind. |
-| `generatedOutputStatus` | `pending`, `visible`, `unavailable` | Availability in generated file APIs. |
-| `actions` | array | Followable operations authorized for the current lifecycle state. |
+| `state` | `waiting`, `processing`, `available`, `error`, `deleting` | Overall document-indexing status of the uploaded file. |
+| `workProgress` | object | Progress across the required document work. `activeKinds` lists work in progress; `blockingKind` and `retryingKind` identify work that is waiting or will be retried. |
+| `failure` | object or `null` | Error details and the available retry type. |
+| `generatedOutputStatus` | `unavailable`, `previous_available`, `current_available` | Whether no generated content, the previous active revision, or the current revision can be read. |
+| `actions` | array | API calls currently available for this file. |
 
-A file is ready when `state` is `visible`. When `state` is `failed`, read `failure` and follow one of the returned `actions`. A publication retry has knowledge-base publication scope and preserves completed source processing.
+A file is ready when `state` is `available`. Use `state` as the availability authority; `workProgress` can still show final cleanup after the file becomes available. When `state` is `error`, read `failure.workKind` and follow one of the returned `actions`. A failed replacement may keep its previous readable content, while a failed first upload is not exposed through content, tree, graph, or search reads.
 
 ```bash
 curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$SOURCE_FILE_ID" \
@@ -152,7 +159,7 @@ curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/source
 
 ## File Reading And Exploration
 
-Start with `index.md`, inspect the tree, and read candidate files before using them as evidence.
+Start with `index.md`, inspect the tree, and read matching files before using them as evidence.
 
 ```bash
 curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
@@ -160,7 +167,7 @@ curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
   --data-urlencode "path=index.md"
 ```
 
-Nested source paths are published under `pages/`. The uploaded example can be read at `pages/handbook/onboarding/guide.md` after it becomes visible:
+Nested upload paths are generated under `pages/`. The uploaded example can be read at `pages/handbook/onboarding/guide.md` after it becomes available:
 
 ```bash
 curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
@@ -168,33 +175,37 @@ curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
   --data-urlencode "path=pages/handbook/onboarding/guide.md"
 ```
 
-The tree endpoint supports parent-path navigation, fuzzy lookup, type filtering, and cursor pagination. Search returns candidate files with `fileId`, `path`, match information, and read actions. Relationship exploration accepts a file or query and returns paths that can be opened through the file-content operations.
+The tree endpoint supports parent-path navigation, fuzzy lookup, type filtering, and cursor pagination. Search accepts one standalone natural-language question from 2 through 512 grapheme clusters and at most 2048 UTF-8 bytes after normalization. Unsafe control characters are rejected. Omit `mode` to use the recommended `hybrid` retrieval. `file` searches file paths, titles, metadata, content, and semantic similarity. `graph` follows file relationships and graph-derived semantic signals. `hybrid` combines both. Use `scope=path` for paths and titles, `scope=metadata` for metadata, or `scope=all` for the complete search scope.
+
+Search returns active Markdown pages created from uploaded files. `fileKind=page` is the default; `fileKind=all` removes the explicit type predicate but currently returns the same page set. OKF filters are optional and exclude files without matching valid OKF signals, so omit them for unrestricted search. `graphDepth=0` returns only the seed graph reference, `1` includes direct relationships, and `2` may include second-level relationships within the requested `graphFanout`. Search results include `fileId`, `path`, actual matched fields, safe evidence types, a short source excerpt when available, status, and read actions.
 
 Search and relationship results guide navigation. Applications should read the returned Markdown files before presenting an answer.
 
 ```bash
 curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/search" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "query=installation" \
+  --data-urlencode "query=How do I install, configure, and verify this knowledge base?" \
   --data-urlencode "mode=hybrid" \
   --data-urlencode "limit=10"
 ```
 
-Search can return `ok`, `no_candidates`, or `index_unavailable`. `no_candidates` describes the current query result and does not prove that the knowledge base lacks relevant content. Clients can try a shorter phrase, inspect `index.md`, browse the tree, or follow file relationships.
+Search returns `searchStatus=ok` or `searchStatus=no_candidates`. `no_candidates` describes only the current query result and does not prove that the knowledge base lacks relevant content. Dependency failures use the documented 503 or 504 error envelope. The response exposes stable semantic and reranker reason codes plus the completed and degraded evidence-family enums. A 422 response uses top-level `VALIDATION_ERROR`; its `details.code` is one of the operation's machine-readable `x-validation-detail-codes`, such as `FILE_SEARCH_QUERY_TOO_LONG`, `INVALID_FILE_SEARCH_KIND`, or `INVALID_FILE_SEARCH_RERANK_CONTROLS`.
 
-## Source Maintenance
+Reranking is disabled by default. Set `rerank=true` per request to use the active Admin-configured reranker; `rerankTopK` controls its non-exact candidate window and `rerankScoreThreshold` filters only valid non-exact reranker scores. These fields do not change the embedding model's server-owned cosine relevance threshold. Missing or failed reranking falls back to deterministic hybrid order and reports a safe `rerankerStatus`. Search excerpts, entity or relationship labels, community summaries, and reranker output are discovery hints. Read the returned source Markdown through `readActions` before using its content in an answer.
 
-Source files support content reads, moves, full-content replacement, retry, and deletion. Source directories support listing, moves, and recursive deletion. Move, replace, and delete requests return an `operationId`; use resource-operation endpoints to observe completion.
+## Manage Uploaded Content
 
-Deleting a source file removes its generated page and relationships. Deleting a source directory removes all source files below it. Deleting a knowledge base accepts one knowledge-base-level deletion and makes that knowledge base unavailable to later reads.
+Uploaded files support content reads, moves, full-content replacement, retry, and deletion. Uploaded directories support listing, moves, and recursive deletion. Upload sessions and resource changes return an `operationId`; use the operation endpoints to check progressive indexing, change progress, and results.
+
+Deleting an uploaded file removes its current generated page and relationships. Deleting an uploaded directory removes all uploaded files below it. Deleting a knowledge base starts deletion for the complete knowledge base and makes it unavailable to later reads.
 
 ## Webhooks
 
-Webhook subscriptions deliver source-file and knowledge-base update events to an HTTPS endpoint. See [Webhook Delivery](./webhook-delivery.md) for event names, signature verification, payloads, retries, and redelivery.
+Webhook subscriptions deliver uploaded-file and knowledge-base update events to an HTTPS endpoint. See [Webhook Delivery](./webhook-delivery.md) for event names, signature verification, payloads, delivery records, and manual redelivery.
 
 ## Agent Integration
 
-Keep the OpenAPI key in an application backend. Give the Agent a small read interface that can list the tree, read files, search candidates, and follow relationships. See [Agent Integration](../agent-integration/index.md) for integration patterns and Skill guidance.
+Keep the OpenAPI key in an application backend. Give the Agent a small read interface that can list the tree, read files, search for matching files, and follow relationships. See [Agent Integration](../agent-integration/index.md) for integration patterns and Skill guidance.
 
 ## Interface Reference
 

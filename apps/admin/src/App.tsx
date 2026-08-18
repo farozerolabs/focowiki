@@ -53,6 +53,7 @@ export function App() {
     createInitialCursorPageState
   );
   const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
+  const [knowledgeBaseListError, setKnowledgeBaseListError] = useState("");
   const [knowledgeBaseQuery, setKnowledgeBaseQuery] = useState("");
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null);
   const [homeSection, setHomeSection] = useState<HomeSection>("knowledge-bases");
@@ -63,7 +64,7 @@ export function App() {
   const [publicOpenApiKeysOneTimeKey, setPublicOpenApiKeysOneTimeKey] =
     useState<OneTimePublicOpenApiKey | null>(null);
   const [isLoadingPublicOpenApiKeys, setIsLoadingPublicOpenApiKeys] = useState(false);
-  const [hasLoadedPublicOpenApiKeys, setHasLoadedPublicOpenApiKeys] = useState(false);
+  const [publicOpenApiKeysError, setPublicOpenApiKeysError] = useState("");
   const knowledgeBaseLoadIdRef = useRef(0);
   const adminViewLoadIdRef = useRef(0);
 
@@ -95,7 +96,17 @@ export function App() {
       setIsLoadingKnowledgeBases(true);
 
       const initialPageState = createInitialCursorPageState();
-      const page = await listKnowledgeBases({});
+      let page;
+      try {
+        page = await listKnowledgeBases({});
+      } catch (error) {
+        console.error("Failed to restore the knowledge base list.", error);
+        if (isActive) {
+          setIsLoadingKnowledgeBases(false);
+          await restoreAdminView();
+        }
+        return;
+      }
 
       if (!isActive) {
         return;
@@ -143,8 +154,28 @@ export function App() {
       setHomeSection("settings");
       return;
     }
+    if (view.type === "model-settings") {
+      setSelectedKnowledgeBase(null);
+      setHomeSection("model-settings");
+      return;
+    }
+    if (view.type === "openapi-keys") {
+      setSelectedKnowledgeBase(null);
+      setHomeSection("openapi-keys");
+      await loadPublicOpenApiKeys({ replace: true });
+      return;
+    }
 
-    const knowledgeBase = await fetchKnowledgeBase(view.knowledgeBaseId);
+    let knowledgeBase;
+    try {
+      knowledgeBase = await fetchKnowledgeBase(view.knowledgeBaseId);
+    } catch (error) {
+      navigateAdminView({ type: "home" }, "replace");
+      setSelectedKnowledgeBase(null);
+      setHomeSection("knowledge-bases");
+      setKnowledgeBaseListError(readRequestError(error));
+      return;
+    }
     if (loadId !== adminViewLoadIdRef.current) {
       return;
     }
@@ -167,7 +198,11 @@ export function App() {
   function handleHomeSectionChange(section: HomeSection) {
     if (section === "settings") {
       navigateAdminView({ type: "settings" });
-    } else if (homeSection === "settings") {
+    } else if (section === "model-settings") {
+      navigateAdminView({ type: "model-settings" });
+    } else if (section === "openapi-keys") {
+      navigateAdminView({ type: "openapi-keys" });
+    } else if (homeSection !== "knowledge-bases") {
       navigateAdminView({ type: "home" });
     }
     setSelectedKnowledgeBase(null);
@@ -196,11 +231,12 @@ export function App() {
     setSelectedKnowledgeBase(null);
     setHomeSection("knowledge-bases");
     setIsLoadingKnowledgeBases(false);
+    setKnowledgeBaseListError("");
     setPublicOpenApiKeys([]);
     setPublicOpenApiKeysNextCursor(null);
     setPublicOpenApiKeysOneTimeKey(null);
     setIsLoadingPublicOpenApiKeys(false);
-    setHasLoadedPublicOpenApiKeys(false);
+    setPublicOpenApiKeysError("");
   }
 
   async function loadKnowledgeBases(input: { pageState?: CursorPageState; query?: string }) {
@@ -210,18 +246,27 @@ export function App() {
     const loadId = knowledgeBaseLoadIdRef.current + 1;
     knowledgeBaseLoadIdRef.current = loadId;
     setIsLoadingKnowledgeBases(true);
-    const page = await listKnowledgeBases({
-      ...(pageState.currentCursor ? { cursor: pageState.currentCursor } : {}),
-      ...(normalizedQuery ? { query: normalizedQuery } : {})
-    });
+    setKnowledgeBaseListError("");
+    try {
+      const page = await listKnowledgeBases({
+        ...(pageState.currentCursor ? { cursor: pageState.currentCursor } : {}),
+        ...(normalizedQuery ? { query: normalizedQuery } : {})
+      });
 
-    if (loadId !== knowledgeBaseLoadIdRef.current) {
-      return;
+      if (loadId !== knowledgeBaseLoadIdRef.current) {
+        return;
+      }
+
+      setKnowledgeBases(page.items);
+      setKnowledgeBasePageState(completeCursorPageRequest(pageState, page.nextCursor));
+    } catch (error) {
+      console.error("Failed to load the knowledge base list.", error);
+      setKnowledgeBaseListError(readRequestError(error));
+    } finally {
+      if (loadId === knowledgeBaseLoadIdRef.current) {
+        setIsLoadingKnowledgeBases(false);
+      }
     }
-
-    setKnowledgeBases(page.items);
-    setKnowledgeBasePageState(completeCursorPageRequest(pageState, page.nextCursor));
-    setIsLoadingKnowledgeBases(false);
   }
 
   async function handleKnowledgeBaseQueryChange(query: string) {
@@ -264,19 +309,20 @@ export function App() {
       return result;
     }
 
-    if (knowledgeBaseQuery || knowledgeBasePageState.pageNumber > 1) {
-      const initialPageState = createInitialCursorPageState();
-      setKnowledgeBasePageState(initialPageState);
-      await loadKnowledgeBases({ pageState: initialPageState });
-    } else {
-      setKnowledgeBases((current) => [result.knowledgeBase, ...current]);
-    }
+    const initialPageState = createInitialCursorPageState();
+    setKnowledgeBasePageState(initialPageState);
+    await loadKnowledgeBases({ pageState: initialPageState, query: knowledgeBaseQuery });
     return result;
   }
 
   async function handleDeleteKnowledgeBase(
     knowledgeBase: KnowledgeBase
-  ): Promise<ApiFailure | { deleted: true }> {
+  ): Promise<ApiFailure | {
+    accepted: true;
+    operationId: string;
+    affectedDirectoryCount: number;
+    affectedFileCount: number;
+  }> {
     const result = await deleteKnowledgeBase({ knowledgeBaseId: knowledgeBase.id });
 
     if ("messageKey" in result) {
@@ -308,29 +354,34 @@ export function App() {
       description: input.description
     });
     if ("messageKey" in result) return result;
-    setKnowledgeBases((current) =>
-      current.map((item) => item.id === result.knowledgeBase.id ? result.knowledgeBase : item)
-    );
+    const persisted = result.knowledgeBase;
     setSelectedKnowledgeBase((current) =>
-      current?.id === result.knowledgeBase.id ? result.knowledgeBase : current
+      current?.id === persisted.id ? persisted : current
     );
-    return { knowledgeBase: result.knowledgeBase };
+    const initialPageState = createInitialCursorPageState();
+    setKnowledgeBasePageState(initialPageState);
+    await loadKnowledgeBases({ pageState: initialPageState, query: knowledgeBaseQuery });
+    return { knowledgeBase: persisted };
   }
 
   async function loadPublicOpenApiKeys(input: { replace: boolean }) {
     setIsLoadingPublicOpenApiKeys(true);
-    const page = await listPublicOpenApiKeys(
-      input.replace ? {} : { cursor: publicOpenApiKeysNextCursor }
-    );
-    setPublicOpenApiKeys((current) => (input.replace ? page.items : [...current, ...page.items]));
-    setPublicOpenApiKeysNextCursor(page.nextCursor);
-    setPublicOpenApiKeysOneTimeKey(page.oneTimeKey);
-    setHasLoadedPublicOpenApiKeys(true);
-    setIsLoadingPublicOpenApiKeys(false);
+    setPublicOpenApiKeysError("");
+    try {
+      const page = await listPublicOpenApiKeys(
+        input.replace ? {} : { cursor: publicOpenApiKeysNextCursor }
+      );
+      setPublicOpenApiKeys((current) => (input.replace ? page.items : [...current, ...page.items]));
+      setPublicOpenApiKeysNextCursor(page.nextCursor);
+    } catch (error) {
+      setPublicOpenApiKeysError(readRequestError(error));
+    } finally {
+      setIsLoadingPublicOpenApiKeys(false);
+    }
   }
 
   function handleOpenApiKeysSelected() {
-    if (!hasLoadedPublicOpenApiKeys && !isLoadingPublicOpenApiKeys) {
+    if (!isLoadingPublicOpenApiKeys) {
       void loadPublicOpenApiKeys({ replace: true });
     }
   }
@@ -346,7 +397,6 @@ export function App() {
 
     setPublicOpenApiKeys((current) => [result.key, ...current]);
     setPublicOpenApiKeysOneTimeKey(result.oneTimeKey);
-    setHasLoadedPublicOpenApiKeys(true);
     return result;
   }
 
@@ -402,10 +452,12 @@ export function App() {
         hasPreviousKnowledgeBasePage={knowledgeBasePageState.previousCursors.length > 0}
         hasNextKnowledgeBasePage={Boolean(knowledgeBasePageState.nextCursor)}
         isLoading={isLoadingKnowledgeBases}
+        knowledgeBaseListError={knowledgeBaseListError}
         publicOpenApiKeys={publicOpenApiKeys}
         publicOpenApiKeysNextCursor={publicOpenApiKeysNextCursor}
         publicOpenApiKeysOneTimeKey={publicOpenApiKeysOneTimeKey}
         isLoadingPublicOpenApiKeys={isLoadingPublicOpenApiKeys}
+        publicOpenApiKeysError={publicOpenApiKeysError}
         onCreate={handleCreateKnowledgeBase}
         onUpdate={handleUpdateKnowledgeBase}
         onDelete={handleDeleteKnowledgeBase}
@@ -423,4 +475,10 @@ export function App() {
       />
     </AdminPageBoundary>
   );
+}
+
+function readRequestError(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : "errors.runtimeSettingsUnavailable";
 }

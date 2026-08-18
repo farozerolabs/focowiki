@@ -20,17 +20,17 @@ The target file has three parts:
 | Markdown body | Stores the full readable document with headings, paragraphs, tables, lists, citations, and links. |
 | Source notes | Stores source evidence, conversion notes, unresolved issues, and update history when useful. |
 
-Focowiki parses safe frontmatter fields, preserves domain metadata, reads headings and links, and generates an OKF-style file knowledge base with `index.md`, `schema.md`, `_index/`, `pages/`, and `_graph/` files.
+Focowiki parses safe frontmatter fields, preserves domain metadata, reads headings and links, and generates an OKF-style file knowledge base with `index.md`, `log.md`, `_index/`, `pages/`, and `_graph/` files.
 
 ## Folder Paths And Generated Paths
 
-The Admin upload dialog accepts loose Markdown files or one selected folder with nested subfolders. Folder upload keeps each NFC-normalized relative path. A source such as `handbook/onboarding/guide.md` is published as `pages/handbook/onboarding/guide.md`; loose files use their basename below `pages/`.
+The Admin upload dialog accepts loose Markdown files or one selected folder with nested subfolders. Folder upload keeps each NFC-normalized relative path. A source such as `handbook/onboarding/guide.md` becomes `pages/handbook/onboarding/guide.md`; loose files use their basename below `pages/`.
 
 Selecting the same folder again adds paths that are absent from the knowledge base. Existing active paths are skipped and keep their source IDs and revisions. Content changes for an existing path use the explicit source-file replacement operation.
 
-Every selected item must be a `.md` file. Keep path segments stable and avoid absolute paths, `.` or `..` segments, backslashes, control characters, and case-only path duplicates. Focowiki reserves generated navigation basenames matching `index.md`, `index-<number>.md`, `index-map-<number>.md`, `log.md`, and `log-<number>.md`. Rename source files that use these basenames before upload.
+Every selected item must be a `.md` file. Keep path segments stable and at most 1,000 Unicode code points, and avoid absolute paths, `.` or `..` segments, backslashes, control characters, and case-only path duplicates. Focowiki reserves generated navigation basenames matching `index.md`, `index-<number>.md`, `log.md`, and `log-<number>.md`. Rename source files that use these basenames before upload.
 
-Focowiki creates directory `index.md` files and numbered index or index-map pages when a direct listing exceeds its configured budgets. These generated navigation pages link to the next page and remain available through the tree and content APIs. Agents use them to discover source-backed Markdown pages and read those pages as evidence.
+Focowiki creates directory `index.md` files and bounded stable continuation pages when a direct listing exceeds its configured budgets. These generated navigation pages link to adjacent pages and remain available through the tree and content APIs. Agents use them to discover Markdown pages created from uploaded files and read those pages as evidence.
 
 ## Cleaning Workflow
 
@@ -49,7 +49,7 @@ Use the same workflow for every source format. The tools can differ by format, b
 
 ## Markdown Structure
 
-A cleaned Markdown file should start with YAML frontmatter.
+A cleaned Markdown file can start with YAML frontmatter when reliable metadata is available. Plain Markdown remains uploadable.
 
 ```md
 ---
@@ -94,6 +94,8 @@ Use one clear document title. Keep heading levels stable. Preserve tables as Mar
 Common metadata fields:
 
 These fields are recommended examples for interoperable Markdown files. Uploads can also include domain-specific metadata. Focowiki preserves safe and valid frontmatter fields and passes them through to generated outputs.
+
+OKF 0.2 also defines optional `sources`, `usage_window`, `generated`, `verified`, `status`, `stale_after`, and Attested Computation fields. Preserve them when source evidence exists. Do not invent missing provenance or verification. A safe value that does not conform to the recommended OKF shape remains uploadable and readable, but its derived signal may be `null`.
 
 | Field | Use |
 | --- | --- |
@@ -216,14 +218,14 @@ After processing, inspect:
 | Output | What to check |
 | --- | --- |
 | `pages/*.md` | Title, frontmatter, body, related links, and source notes. |
-| `index.md` | Knowledge-base overview and page listing. |
-| `schema.md` | Metadata conventions and generated file conventions. |
-| `_index/search.json` | Search fields, titles, descriptions, tags, and paths. |
-| `_index/links.json` | Markdown links and graph-backed related links. |
-| `_graph/by-file/{fileId}.json` | Per-file relationships, reasons, weights, and related page paths. |
-| `log.md` | Recent publish history and rolling update notes. |
+| `index.md` | Knowledge-base overview and links to document, graph, history, and machine-readable navigation. |
+| `_index/pages/**/all-documents*.json` or `_index/pages/**/*-documents*.json` | Consolidated titles, metadata, headings, terms, integrity, and current page paths. |
+| `_index/terms/<bucket>/index.json`, `*-terms-part-NNNN.json` | A finite language-script bucket router and bounded multilingual postings to current pages. |
+| `_graph/by-directory/**/*-relationships*.json` | Accepted relationships grouped by the source page directory. |
+| `_graph/by-file/<page-relative-path-without-md>.json` | Per-page relationships, reasons, weights, and readable target paths. |
+| `log.md` | Recent content-update history and rolling update notes. |
 
-The generated files should expose logical paths and safe metadata. They should not expose local paths, S3 object keys, conversion directories, credentials, or provider payloads.
+Generated bundle files expose portable page paths and safe metadata. They do not expose runtime IDs, local paths, object keys, conversion directories, credentials, service URLs, model/provider labels, or persistence details.
 
 ## Practical Acceptance Criteria
 
@@ -241,5 +243,5 @@ A cleaned Markdown corpus is ready for upload when these statements are true:
 ## Related Documentation
 
 - [Open Knowledge Format](./open-knowledge-format.md)
-- [File-first Graph](./file-first-graph.md)
+- [Source-file Evidence and Graph Relationships](./file-first-graph.md)
 - [Developer OpenAPI](../openapi/index.md)

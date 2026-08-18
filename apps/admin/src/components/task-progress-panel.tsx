@@ -28,8 +28,7 @@ import type {
   ApiFailure,
   ProcessingSummary,
   SourceFileRecord,
-  SourceFileTaskDeletionResponse,
-  WorkerQueueSummary
+  SourceFileTaskDeletionResponse
 } from "@/lib/admin-api";
 import type { SourceFileListFilters } from "@/lib/source-file-list-filters";
 import { getSelectableSourceFileIds } from "@/lib/source-file-task-deletion";
@@ -54,6 +53,7 @@ type SourceFileProgressPanelProps = {
   errorMessageKey?: string;
   retryingSourceFileId?: string | null | undefined;
   onRetrySourceFile: (sourceFile: SourceFileRecord) => void;
+  onReplaceSourceFile: (sourceFile: SourceFileRecord) => void;
   onOpenGeneratedFile: (sourceFile: SourceFileRecord) => void;
   onDeleteSourceFileTasks: (
     sourceFileIds: string[]
@@ -75,6 +75,7 @@ export function SourceFileProgressPanel({
   errorMessageKey,
   retryingSourceFileId,
   onRetrySourceFile,
+  onReplaceSourceFile,
   onOpenGeneratedFile,
   onDeleteSourceFileTasks
 }: SourceFileProgressPanelProps) {
@@ -196,6 +197,7 @@ export function SourceFileProgressPanel({
               onFiltersChange={onFiltersChange}
               onClearFilters={onClearFilters}
               onRetrySourceFile={onRetrySourceFile}
+              onReplaceSourceFile={onReplaceSourceFile}
               onOpenGeneratedFile={onOpenGeneratedFile}
             />
             <CursorPaginationControls
@@ -253,7 +255,9 @@ function createTaskDeletionToast(
       title: t("tasks.deleteToast.partialTitle"),
       description: t("tasks.deleteToast.partialDescription", {
         changed: changedCount,
-        skipped: result.summary.skipped
+        skipped: result.summary.skipped,
+        deleted: result.summary.deleted,
+        hidden: result.summary.hidden
       })
     };
   }
@@ -261,7 +265,11 @@ function createTaskDeletionToast(
   if (changedCount > 0) {
     return {
       title: t("tasks.deleteToast.successTitle"),
-      description: t("tasks.deleteToast.successDescription", { count: changedCount })
+      description: t("tasks.deleteToast.successDescription", {
+        count: changedCount,
+        deleted: result.summary.deleted,
+        hidden: result.summary.hidden
+      })
     };
   }
 
@@ -274,221 +282,35 @@ function createTaskDeletionToast(
 
 function ProcessingSummaryStrip({ summary }: { summary: ProcessingSummary }) {
   const { t } = useTranslation();
-  const sourceActive = activeCount(summary.sourceFileJobs);
-  const publicationActive = activeCount(summary.publicationJobs);
-  const progress = summary.publicationProgress;
 
   return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
       <SummaryItem
-        label={t("tasks.summary.pendingDispatch")}
-        value={t("tasks.summary.pendingCount", { count: summary.pendingDispatch.pendingCount })}
-        detail={summary.pendingDispatch.paused
-          ? t("tasks.summary.dispatchPaused")
-          : summary.pendingDispatch.oldestPendingAt
-            ? t("tasks.summary.oldestDirty", {
-                time: new Date(summary.pendingDispatch.oldestPendingAt).toLocaleString()
-              })
-            : t("tasks.summary.noPendingDispatch")}
-      />
-      <SummaryItem
-        label={t("tasks.summary.sourceQueue")}
-        value={t("tasks.summary.activeCount", { count: sourceActive })}
-        detail={formatQueueDetail(summary.sourceFileJobs, t)}
-      />
-      <SummaryItem
-        label={t("tasks.summary.publicationQueue")}
-        value={t("tasks.summary.activeCount", { count: publicationActive })}
-        detail={progress.stage
-          ? t("tasks.summary.publicationStage", {
-              stage: progress.stage,
-              processed: progress.processedImpactCount,
-              total: progress.totalImpactCount
+        label={t("tasks.summary.waiting")}
+        value={String(summary.waitingCount)}
+        detail={summary.oldestWaitingAt
+          ? t("tasks.summary.oldestWaiting", {
+              time: new Date(summary.oldestWaitingAt).toLocaleString()
             })
-          : formatQueueDetail(summary.publicationJobs, t)}
+          : t("tasks.summary.noWaiting")}
       />
       <SummaryItem
-        label={t("tasks.summary.activeVisibility")}
-        value={summary.activeGenerationId
-          ? t("tasks.summary.activeGeneration")
-          : t("tasks.summary.noActiveGeneration")}
-        detail={progress.safeErrorCode
-          ? t("tasks.summary.publicationFailed", { code: progress.safeErrorCode })
-          : summary.activeGenerationId ?? t("tasks.summary.waitingForFirstGeneration")}
+        label={t("tasks.summary.processing")}
+        value={String(summary.processingCount)}
+        detail={t("tasks.summary.documentCount", { count: summary.processingCount })}
       />
-      <MaintenanceSummaryItem summary={summary} />
+      <SummaryItem
+        label={t("tasks.summary.available")}
+        value={String(summary.availableCount)}
+        detail={t("tasks.summary.documentCount", { count: summary.availableCount })}
+      />
+      <SummaryItem
+        label={t("tasks.summary.error")}
+        value={String(summary.errorCount)}
+        detail={t("tasks.summary.documentCount", { count: summary.errorCount })}
+      />
     </div>
   );
-}
-
-function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
-  const { t, i18n } = useTranslation();
-  const migration = summary.maintenanceProgress.migration;
-  const lexicalRebuild = summary.maintenanceProgress.lexicalRebuild;
-  const projectionRepair = summary.maintenanceProgress.projectionRepair;
-  const compaction = summary.maintenanceProgress.compaction.active;
-  const latestUpdate = latestMaintenanceUpdate(summary);
-  const failedCode = projectionRepair?.safeErrorCode
-    ?? compaction?.safeErrorCode
-    ?? lexicalRebuild?.safeErrorCode
-    ?? migration?.safeErrorCode;
-
-  if (failedCode) {
-    return (
-      <SummaryItem
-        label={t("tasks.summary.maintenance")}
-        value={t("tasks.summary.maintenanceFailed")}
-        detail={failedCode}
-      />
-    );
-  }
-
-  if (projectionRepair && ["pending", "running", "retry"].includes(projectionRepair.state)) {
-    return (
-      <SummaryItem
-        label={t("tasks.summary.maintenance")}
-        value={t("tasks.summary.projectionRepairActive")}
-        detail={formatProjectionRepairProgress(projectionRepair, t, i18n.language)}
-      />
-    );
-  }
-
-  if (
-    lexicalRebuild
-    && ["pending", "running", "validating", "activating", "failed"].includes(
-      lexicalRebuild.state
-    )
-  ) {
-    return (
-      <SummaryItem
-        label={t("tasks.summary.maintenance")}
-        value={t("tasks.summary.lexicalRebuildActive")}
-        detail={formatLexicalRebuildProgress(lexicalRebuild, t, i18n.language)}
-      />
-    );
-  }
-
-  if (compaction) {
-    return (
-      <SummaryItem
-        label={t("tasks.summary.maintenance")}
-        value={t("tasks.summary.compactionActive")}
-        detail={t("tasks.summary.maintenanceState", {
-          state: compaction.state,
-          attempt: compaction.attemptCount,
-          maximum: compaction.maxAttempts
-        })}
-      />
-    );
-  }
-
-  if (migration && !["optimized_active", "legacy_readable"].includes(migration.state)) {
-    return (
-      <SummaryItem
-        label={t("tasks.summary.maintenance")}
-        value={t("tasks.summary.migrationActive")}
-        detail={t("tasks.summary.migrationState", {
-          state: migration.state,
-          phase: migration.phase
-        })}
-      />
-    );
-  }
-
-  return (
-    <SummaryItem
-      label={t("tasks.summary.maintenance")}
-      value={t("tasks.summary.maintenanceIdle")}
-      detail={latestUpdate
-        ? t("tasks.summary.maintenanceUpdated", {
-            time: new Date(latestUpdate).toLocaleString()
-          })
-        : t("tasks.summary.noMaintenanceHistory")}
-    />
-  );
-}
-
-function formatProjectionRepairProgress(
-  repair: NonNullable<ProcessingSummary["maintenanceProgress"]["projectionRepair"]>,
-  t: ReturnType<typeof useTranslation>["t"],
-  locale: string
-): string {
-  const integerFormatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
-  const phase = t(`tasks.summary.projectionRepairPhase.${repair.phase}`, {
-    defaultValue: repair.phase
-  });
-  const parts = [
-    t("tasks.summary.projectionRepairProgress", {
-      phase,
-      completed: integerFormatter.format(repair.completedRecordCount),
-      total: integerFormatter.format(repair.totalRecordCount),
-      completedTasks: integerFormatter.format(repair.completedSubtaskCount),
-      totalTasks: integerFormatter.format(repair.totalSubtaskCount)
-    })
-  ];
-  if (repair.recordsPerSecond !== null) {
-    parts.push(t("tasks.summary.projectionRepairRate", {
-      rate: new Intl.NumberFormat(locale, { maximumFractionDigits: 1 })
-        .format(repair.recordsPerSecond)
-    }));
-  }
-  if (repair.estimatedCompletionAt) {
-    parts.push(t("tasks.summary.projectionRepairEta", {
-      time: new Date(repair.estimatedCompletionAt).toLocaleString(locale)
-    }));
-  }
-  return parts.join(" · ");
-}
-
-function formatLexicalRebuildProgress(
-  rebuild: NonNullable<ProcessingSummary["maintenanceProgress"]["lexicalRebuild"]>,
-  t: ReturnType<typeof useTranslation>["t"],
-  locale: string
-): string {
-  const integerFormatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
-  const parts = [
-    t("tasks.summary.lexicalRebuildState", {
-      phase: t(`tasks.summary.lexicalRebuildPhase.${rebuild.phase}`, {
-        defaultValue: rebuild.phase
-      }),
-      processed: integerFormatter.format(rebuild.processedSourceCount),
-      total: integerFormatter.format(rebuild.totalSourceCount)
-    }),
-    t("tasks.summary.lexicalRebuildWorkers", {
-      workers: rebuild.activeWorkerCount,
-      running: integerFormatter.format(rebuild.runningSourceCount),
-      pending: integerFormatter.format(
-        rebuild.pendingSourceCount + rebuild.retrySourceCount
-      )
-    })
-  ];
-  if (rebuild.filesPerSecond !== null) {
-    parts.push(t("tasks.summary.lexicalRebuildRate", {
-      rate: new Intl.NumberFormat(locale, { maximumFractionDigits: 1 })
-        .format(rebuild.filesPerSecond)
-    }));
-  }
-  const retries = rebuild.sourceReadRetryCount + rebuild.databaseRetryCount;
-  if (retries > 0) {
-    parts.push(t("tasks.summary.lexicalRebuildRetries", { count: retries }));
-  }
-  if (rebuild.estimatedCompletionAt) {
-    parts.push(t("tasks.summary.lexicalRebuildEta", {
-      time: new Date(rebuild.estimatedCompletionAt).toLocaleString(locale)
-    }));
-  }
-  return parts.join(" · ");
-}
-
-function latestMaintenanceUpdate(summary: ProcessingSummary): string | null {
-  const timestamps = [
-    summary.maintenanceProgress.migration?.updatedAt,
-    summary.maintenanceProgress.lexicalRebuild?.updatedAt,
-    summary.maintenanceProgress.projectionRepair?.updatedAt,
-    summary.maintenanceProgress.compaction.latestCompleted?.updatedAt
-  ].filter((value): value is string => Boolean(value));
-  if (timestamps.length === 0) return null;
-  return timestamps.reduce((latest, current) => current > latest ? current : latest);
 }
 
 function SummaryItem({
@@ -507,30 +329,4 @@ function SummaryItem({
       <p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p>
     </div>
   );
-}
-
-function activeCount(summary: WorkerQueueSummary): number {
-  return summary.queuedCount + summary.runningCount;
-}
-
-function formatQueueDetail(
-  summary: WorkerQueueSummary,
-  t: ReturnType<typeof useTranslation>["t"]
-): string {
-  const parts = [
-    t("tasks.summary.queued", { count: summary.queuedCount }),
-    t("tasks.summary.running", { count: summary.runningCount })
-  ];
-
-  if (summary.failedCount > 0) {
-    parts.push(t("tasks.summary.failed", { count: summary.failedCount }));
-  }
-  if (summary.deadLetterCount > 0) {
-    parts.push(t("tasks.summary.deadLetter", { count: summary.deadLetterCount }));
-  }
-  if (summary.oldestQueuedAgeSeconds !== null) {
-    parts.push(t("tasks.summary.oldestQueuedAge", { seconds: summary.oldestQueuedAgeSeconds }));
-  }
-
-  return parts.join(" / ");
 }

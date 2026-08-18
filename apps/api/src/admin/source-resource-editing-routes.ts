@@ -1,92 +1,55 @@
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { createSourceResourceMutationService } from "../application/source-resource-mutations.js";
-import { resolveWorkerConfig, type RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
+import type { RuntimeConfig } from "../config.js";
+import { SourcePathValidationError } from "../domain/source-path.js";
 import { SourceResourceError, type ResourceOperationRecord } from "../domain/source-resource.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
-import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageAdapter } from "../storage/s3.js";
-import type { ApplicationRuntime } from "../application/ports/runtime.js";
-import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
-import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import { INCREMENTAL_PUBLICATION_DEFAULTS } from "../publication/incremental-defaults.js";
 import { readPageLimit } from "./pagination.js";
-import { recordAdminAudit } from "./security.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
+import type { StorageVnextAdminMutationApplication } from "../storage-vnext/api/admin-mutation-application.js";
 
 export function registerAdminSourceResourceEditingRoutes(
   app: Hono,
   services: {
     config: RuntimeConfig;
-    repositories: AdminRepositories | null;
-    redis: RedisCoordinator | null;
-    runtimeSettings: RuntimeSettingsService | null;
-    storage: StorageAdapter;
-    roleJobs: RoleJobRepository | null;
-    publicationGenerations: PublicationGenerationRepository | null;
-    applicationRuntime: ApplicationRuntime;
+    application: StorageVnextAdminMutationApplication;
+    audit: StorageVnextAdminAuditApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const requireMutationService = async () => {
-    const sourceResources = services.repositories?.sourceResources;
-    if (!sourceResources || !services.roleJobs || !services.publicationGenerations) return null;
-    const snapshot = await services.runtimeSettings?.getSnapshot();
-    const runtimeWorker = snapshot?.worker;
-    return {
-      mutations: createSourceResourceMutationService({
-        repository: sourceResources,
-        roleJobs: services.roleJobs,
-        generations: services.publicationGenerations,
-        graph: services.repositories?.graph,
-        impactPlanner: INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner,
-        publicationSettingsSnapshot: {
-          publication: snapshot?.publication ?? {},
-          graph: snapshot?.graph ?? {},
-          worker: snapshot?.worker ?? {}
-        },
-        storage: {
-          sourceRevisionKey: services.storage.keyspace.sourceRevisionKey,
-          put: (object) => services.storage.putObject(object),
-          delete: async (key) => {
-            await services.storage.deleteObject?.(key);
-          }
-        },
-        runtime: services.applicationRuntime
-      }),
-      worker: runtimeWorker ?? resolveWorkerConfig(services.config)
-    };
-  };
-
   app.patch(
     "/admin/api/knowledge-bases/:knowledgeBaseId",
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
-      const name = body.name === undefined ? undefined : readName(body.name);
-      const description = readDescription(body.description);
-      if (name === undefined && description === undefined) return invalid(context, "errors.invalidKnowledgeBase");
       try {
-        const result = await service.mutations.updateKnowledgeBase(
-          {
-            knowledgeBaseId: context.req.param("knowledgeBaseId"),
-            expectedResourceRevision: readRevision(context.req.header("if-match")),
-            ...(name === undefined ? {} : { name }),
-            ...(description === undefined ? {} : { description })
-          },
-          service.worker.jobMaxAttempts
-        );
+        const idempotencyKeyHeader = context.req.header("idempotency-key");
+        const name = body.name === undefined ? undefined : readName(body.name);
+        const description = readDescription(body.description);
+        if (name === undefined && description === undefined) {
+          return invalid(context, "errors.invalidKnowledgeBase");
+        }
+        const result = await services.application.updateKnowledgeBase({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          expectedResourceRevision: readRevision(context.req.header("if-match")),
+          ...(idempotencyKeyHeader === undefined
+            ? {}
+            : { idempotencyKey: readIdempotencyKey(idempotencyKeyHeader) }),
+          ...(name === undefined ? {} : { name }),
+          ...(description === undefined ? {} : { description })
+        });
         if (!result.knowledgeBase) return conflict(context, "RESOURCE_REVISION_CONFLICT");
-        await audit(context, services, "knowledge_base_metadata_updated");
+        await audit(context, services, "knowledge_base_metadata_updated", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "knowledge_base",
+          targetPublicId: context.req.param("knowledgeBaseId")
+        });
         return context.json({
-          knowledgeBase: result.knowledgeBase,
-          publicationQueued: result.publicationQueued
+          knowledgeBase: result.knowledgeBase
         });
       } catch (error) {
         return mutationError(context, error);
@@ -98,17 +61,20 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-directories",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const limit = readPageLimit(context.req.query("limit"), services.config);
-      if (!limit) return invalid(context, "errors.invalidPagination");
-      const page = await service.mutations.resources.listDirectories({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        parentDirectoryId: readNullableId(context.req.query("parentDirectoryId")),
-        limit,
-        cursor: context.req.query("cursor") ?? null
-      });
-      return context.json({ items: page.items.map(directoryResponse), nextCursor: page.nextCursor });
+      if (!limit) return invalidPagination(context);
+      try {
+        const page = await services.application.listDirectories({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          parentDirectoryId: readNullableId(context.req.query("parentDirectoryId")),
+          limit,
+          cursor: context.req.query("cursor") ?? null
+        });
+        return context.json({ items: page.items.map(directoryResponse), nextCursor: page.nextCursor });
+      } catch (error) {
+        return mutationError(context, error);
+      }
     }
   );
 
@@ -116,9 +82,8 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
-      const directory = await service.mutations.resources.getDirectory({
+      if (!services.application.available()) return unavailable(context);
+      const directory = await services.application.getDirectory({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         directoryId: context.req.param("directoryId")
       });
@@ -131,23 +96,21 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       try {
-        const result = await service.mutations.acceptOperation(
-          {
-            knowledgeBaseId: context.req.param("knowledgeBaseId"),
-            kind: "source_directory_move",
-            idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-            expectedResourceRevision: readRevision(context.req.header("if-match")),
-            targetKind: "source_directory",
-            targetId: context.req.param("directoryId"),
-            payload: { relativePath: readRelativePath(body.relativePath) }
-          },
-          service.worker.jobMaxAttempts
-        );
-        await audit(context, services, "source_directory_move_accepted");
+        const result = await services.application.moveSourceDirectory({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
+          expectedResourceRevision: readRevision(context.req.header("if-match")),
+          targetId: context.req.param("directoryId"),
+          relativePath: readRelativePath(body.relativePath)
+        });
+        await audit(context, services, "source_directory_move_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_directory",
+          targetPublicId: context.req.param("directoryId")
+        });
         return context.json({ operation: operationResponse(result.operation) }, 202);
       } catch (error) {
         return mutationError(context, error);
@@ -160,27 +123,27 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       const expectedResourceRevision = Number(body.expectedResourceRevision);
       if (!Number.isInteger(expectedResourceRevision) || expectedResourceRevision < 1) {
         return invalid(context, "errors.invalidResourceRevision");
       }
       try {
-        const result = await service.mutations.deleteDirectory({
+        const result = await services.application.deleteSourceDirectory({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           directoryId: context.req.param("directoryId"),
-          idempotencyKey:
-            context.req.header("idempotency-key")?.trim()
-            || services.applicationRuntime.ids.create("admin-delete"),
-          expectedResourceRevision,
-          maxAttempts: service.worker.jobMaxAttempts
+          idempotencyKey: context.req.header("idempotency-key")?.trim() || null,
+          expectedResourceRevision
         });
-        await audit(context, services, "source_directory_delete_accepted");
+        await audit(context, services, "source_directory_delete_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_directory",
+          targetPublicId: context.req.param("directoryId")
+        });
         return context.json({
           accepted: true,
-          operationId: result.operation.id,
+          operation: operationResponse(result.operation),
           directoryId: result.effectiveDirectoryId,
           affectedDirectoryCount: result.affectedDirectoryCount,
           affectedFileCount: result.affectedFileCount
@@ -195,20 +158,17 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/content",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
-      const descriptor = await service.mutations.resources.getSourceFileContentDescriptor({
+      if (!services.application.available()) return unavailable(context);
+      const source = await services.application.readSourceContent({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sourceFileId: context.req.param("sourceFileId")
       });
-      if (!descriptor) return notFound(context);
-      const content = await services.storage.getObjectBody?.(descriptor.objectKey);
-      if (content == null) return notFound(context);
-      return new Response(content, {
+      if (!source) return notFound(context);
+      return new Response(source.content, {
         headers: {
-          "content-type": descriptor.contentType,
-          etag: `\"${descriptor.resourceRevision}\"`,
-          "x-content-revision": String(descriptor.contentRevision)
+          "content-type": source.contentType,
+          etag: `\"${source.resourceRevision}\"`,
+          "x-content-revision": String(source.contentRevision)
         }
       });
     }
@@ -219,23 +179,21 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       try {
-        const result = await service.mutations.acceptOperation(
-          {
-            knowledgeBaseId: context.req.param("knowledgeBaseId"),
-            kind: "source_file_move",
-            idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-            expectedResourceRevision: readRevision(context.req.header("if-match")),
-            targetKind: "source_file",
-            targetId: context.req.param("sourceFileId"),
-            payload: { relativePath: readRelativePath(body.relativePath) }
-          },
-          service.worker.jobMaxAttempts
-        );
-        await audit(context, services, "source_file_move_accepted");
+        const result = await services.application.moveSourceFile({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
+          expectedResourceRevision: readRevision(context.req.header("if-match")),
+          targetId: context.req.param("sourceFileId"),
+          relativePath: readRelativePath(body.relativePath)
+        });
+        await audit(context, services, "source_file_move_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: context.req.param("sourceFileId")
+        });
         return context.json({ operation: operationResponse(result.operation) }, 202);
       } catch (error) {
         return mutationError(context, error);
@@ -248,23 +206,72 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
+      if (!isMarkdownContentType(context.req.header("content-type"))) {
+        return context.json({
+          error: {
+            code: "UNSUPPORTED_MEDIA_TYPE",
+            messageKey: "errors.sourceContentTypeUnsupported"
+          }
+        }, 415);
+      }
+      const declaredLength = Number(context.req.header("content-length") ?? 0);
+      if (Number.isFinite(declaredLength)
+        && declaredLength > services.config.pagination.generatedContentMaxBytes) {
+        return context.json({
+          error: {
+            code: "RESOURCE_CONTENT_TOO_LARGE",
+            messageKey: "errors.sourceContentTooLarge"
+          }
+        }, 413);
+      }
       const bytes = new Uint8Array(await context.req.raw.arrayBuffer());
       if (bytes.byteLength === 0) return invalid(context, "errors.sourceContentRequired");
       try {
         const relativePath = context.req.header("x-source-relative-path")?.trim();
-        const result = await service.mutations.replaceSourceContent({
+        const result = await services.application.replaceSourceFileContent({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sourceFileId: context.req.param("sourceFileId"),
           expectedResourceRevision: readRevision(context.req.header("if-match")),
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           bytes,
-          ...(relativePath ? { relativePath } : {}),
-          maxAttempts: service.worker.jobMaxAttempts
+          ...(relativePath ? { relativePath } : {})
         });
-        await audit(context, services, "source_file_replacement_accepted");
+        await audit(context, services, "source_file_replacement_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: context.req.param("sourceFileId")
+        });
         return context.json({ operation: operationResponse(result.operation) }, 202);
+      } catch (error) {
+        return mutationError(context, error);
+      }
+    }
+  );
+
+  app.delete(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
+      if (!services.application.available()) return unavailable(context);
+      try {
+        const sourceFileId = context.req.param("sourceFileId");
+        const result = await services.application.deleteSourceFile({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          sourceFileId,
+          idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
+          expectedResourceRevision: readRevision(context.req.header("if-match"))
+        });
+        await audit(context, services, "source_file_delete_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: sourceFileId
+        });
+        return context.json({
+          operation: operationResponse(result.operation),
+          deletion: { sourceFileId }
+        }, 202);
       } catch (error) {
         return mutationError(context, error);
       }
@@ -275,21 +282,29 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/operations",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const limit = readPageLimit(context.req.query("limit"), services.config);
-      if (!limit) return invalid(context, "errors.invalidPagination");
-      const state = readOperationState(context.req.query("state"));
+      if (!limit) return invalidPagination(context);
+      let state: ResourceOperationRecord["state"] | undefined;
+      try {
+        state = readOperationState(context.req.query("state"));
+      } catch (error) {
+        return mutationError(context, error);
+      }
       const activeStates: ResourceOperationRecord["state"][] = [
-        "accepted", "validating", "processing", "publishing"
+        "accepted", "validating", "processing"
       ];
-      const page = await service.mutations.resources.listOperations({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        states: state ? [state] : activeStates,
-        limit,
-        cursor: context.req.query("cursor") ?? null
-      });
-      return context.json({ items: page.items.map(operationResponse), nextCursor: page.nextCursor });
+      try {
+        const page = await services.application.listOperations({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          states: state ? [state] : activeStates,
+          limit,
+          cursor: context.req.query("cursor") ?? null
+        });
+        return context.json({ items: page.items.map(operationResponse), nextCursor: page.nextCursor });
+      } catch (error) {
+        return mutationError(context, error);
+      }
     }
   );
 
@@ -297,9 +312,8 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/operations/:operationId",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
-      const operation = await service.mutations.resources.getOperation({
+      if (!services.application.available()) return unavailable(context);
+      const operation = await services.application.getOperation({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         operationId: context.req.param("operationId")
       });
@@ -308,7 +322,9 @@ export function registerAdminSourceResourceEditingRoutes(
   );
 }
 
-function directoryResponse(directory: Awaited<ReturnType<ReturnType<typeof createSourceResourceMutationService>["resources"]["getDirectory"]>> & {}) {
+function directoryResponse(
+  directory: NonNullable<Awaited<ReturnType<StorageVnextAdminMutationApplication["getDirectory"]>>>
+) {
   return {
     directoryId: directory.id,
     knowledgeBaseId: directory.knowledgeBaseId,
@@ -335,7 +351,7 @@ function operationResponse(operation: ResourceOperationRecord) {
     candidateRelativePath: operation.candidateRelativePath ?? null,
     result: operation.result,
     errorCode: operation.errorCode,
-    retryGuidance: ["accepted", "validating", "processing", "publishing"].includes(operation.state)
+    retryGuidance: ["accepted", "validating", "processing"].includes(operation.state)
       ? "retry_after_short_delay"
       : null,
     createdAt: operation.createdAt,
@@ -347,14 +363,18 @@ function operationResponse(operation: ResourceOperationRecord) {
 async function audit(
   context: Parameters<MiddlewareHandler>[0],
   services: Parameters<typeof registerAdminSourceResourceEditingRoutes>[1],
-  eventType: string
+  eventType: string,
+  target: {
+    knowledgeBaseId?: string;
+    targetKind?: string;
+    targetPublicId?: string;
+  } = {}
 ) {
-  await recordAdminAudit({
-    repositories: services.repositories,
-    config: services.config,
+  await services.audit.record({
     context,
     eventType,
-    result: "success"
+    result: "success",
+    ...target
   });
 }
 
@@ -405,17 +425,29 @@ function readNullableId(value: string | undefined): string | null {
 function readOperationState(value: string | undefined): ResourceOperationRecord["state"] | undefined {
   if (!value) return undefined;
   const states: ResourceOperationRecord["state"][] = [
-    "accepted", "validating", "processing", "publishing", "completed", "failed", "cancelled", "superseded"
+    "accepted", "validating", "processing", "completed", "failed", "cancelled", "superseded"
   ];
   if (!states.includes(value as ResourceOperationRecord["state"])) throw new SourceResourceError("INVALID_RESOURCE_MUTATION");
   return value as ResourceOperationRecord["state"];
 }
 
 function mutationError(context: Parameters<MiddlewareHandler>[0], error: unknown): Response {
+  if (error instanceof SourcePathValidationError) {
+    return invalid(context, "errors.invalidResourceMutation");
+  }
   if (!(error instanceof SourceResourceError)) {
     return context.json({ error: { code: "INTERNAL_ERROR", messageKey: "errors.editFailed" } }, 500);
   }
+  if (error.code === "INVALID_PAGINATION") return invalidPagination(context);
   if (error.code === "RESOURCE_NOT_FOUND") return notFound(context);
+  if (error.code === "RESOURCE_CONTENT_TOO_LARGE") {
+    return context.json({
+      error: {
+        code: error.code,
+        messageKey: "errors.sourceContentTooLarge"
+      }
+    }, 413);
+  }
   if (error.code === "INVALID_RESOURCE_MUTATION") return invalid(context, "errors.invalidResourceMutation");
   return conflict(context, error.code);
 }
@@ -424,6 +456,7 @@ function conflict(context: Parameters<MiddlewareHandler>[0], code: string): Resp
   const keys: Record<string, string> = {
     RESOURCE_REVISION_CONFLICT: "errors.resourceRevisionConflict",
     RESOURCE_PATH_CONFLICT: "errors.resourcePathConflict",
+    RESOURCE_CONTENT_UNCHANGED: "errors.sourceContentUnchanged",
     RESOURCE_BUSY: "errors.resourceBusy",
     RESOURCE_DELETING: "errors.resourceDeleting",
     IDEMPOTENCY_CONFLICT: "errors.idempotencyConflict"
@@ -431,8 +464,16 @@ function conflict(context: Parameters<MiddlewareHandler>[0], code: string): Resp
   return context.json({ error: { code, messageKey: keys[code] ?? "errors.editFailed" } }, 409);
 }
 
+function isMarkdownContentType(value: string | undefined): boolean {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
+}
+
 function invalid(context: Parameters<MiddlewareHandler>[0], messageKey: string): Response {
   return context.json({ error: { code: "VALIDATION_ERROR", messageKey } }, 422);
+}
+
+function invalidPagination(context: Parameters<MiddlewareHandler>[0]): Response {
+  return context.json({ error: { code: "INVALID_PAGINATION" } }, 400);
 }
 
 function notFound(context: Parameters<MiddlewareHandler>[0]): Response {

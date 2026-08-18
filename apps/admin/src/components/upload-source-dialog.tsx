@@ -46,6 +46,7 @@ export function UploadSourceDialog({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadOperationEpochRef = useRef(0);
   const activeSessionIdRef = useRef<string | null>(null);
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadError, setUploadError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
@@ -55,7 +56,9 @@ export function UploadSourceDialog({
   const selectedFileTotalSize = formatUploadBytes(totalSelectedFileBytes(selectedFiles));
   const invalidPaths = invalidSelectedUploadPaths(selectedFiles);
   const uploadSelectionErrorKey = hasUnsupportedMarkdownFile(selectedFiles) || invalidPaths.length > 0
-    ? "errors.uploadMarkdownOnly"
+    ? hasUnsupportedMarkdownFile(selectedFiles)
+      ? "errors.uploadMarkdownOnly"
+      : "errors.uploadInvalidPath"
     : hasDuplicateFileName(selectedFiles)
       ? "errors.duplicateUploadFileName"
       : "";
@@ -78,9 +81,13 @@ export function UploadSourceDialog({
       return;
     }
 
+    const uploadAbortController = new AbortController();
+    uploadAbortControllerRef.current = uploadAbortController;
+
     const result = await runUploadSession({
       knowledgeBaseId,
       files: selectedFiles,
+      signal: uploadAbortController.signal,
       onProgress: setProgress,
       onSessionReady: (id) => {
         if (uploadOperationEpochRef.current === operationEpoch) {
@@ -96,10 +103,19 @@ export function UploadSourceDialog({
     if (uploadOperationEpochRef.current !== operationEpoch) {
       return;
     }
+    uploadAbortControllerRef.current = null;
 
     if (!result.ok) {
-      setIsUploading(false);
-      activeSessionIdRef.current = null;
+      if (result.sessionId) {
+        activeSessionIdRef.current = result.sessionId;
+        setIsUploading(true);
+      } else {
+        setIsUploading(false);
+        activeSessionIdRef.current = null;
+        if (result.failure.messageKey === "errors.uploadCancelled") {
+          resetSelection();
+        }
+      }
       setUploadError(result.failure.messageKey);
       return;
     }
@@ -153,13 +169,22 @@ export function UploadSourceDialog({
   }
 
   async function handleCancelUpload() {
-    uploadOperationEpochRef.current += 1;
+    if (uploadAbortControllerRef.current) {
+      uploadAbortControllerRef.current.abort();
+      return;
+    }
     const sessionId = activeSessionIdRef.current;
+    if (sessionId) {
+      const failure = await cancelFolderUpload({ knowledgeBaseId, sessionId })
+        .catch(() => ({ messageKey: "errors.uploadCleanupFailed" }));
+      if (failure) {
+        setUploadError("errors.uploadCleanupFailed");
+        return;
+      }
+    }
+    uploadOperationEpochRef.current += 1;
     setIsUploading(false);
     resetSelection();
-    if (sessionId) {
-      await cancelFolderUpload({ knowledgeBaseId, sessionId }).catch(() => undefined);
-    }
   }
 
   return (

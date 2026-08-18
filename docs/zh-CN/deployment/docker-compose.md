@@ -4,7 +4,7 @@ title: Docker Compose 部署
 
 # Docker Compose 部署
 
-本指南使用生产 Docker Compose 模板和 GitHub Container Registry 镜像启动 Focowiki。
+本指南使用生产 Docker Compose 模板和已发布的 GitHub Container Registry 镜像启动 Focowiki。
 
 ## 部署要求
 
@@ -12,30 +12,72 @@ title: Docker Compose 部署
 
 | 服务 | 用途 |
 | --- | --- |
-| PostgreSQL | 保存来源修订、持久化角色任务、发布 generation、投影记录、OpenAPI key、运行配置和审计证据。 |
-| Redis | 保存 session、限流计数、cursor、短期缓存、通知和范围协调状态。 |
-| S3 兼容存储 | 保存上传来源修订和内容寻址的生成 Markdown 与投影对象。 |
-| 反向代理 | 为 Admin UI、Admin API 和 Developer OpenAPI 提供 HTTPS public origins。 |
+| PostgreSQL | 保存知识库、文件记录、处理状态、设置、OpenAPI 密钥和关系数据。 |
+| Redis | 保存登录会话、限流计数、分页和短期任务状态。 |
+| OpenSearch 或 Meilisearch | 为每个知识库保存一个搜索索引。模板默认使用 OpenSearch 3.8.0。 |
+| S3 兼容存储 | 保存上传的 Markdown 和生成后的知识库文件。 |
+| 反向代理 | 为 Admin UI、Admin API 和 Developer OpenAPI 提供 HTTPS 访问。 |
 
-Compose 模板会启动 PostgreSQL 和 Redis。外部 S3 兼容服务需要在 `.env` 中配置。
+模板会启动 PostgreSQL、Redis 和选中的私有搜索服务。外部 S3 兼容服务需要在 `.env` 中配置。也可以用外部 OpenSearch 或 Meilisearch 替代模板附带的搜索容器。一个 `worker` 服务统一处理文档索引、语义增强、删除、修复和维护。
 
 ## 准备文件
 
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
-mkdir -p data/postgres data/redis runtime-secrets logs backups
+mkdir -p data/postgres data/redis data/opensearch data/meilisearch data/meilisearch-snapshots data/meilisearch-dumps opensearch-security runtime-secrets logs backups
 ```
 
-启动前填写 `.env`。启动变量、必填项、可选项和生产填写方式见 [环境变量配置](./environment.md)。在 Admin UI 中修改的运行时配置见 [Admin 配置](./admin-settings.md)。
+启动前填写 `.env`。所有生产变量见 [环境变量配置](./environment.md)，启动后可以修改的配置见 [Admin 配置](./admin-settings.md)。
 
-真实 `.env` 文件和复制后的 Compose 文件应留在 git 之外。
+真实 `.env` 和复制后的 `docker-compose.yml` 不要提交到 git。
 
-## Runtime logging
+## 选择搜索服务
 
-`APP_ENV=production` 会启用生产安全运行方式。API error responses 不会把内部诊断信息写入 response body。Admin UI 生产构建会移除产品代码中的 `console.log`、`console.debug`、`console.info` 和 `debugger` statements。
+复制后的环境模板默认启动 OpenSearch 3.8.0：
 
-文件日志、日志轮转和 Docker 日志限制见 [环境变量配置](./environment.md#运行模式)。
+```dotenv
+SEARCH_PROVIDER=opensearch
+COMPOSE_PROFILES=opensearch
+OPENSEARCH_URL=https://opensearch:9200
+OPENSEARCH_AUTH_MODE=basic
+```
+
+在 `.env` 中只设置一个强管理员密码：
+
+```dotenv
+OPENSEARCH_ADMIN_PASSWORD=<generate-an-opensearch-admin-password>
+```
+
+无需手工准备 TLS 文件。模板附带的 OpenSearch 启动前，`search-init` 会创建当前部署独有的私有 CA 和证书、完整的 OpenSearch Security 配置，以及恰好两个内部身份：配置的管理员和一个只允许访问 `SEARCH_INDEX_PREFIX` 的随机运行身份。私有安全状态保存在 `./opensearch-security`，运行密码和可信 CA 保存在 `./runtime-secrets`。以后每次重启都会原样复用完整且有效的文件。文件缺失、残缺、损坏、权限不安全、接近到期或与当前配置不匹配时，服务会拒绝启动，不会替换部署身份。OpenSearch 的演示安装程序在整个启动过程中始终关闭。
+
+API 和工作进程只会收到生成的运行身份和可信 CA，不会收到管理员密码或私钥。选择 Meilisearch Compose 配置组时，同一个 `search-init` 服务会准备 Meilisearch 的运行访问。
+
+改用模板附带的 Meilisearch 时，先解除 Compose 模板中完整 `meilisearch` 服务块的注释，再设置：
+
+```dotenv
+SEARCH_PROVIDER=meilisearch
+COMPOSE_PROFILES=meilisearch
+MEILI_HOST=http://meilisearch:7700
+```
+
+使用外部服务时，将 `COMPOSE_PROFILES` 留空，并填写所选服务的外部端点和认证字段。OpenSearch 支持 Basic 认证、可选的私有 CA，以及服务名为 `es` 或 `aoss` 的 AWS SigV4。外部模式不会启动模板附带的搜索容器或初始化服务。
+
+## 模板启动的服务
+
+| Compose 服务 | 说明 |
+| --- | --- |
+| `admin` | Admin UI。 |
+| `api` | Admin API 和 Developer OpenAPI。 |
+| `worker` | 处理文档任务，并以较低优先级执行删除、修复和维护。 |
+| `migrate` | 在应用服务启动前检查并更新数据库。 |
+| `postgres` | PostgreSQL 数据库。 |
+| `redis` | Redis 服务。 |
+| `search-init` | 准备选中的模板附带搜索服务；使用 OpenSearch 时，会在其启动前生成或校验 TLS、内部身份和受前缀限制的权限。 |
+| `opensearch` | 模板附带的 OpenSearch 3.8.0，通过 `COMPOSE_PROFILES=opensearch` 启用。 |
+| `meilisearch` | 模板附带的 Meilisearch 备选服务，通过 `COMPOSE_PROFILES=meilisearch` 启用。 |
+
+生产模板只把 Admin UI、Admin API 和 Developer OpenAPI 发布到 `127.0.0.1`。PostgreSQL、Redis 和两种模板附带的搜索服务都保持在 Compose 私有网络内，并且只会启动选中的搜索配置组。
 
 ## 拉取镜像
 
@@ -43,55 +85,50 @@ mkdir -p data/postgres data/redis runtime-secrets logs backups
 docker compose -f docker-compose.yml pull
 ```
 
-模板默认使用这些镜像：
-
-| 镜像 | 默认 tag |
-| --- | --- |
-| `ghcr.io/farozerolabs/focowiki-api` | `latest` |
-| `ghcr.io/farozerolabs/focowiki-admin` | `latest` |
-
-如需固定版本，在 `.env` 中设置镜像变量。
+镜像变量默认使用 `latest`。生产环境应把两个镜像固定为相同的发布版本；`worker` 使用 API 镜像。
 
 ```text
-FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
-FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:<release-tag>
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:<release-tag>
 ```
 
-## 更新现有部署
+## 启动服务
 
-更新前先阅读发行说明。发行说明会写明该版本是否调整数据库、是否要求先完成异步任务，以及是否更新知识库索引。
-
-1. 备份 PostgreSQL 和当前配置的 S3 兼容存储。
-2. 更新 `.env` 中的镜像标签并拉取镜像。
-3. 如果发行说明要求先完成异步任务，在停止当前服务前完成该要求。
-4. 执行数据库迁移命令。
-5. 启动更新后的服务。
+首次启动前执行一次数据库命令，然后启动全部服务。
 
 ```bash
-docker compose -f docker-compose.yml pull
 docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 ```
 
-数据库迁移命令只更新数据库结构，成功后可以重复执行。该命令不会重建知识库索引，也不会处理来源文件。
+默认本地地址使用 `.env` 中的端口：
 
-当版本更新了生成索引时，知识库页面会显示是否需要维护。维护等待或运行期间，当前已生效内容继续保持可读。手动模式下，在每个受影响知识库的设置中启动维护。自动模式下，Focowiki 会以受控的后台任务安排受影响的知识库；知识库空闲时仍可使用手动维护。
-
-## 启动服务
-
-```bash
-docker compose -f docker-compose.yml up -d
-```
-
-默认服务地址由 `.env` 端口决定：
-
-| 服务 | 本地 URL 格式 |
+| 服务 | 本地 URL |
 | --- | --- |
 | Admin UI | `http://127.0.0.1:${ADMIN_UI_PORT}` |
 | Admin API | `http://127.0.0.1:${ADMIN_API_PORT}` |
 | Developer OpenAPI | `http://127.0.0.1:${PUBLIC_OPENAPI_PORT}` |
 
-公开部署时，将 Admin UI、Admin API 和 Developer OpenAPI 放到 `.env` 配置的 HTTPS origins 后面。
+公开访问应通过 `.env` 中配置的 HTTPS 来源地址。
+
+## 检查启动状态
+
+```bash
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml logs --tail=200 api worker admin
+```
+
+所有长期运行的服务都应显示 `healthy`。启动失败时，先检查 `migrate`、所选搜索服务的初始化服务或异常服务的第一条错误。常见原因包括基础设施不可访问、凭据错误、TLS 信任无效、公开来源地址无效，或者数据库来自不受支持的旧版本。
+
+启动后：
+
+1. 打开 Admin UI，使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录。
+2. 检查 Admin 配置。
+3. 在**模型配置**中分别创建并测试生成模型与嵌入模型，然后将生成模型**设为生效**并**激活**嵌入模型。完成上传需要这两项配置。
+4. 创建知识库并上传一个小型 Markdown 文件。
+5. 确认文件逐步变为 `available`，随后可以读取并通过搜索找到。
+6. 后续上传和正文替换会自动执行同一处理流程。已有内容更换模型、嵌入维度或搜索服务时，或者需要明确修复或重建时，执行一次**维护索引**。
+7. 创建 OpenAPI 密钥，并检查 Developer OpenAPI。
 
 ## 常用命令
 
@@ -106,72 +143,122 @@ pnpm compose:down
 pnpm compose:clean
 ```
 
-`docker compose logs -f` 用于查看 container stdout/stderr 日志。产品运行日志文件见 [环境变量配置](./environment.md#运行模式)。
+`docker compose logs -f` 用于查看容器输出。产品日志文件保存在 `./logs`，限制见 [环境变量配置](./environment.md#运行模式)。
 
-`pnpm compose:clean` 会删除生产 Compose stack 使用的 deployment containers、Docker 管理的 named volumes、orphans 和本地镜像副本。部署目录下的 `data`、`runtime-secrets` 和 `logs` 会保留。只有明确要删除本地部署数据时，才手动删除这些目录。
+`pnpm compose:clean` 会删除当前服务使用的容器、Docker 管理的卷、孤立容器和本地镜像副本。`data`、`opensearch-security`、`runtime-secrets` 和 `logs` 目录仍会保留。只有确定要删除部署数据时才删除这些目录。
 
-## 启动之后
+## 更新现有部署
 
-1. 打开 Admin UI。
-2. 使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录。
-3. 创建知识库。
-4. 在 Admin UI 中创建或复制 OpenAPI key。
-5. 使用这个 key 调用 Developer OpenAPI。
+本版本是完整的破坏式存储重置。所有旧版本 PostgreSQL 数据结构都会被拒绝；旧 PostgreSQL 数据、Redis 状态、S3 对象、运行时模型设置、知识库标识、生成内容和搜索索引均不复用。旧部署的完整协调备份只用于回滚。目标版本必须使用空 PostgreSQL 数据库、空 Redis 命名空间、空 S3 前缀和空搜索前缀，执行迁移后重新配置模型、创建知识库并重新导入来源 Markdown。禁止把旧版本备份还原到本版本。完成新导入的文件数量、路径、预览、搜索、关系和 API 访问检查前，保留完整旧部署。
 
-继续阅读 [Developer OpenAPI](../openapi/index.md)。
+更新到继续支持当前数据库格式的后续版本时：
 
-## 发布失败诊断
+1. 创建备份。
+2. 更新 `.env` 中三个镜像的版本并拉取镜像。
+3. 完成发行说明要求的准备工作。
+4. 执行数据库命令。
+5. 启动更新后的服务。
 
-来源文件列表会返回统一的生命周期状态、当前阶段、安全失败详情和允许执行的操作。`state=failed` 的行会标明终止阶段，并提供可以与产品日志对应的关联 ID。
+```bash
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml run --rm migrate
+docker compose -f docker-compose.yml up -d
+```
 
-来源文件处理失败时使用“重试处理”。必要投影校验或 generation 激活失败时使用“重试发布”。发布重试会保留已完成的来源事实并继续合并后的 generation。确定性的校验失败需要在修正原因后显式重试。
+数据库命令成功后可以再次执行。该命令不会处理上传文件，也不会重建搜索索引。新部署启动后，已有内容更换模型、嵌入维度、输出格式或搜索服务时，可能需要执行**维护索引**。维护期间，已经可以读取的文件继续可用。
 
-文件只有在 `state=visible` 后才能读取生成内容。候选 generation 通过变更投影校验并成功激活前不会进入正常读取。候选 generation 失败时，之前的活动 generation 继续保持可读。
+## 处理失败
+
+来源文件列表会显示当前状态、当前步骤、失败信息和可用操作。
+
+- 文件处理失败时使用**重试处理**。
+- 可重复出现的失败需要先修正配置或服务错误，再执行重试。
+
+文件到达 `state=available` 后可以读取生成内容。替换失败时，之前已经可用的内容继续可读。
+
+文件只有在必要处理完成，并且生成内容可以读取和搜索后才会显示为可用。重试前，先在 Admin 中修正模型、嵌入、搜索或资源上限问题。相关配置发生变化，或者需要明确修复、恢复或完整重建时，使用**维护索引**。
 
 ## 备份
 
-在 `.env` 和 `docker-compose.yml` 所在的部署目录中停止服务并打包本地持久化目录。
+在 `.env` 和 `docker-compose.yml` 所在目录执行备份。停止会修改 Focowiki 数据的服务，并保持 PostgreSQL 运行。
+
+备份归档只能使用相同存储结构版本和匹配的镜像版本还原。旧版本创建的备份只用于配合旧版本镜像回滚，不能作为本次破坏式目标版本的初始数据。
 
 ```bash
-docker compose -f docker-compose.yml down
-backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis runtime-secrets logs && tar -czf "backups/focowiki-$backup_id.tar.gz" .env docker-compose.yml data runtime-secrets logs
+docker compose -f docker-compose.yml stop api worker admin
+pnpm compose:backup
 ```
 
-外部 S3 兼容 bucket 或 prefix 需要通过存储服务提供的快照、复制或导出功能单独备份。PostgreSQL 和 S3 备份应来自同一个时间点。
+上述服务仍在运行时，备份命令会拒绝继续。命令会生成带校验和的归档，其中包含 PostgreSQL 备份、所需 S3 文件、部署设置、`.env`、Compose 文件和 `runtime-secrets`。归档及其 `.sha256` 文件应保存在当前服务器之外。
+
+使用模板附带的 OpenSearch 时，还要把已停止服务的完整 `opensearch-security` 目录复制到加密的部署备份存储中，并与匹配的 `.env`、`runtime-secrets` 和 OpenSearch 数据备份一起保存。标准备份归档不包含生成的私钥。
+
+Redis 和搜索索引都可以重新生成。需要包含兼容的 Meilisearch 快照时，同时传入 `--meilisearch-snapshot` 和 `--meilisearch-snapshot-sha256`。备份命令不会打包 OpenSearch 快照；需要快照时使用 OpenSearch 服务商提供的流程，也可以在还原后逐个重建知识库索引。
+
+部署使用显式 Compose 项目名时，备份和还原命令都需要传入相同的 `--project-name <name>`。
 
 ## 从备份还原
 
-只在目标部署目录中执行还原。继续前先给当前状态再做一次备份。
+只有当前存储基线创建的备份可以还原到本版本，且还原目标必须为空；目标中已有数据时先单独备份。旧版本备份只能配合其对应的旧镜像还原成回滚部署。
 
-1. 停止 stack。
+1. 停止全部服务。
 
    ```bash
    docker compose -f docker-compose.yml down
    ```
 
-2. 在部署目录中解压备份。
+2. 配置 `.env`，指向空的 PostgreSQL 数据库和空的 S3 前缀，然后只启动 PostgreSQL。
 
    ```bash
-   tar -xzf backups/focowiki-<backup-id>.tar.gz
+   docker compose -f docker-compose.yml up -d postgres
    ```
 
-3. 将外部 S3 兼容 bucket 或 prefix 还原或复制到 `.env` 当前配置的位置。
+3. 使用归档和校验和文件执行还原。
 
-4. 将 API 和 Admin 镜像标签改为备份对应的版本。
+   ```bash
+   pnpm compose:restore -- \
+     --archive backups/focowiki-<backup-id>.tar.gz \
+     --checksum backups/focowiki-<backup-id>.tar.gz.sha256
+   ```
 
-5. 执行迁移并启动 stack。
+   还原命令会校验归档，并拒绝非空的数据库、S3 前缀或 `runtime-secrets` 目标。
+
+4. 还原模板附带的 OpenSearch 数据时，启动 OpenSearch 前还原与其匹配的完整 `opensearch-security` 目录。不要混入其他部署的文件。
+
+5. 使用备份对应的 API 和 Admin 镜像版本。
+
+6. 执行数据库命令并启动服务。
 
    ```bash
    docker compose -f docker-compose.yml run --rm migrate
    docker compose -f docker-compose.yml up -d
    ```
 
-6. 检查 Admin UI 登录、知识库列表、文件预览、Developer OpenAPI health 和 Worker 状态。
+7. 未还原所选搜索服务的兼容快照时，对每个知识库执行**维护索引**。
 
-## 图关系处理说明
+允许新写入前，检查知识库数量、文件路径、预览、搜索、关系导航、Admin UI 登录、Developer OpenAPI 健康检查和工作进程健康检查。
 
-Focowiki 将基于正文的图关系事实和活动图投影保存在 PostgreSQL。Redis 提供短期协调和查询缓存。生成后的图关系 Markdown 与机器分片以不可变 S3 对象保存，并由活动 generation 引用。
+## 切换搜索服务
 
-图关系处理应受 Admin UI 运行时设置控制。避免使用自定义脚本把完整 source corpus 或完整 graph 加载到进程内存。
+切换搜索服务不会复制或自动重建索引。
 
-API 限流、Worker、发布、图关系和模型配置见 [Admin 配置](./admin-settings.md)。
+1. 停止全部服务，并在验证完成前保留当前搜索服务的数据。
+2. 修改 `SEARCH_PROVIDER`、对应的端点和认证字段，以及 `COMPOSE_PROFILES`（`opensearch`、`meilisearch`，外部服务则留空）。
+3. 启动服务并检查健康状态。
+4. 已有知识库的树、正文、生成文件、图关系、设置和 Developer OpenAPI 非搜索读取继续可用。完成接入前，搜索会返回可重试的暂不可用响应。
+5. 对每个已有知识库执行一次**维护索引**。系统会在所选搜索服务中完整构建并验证新索引，再将其设为生效索引。兼容的已存储嵌入结果会被复用，因此只切换搜索服务不会重复调用相同模型。
+6. 验证搜索和常规文档可用性后，再按照备份策略处理旧搜索服务数据。
+
+切换回原来的服务也执行相同步骤。旧的物理索引不会被自动重新启用。搜索服务变化不会修改 Developer OpenAPI 的请求和响应结构。
+
+搜索持续不可用时，确认运行日志中的搜索服务符合预期、所有容器都能访问端点、TLS 和凭据有效，并确认该知识库的**维护索引**已经完成。维护操作运行期间不要反复重启工作进程。
+
+## 轮换模板附带 OpenSearch 的 TLS
+
+普通重启不会轮换证书。需要轮换时，先停止全部服务，并备份 `opensearch-security`、`runtime-secrets` 和 OpenSearch 数据。把现有 `opensearch-security` 目录、`runtime-secrets/opensearch-password` 和 `runtime-secrets/opensearch-ca.pem` 一起移动到受保护的备份存储，再创建一个空的 `opensearch-security` 目录；`runtime-secrets` 中其他无关文件保持不变。启动一次全部服务，确认 OpenSearch 健康、Admin 搜索和 Developer OpenAPI 搜索正常后，才能处理之前匹配的安全文件备份。
+
+启动报告 `OpenSearch security assets are incomplete or invalid` 时，保留失败状态原样用于诊断；初始化程序不会修复不完整的安全目录与运行时密码组合。应从同一份备份还原匹配的安全目录、密码文件和 CA 文件，或者执行停止全部服务后的轮换流程。不要只删除一个生成文件，也不要在不同部署之间复制证书。
+
+## 容量说明
+
+生产模板默认把 `worker` 限制在 2 个 CPU、2 GiB 内存和 128 个进程或线程以内。启动硬上限在 `.env` 中调整。观察部署资源后，在**设置**中调整 Worker、生成知识库、维护、搜索、图关系和语义搜索，在**模型配置**中管理嵌入模型。避免使用一次性读取全部来源文件或全部关系数据的脚本。详见 [环境变量配置](./environment.md#worker-启动限制) 和 [Admin 配置](./admin-settings.md)。

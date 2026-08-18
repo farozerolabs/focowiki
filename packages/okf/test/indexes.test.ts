@@ -9,7 +9,7 @@ describe("Markdown link indexes", () => {
         "[Sibling](setup.md)",
         "[Parent](../index.md#overview)",
         "[Unicode](%E4%B8%AD%E6%96%87.md)",
-        "[Root](/schema.md)",
+        "[History](/log.md)",
         "![Image](diagram.md)",
         "[External](https://example.com/doc.md)",
         "[Fragment](#local)",
@@ -19,7 +19,7 @@ describe("Markdown link indexes", () => {
       { from: "pages/guide/intro.md", to: "pages/guide/setup.md", label: "Sibling" },
       { from: "pages/guide/intro.md", to: "pages/index.md", label: "Parent" },
       { from: "pages/guide/intro.md", to: "pages/guide/中文.md", label: "Unicode" },
-      { from: "pages/guide/intro.md", to: "schema.md", label: "Root" }
+      { from: "pages/guide/intro.md", to: "log.md", label: "History" }
     ]);
   });
 

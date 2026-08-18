@@ -5,9 +5,13 @@ import { join } from "node:path";
 import type { RuntimeConfig } from "../src/config.js";
 import { createApiApp } from "../src/server.js";
 import type { RuntimeSettingsRepository } from "../src/runtime-settings/repository.js";
-import { createRuntimeSettingsService } from "../src/runtime-settings/service.js";
+import {
+  createRuntimeSettingsService,
+  type RuntimeSettingsService
+} from "../src/runtime-settings/service.js";
 import type {
   ModelConfigStatus,
+  RuntimeModelConfigDraft,
   RuntimeModelConfigPrivate,
   RuntimeSettingKey,
   RuntimeSettingRecord,
@@ -22,8 +26,92 @@ import {
   encryptRuntimeSecret,
   fingerprintRuntimeSecret
 } from "../src/runtime-settings/encryption.js";
-import type { StorageReconciliationRepository } from "../src/application/ports/storage-reconciliation-repository.js";
-import type { ObjectProtectionRepository } from "../src/application/ports/object-protection-repository.js";
+import { validateModelDraft } from "../src/runtime-settings/validation.js";
+
+function generationModelDraft(): RuntimeModelConfigDraft {
+  return {
+    displayName: "Generation model",
+    apiMode: "responses",
+    baseUrl: "https://generation.example/v1",
+    apiKey: "generation-secret",
+    modelName: "generation-model",
+    contextWindowTokens: 128_000,
+    requestMaxTimeoutMs: 300_000,
+    requestIdleTimeoutMs: 60_000,
+    suggestionConcurrency: 2,
+    transientRetryDelayMs: 1_000,
+    requestMinIntervalMs: 0,
+    isActive: true
+  };
+}
+
+describe("generation model configuration field contract", () => {
+  it("accepts supported API modes, URLs, boolean states, and numeric minima", () => {
+    expect(validateModelDraft(generationModelDraft())).toEqual([]);
+    expect(validateModelDraft({
+      ...generationModelDraft(), apiMode: undefined, isActive: false
+    })).toEqual([]);
+    expect(validateModelDraft({
+      ...generationModelDraft(), apiMode: "chat_completions", baseUrl: "http://127.0.0.1:11434/v1"
+    })).toEqual([]);
+  });
+
+  it.each([
+    ["contextWindowTokens", 1, 0],
+    ["requestMaxTimeoutMs", 1, 0],
+    ["requestIdleTimeoutMs", 1, 0],
+    ["suggestionConcurrency", 1, 0],
+    ["transientRetryDelayMs", 1, 0],
+    ["requestMinIntervalMs", 0, -1]
+  ] as const)("validates every %s numeric boundary", (field, minimum, below) => {
+    expect(validateModelDraft({
+      ...generationModelDraft(), [field]: minimum
+    })).toEqual([]);
+    expect(validateModelDraft({
+      ...generationModelDraft(), [field]: Number.MAX_SAFE_INTEGER
+    })).toEqual([]);
+    for (const value of [below, 1.5, "1", null, undefined]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), [field]: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field })
+      );
+    }
+  });
+
+  it("returns stable issues for every required text, URL, mode, and active field", () => {
+    for (const field of ["displayName", "baseUrl", "apiKey", "modelName"] as const) {
+      for (const value of [undefined, null, "", "   ", 42, {}]) {
+        expect(validateModelDraft({
+          ...generationModelDraft(), [field]: value
+        } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+          expect.objectContaining({ field })
+        );
+      }
+    }
+    for (const value of [null, "completions", 42, {}]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), apiMode: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field: "apiMode" })
+      );
+    }
+    for (const value of [undefined, null, "true", 1, {}]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), isActive: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field: "isActive" })
+      );
+    }
+    for (const value of ["not-a-url", "ftp://example.com/model", 42, null]) {
+      expect(validateModelDraft({
+        ...generationModelDraft(), baseUrl: value
+      } as unknown as RuntimeModelConfigDraft)).toContainEqual(
+        expect.objectContaining({ field: "baseUrl" })
+      );
+    }
+  });
+});
 
 describe("runtime settings service", () => {
   it("bootstraps settings and keeps model assistance optional", async () => {
@@ -37,69 +125,214 @@ describe("runtime settings service", () => {
     const snapshot = await service.getSnapshot();
 
     expect(snapshot.worker.sourceFileConcurrency).toBe(2);
-    expect(snapshot.worker.hardDeleteConcurrency).toBe(1);
-    expect(snapshot.worker.hardDeleteObjectBatchSize).toBe(1_000);
-    expect(snapshot.worker.hardDeleteVersionPurgeEnabled).toBe(false);
+    expect(snapshot.maintenance.hardDeleteConcurrency).toBe(1);
+    expect(snapshot.maintenance.hardDeleteObjectBatchSize).toBe(1_000);
+    expect(snapshot.worker).not.toHaveProperty("hardDeleteVersionPurgeEnabled");
     expect(snapshot.worker).not.toHaveProperty("databasePoolMax");
     expect(snapshot.rateLimits.publicOpenApi.max).toBe(1_200);
     expect(snapshot.rateLimits).not.toHaveProperty("upload");
     expect(snapshot).not.toHaveProperty("uploadGeneration");
     expect(snapshot.worker).toMatchObject({
       sourceFileConcurrency: 2,
-      sourceObjectReadConcurrency: 2,
-      graphQueryConcurrency: 2,
-      databaseMutationConcurrency: 2,
-      generationBatchSize: 50,
-      sourceQueueHardDepth: 5_000,
-      sourceQueueResumeDepth: 3_000,
-      sourceQueueHardAgeSeconds: 3_600,
-      sourceQueueResumeAgeSeconds: 1_800
+      sourceObjectReadConcurrency: 2
     });
-    expect(snapshot.publication).toMatchObject({
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      impactBatchSize: 100,
-      impactConcurrency: 8,
-      generationAssemblyConcurrency: 1,
-      projectionPartitionConcurrency: 8,
-      generatedObjectWriteConcurrency: 8,
-      directoryMaterializationConcurrency: 4,
-      dirtyFileHardCount: 2_000,
-      dirtyFileResumeCount: 1_000,
-      dirtyAgeHardSeconds: 900,
-      dirtyAgeResumeSeconds: 300,
-      pendingImpactHardCount: 20_000,
-      pendingImpactResumeCount: 10_000,
-      generationRetentionDays: 7
+    expect(snapshot.generated).toMatchObject({
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(snapshot.maintenance).toEqual({
       reconciliationEnabled: true,
-      knowledgeBaseMaintenanceMode: "manual",
-      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
-      knowledgeBaseMaintenanceConcurrency: 1,
-      scanIntervalSeconds: 21_600,
       scanBatchSize: 500,
-      deletionBatchSize: 100,
-      quarantineGracePeriodSeconds: 86_400,
-      confirmationPasses: 2,
       maxAttempts: 5,
       retryDelayMs: 30_000,
-      migrationBackfillConcurrency: 2,
-      compactionConcurrency: 1,
-      projectionRepairConcurrency: 4,
-      projectionRepairDatabaseBatchSize: 2_000,
-      projectionRepairObjectWriteConcurrency: 8,
-      lexicalRebuildConcurrency: 4,
-      lexicalRebuildSourceReadConcurrency: 2,
-      lexicalRebuildDatabaseWriteConcurrency: 2,
-      lexicalRebuildClaimBatchSize: 500,
-      lexicalRebuildDatabaseBatchSize: 50,
-      lexicalRebuildMaxInFlightSourceBytes: 64 * 1_024 * 1_024
+      hardDeleteConcurrency: 1,
+      hardDeleteDatabaseBatchSize: 1_000,
+      hardDeleteObjectBatchSize: 1_000,
+      hardDeleteMaxAttempts: 3,
+      hardDeleteRetryDelayMs: 60_000,
+      hardDeleteFailedRetentionDays: 30
+    });
+    expect(snapshot.search).toEqual({
+      requestTimeoutMs: 3_000,
+      engineSearchCutoffMs: 1_000,
+      overfetchFactor: 3,
+      indexBatchDocumentCount: 10_000,
+      indexBatchCompressedBytes: 8 * 1_024 * 1_024,
+      maxInFlightTasks: 8,
+      taskPollIntervalMs: 500,
+      taskTimeoutMs: 600_000,
+      maxAttempts: 5,
+      retryDelayMs: 2_000,
+      cleanupBatchSize: 1_000,
+      cropLength: 1_200
+    });
+    expect(snapshot.semantic).toEqual({
+      maximumChunkCharacters: 8_000,
+      maximumChunks: 32,
+      maximumEvidenceTargets: 64,
+      graphRagAdapterTimeoutMs: 30_000,
+      searchLaneCutoffMs: 2_500,
+      queryEmbeddingConcurrency: 4,
+      queryEmbeddingCacheEntries: 1_000
     });
     expect(snapshot.activeModel).toBeNull();
   });
 
-  it("adds resource budget defaults to saved setting documents without rewriting history", async () => {
+  it("validates and hot-reloads every semantic settings field as one revision", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+    const updated = await service.updateSemantic({
+      actor: "admin",
+      value: {
+        ...initial.semantic,
+        maximumChunkCharacters: 12_000,
+        graphRagAdapterTimeoutMs: 25_000,
+        queryEmbeddingConcurrency: 2,
+        searchLaneCutoffMs: 900
+      }
+    });
+    expect(updated.semantic).toMatchObject({
+      maximumChunkCharacters: 12_000,
+      graphRagAdapterTimeoutMs: 25_000,
+      queryEmbeddingConcurrency: 2,
+      searchLaneCutoffMs: 900
+    });
+    await expect(service.updateSemantic({
+      actor: "admin",
+      value: { ...updated.semantic, graphRagAdapterTimeoutMs: 300_001 }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
+    expect((await service.getSnapshot()).semantic).toEqual(updated.semantic);
+  });
+
+  it("rejects missing and non-integer values for every semantic settings field", async () => {
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository: new MemoryRuntimeSettingsRepository(),
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    for (const field of Object.keys(initial.semantic)) {
+      const missing = structuredClone(initial.semantic) as Record<string, unknown>;
+      delete missing[field];
+      await expect(service.updateSemantic({
+        actor: "admin",
+        value: missing as RuntimeSettingsSnapshot["semantic"]
+      }), `${field} missing`).rejects.toMatchObject({
+        code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+      });
+
+      const wrongType = {
+        ...initial.semantic,
+        [field]: String(initial.semantic[field as keyof typeof initial.semantic])
+      } as RuntimeSettingsSnapshot["semantic"];
+      await expect(service.updateSemantic({
+        actor: "admin",
+        value: wrongType
+      }), `${field} wrong type`).rejects.toMatchObject({
+        code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+      });
+    }
+  });
+
+  it("validates and persists bounded search settings", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    const updated = await service.updateSearch({
+      actor: "admin",
+      value: {
+        ...initial.search,
+        overfetchFactor: 4,
+        cropLength: 1_500,
+        maxInFlightTasks: 7,
+      }
+    });
+
+    expect(updated.search).toMatchObject({
+      overfetchFactor: 4,
+      cropLength: 1_500,
+      maxInFlightTasks: 7,
+    });
+    await expect(service.updateSearch({
+      actor: "admin",
+      value: { ...updated.search, maxInFlightTasks: 9 }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: "memoryCapacity" })
+      ])
+    });
+    await expect(service.updateSearch({
+      actor: "admin",
+      value: {
+        ...updated.search,
+        overfetchFactor: 11
+      }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
+  });
+
+  it("rejects stale or unsafe complete candidates without writing settings or audit", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+    const initialWorker = await repository.getSetting("worker");
+    const initialMaintenance = await repository.getSetting("maintenance");
+
+    await expect(service.updateWorker({
+      value: {
+        ...initial.worker,
+        generationBatchSize: 50
+      } as never
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: "worker.generationBatchSize" })
+      ])
+    });
+    await expect(service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        scanIntervalSeconds: 86_401
+      } as never
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: "scanIntervalSeconds" })
+      ])
+    });
+
+    expect(await repository.getSetting("worker")).toEqual(initialWorker);
+    expect(await repository.getSetting("maintenance")).toEqual(initialMaintenance);
+    expect(repository.auditLogs).toEqual([]);
+  });
+
+  it("drops removed persisted fields and adds retained defaults without rewriting history", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
     const config = createConfig({ modelEnabled: false });
     const first = createRuntimeSettingsService({
@@ -110,29 +343,16 @@ describe("runtime settings service", () => {
     });
     const defaults = await first.getSnapshot();
     const worker = { ...defaults.worker } as Record<string, unknown>;
-    const publication = { ...defaults.publication } as Record<string, unknown>;
+    const generated = { ...defaults.generated } as Record<string, unknown>;
     const maintenance = { ...defaults.maintenance } as Record<string, unknown>;
     delete worker.sourceObjectReadConcurrency;
-    delete worker.graphQueryConcurrency;
-    delete worker.databaseMutationConcurrency;
-    delete publication.generationAssemblyConcurrency;
-    delete publication.projectionPartitionConcurrency;
-    delete publication.generatedObjectWriteConcurrency;
-    delete publication.directoryMaterializationConcurrency;
-    delete maintenance.migrationBackfillConcurrency;
-    delete maintenance.compactionConcurrency;
-    delete maintenance.knowledgeBaseMaintenanceMode;
-    delete maintenance.knowledgeBaseMaintenanceScanIntervalSeconds;
-    delete maintenance.knowledgeBaseMaintenanceConcurrency;
-    delete maintenance.lexicalRebuildConcurrency;
-    delete maintenance.lexicalRebuildSourceReadConcurrency;
-    delete maintenance.lexicalRebuildDatabaseWriteConcurrency;
-    delete maintenance.lexicalRebuildClaimBatchSize;
-    delete maintenance.lexicalRebuildDatabaseBatchSize;
-    delete maintenance.lexicalRebuildMaxInFlightSourceBytes;
+    delete generated.directoryIndexMaxBytes;
     worker.sourceFileConcurrency = 3;
+    worker.graphQueryConcurrency = 99;
+    generated.impactConcurrency = 99;
+    maintenance.compactionConcurrency = 99;
     await repository.upsertSetting({ key: "worker", value: worker, source: "admin" });
-    await repository.upsertSetting({ key: "publication", value: publication, source: "admin" });
+    await repository.upsertSetting({ key: "generated", value: generated, source: "admin" });
     await repository.upsertSetting({ key: "maintenance", value: maintenance, source: "admin" });
     const versions = Object.fromEntries(
       [...repository.settings].map(([key, value]) => [key, value.version])
@@ -142,32 +362,25 @@ describe("runtime settings service", () => {
       config,
       repository,
       redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
     });
     const snapshot = await second.getSnapshot();
 
     expect(snapshot.worker).toMatchObject({
       sourceFileConcurrency: 3,
-      sourceObjectReadConcurrency: 2,
-      graphQueryConcurrency: 2,
-      databaseMutationConcurrency: 2
+      sourceObjectReadConcurrency: 2
     });
-    expect(snapshot.publication).toMatchObject({
-      generationAssemblyConcurrency: 1,
-      projectionPartitionConcurrency: 8,
-      generatedObjectWriteConcurrency: 8,
-      directoryMaterializationConcurrency: 4
+    expect(snapshot.generated).toMatchObject({
+      directoryIndexMaxBytes: 65_536
     });
     expect(snapshot.maintenance).toMatchObject({
-      knowledgeBaseMaintenanceMode: "manual",
-      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
-      knowledgeBaseMaintenanceConcurrency: 1,
-      migrationBackfillConcurrency: 2,
-      compactionConcurrency: 1,
-      projectionRepairConcurrency: 4,
-      projectionRepairDatabaseBatchSize: 2_000,
-      projectionRepairObjectWriteConcurrency: 8
+      reconciliationEnabled: true,
+      scanBatchSize: 500
     });
+    expect(snapshot.worker).not.toHaveProperty("graphQueryConcurrency");
+    expect(snapshot.generated).not.toHaveProperty("impactConcurrency");
+    expect(snapshot.maintenance).not.toHaveProperty("compactionConcurrency");
     expect(Object.fromEntries(
       [...repository.settings].map(([key, value]) => [key, value.version])
     )).toEqual(versions);
@@ -190,14 +403,12 @@ describe("runtime settings service", () => {
       actor: "admin",
       value: {
         ...initial.maintenance,
-        scanBatchSize: 1_000,
-        deletionBatchSize: 250
+        scanBatchSize: 1_000
       }
     });
 
     expect(updated.maintenance).toMatchObject({
-      scanBatchSize: 1_000,
-      deletionBatchSize: 250
+      scanBatchSize: 1_000
     });
     expect(await redis.getRuntimeSettingsVersion()).not.toBe(previousVersion);
     expect(repository.auditLogs).toContainEqual(
@@ -213,8 +424,7 @@ describe("runtime settings service", () => {
         actor: "admin",
         value: {
           ...updated.maintenance,
-          scanBatchSize: 1_001,
-          confirmationPasses: 1
+          scanBatchSize: 1_001
         }
       })
     ).rejects.toMatchObject({
@@ -228,7 +438,8 @@ describe("runtime settings service", () => {
       config: createConfig({ modelEnabled: false }),
       repository: new MemoryRuntimeSettingsRepository(),
       redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
     });
     const snapshot = await service.getSnapshot();
 
@@ -238,17 +449,16 @@ describe("runtime settings service", () => {
         sourceObjectReadConcurrency: snapshot.worker.sourceFileConcurrency + 1
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
-    await expect(service.updatePublication({
+    await expect(service.updateGenerated({
       value: {
-        ...snapshot.publication,
-        generatedObjectWriteConcurrency:
-          snapshot.publication.projectionPartitionConcurrency + 1
+        ...snapshot.generated,
+        directoryIndexMaxEntries: 0
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
     await expect(service.updateMaintenance({
       value: {
         ...snapshot.maintenance,
-        compactionConcurrency: 17
+        hardDeleteConcurrency: 17
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
   });
@@ -258,7 +468,14 @@ describe("runtime settings service", () => {
       config: createConfig({ modelEnabled: false }),
       repository: new MemoryRuntimeSettingsRepository(),
       redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: {
+        databaseConnections: 128,
+        searchTasks: 64,
+        objectStoreRequests: 128,
+        memoryBytes: 1_073_741_824,
+        cpuConcurrency: 256
+      }
     });
     const initial = await service.getSnapshot();
 
@@ -266,16 +483,12 @@ describe("runtime settings service", () => {
       value: {
         ...initial.worker,
         sourceFileConcurrency: 1,
-        sourceObjectReadConcurrency: 1,
-        graphQueryConcurrency: 1,
-        databaseMutationConcurrency: 1
+        sourceObjectReadConcurrency: 1
       }
     });
     expect(minimum.worker).toMatchObject({
       sourceFileConcurrency: 1,
-      sourceObjectReadConcurrency: 1,
-      graphQueryConcurrency: 1,
-      databaseMutationConcurrency: 1
+      sourceObjectReadConcurrency: 1
     });
 
     const maximumWorker = await service.updateWorker({
@@ -283,38 +496,29 @@ describe("runtime settings service", () => {
         ...minimum.worker,
         sourceFileConcurrency: 32,
         sourceObjectReadConcurrency: 32,
-        graphQueryConcurrency: 32,
-        databaseMutationConcurrency: 32,
         claimBatchSize: 32
       }
     });
-    const maximumPublication = await service.updatePublication({
+    const updatedGenerated = await service.updateGenerated({
       value: {
-        ...maximumWorker.publication,
-        roleConcurrency: 32,
-        impactConcurrency: 32,
-        generationAssemblyConcurrency: 32,
-        projectionPartitionConcurrency: 32,
-        generatedObjectWriteConcurrency: 32,
-        directoryMaterializationConcurrency: 32
+        ...maximumWorker.generated,
+        directoryIndexMaxEntries: 10_000,
+        directoryIndexMaxBytes: 10_485_760
       }
     });
     const maximumMaintenance = await service.updateMaintenance({
       value: {
-        ...maximumPublication.maintenance,
-        migrationBackfillConcurrency: 16,
-        compactionConcurrency: 16,
-        projectionRepairConcurrency: 16,
-        projectionRepairDatabaseBatchSize: 10_000,
-        projectionRepairObjectWriteConcurrency: 32
+        ...updatedGenerated.maintenance,
+        hardDeleteConcurrency: 16,
+        hardDeleteDatabaseBatchSize: 10_000,
+        hardDeleteObjectBatchSize: 1_000
       }
     });
 
     expect(maximumMaintenance.worker.sourceObjectReadConcurrency).toBe(32);
-    expect(maximumMaintenance.worker.databaseMutationConcurrency).toBe(32);
-    expect(maximumMaintenance.publication.projectionPartitionConcurrency).toBe(32);
-    expect(maximumMaintenance.maintenance.compactionConcurrency).toBe(16);
-    expect(maximumMaintenance.maintenance.projectionRepairConcurrency).toBe(16);
+    expect(maximumMaintenance.generated.directoryIndexMaxEntries).toBe(10_000);
+    expect(maximumMaintenance.maintenance.hardDeleteConcurrency).toBe(16);
+    expect(maximumMaintenance.maintenance.hardDeleteDatabaseBatchSize).toBe(10_000);
   });
 
   it("rejects source concurrency above the process budget and undersized claim batches", async () => {
@@ -331,8 +535,6 @@ describe("runtime settings service", () => {
         ...initial.worker,
         sourceFileConcurrency: 33,
         sourceObjectReadConcurrency: 32,
-        graphQueryConcurrency: 32,
-        databaseMutationConcurrency: 32,
         claimBatchSize: 33
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
@@ -342,8 +544,6 @@ describe("runtime settings service", () => {
         ...initial.worker,
         sourceFileConcurrency: 16,
         sourceObjectReadConcurrency: 16,
-        graphQueryConcurrency: 16,
-        databaseMutationConcurrency: 16,
         claimBatchSize: 10
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
@@ -362,25 +562,26 @@ describe("runtime settings service", () => {
     await expect(service.updateWorker({ value: {} as never })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
-    await expect(service.updatePublication({
-      value: { ...initial.publication, projectionPartitionConcurrency: "eight" } as never
+    await expect(service.updateGenerated({
+      value: { ...initial.generated, directoryIndexMaxBytes: "large" } as never
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
     await expect(service.updateMaintenance({ value: [] as never })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
 
     expect((await service.getSnapshot()).worker).toEqual(initial.worker);
-    expect((await service.getSnapshot()).publication).toEqual(initial.publication);
+    expect((await service.getSnapshot()).generated).toEqual(initial.generated);
     expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
   });
 
-  it("validates knowledge-base maintenance scheduling atomically", async () => {
+  it("rejects removed maintenance scheduler fields atomically", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
     const service = createRuntimeSettingsService({
       config: createConfig({ modelEnabled: false }),
       repository,
       redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
     });
     const initial = await service.getSnapshot();
 
@@ -398,9 +599,8 @@ describe("runtime settings service", () => {
     await expect(service.updateMaintenance({
       value: {
         ...initial.maintenance,
-        knowledgeBaseMaintenanceMode: "automatic",
         knowledgeBaseMaintenanceScanIntervalSeconds: 59
-      }
+      } as never
     })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
       issues: expect.arrayContaining([
@@ -413,7 +613,7 @@ describe("runtime settings service", () => {
       value: {
         ...initial.maintenance,
         knowledgeBaseMaintenanceConcurrency: 17
-      }
+      } as never
     })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
       issues: expect.arrayContaining([
@@ -423,20 +623,7 @@ describe("runtime settings service", () => {
 
     expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
 
-    const automatic = await service.updateMaintenance({
-      value: {
-        ...initial.maintenance,
-        knowledgeBaseMaintenanceMode: "automatic",
-        knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
-        knowledgeBaseMaintenanceConcurrency: 2
-      }
-    });
-    expect(automatic.maintenance).toMatchObject({
-      knowledgeBaseMaintenanceMode: "automatic",
-      knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
-      knowledgeBaseMaintenanceConcurrency: 2
-    });
-    await expect(service.getMaintenanceRevision()).resolves.toBeGreaterThan(1);
+    await expect(service.getMaintenanceRevision()).resolves.toBe(1);
   });
 
   it("propagates concurrent live updates and preserves them after service restart", async () => {
@@ -447,13 +634,15 @@ describe("runtime settings service", () => {
       config,
       repository,
       redis,
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
     });
     const second = createRuntimeSettingsService({
       config,
       repository,
       redis,
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
     });
     const initial = await first.getSnapshot();
     await second.getSnapshot();
@@ -465,33 +654,35 @@ describe("runtime settings service", () => {
       }),
       second.updateMaintenance({
         actor: "maintenance-admin",
-        value: { ...initial.maintenance, compactionConcurrency: 3 }
+        value: { ...initial.maintenance, reconciliationEnabled: false }
       })
     ]);
 
     const liveSnapshot = await first.getSnapshot();
     expect(liveSnapshot.worker.sourceFileConcurrency).toBe(4);
-    expect(liveSnapshot.maintenance.compactionConcurrency).toBe(3);
+    expect(liveSnapshot.maintenance.reconciliationEnabled).toBe(false);
 
     const restarted = createRuntimeSettingsService({
       config,
       repository,
       redis,
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
     });
     const restartedSnapshot = await restarted.getSnapshot();
     expect(restartedSnapshot.worker.sourceFileConcurrency).toBe(4);
-    expect(restartedSnapshot.maintenance.compactionConcurrency).toBe(3);
+    expect(restartedSnapshot.maintenance.reconciliationEnabled).toBe(false);
   });
 
-  it("creates a model without exposing the raw key and blocks deleting a running model", async () => {
+  it("creates a model without exposing the raw key and deletes it after running work ends", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
-    repository.runningSourceFileJobCount = 1;
+    repository.runningModelInvocationCount = 1;
     const service = createRuntimeSettingsService({
       config: createConfig({ modelEnabled: false }),
       repository,
       redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
     });
 
     const model = await service.createModel({
@@ -514,16 +705,204 @@ describe("runtime settings service", () => {
     await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
-    repository.runningSourceFileJobCount = 0;
-    repository.runningModelInvocationCount = 1;
-    await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
-      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
-    });
     repository.runningModelInvocationCount = 0;
     await expect(service.deleteModel({ id: model.id })).resolves.toMatchObject({
       id: model.id,
-      status: "deleted"
+      status: "deleted",
+      isActive: false
     });
+  });
+
+  it("updates a generation model without replacing its encrypted API key", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
+    });
+    const model = await service.createModel({
+      displayName: "Generation model",
+      apiMode: "responses",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-generation-secret",
+      modelName: "generation-v1",
+      contextWindowTokens: 128_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 0,
+      isActive: false
+    });
+    const encryptedBefore = repository.models.get(model.id)?.apiKey;
+
+    const updated = await service.updateModel({
+      id: model.id,
+      actor: "admin",
+      value: {
+        displayName: "Generation model updated",
+        apiMode: "chat_completions",
+        baseUrl: "https://api.example.com/v2",
+        modelName: "generation-v2",
+        contextWindowTokens: 256_000,
+        requestMaxTimeoutMs: 300_000,
+        requestIdleTimeoutMs: 60_000,
+        suggestionConcurrency: 3,
+        transientRetryDelayMs: 30_000,
+        requestMinIntervalMs: 1_000
+      }
+    });
+
+    expect(updated).toMatchObject({
+      id: model.id,
+      displayName: "Generation model updated",
+      apiMode: "chat_completions",
+      modelName: "generation-v2",
+      apiKeyFingerprint: model.apiKeyFingerprint
+    });
+    expect(repository.models.get(model.id)?.apiKey).toBe(encryptedBefore);
+    expect(repository.auditLogs.at(-1)).toMatchObject({
+      settingKey: "model_configs",
+      action: "update"
+    });
+  });
+
+  it("updates a generation model through Admin API without returning its credential", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const redis = createTestRedisCoordinator();
+    const config = createConfig({ modelEnabled: false });
+    const app = createApiApp({
+      config,
+      redis,
+      runtimeSettings: createRuntimeSettingsService({
+        config,
+        repository,
+        redis,
+        deploymentSecretDirectory: createRuntimeSecretDirectory(),
+        resourceCapacity: createTestResourceCapacity()
+      })
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const createdResponse = await app.request("/admin/api/settings/models", {
+      method: "POST",
+      headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+      body: JSON.stringify({
+        displayName: "Generation API model",
+        apiMode: "responses",
+        baseUrl: "https://api.example.com/v1",
+        apiKey: "sk-generation-api-secret",
+        modelName: "generation-api-v1",
+        contextWindowTokens: 128_000,
+        requestMaxTimeoutMs: 600_000,
+        requestIdleTimeoutMs: 120_000,
+        suggestionConcurrency: 2,
+        transientRetryDelayMs: 60_000,
+        requestMinIntervalMs: 0,
+        isActive: false
+      })
+    });
+    const created = (await createdResponse.json()) as { model: RuntimeModelConfigPrivate };
+
+    const updatedResponse = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({
+          displayName: "Generation API model updated",
+          apiMode: "chat_completions",
+          baseUrl: "https://api.example.com/v2",
+          modelName: "generation-api-v2",
+          contextWindowTokens: 256_000,
+          requestMaxTimeoutMs: 300_000,
+          requestIdleTimeoutMs: 60_000,
+          suggestionConcurrency: 3,
+          transientRetryDelayMs: 30_000,
+          requestMinIntervalMs: 1_000
+        })
+      }
+    );
+    const updated = await updatedResponse.json();
+
+    expect(updatedResponse.status).toBe(200);
+    expect(updated).toMatchObject({
+      model: {
+        id: created.model.id,
+        displayName: "Generation API model updated",
+        apiKeyFingerprint: created.model.apiKeyFingerprint
+      }
+    });
+    expect(JSON.stringify(updated)).not.toContain("sk-generation-api-secret");
+
+    const nullRequired = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({ displayName: null })
+      }
+    );
+    expect(nullRequired.status).toBe(400);
+
+    const nullCredential = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({ apiKey: null })
+      }
+    );
+    expect(nullCredential.status).toBe(200);
+    await expect(nullCredential.json()).resolves.toMatchObject({
+      model: { apiKeyFingerprint: created.model.apiKeyFingerprint }
+    });
+
+    const wrongCredentialType = await app.request(
+      `/admin/api/settings/models/${created.model.id}`,
+      {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({ cookie, "content-type": "application/json" }),
+        body: JSON.stringify({ apiKey: 42 })
+      }
+    );
+    expect(wrongCredentialType.status).toBe(400);
+  });
+
+  it("soft deletes an active generation model and removes it from future selection", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
+    });
+    const model = await service.createModel({
+      displayName: "Pinned generation model",
+      apiMode: "chat_completions",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-pinned-test",
+      modelName: "generation-test",
+      contextWindowTokens: 128_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 0,
+      isActive: true
+    });
+    await expect(service.deleteModel({ id: model.id })).resolves.toMatchObject({
+      id: model.id,
+      status: "deleted",
+      isActive: false
+    });
+    await expect(repository.getModel(model.id)).resolves.toMatchObject({
+      status: "deleted",
+      isActive: false
+    });
+    await expect(repository.getActiveModel()).resolves.toBeNull();
   });
 
   it("keeps saved model keys usable after service recreation", async () => {
@@ -538,7 +917,8 @@ describe("runtime settings service", () => {
       config,
       repository,
       redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: runtimeSecretDirectory
+      deploymentSecretDirectory: runtimeSecretDirectory,
+      resourceCapacity: createTestResourceCapacity()
     });
     await firstService.createModel({
       displayName: "OpenAI production",
@@ -559,7 +939,8 @@ describe("runtime settings service", () => {
       config,
       repository,
       redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: runtimeSecretDirectory
+      deploymentSecretDirectory: runtimeSecretDirectory,
+      resourceCapacity: createTestResourceCapacity()
     });
     const snapshot = await secondService.getSnapshot();
 
@@ -617,6 +998,105 @@ describe("runtime settings service", () => {
     });
   });
 
+  it("persists every exposed runtime setting field through Admin API one by one", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const redis = createTestRedisCoordinator();
+    const config = createConfig({ modelEnabled: false });
+    const runtimeSettings = createRuntimeSettingsService({
+      config,
+      repository,
+      redis,
+      deploymentSecretDirectory: createRuntimeSecretDirectory(),
+      resourceCapacity: createTestResourceCapacity()
+    });
+    const app = createApiApp({ config, redis, runtimeSettings });
+    const cookie = await loginAndReadSessionCookie(app);
+    const initialResponse = await app.request("/admin/api/settings/runtime", {
+      headers: { cookie }
+    });
+    const initial = (await initialResponse.json()) as {
+      settings: PublicRuntimeSettings;
+    };
+
+    for (const testCase of runtimeSettingFieldCases) {
+      const section = structuredClone(initial.settings[testCase.section]) as Record<
+        string,
+        unknown
+      >;
+      testCase.prepare?.(section);
+      writeNestedValue(section, testCase.path, testCase.value);
+
+      const update = await app.request(`/admin/api/settings/${testCase.route}`, {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({
+          cookie,
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify(section)
+      });
+      expect(update.status, testCase.id).toBe(200);
+      const updateBody = (await update.json()) as {
+        settings: PublicRuntimeSettings;
+      };
+      expect(
+        readNestedValue(
+          updateBody.settings[testCase.section] as unknown as Record<string, unknown>,
+          testCase.path
+        ),
+        `${testCase.id} update response`
+      ).toBe(testCase.value);
+
+      const reloaded = await app.request("/admin/api/settings/runtime", {
+        headers: { cookie }
+      });
+      const reloadedBody = (await reloaded.json()) as {
+        settings: PublicRuntimeSettings;
+      };
+      expect(
+        readNestedValue(
+          reloadedBody.settings[testCase.section] as unknown as Record<string, unknown>,
+          testCase.path
+        ),
+        `${testCase.id} reload response`
+      ).toBe(testCase.value);
+
+      const restarted = createRuntimeSettingsService({
+        config,
+        repository,
+        redis,
+        deploymentSecretDirectory: createRuntimeSecretDirectory(),
+        resourceCapacity: createTestResourceCapacity()
+      });
+      const restartedSnapshot = await restarted.getPublicSnapshot();
+      expect(
+        readNestedValue(
+          restartedSnapshot[testCase.section] as unknown as Record<string, unknown>,
+          testCase.path
+        ),
+        `${testCase.id} restarted runtime`
+      ).toBe(testCase.value);
+
+      const restore = await app.request(`/admin/api/settings/${testCase.route}`, {
+        method: "PUT",
+        headers: withTrustedAdminOrigin({
+          cookie,
+          "content-type": "application/json"
+        }),
+        body: JSON.stringify(initial.settings[testCase.section])
+      });
+      expect(restore.status, `${testCase.id} restore`).toBe(200);
+    }
+
+    const restored = await runtimeSettings.getPublicSnapshot();
+    expect(restored.rateLimits).toEqual(initial.settings.rateLimits);
+    expect(restored.worker).toEqual(initial.settings.worker);
+    expect(restored.generated).toEqual(initial.settings.generated);
+    expect(restored.graph).toEqual(initial.settings.graph);
+    expect(restored.maintenance).toEqual(initial.settings.maintenance);
+    expect(restored.semantic).toEqual(initial.settings.semantic);
+    expect(restored.search).toEqual(initial.settings.search);
+  });
+
   it("serves runtime settings through authenticated Admin API routes", async () => {
     const runtimeSettings = new MemoryRuntimeSettingsRepository();
     const redis = createTestRedisCoordinator();
@@ -629,23 +1109,7 @@ describe("runtime settings service", () => {
         repository: runtimeSettings,
         redis,
         deploymentSecretDirectory: createRuntimeSecretDirectory()
-      }),
-      repositories: {
-        runtimeSettings,
-        knowledgeBases: {
-          async listKnowledgeBases() {
-            return { items: [], nextCursor: null };
-          },
-          async createKnowledgeBase() {
-            throw new Error("Not used by runtime settings tests");
-          },
-          async getKnowledgeBase() {
-            return null;
-          }
-        }
-      },
-      storageReconciliation: createStorageReconciliationRepository(),
-      objectProtection: createObjectProtectionRepository()
+      })
     });
     const cookie = await loginAndReadSessionCookie(app);
     const initial = await app.request("/admin/api/settings/runtime", {
@@ -664,53 +1128,18 @@ describe("runtime settings service", () => {
 
     expect(initial.status).toBe(200);
     const initialBody = (await initial.json()) as {
-      settings: RuntimeSettingsSnapshot;
+      settings: PublicRuntimeSettings;
       models: unknown[];
-      maintenanceStatus: unknown;
-      objectProtectionStatus: unknown;
     };
     expect(initialBody).toMatchObject({ settings: { activeModel: null }, models: [] });
+    expect(initialBody.settings).not.toHaveProperty("publication");
     expect(initialBody.settings).not.toHaveProperty("uploadGeneration");
     expect(initialBody.settings.rateLimits).not.toHaveProperty("upload");
     expect(initialBody.settings.maintenance).toMatchObject({
-      reconciliationEnabled: true,
-      confirmationPasses: 2
+      reconciliationEnabled: true
     });
-    expect(initialBody.maintenanceStatus).toEqual({
-      state: "verifying",
-      lastScanStartedAt: "2026-07-18T10:00:00.000Z",
-      lastScanCompletedAt: null,
-      listedCount: 500,
-      quarantinedCount: 2,
-      deletedCount: 1,
-      missingCount: 0,
-      retryCount: 1,
-      lastErrorCode: null,
-      lastErrorMessage: null,
-      resolvedCount: 0,
-      pendingCount: 0,
-      databaseChunkSize: 100,
-      recentObjectsPerSecond: 50,
-      rollingBatchLatencyMs: 20,
-      heartbeatAt: "2026-07-18T10:00:00.000Z",
-      lastProgressAt: "2026-07-18T10:00:00.000Z"
-    });
-    expect(initialBody.objectProtectionStatus).toEqual({
-      readiness: "backfilling",
-      phase: "source_files",
-      processedCount: 400,
-      expectedCount: 1_000,
-      verifiedCount: 0,
-      dirtyCount: 3,
-      retryCount: 1,
-      recentObjectsPerSecond: 80,
-      rollingBatchLatencyMs: 25,
-      lastProgressAt: "2026-07-18T10:00:00.000Z",
-      heartbeatAt: "2026-07-18T10:00:01.000Z",
-      estimatedCompletionAt: null,
-      lastErrorCode: null,
-      lastErrorMessage: null
-    });
+    expect(initialBody).not.toHaveProperty("maintenanceStatus");
+    expect(initialBody).not.toHaveProperty("objectProtectionStatus");
     const serializedInitial = JSON.stringify(initialBody);
     for (const forbidden of [
       "objectKey", "checksumSha256", "secretAccessKey", "SELECT ",
@@ -727,37 +1156,15 @@ describe("runtime settings service", () => {
       }
     });
 
-    const invalidHardDeleteBatch = await app.request("/admin/api/settings/worker", {
+    const invalidHardDeleteBatch = await app.request("/admin/api/settings/maintenance", {
       method: "PUT",
       headers: withTrustedAdminOrigin({
         cookie,
         "content-type": "application/json"
       }),
       body: JSON.stringify({
-        sourceFileConcurrency: 2,
-        claimBatchSize: 10,
-        generationBatchSize: 50,
-        pollIntervalMs: 1_000,
-        lockTtlSeconds: 900,
-        heartbeatIntervalMs: 15_000,
-        jobMaxAttempts: 3,
-        jobRetryDelayMs: 30_000,
-        sourceQueueHardDepth: 5_000,
-        sourceQueueResumeDepth: 3_000,
-        sourceQueueHardAgeSeconds: 3_600,
-        sourceQueueResumeAgeSeconds: 1_800,
-        shutdownGraceMs: 30_000,
-        completedJobRetentionDays: 7,
-        failedJobRetentionDays: 30,
-        deadLetterJobRetentionDays: 90,
-        retentionCleanupBatchSize: 1_000,
-        hardDeleteConcurrency: 1,
-        hardDeleteDatabaseBatchSize: 1_000,
+        ...initialBody.settings.maintenance,
         hardDeleteObjectBatchSize: 1_001,
-        hardDeleteMaxAttempts: 3,
-        hardDeleteRetryDelayMs: 60_000,
-        hardDeleteFailedRetentionDays: 30,
-        hardDeleteVersionPurgeEnabled: false
       })
     });
     expect(invalidHardDeleteBatch.status).toBe(400);
@@ -768,24 +1175,20 @@ describe("runtime settings service", () => {
       }
     });
 
-    const invalidImpactConcurrency = await app.request("/admin/api/settings/publication", {
+    const removedPublicationRoute = await app.request(
+      "/admin/api/settings/publication",
+      {
       method: "PUT",
       headers: withTrustedAdminOrigin({
         cookie,
         "content-type": "application/json"
       }),
       body: JSON.stringify({
-        ...initialBody.settings.publication,
-        impactConcurrency: 33
+        ...initialBody.settings.generated,
+        generatedObjectWriteConcurrency: 33
       })
     });
-    expect(invalidImpactConcurrency.status).toBe(400);
-    await expect(invalidImpactConcurrency.json()).resolves.toMatchObject({
-      error: {
-        code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
-        messageKey: "errors.runtimeSettingsValidationFailed"
-      }
-    });
+    expect(removedPublicationRoute.status).toBe(404);
 
     const removedUploadGeneration = await app.request("/admin/api/settings/upload-generation", {
       method: "PUT",
@@ -821,8 +1224,7 @@ describe("runtime settings service", () => {
       }),
       body: JSON.stringify({
         ...initialBody.settings.maintenance,
-        scanBatchSize: 1_001,
-        confirmationPasses: 1
+        scanBatchSize: 1_001
       })
     });
     expect(invalidMaintenance.status).toBe(400);
@@ -848,86 +1250,6 @@ describe("runtime settings service", () => {
     });
   });
 });
-
-function createObjectProtectionRepository(): ObjectProtectionRepository {
-  return {
-    async protectIdentities() {},
-    async markIdentitiesDirty() {},
-    async lookupIdentities() { return []; },
-    async getReadiness() { return "backfilling"; },
-    async claimMaintenance() { return null; },
-    async renewMaintenanceLease() { return true; },
-    async runBackfillBatch() {
-      return { processed: 0, completed: false, phase: "source_files" };
-    },
-    async refreshDirtyBatch() {
-      return { processed: 0, completed: false, phase: "dirty_refresh" };
-    },
-    async failMaintenance() {},
-    async getStatus() {
-      return {
-        readiness: "backfilling",
-        phase: "source_files",
-        processedCount: 400,
-        expectedCount: 1_000,
-        verifiedCount: 0,
-        dirtyCount: 3,
-        retryCount: 1,
-        recentObjectsPerSecond: 80,
-        rollingBatchLatencyMs: 25,
-        lastProgressAt: "2026-07-18T10:00:00.000Z",
-        heartbeatAt: "2026-07-18T10:00:01.000Z",
-        estimatedCompletionAt: null,
-        lastErrorCode: null,
-        lastErrorMessage: null
-      };
-    }
-  };
-}
-
-function createStorageReconciliationRepository(): StorageReconciliationRepository {
-  return {
-    async claimCycle() { return null; },
-    async renewCycleLease() { return true; },
-    async getProtectionReadiness() { return "ready"; },
-    async prepareScanPage() {
-      return { completedObjectCount: 0, databaseChunkSize: 100, committed: false };
-    },
-    async recordScanChunk() { return true; },
-    async reduceScanPageChunkSize() { return true; },
-    async completeScanPage() { return true; },
-    async claimDeletionCandidates() { return []; },
-    async authorizeCandidateDeletion() { return false; },
-    async refreshCandidateObservation() {},
-    async completeCandidateDeletion() {},
-    async failCandidateDeletion() {},
-    async listRegisteredObjectsForVerification() { return []; },
-    async recordRegisteredObjectCheck() { return true; },
-    async finishCycle() { return true; },
-    async failCycle() {},
-    async getStatus() {
-      return {
-        state: "verifying",
-        lastScanStartedAt: "2026-07-18T10:00:00.000Z",
-        lastScanCompletedAt: null,
-        listedCount: 500,
-        quarantinedCount: 2,
-        deletedCount: 1,
-        missingCount: 0,
-        retryCount: 1,
-        lastErrorCode: null,
-        lastErrorMessage: null,
-        resolvedCount: 0,
-        pendingCount: 0,
-        databaseChunkSize: 100,
-        recentObjectsPerSecond: 50,
-        rollingBatchLatencyMs: 20,
-        heartbeatAt: "2026-07-18T10:00:00.000Z",
-        lastProgressAt: "2026-07-18T10:00:00.000Z"
-      };
-    }
-  };
-}
 
 function createConfig(input: { modelEnabled: boolean }): RuntimeConfig {
   return {
@@ -958,17 +1280,12 @@ function createConfig(input: { modelEnabled: boolean }): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+    generated: {
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     },
     pagination: {
       defaultPageSize: 50,
@@ -985,7 +1302,6 @@ function createConfig(input: { modelEnabled: boolean }): RuntimeConfig {
       lockTtlSeconds: 900,
       jobMaxAttempts: 3,
       jobRetryDelayMs: 30_000,
-      generationBatchSize: 50,
       sourceQueueHardDepth: 5_000,
       sourceQueueResumeDepth: 3_000,
       sourceQueueHardAgeSeconds: 3_600,
@@ -996,8 +1312,7 @@ function createConfig(input: { modelEnabled: boolean }): RuntimeConfig {
       hardDeleteObjectBatchSize: 1_000,
       hardDeleteMaxAttempts: 3,
       hardDeleteRetryDelayMs: 60_000,
-      hardDeleteFailedRetentionDays: 30,
-      hardDeleteVersionPurgeEnabled: false
+      hardDeleteFailedRetentionDays: 30
     },
     model: input.modelEnabled
       ? {
@@ -1023,11 +1338,117 @@ function createRuntimeSecretDirectory(): string {
   return join(tmpdir(), "focowiki-runtime-settings-test", randomUUID());
 }
 
+function createTestResourceCapacity() {
+  return {
+    databaseConnections: 128,
+    searchTasks: 64,
+    objectStoreRequests: 128,
+    memoryBytes: 1_073_741_824,
+    cpuConcurrency: 256
+  };
+}
+
+type PublicRuntimeSettings = Awaited<
+  ReturnType<RuntimeSettingsService["getPublicSnapshot"]>
+>;
+
+type RuntimeSettingFieldCase = {
+  id: string;
+  section: Exclude<keyof PublicRuntimeSettings, "activeModel">;
+  route: "rate-limits" | "worker" | "generated" | "graph" | "maintenance" | "semantic" | "search";
+  path: readonly string[];
+  value: string | number | boolean;
+  prepare?: (section: Record<string, unknown>) => void;
+};
+
+const runtimeSettingFieldCases: readonly RuntimeSettingFieldCase[] = [
+  { id: "rateLimits.adminLogin.max", section: "rateLimits", route: "rate-limits", path: ["adminLogin", "max"], value: 9 },
+  { id: "rateLimits.adminLogin.windowSeconds", section: "rateLimits", route: "rate-limits", path: ["adminLogin", "windowSeconds"], value: 901 },
+  { id: "rateLimits.adminApi.max", section: "rateLimits", route: "rate-limits", path: ["adminApi", "max"], value: 601 },
+  { id: "rateLimits.adminApi.windowSeconds", section: "rateLimits", route: "rate-limits", path: ["adminApi", "windowSeconds"], value: 61 },
+  { id: "rateLimits.publicOpenApi.max", section: "rateLimits", route: "rate-limits", path: ["publicOpenApi", "max"], value: 1_201 },
+  { id: "rateLimits.publicOpenApi.windowSeconds", section: "rateLimits", route: "rate-limits", path: ["publicOpenApi", "windowSeconds"], value: 61 },
+  {
+    id: "worker.sourceFileConcurrency",
+    section: "worker",
+    route: "worker",
+    path: ["sourceFileConcurrency"],
+    value: 1
+  },
+  { id: "worker.jobMaxAttempts", section: "worker", route: "worker", path: ["jobMaxAttempts"], value: 4 },
+  { id: "worker.jobRetryDelayMs", section: "worker", route: "worker", path: ["jobRetryDelayMs"], value: 30_001 },
+  { id: "worker.completedJobRetentionDays", section: "worker", route: "worker", path: ["completedJobRetentionDays"], value: 8 },
+  { id: "generated.directoryIndexMaxEntries", section: "generated", route: "generated", path: ["directoryIndexMaxEntries"], value: 201 },
+  { id: "generated.directoryIndexMaxBytes", section: "generated", route: "generated", path: ["directoryIndexMaxBytes"], value: 65_537 },
+  { id: "generated.rootSummaryLimit", section: "generated", route: "generated", path: ["rootSummaryLimit"], value: 501 },
+  { id: "generated.okfLogMaxEntries", section: "generated", route: "generated", path: ["okfLogMaxEntries"], value: 101 },
+  { id: "generated.okfLogMaxBytes", section: "generated", route: "generated", path: ["okfLogMaxBytes"], value: 65_537 },
+  { id: "graph.candidateLimit", section: "graph", route: "graph", path: ["candidateLimit"], value: 201 },
+  { id: "graph.acceptedEdgeLimit", section: "graph", route: "graph", path: ["acceptedEdgeLimit"], value: 41 },
+  { id: "graph.searchDefaultDepth", section: "graph", route: "graph", path: ["searchDefaultDepth"], value: 0 },
+  { id: "graph.searchMaxDepth", section: "graph", route: "graph", path: ["searchMaxDepth"], value: 1 },
+  { id: "graph.searchDefaultFanout", section: "graph", route: "graph", path: ["searchDefaultFanout"], value: 11 },
+  { id: "graph.searchMaxFanout", section: "graph", route: "graph", path: ["searchMaxFanout"], value: 26 },
+  { id: "graph.shardSize", section: "graph", route: "graph", path: ["shardSize"], value: 5_001 },
+  { id: "graph.genericPhraseThreshold", section: "graph", route: "graph", path: ["genericPhraseThreshold"], value: 5 },
+  { id: "maintenance.reconciliationEnabled", section: "maintenance", route: "maintenance", path: ["reconciliationEnabled"], value: false },
+  { id: "maintenance.scanBatchSize", section: "maintenance", route: "maintenance", path: ["scanBatchSize"], value: 501 },
+  { id: "maintenance.maxAttempts", section: "maintenance", route: "maintenance", path: ["maxAttempts"], value: 6 },
+  { id: "maintenance.retryDelayMs", section: "maintenance", route: "maintenance", path: ["retryDelayMs"], value: 30_001 },
+  { id: "maintenance.hardDeleteConcurrency", section: "maintenance", route: "maintenance", path: ["hardDeleteConcurrency"], value: 2 },
+  { id: "maintenance.hardDeleteDatabaseBatchSize", section: "maintenance", route: "maintenance", path: ["hardDeleteDatabaseBatchSize"], value: 1_001 },
+  { id: "maintenance.hardDeleteObjectBatchSize", section: "maintenance", route: "maintenance", path: ["hardDeleteObjectBatchSize"], value: 999 },
+  { id: "maintenance.hardDeleteMaxAttempts", section: "maintenance", route: "maintenance", path: ["hardDeleteMaxAttempts"], value: 4 },
+  { id: "maintenance.hardDeleteRetryDelayMs", section: "maintenance", route: "maintenance", path: ["hardDeleteRetryDelayMs"], value: 60_001 },
+  { id: "maintenance.hardDeleteFailedRetentionDays", section: "maintenance", route: "maintenance", path: ["hardDeleteFailedRetentionDays"], value: 31 },
+  { id: "semantic.maximumChunkCharacters", section: "semantic", route: "semantic", path: ["maximumChunkCharacters"], value: 16_001 },
+  { id: "semantic.maximumChunks", section: "semantic", route: "semantic", path: ["maximumChunks"], value: 31 },
+  { id: "semantic.maximumEvidenceTargets", section: "semantic", route: "semantic", path: ["maximumEvidenceTargets"], value: 65 },
+  { id: "semantic.graphRagAdapterTimeoutMs", section: "semantic", route: "semantic", path: ["graphRagAdapterTimeoutMs"], value: 30_001 },
+  { id: "semantic.searchLaneCutoffMs", section: "semantic", route: "semantic", path: ["searchLaneCutoffMs"], value: 1_001 },
+  { id: "semantic.queryEmbeddingConcurrency", section: "semantic", route: "semantic", path: ["queryEmbeddingConcurrency"], value: 5 },
+  { id: "semantic.queryEmbeddingCacheEntries", section: "semantic", route: "semantic", path: ["queryEmbeddingCacheEntries"], value: 1_001 },
+  { id: "search.requestTimeoutMs", section: "search", route: "search", path: ["requestTimeoutMs"], value: 4_000 },
+  { id: "search.engineSearchCutoffMs", section: "search", route: "search", path: ["engineSearchCutoffMs"], value: 1_100 },
+  { id: "search.overfetchFactor", section: "search", route: "search", path: ["overfetchFactor"], value: 4 },
+  { id: "search.indexBatchDocumentCount", section: "search", route: "search", path: ["indexBatchDocumentCount"], value: 9_999 },
+  { id: "search.indexBatchCompressedBytes", section: "search", route: "search", path: ["indexBatchCompressedBytes"], value: 8_388_609 },
+  { id: "search.maxInFlightTasks", section: "search", route: "search", path: ["maxInFlightTasks"], value: 7 },
+  { id: "search.taskPollIntervalMs", section: "search", route: "search", path: ["taskPollIntervalMs"], value: 501 },
+  { id: "search.taskTimeoutMs", section: "search", route: "search", path: ["taskTimeoutMs"], value: 600_001 },
+  { id: "search.maxAttempts", section: "search", route: "search", path: ["maxAttempts"], value: 6 },
+  { id: "search.retryDelayMs", section: "search", route: "search", path: ["retryDelayMs"], value: 2_001 },
+  { id: "search.cleanupBatchSize", section: "search", route: "search", path: ["cleanupBatchSize"], value: 1_001 },
+  { id: "search.cropLength", section: "search", route: "search", path: ["cropLength"], value: 1_201 }
+];
+
+function writeNestedValue(
+  target: Record<string, unknown>,
+  path: readonly string[],
+  value: string | number | boolean
+): void {
+  let current = target;
+  for (const segment of path.slice(0, -1)) {
+    current = current[segment] as Record<string, unknown>;
+  }
+  current[path.at(-1)!] = value;
+}
+
+function readNestedValue(
+  target: Record<string, unknown>,
+  path: readonly string[]
+): unknown {
+  let current: unknown = target;
+  for (const segment of path) {
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
 class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
   public readonly settings = new Map<RuntimeSettingKey, RuntimeSettingRecord>();
   public readonly models = new Map<string, RuntimeModelConfigPrivate>();
   public runningModelInvocationCount = 0;
-  public runningSourceFileJobCount = 0;
   public readonly auditLogs: Array<{
     settingKey: string;
     action: string;
@@ -1041,6 +1462,22 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
 
   public async getSetting(key: RuntimeSettingKey) {
     return this.settings.get(key) ?? null;
+  }
+
+  public async getCurrentRevision() {
+    const version = Math.max(
+      0,
+      ...[...this.settings.values()].map((setting) => setting.version)
+    );
+    return version === 0 ? null : {
+      publicId: `runtime-settings-memory-${version}`,
+      checksum: "0".repeat(64),
+      version
+    };
+  }
+
+  public async getRevision() {
+    return null;
   }
 
   public async upsertSetting(input: {
@@ -1067,6 +1504,7 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
     action: string;
     actor?: string | null | undefined;
     value: unknown;
+    expiresAt: string;
   }) {
     this.auditLogs.push(input);
   }
@@ -1077,6 +1515,11 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
 
   public async getModel(id: string) {
     return this.models.get(id) ?? null;
+  }
+
+  public async getModelRevision(id: string, revision: number) {
+    const model = this.models.get(id) ?? null;
+    return model?.configurationRevision === revision ? model : null;
   }
 
   public async getActiveModel() {
@@ -1127,6 +1570,41 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
     return model;
   }
 
+  public async updateModel(input: {
+    id: string;
+    displayName: string;
+    apiMode: RuntimeModelConfigPrivate["apiMode"];
+    baseUrl: string;
+    encryptedApiKey: string;
+    apiKeyFingerprint: string;
+    modelName: string;
+    contextWindowTokens: number;
+    requestMaxTimeoutMs: number;
+    requestIdleTimeoutMs: number;
+    suggestionConcurrency: number;
+    transientRetryDelayMs: number;
+    requestMinIntervalMs: number;
+  }) {
+    const model = this.models.get(input.id);
+    if (!model) return null;
+    Object.assign(model, {
+      displayName: input.displayName,
+      apiMode: input.apiMode,
+      baseUrl: input.baseUrl,
+      apiKey: input.encryptedApiKey,
+      apiKeyFingerprint: input.apiKeyFingerprint,
+      modelName: input.modelName,
+      contextWindowTokens: input.contextWindowTokens,
+      requestMaxTimeoutMs: input.requestMaxTimeoutMs,
+      requestIdleTimeoutMs: input.requestIdleTimeoutMs,
+      suggestionConcurrency: input.suggestionConcurrency,
+      transientRetryDelayMs: input.transientRetryDelayMs,
+      requestMinIntervalMs: input.requestMinIntervalMs,
+      updatedAt: new Date().toISOString()
+    });
+    return model;
+  }
+
   public async setModelStatus(input: {
     id: string;
     status: Exclude<ModelConfigStatus, "deleted">;
@@ -1169,7 +1647,4 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
     return this.runningModelInvocationCount;
   }
 
-  public async countRunningSourceFileJobs() {
-    return this.runningSourceFileJobCount;
-  }
 }

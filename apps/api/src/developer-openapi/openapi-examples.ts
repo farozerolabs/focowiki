@@ -1,46 +1,71 @@
+import { portableByFileGraphPath } from "@focowiki/okf";
 import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 
 const exampleTimestamp = "2026-06-17T00:00:00.000Z";
-const knowledgeBaseId = "kb-11111111-1111-4111-8111-111111111111";
+const knowledgeBaseId = "knowledge-base-11111111-1111-4111-8111-111111111111";
 const sourceFileId = "source-file-11111111-1111-4111-8111-111111111111";
-const generationId = "generation-11111111-1111-4111-8111-111111111111";
+const activeContentRevision = 1;
 const fileId = sourceFileId;
+const primaryPagePath = "pages/handbook/guide.md";
+const relatedPagePath = "pages/reference.md";
 const webhookId = "webhook-11111111-1111-4111-8111-111111111111";
 const deliveryId = "delivery-11111111-1111-4111-8111-111111111111";
 const knowledgeBase = {
   knowledgeBaseId,
   name: "Product Docs",
   description: "Product documentation",
-  activeGenerationId: generationId,
+  activeContentRevision: 1,
   resourceRevision: 1,
-  catalogGeneration: 1,
   createdAt: exampleTimestamp,
   updatedAt: exampleTimestamp
 };
 
 const uploadSessionCounts = {
-  selected: 2,
+  selected: 1,
   uploadRequired: 1,
-  skippedExisting: 1,
+  skippedExisting: 0,
   waitingReservation: 0,
   rejectedDeleting: 0,
   uploaded: 1,
-  failed: 0,
   finalized: 1
 };
 
+const emptyUploadSessionCounts = {
+  selected: 0,
+  uploadRequired: 0,
+  skippedExisting: 0,
+  waitingReservation: 0,
+  rejectedDeleting: 0,
+  uploaded: 0,
+  finalized: 0
+};
+
+const sealedUploadSessionCounts = {
+  selected: 1,
+  uploadRequired: 1,
+  skippedExisting: 0,
+  waitingReservation: 0,
+  rejectedDeleting: 0,
+  uploaded: 0,
+  finalized: 0
+};
+
 const uploadSession = {
-  id: "upload-session-11111111-1111-4111-8111-111111111111",
+  id: "upload-11111111-1111-4111-8111-111111111111",
+  operationId: "upload-operation-11111111-1111-4111-8111-111111111111",
   knowledgeBaseId,
   state: "completed",
-  declaredFileCount: 2,
-  declaredByteCount: 4096,
+  declaredFileCount: 1,
+  declaredByteCount: 37,
   counts: uploadSessionCounts,
   errorCode: null,
   expiresAt: "2026-06-18T00:00:00.000Z",
   completedAt: exampleTimestamp,
   createdAt: exampleTimestamp,
-  updatedAt: exampleTimestamp
+  updatedAt: exampleTimestamp,
+  actions: {
+    operation: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/operations/upload-operation-11111111-1111-4111-8111-111111111111`
+  }
 };
 
 const uploadSessionTransport = { manifestPageSize: 500, contentUploadConcurrency: 8 };
@@ -50,21 +75,18 @@ const uploadSessionEntry = {
   relativePath: "handbook/onboarding/guide.md",
   directoryPath: "handbook/onboarding",
   name: "guide.md",
-  declaredSize: 2048,
-  receivedSize: 2048,
+  declaredSize: 37,
+  receivedSize: 37,
   disposition: "upload_required",
   transferState: "uploaded",
-  sourceDirectoryId: "source-directory-11111111-1111-4111-8111-111111111111",
   sourceFileId,
-  existingResourceRevision: null,
-  generatedPath: "pages/handbook/onboarding/guide.md",
-  errorCode: null
+  existingResourceRevision: null
 };
 
 const sourceDirectory = {
-  directoryId: "source-directory-11111111-1111-4111-8111-111111111111",
+  directoryId: "directory-11111111-1111-4111-8111-111111111111",
   knowledgeBaseId,
-  parentDirectoryId: "source-directory-handbook",
+  parentDirectoryId: "directory-handbook",
   name: "onboarding",
   relativePath: "handbook/onboarding",
   generatedPath: "pages/handbook/onboarding",
@@ -76,9 +98,9 @@ const sourceDirectory = {
   deletable: true,
   deleting: false,
   actions: {
-    self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-directories/source-directory-11111111-1111-4111-8111-111111111111`,
-    children: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-directories?parentDirectoryId=source-directory-11111111-1111-4111-8111-111111111111`,
-    sourceFiles: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files?directoryId=source-directory-11111111-1111-4111-8111-111111111111`,
+    self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-directories/directory-11111111-1111-4111-8111-111111111111`,
+    children: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-directories?parentDirectoryId=directory-11111111-1111-4111-8111-111111111111`,
+    sourceFiles: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files?directoryId=directory-11111111-1111-4111-8111-111111111111`,
     generatedTree: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=pages%2Fhandbook%2Fonboarding`
   },
   createdAt: exampleTimestamp,
@@ -86,29 +108,47 @@ const sourceDirectory = {
 };
 
 const sourceMoveOperation = {
-  operationId: "resource-operation-11111111-1111-4111-8111-111111111111",
+  operationId: "source-move-11111111-1111-4111-8111-111111111111",
   knowledgeBaseId,
   kind: "source_file_move",
-  state: "accepted",
+  state: "processing",
   expectedResourceRevision: 1,
   targetKind: "source_file",
   targetId: sourceFileId,
-  candidateRelativePath: "handbook/getting-started.md",
+  candidateRelativePath: "handbook/setup/install.md",
   result: null,
   errorCode: null,
-  retryGuidance: "Read the operation again after a short delay.",
+  retryGuidance: "Check this change again after a short delay.",
   actions: {
-    self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/operations/resource-operation-11111111-1111-4111-8111-111111111111`
+    self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/operations/source-move-11111111-1111-4111-8111-111111111111`
   },
   createdAt: exampleTimestamp,
   updatedAt: exampleTimestamp,
   completedAt: null
 };
 
+function resourceOperationActions(operationId: string) {
+  return {
+    self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/operations/${operationId}`
+  };
+}
+
+const sourceDirectoryMoveOperationId =
+  "directory-move-22222222-2222-4222-8222-222222222222";
+const sourceDirectoryMoveOperation = {
+  ...sourceMoveOperation,
+  operationId: sourceDirectoryMoveOperationId,
+  kind: "source_directory_move",
+  targetKind: "source_directory",
+  targetId: sourceDirectory.directoryId,
+  candidateRelativePath: "handbook/archive",
+  actions: resourceOperationActions(sourceDirectoryMoveOperationId)
+};
+
 const sourceResourceFile = {
   sourceFileId,
   knowledgeBaseId,
-  directoryId: "source-directory-11111111-1111-4111-8111-111111111111",
+  directoryId: "directory-11111111-1111-4111-8111-111111111111",
   name: "guide.md",
   relativePath: "handbook/guide.md",
   generatedPath: "pages/handbook/guide.md",
@@ -116,14 +156,16 @@ const sourceResourceFile = {
   sizeBytes: 1024,
   resourceRevision: 1,
   contentRevision: 1,
-  activeRevisionId: "source-revision-11111111-1111-4111-8111-111111111111",
-  state: "visible",
-  currentStage: "generation_activation",
+  state: "available",
+  workProgress: {
+    required: 8,
+    completed: 8,
+    activeKinds: [],
+    blockingKind: null,
+    retryingKind: null
+  },
   failure: null,
-  generatedOutputStatus: "visible",
-  mutable: true,
-  deletable: true,
-  deleting: false,
+  generatedOutputStatus: "current_available",
   actions: [
     {
       kind: "open_generated_file",
@@ -134,27 +176,148 @@ const sourceResourceFile = {
   ],
   links: {
     self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
-    events: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`,
     generatedContent: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fhandbook%2Fguide.md`,
     search: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=guide.md`
   },
   createdAt: exampleTimestamp
 };
 
-const sourceFileEvent = {
-  eventId: "source-event-11111111-1111-4111-8111-111111111111",
-  knowledgeBaseId,
-  sourceFileId,
-  stageKey: "metadata_resolution",
-  messageKey: "sourceFiles.phase.metadataResolution",
-  startedAt: exampleTimestamp,
-  endedAt: exampleTimestamp,
-  severity: "info",
-  createdAt: exampleTimestamp
-};
+export const okfFrontmatterExamples = {
+  nativeV02: {
+    okf_version: "0.2",
+    type: "Guide",
+    title: "Verified guide",
+    tags: ["guide", "policy"],
+    sources: [{ id: "source-a", resource: "references/source-a.md" }],
+    generated: { by: "publisher:example", at: "2026-06-17T00:00:00Z" },
+    verified: [{ by: "human:reviewer", at: "2026-06-17T01:00:00Z" }],
+    status: "stable",
+    stale_after: "2026-12-31"
+  },
+  legacyFallback: {
+    type: "Guide",
+    title: "Legacy guide",
+    timestamp: "2026-06-17T00:00:00Z"
+  },
+  noFrontmatter: {},
+  missingOptionalSignals: { type: "Guide", title: "Minimal guide" },
+  malformedStatus: {
+    type: "Guide",
+    status: ["stable"],
+    stale_after: "next quarter"
+  },
+  malformedVerification: {
+    type: "Guide",
+    verified: [{ by: 42, at: "today" }]
+  },
+  malformedSources: {
+    type: "Guide",
+    sources: { resource: "references/source-a.md" }
+  },
+  malformedGenerated: {
+    type: "Guide",
+    generated: { by: "publisher:example", at: "today" }
+  },
+  completeAttestedComputation: {
+    okf_version: "0.2",
+    type: "Attested Computation",
+    title: "Risk score",
+    runtime: "python",
+    parameters: [{ name: "amount", type: "number", required: true }],
+    computation: { resource: "references/risk-score.py" },
+    executor: { resource: "executor.md", receipt: ["receipt.md"] },
+    attester: { resource: "attester.md" }
+  },
+  incompleteAttestedComputation: {
+    type: "Attested Computation",
+    title: "Incomplete risk score",
+    runtime: ["python"],
+    parameters: "unknown",
+    executor: 42,
+    attester: false
+  }
+} as const;
+
+export const okfSignalExamples = [
+  {
+    effectiveStatus: "stable",
+    trustTier: "human-reviewed",
+    isStale: false,
+    staleAfter: "2026-12-31",
+    generatedAt: "2026-06-17T00:00:00.000Z",
+    generatedAtSource: "generated",
+    latestVerifiedAt: "2026-06-17T01:00:00.000Z",
+    sourceCount: 1
+  },
+  {
+    effectiveStatus: "stable",
+    trustTier: "unverified",
+    isStale: null,
+    staleAfter: null,
+    generatedAt: "2026-06-17T00:00:00.000Z",
+    generatedAtSource: "legacy_timestamp",
+    latestVerifiedAt: null,
+    sourceCount: 0
+  },
+  {
+    effectiveStatus: null,
+    trustTier: null,
+    isStale: null,
+    staleAfter: null,
+    generatedAt: null,
+    generatedAtSource: null,
+    latestVerifiedAt: null,
+    sourceCount: null
+  }
+] as const;
+
+export const okfMarkdownExamples = {
+  nativeV02: {
+    summary: "Native OKF 0.2 metadata",
+    value: "---\nokf_version: '0.2'\ntype: Guide\ntitle: Verified guide\nsources:\n  - id: source-a\n    resource: references/source-a.md\ngenerated:\n  by: publisher:example\n  at: '2026-06-17T00:00:00Z'\nverified:\n  - by: human:reviewer\n    at: '2026-06-17T01:00:00Z'\nstatus: stable\nstale_after: '2026-12-31'\n---\n# Verified guide"
+  },
+  legacyFallback: {
+    summary: "Legacy generated-time fallback",
+    value: "---\ntype: Guide\ntimestamp: '2026-06-17T00:00:00Z'\n---\n# Legacy guide"
+  },
+  noFrontmatter: {
+    summary: "Markdown without frontmatter",
+    value: "# Plain Markdown guide\n\nFrontmatter is optional."
+  },
+  missingOptionalSignals: {
+    summary: "Missing optional OKF signals",
+    value: "---\ntype: Guide\ntitle: Minimal guide\n---\n# Minimal guide"
+  },
+  malformedStatus: {
+    summary: "Safely stored malformed document-status fields",
+    value: "---\ntype: Guide\nstatus: [stable]\nstale_after: next quarter\n---\n# Document status example"
+  },
+  malformedVerification: {
+    summary: "Safely stored malformed verification fields",
+    value: "---\ntype: Guide\nverified:\n  - by: 42\n    at: today\n---\n# Verification example"
+  },
+  malformedSources: {
+    summary: "Safely stored malformed sources",
+    value: "---\ntype: Guide\nsources:\n  resource: references/source-a.md\n---\n# Sources example"
+  },
+  malformedGenerated: {
+    summary: "Safely stored malformed generation event",
+    value: "---\ntype: Guide\ngenerated:\n  by: publisher:example\n  at: today\n---\n# Generation example"
+  },
+  completeAttestedComputation: {
+    summary: "Complete Attested Computation file contract",
+    value: "---\nokf_version: '0.2'\ntype: Attested Computation\ntitle: Risk score\nruntime: python\nparameters:\n  - name: amount\n    type: number\n    required: true\ncomputation:\n  resource: references/risk-score.py\nexecutor:\n  resource: executor.md\n  receipt: [receipt.md]\nattester:\n  resource: attester.md\n---\n# Risk score"
+  },
+  incompleteAttestedComputation: {
+    summary: "Safely stored incomplete Attested Computation metadata",
+    value: "---\ntype: Attested Computation\nruntime: [python]\nparameters: unknown\nexecutor: 42\nattester: false\n---\n# Incomplete risk score"
+  }
+} as const;
+
+const nativeOkfSignals = okfSignalExamples[0];
 
 const generatedFile = {
-  generationId,
+  activeContentRevision,
   fileId,
   knowledgeBaseId,
   sourceFileId,
@@ -162,14 +325,12 @@ const generatedFile = {
   fileKind: "page",
   contentType: "text/markdown; charset=utf-8",
   sizeBytes: 2048,
-  okfType: "page",
-  title: "Guide",
-  description: "Short summary.",
-  tags: ["guide"],
-  frontmatter: {
-    type: "page",
-    title: "Guide"
-  },
+  okfType: "Guide",
+  title: "Verified guide",
+  description: null,
+  tags: ["guide", "policy"],
+  frontmatter: okfFrontmatterExamples.nativeV02,
+  okfSignals: nativeOkfSignals,
   deletable: true,
   contentAvailable: true,
   readActions: {
@@ -178,51 +339,52 @@ const generatedFile = {
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fguide.md`,
     relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/related`,
     graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${fileId}`,
-    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
-    sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`
+    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`
   }
 };
 
-const fileSearchResult = {
-  generationId,
-  nodeId: sourceFileId,
-  edgeId: null,
+const fileSearchResultBase = {
+  activeContentRevision,
   fileId,
-  generatedFileId: fileId,
   knowledgeBaseId,
   sourceFileId,
   path: "pages/guide.md",
-  generatedFilePath: "pages/guide.md",
   fileKind: "page",
-  title: "Guide",
-  description: "Short summary.",
-  tags: ["guide"],
-  frontmatter: {
-    type: "page",
-    title: "Guide"
-  },
-  matchedFields: ["path", "title"],
+  title: "Verified guide",
+  description: null,
+  tags: ["guide", "policy"],
+  frontmatter: okfFrontmatterExamples.nativeV02,
+  okfSignals: nativeOkfSignals,
+  matchedFields: ["content"],
+  evidenceTypes: ["content"],
+  sourceExcerpt: "Configure the deployment, then verify service health and search readiness.",
   score: 9,
   contentAvailable: true,
+  matchType: "file_direct",
   readActions: {
     fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}`,
     fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/content`,
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fguide.md`,
     relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/related`,
     graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${fileId}`,
-    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
-    sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`
+    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`
   }
 };
 
 const fileSearchQueryContext = {
-  query: "guide",
-  normalizedQuery: "guide",
+  query: "How do I configure and verify the knowledge base deployment?",
+  normalizedQuery: "How do I configure and verify the knowledge base deployment?",
   scope: "all",
   fileKind: "page",
   mode: "hybrid",
   graphDepth: 1,
   graphFanout: 10,
+  okfStatus: null,
+  okfTrustTier: null,
+  okfFreshness: null,
+  rerank: false,
+  rerankTopK: null,
+  rerankScoreThreshold: null,
   limit: 10,
   cursorProvided: false
 };
@@ -238,38 +400,21 @@ const fileSearchGraphSummary = {
 const fileSearchResultSummary = {
   resultCount: 1,
   hasMore: false,
-  sort: ["score desc", "path asc", "fileId asc"],
-  meaning: "Candidates matched the query. Read candidate content and related files before answering."
-};
-
-const fileSearchNextRequestTemplates = {
-  searchAgain: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query={query}`,
-  listTree: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath={parentPath}`,
-  readIndex: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=index.md`,
-  fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{generatedFileId}`,
-  fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{generatedFileId}/content`,
-  fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path={generatedFilePath}`,
-  relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{generatedFileId}/related`,
-  graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId={generatedFileId}`,
-  sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/{sourceFileId}`,
-  sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/{sourceFileId}/events`
+  sort: ["relevance_desc", "logical_path_asc", "source_file_id_asc"],
+  meaning: "The query matched readable files. Read the returned files and related files before using their content."
 };
 
 const relatedFile = {
-  generationId,
-  edgeId: "graph-edge-11111111-1111-4111-8111-111111111111",
+  activeContentRevision,
   fileId: "source-file-22222222-2222-4222-8222-222222222222",
   sourceFileId: "source-file-22222222-2222-4222-8222-222222222222",
   path: "pages/reference.md",
   title: "Reference",
   relationType: "same_specific_subject",
   direction: "outgoing",
-  weight: 0.72,
+  fromFileId: fileId,
+  relationshipDepth: 1,
   reason: "Both files share body-derived subjects.",
-  source: "deterministic",
-  evidence: {
-    subjects: ["integration", "configuration"]
-  },
   contentAvailable: true,
   readActions: {
     fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-file-22222222-2222-4222-8222-222222222222`,
@@ -277,84 +422,64 @@ const relatedFile = {
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Freference.md`,
     relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-file-22222222-2222-4222-8222-222222222222/related`,
     graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=source-file-22222222-2222-4222-8222-222222222222`,
-    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/source-file-22222222-2222-4222-8222-222222222222`,
-    sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/source-file-22222222-2222-4222-8222-222222222222/events`
+    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/source-file-22222222-2222-4222-8222-222222222222`
+  }
+};
+
+const fileSearchResult = {
+  ...fileSearchResultBase,
+  graphContext: {
+    graphRef: portableByFileGraphPath(primaryPagePath),
+    depth: 1,
+    seedSourceFileId: sourceFileId,
+    relationships: [relatedFile],
+    graphPaths: [
+      portableByFileGraphPath(primaryPagePath),
+      portableByFileGraphPath(relatedPagePath)
+    ]
   }
 };
 
 const graphExpansion = {
-  generationId,
-  query: {
-    fileId,
-    nodeId: null,
-    edgeId: null,
-    query: null,
-    normalizedQuery: null,
-    depth: 1,
-    fanout: 10,
-    limit: 10,
-    cursorProvided: false
-  },
+  activeContentRevision,
   seedFile: generatedFile,
-  seedResults: [],
   relationships: [relatedFile],
   graphPaths: [
-    `_graph/by-file/${sourceFileId}.json`,
-    "_graph/by-file/source-file-22222222-2222-4222-8222-222222222222.json"
+    portableByFileGraphPath(primaryPagePath),
+    portableByFileGraphPath(relatedPagePath)
   ],
   nextCursor: null,
   resultSummary: {
-    seedCount: 1,
     relationshipCount: 1,
     hasMore: false,
     depth: 1,
     fanout: 10,
-    meaning: "Graph expansion returned related files. Read file content before answering."
+    meaning: "Related files were found. Read the returned files before using their content."
   },
-  nextActions: [
-    "Read candidate file content before answering.",
-    "Continue with related-file reads when more evidence is needed.",
-    "Use graph search when this expansion does not provide enough evidence."
-  ]
 };
 
 const graphOverview = {
-  generationId,
+  activeContentRevision,
   availability: "available",
   summary: {
-    nodeCount: 24,
-    edgeCount: 18
+    readableFileCount: 24,
+    relationshipCount: 18
   },
   resources: {
     graphIndexPath: "_graph/index.md",
-    nodeDirectoryPath: "_graph/graph_node/v1",
-    edgeDirectoryPath: "_graph/graph_edge/v1",
-    byFileDirectoryPath: "_graph/by-file"
+    byDirectoryPath: "_graph/by-directory",
+    byFilePath: "_graph/by-file"
   },
   readActions: {
-    readIndexContent: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=index.md`,
     graphIndexContent: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Findex.md`,
     listGraphRoot: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph`,
-    listGraphNodes: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fgraph_node%2Fv1`,
-    listGraphEdges: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fgraph_edge%2Fv1`,
-    listByFileGraph: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fby-file`,
-    searchGraph: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query={query}&mode=graph`,
-    expandGraphByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId={fileId}`,
-    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}`,
-    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}/content`,
-    fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path={path}`,
-    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}/related`
-  },
-  message: "Graph projections are available. Continue to source-backed files before answering.",
-  nextActions: [
-    "Read the graph index or list graph directories to discover relationships.",
-    "Use graph search, related files, or graph expansion to identify candidate files.",
-    "Read candidate file content before answering."
-  ]
+    listRelationshipsByDirectory: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fby-directory`,
+    listRelationshipsByFile: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fby-file`
+  }
 };
 
 const treeEntry = {
-  generationId,
+  activeContentRevision,
   id: "tree-file-11111111111111111111111111111111",
   fileId,
   sourceFileId,
@@ -378,8 +503,7 @@ const treeEntry = {
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fguide.md`,
     relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/related`,
     graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${fileId}`,
-    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
-    sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`
+    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`
   }
 };
 
@@ -387,10 +511,8 @@ const webhook = {
   webhookId,
   name: "Source file updates",
   endpointHost: "hooks.example.com",
-  events: ["source_file.completed", "source_file.failed", "generation.activated"],
-  enabled: true,
+  events: ["document.available", "document.error", "document.deleting"],
   createdAt: exampleTimestamp,
-  updatedAt: exampleTimestamp,
   lastDeliveryAt: null
 };
 
@@ -398,7 +520,15 @@ const delivery = {
   deliveryId,
   webhookId,
   eventId: "event-11111111-1111-4111-8111-111111111111",
-  eventType: "source_file.completed",
+  eventType: "document.available",
+  payload: {
+    knowledgeBaseId,
+    operationId: "document-operation-11111111-1111-4111-8111-111111111111",
+    sourceFileId,
+    state: "available",
+    errorCode: null,
+    occurredAt: exampleTimestamp
+  },
   status: "success",
   attemptCount: 1,
   httpStatus: 200,
@@ -432,12 +562,16 @@ export const requestExamples = {
   },
   createUploadSession: {
     path: { knowledgeBaseId },
-    body: { declaredFileCount: 2, declaredByteCount: 4096 }
+    body: { declaredFileCount: 1, declaredByteCount: 37 }
   },
   addUploadManifestEntries: {
     path: { knowledgeBaseId, uploadSessionId: uploadSession.id },
     body: {
-      entries: [{ relativePath: uploadSessionEntry.relativePath, declaredSize: 2048, checksumSha256: "0".repeat(64) }]
+      entries: [{
+        relativePath: uploadSessionEntry.relativePath,
+        declaredSize: 37,
+        checksumSha256: "67c26271e50e79cadc720ca4eb964ee65fa4be663c87e0314b486b1109a0990c"
+      }]
     }
   },
   sealUploadManifest: { path: { knowledgeBaseId, uploadSessionId: uploadSession.id } },
@@ -453,7 +587,7 @@ export const requestExamples = {
   deleteSourceFile: { path: { knowledgeBaseId, sourceFileId } },
   getSourceFileContent: { path: { knowledgeBaseId, sourceFileId } },
   replaceSourceFileContent: { path: { knowledgeBaseId, sourceFileId }, body: "# Installation\n\nCurrent installation guidance." },
-  listSourceDirectories: { path: { knowledgeBaseId }, query: { parentDirectoryId: "source-directory-handbook", limit: 50 } },
+  listSourceDirectories: { path: { knowledgeBaseId }, query: { parentDirectoryId: "directory-handbook", limit: 50 } },
   getSourceDirectory: { path: { knowledgeBaseId, directoryId: sourceDirectory.directoryId } },
   moveSourceDirectory: { path: { knowledgeBaseId, directoryId: sourceDirectory.directoryId }, body: { relativePath: "handbook/archive" } },
   deleteSourceDirectory: { path: { knowledgeBaseId, directoryId: sourceDirectory.directoryId } },
@@ -463,15 +597,11 @@ export const requestExamples = {
     path: { knowledgeBaseId },
     query: {
       limit: 50,
-      directoryId: "source-directory-handbook"
+      directoryId: "directory-handbook"
     }
   },
   getKnowledgeBaseSourceFile: {
     path: { knowledgeBaseId, sourceFileId }
-  },
-  listKnowledgeBaseSourceFileEvents: {
-    path: { knowledgeBaseId, sourceFileId },
-    query: { limit: 50 }
   },
   retryKnowledgeBaseSourceFile: {
     path: { knowledgeBaseId, sourceFileId }
@@ -487,7 +617,7 @@ export const requestExamples = {
   searchGeneratedFiles: {
     path: { knowledgeBaseId },
     query: {
-      query: "guide",
+      query: "How do I configure and verify the knowledge base deployment?",
       scope: "all",
       fileKind: "page",
       mode: "hybrid",
@@ -517,7 +647,7 @@ export const requestExamples = {
     body: {
       name: "Source file updates",
       url: "https://hooks.example.com/focowiki",
-      events: ["source_file.completed", "source_file.failed", "generation.activated"]
+      events: ["document.available", "document.error", "document.deleting"]
     }
   },
   listWebhooks: {
@@ -527,7 +657,7 @@ export const requestExamples = {
     path: { webhookId }
   },
   listWebhookDeliveries: {
-    query: { limit: 50 }
+    query: { webhookId, limit: 50 }
   },
   redeliverWebhook: {
     path: { deliveryId }
@@ -552,6 +682,9 @@ export function createDeveloperOpenApiResponseExamples() {
         title: "Focowiki Developer OpenAPI",
         version: productVersion
       },
+      servers: [{ url: "https://openapi.example.com" }],
+      security: [{ bearerAuth: [] }],
+      tags: [{ name: "Knowledge Bases" }],
       paths: {
         "/openapi/v2/knowledge-bases": {
           get: {
@@ -563,6 +696,15 @@ export function createDeveloperOpenApiResponseExamples() {
             summary: "Create a knowledge base"
           }
         }
+      },
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: "http",
+            scheme: "bearer"
+          }
+        },
+        schemas: {}
       }
     },
     listKnowledgeBases: {
@@ -570,20 +712,31 @@ export function createDeveloperOpenApiResponseExamples() {
       nextCursor: null
     },
     createKnowledgeBase: {
-      knowledgeBase
+      knowledgeBase: {
+        ...knowledgeBase,
+        activeContentRevision: 0
+      }
     },
     getKnowledgeBase: {
       knowledgeBase
     },
     updateKnowledgeBase: {
       knowledgeBase: {
-        ...knowledgeBase,
-        name: "Product handbook",
-        description: "Current product guidance.",
-        resourceRevision: 2
+        ...knowledgeBase
       }
     },
     deleteKnowledgeBase: {
+      operation: {
+        ...sourceMoveOperation,
+        operationId: "deletion-44444444-4444-4444-8444-444444444444",
+        kind: "knowledge_base_delete",
+        targetKind: "knowledge_base",
+        targetId: knowledgeBaseId,
+        candidateRelativePath: null,
+        actions: resourceOperationActions(
+          "deletion-44444444-4444-4444-8444-444444444444"
+        )
+      },
       deletion: {
         knowledgeBaseId,
         accepted: true,
@@ -592,16 +745,29 @@ export function createDeveloperOpenApiResponseExamples() {
       }
     },
     createUploadSession: {
-      session: { ...uploadSession, state: "draft", completedAt: null },
+      session: {
+        ...uploadSession,
+        state: "draft",
+        counts: emptyUploadSessionCounts,
+        completedAt: null
+      },
       transport: uploadSessionTransport
     },
     addUploadManifestEntries: {
-      session: { ...uploadSession, state: "manifest_building", completedAt: null },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "manifest_building",
+        counts: { ...emptyUploadSessionCounts, selected: 1 },
+        completedAt: null
+      }
     },
     sealUploadManifest: {
-      session: { ...uploadSession, state: "manifest_sealed", completedAt: null },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "manifest_sealed",
+        counts: sealedUploadSessionCounts,
+        completedAt: null
+      }
     },
     uploadSessionEntryContent: { entry: uploadSessionEntry },
     getUploadSession: {
@@ -609,35 +775,68 @@ export function createDeveloperOpenApiResponseExamples() {
       entries: { items: [uploadSessionEntry], nextCursor: null }
     },
     reconcileUploadSession: {
-      session: { ...uploadSession, state: "manifest_sealed", completedAt: null },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "manifest_sealed",
+        counts: sealedUploadSessionCounts,
+        completedAt: null
+      }
     },
     finalizeUploadSession: {
       session: {
         ...uploadSession,
-        state: "completed"
+        state: "finalizing",
+        completedAt: null
       }
     },
     cancelUploadSession: {
-      session: { ...uploadSession, state: "cancelled", completedAt: exampleTimestamp },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "cancelled",
+        counts: sealedUploadSessionCounts,
+        completedAt: exampleTimestamp
+      }
     },
     moveSourceFile: { operation: sourceMoveOperation },
     deleteSourceFile: {
-      operation: { ...sourceMoveOperation, kind: "source_file_delete" },
+      operation: {
+        ...sourceMoveOperation,
+        operationId: "deletion-33333333-3333-4333-8333-333333333333",
+        kind: "source_file_delete",
+        candidateRelativePath: "handbook/guide.md",
+        actions: resourceOperationActions(
+          "deletion-33333333-3333-4333-8333-333333333333"
+        )
+      },
       deletion: { sourceFileId }
     },
     getSourceFileContent: "---\ntype: guide\ntitle: Guide\n---\n# Guide",
     replaceSourceFileContent: {
-      operation: { ...sourceMoveOperation, kind: "source_file_replace" }
+      operation: {
+        ...sourceMoveOperation,
+        operationId: "source-replace-44444444-4444-4444-8444-444444444444",
+        kind: "source_file_replace",
+        candidateRelativePath: "handbook/setup/install.md",
+        actions: resourceOperationActions(
+          "source-replace-44444444-4444-4444-8444-444444444444"
+        )
+      }
     },
     listSourceDirectories: { items: [sourceDirectory], nextCursor: null },
     getSourceDirectory: { directory: sourceDirectory },
     moveSourceDirectory: {
-      operation: { ...sourceMoveOperation, kind: "source_directory_move" }
+      operation: sourceDirectoryMoveOperation
     },
     deleteSourceDirectory: {
-      operation: { ...sourceMoveOperation, kind: "source_directory_delete" },
+      operation: {
+        ...sourceDirectoryMoveOperation,
+        operationId: "deletion-55555555-5555-4555-8555-555555555555",
+        kind: "source_directory_delete",
+        candidateRelativePath: sourceDirectory.relativePath,
+        actions: resourceOperationActions(
+          "deletion-55555555-5555-4555-8555-555555555555"
+        )
+      },
       deletion: {
         directoryId: sourceDirectory.directoryId,
         affectedDirectoryCount: 1,
@@ -654,22 +853,29 @@ export function createDeveloperOpenApiResponseExamples() {
     getKnowledgeBaseSourceFile: {
       sourceFile: sourceResourceFile
     },
-    listKnowledgeBaseSourceFileEvents: {
-      items: [sourceFileEvent],
-      nextCursor: null
-    },
     retryKnowledgeBaseSourceFile: {
       sourceFile: {
         ...sourceResourceFile,
-        state: "queued",
-        currentStage: "upload_storage",
+        state: "waiting",
+        workProgress: {
+          required: 8,
+          completed: 0,
+          activeKinds: [],
+          blockingKind: "prepare",
+          retryingKind: null
+        },
         failure: null,
-        generatedOutputStatus: "pending",
+        generatedOutputStatus: "unavailable",
         actions: []
+      },
+      retry: {
+        kind: "document_processing",
+        scope: "source_file",
+        coalesced: false
       }
     },
     listKnowledgeBaseTree: {
-      generationId,
+      activeContentRevision,
       items: [treeEntry],
       nextCursor: null
     },
@@ -678,22 +884,38 @@ export function createDeveloperOpenApiResponseExamples() {
       content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
     },
     searchGeneratedFiles: {
-      generationId,
+      activeContentRevision,
       query: fileSearchQueryContext,
       items: [fileSearchResult],
       nextCursor: null,
       searchStatus: "ok",
       searchMode: "hybrid",
+      semanticStatus: { state: "ready", safeCode: null },
+      evidenceStatus: {
+        completedFamilies: [
+          "exact_path",
+          "exact_title",
+          "lexical",
+          "jieba",
+          "content_vector",
+          "entity_vector",
+          "relationship_vector",
+          "community_vector",
+          "file_graph",
+          "file_relationship"
+        ],
+        degradedFamilies: []
+      },
+      rerankerStatus: { state: "skipped", safeCode: "RERANKER_DISABLED" },
       graphStatus: "available",
       graphSummary: fileSearchGraphSummary,
-      resultSummary: fileSearchResultSummary,
-      nextRequestTemplates: fileSearchNextRequestTemplates
+      resultSummary: fileSearchResultSummary
     },
     getFileById: {
       file: generatedFile
     },
     listRelatedFiles: {
-      generationId,
+      activeContentRevision,
       fileId,
       sourceFileId,
       items: [relatedFile],
@@ -722,7 +944,14 @@ export function createDeveloperOpenApiResponseExamples() {
       nextCursor: null
     },
     redeliverWebhook: {
-      delivery
+      delivery: {
+        ...delivery,
+        deliveryId: "delivery-22222222-2222-4222-8222-222222222222",
+        status: "pending",
+        attemptCount: 0,
+        httpStatus: null,
+        errorCode: null
+      }
     }
   } as const;
 }

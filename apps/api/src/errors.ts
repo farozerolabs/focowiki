@@ -9,7 +9,12 @@ export const DEFAULT_SECRET_FIELD_NAMES = [
   "REDIS_PASSWORD",
   "S3_ACCESS_KEY_ID",
   "S3_SECRET_ACCESS_KEY",
-  "MODEL_API_KEY"
+  "MODEL_API_KEY",
+  "EMBEDDING_API_KEY",
+  "MEILI_API_KEY",
+  "MEILI_METRICS_API_KEY",
+  "OPENSEARCH_PASSWORD",
+  "OPENSEARCH_ADMIN_PASSWORD"
 ] as const;
 
 export type AppErrorOptions = {
@@ -65,6 +70,7 @@ export function redactSecrets(
   }
 
   return safe
+    .replace(/(https?:\/\/)[^\s/@]+@/gi, "$1<redacted>@")
     .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;}\]]+/gi, "$1<redacted>")
     .replace(/(bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1<redacted>");
 }

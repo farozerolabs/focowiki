@@ -8,13 +8,13 @@ This example shows a third-party Agent using a Focowiki-backed demo service to a
 
 The demo service keeps the Focowiki OpenAPI key on the backend. The Skill sends HTTP requests to the demo service, searches the configured knowledge base, reads matching files, and uses the retrieved evidence to answer.
 
-## Research Notes
+## Reading The Example
 
-After repeated tuning with real legal documents, Focowiki shows a clear improvement over a traditional RAG-style knowledge base in exploration depth and answer accuracy. The main improvement comes from giving the Agent a file-first knowledge space with indexes, metadata, graph files, related links, and readable source pages. The Agent can inspect the corpus, expand leads, read complete files, compare evidence, and then answer with cited sources.
+This recording demonstrates one evidence workflow with legal documents as test data. It does not claim a general accuracy comparison or make the knowledge base domain-specific.
 
-The current bottleneck has moved from chunking and recombining knowledge to how the Agent organizes its exploration Loop. A shallow Loop usually stops after one or two files and produces a narrow answer. A complete Loop starts from the question, derives search phrases, reads the index and schema, opens relevant files, extracts new leads from the content, searches again, compares multiple sources, and only then closes the answer. When this Loop is well organized, the answer is more precise and more complete.
+The Agent sends the complete question to search, treats returned files as candidates, reads the useful Markdown files, and follows related files only when more evidence is needed. The final answer cites files that were actually read. Search excerpts and relationship summaries help discovery but are not used as answer evidence by themselves.
 
-We started by testing RAG-style search and found that chunk recall often missed document-level context, cross-file relations, update status, and legal structure. Through this exploration, we moved away from a traditional RAG knowledge base. RAG systems often require repeated tuning of embeddings, rerankers, and chunking strategies for different datasets. This made debugging tedious and made it harder to keep the knowledge base stable and explorable. We then moved the core representation to Markdown files, preserved metadata, generated index files, added graph and related-link files, and designed Skills that guide the Agent to explore in cycles. This approach keeps the knowledge base auditable for people and navigable for Agents, and reduces reliance on fixed retrieval fragments to express the whole corpus.
+The same workflow applies to product documentation, manuals, research notes, policies, support content, and other Markdown collections. Answer quality still depends on the uploaded material, the question, the selected model, and the Agent's exploration limits.
 
 ## English Session
 
@@ -27,3 +27,4 @@ We started by testing RAG-style search and found that chunk recall often missed 
 - The Skill can guide the Agent to search the configured knowledge base before answering.
 - The demo service can expose a small read-only HTTP interface for third-party Agent clients.
 - The Agent can continue from search results to file reading and then produce an evidence-based answer.
+- Legal files in this recording are test data; the integration remains general purpose.

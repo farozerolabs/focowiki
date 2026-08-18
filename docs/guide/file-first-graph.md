@@ -1,114 +1,161 @@
 ---
-title: File-first Graph
+title: Source-file Evidence and Document Relationships
 ---
 
-# File-first Graph
+# Source-file Evidence and Document Relationships
 
-Focowiki builds a lightweight relationship graph for generated Markdown pages. The graph is stored in PostgreSQL for consistency, coordinated with Redis during processing, and published as files in the OKF bundle. Agents can explore relationships by reading files through the same tree and content APIs used for normal Markdown pages.
+Focowiki keeps uploaded Markdown as the authoritative evidence and builds a lightweight relationship graph between readable documents. Search, embeddings, GraphRAG, and relationship records help find relevant files; an Agent should still read the source Markdown before answering.
 
-The graph feature keeps the product file-first. It adds stable relationship files to the bundle and keeps graph state available for deletion, retry, and republish workflows.
+This graph connects documents. It is not a separate entity-management graph, and it does not replace the file tree.
 
-## Why It Exists
+## Relationship Sources
 
-Large knowledge bases need stable cross-file relationships. A model prompt can inspect one file and a bounded set of candidates, but it cannot compare a file with every document in a corpus containing thousands or tens of thousands of files.
+Relationships can come from:
 
-Focowiki handles this by separating relationship work into two layers:
+- Markdown links written in the source document.
+- Safe local references in supported metadata.
+- Content-based candidate discovery confirmed during document indexing.
 
-| Layer | Purpose |
-| --- | --- |
-| Content profile | Build one generic profile from each Markdown body, including summary, subjects, keywords, entities, explicit references, heading outline, and safe frontmatter context. |
-| Deterministic candidates | Use bounded database reads and content evidence such as Markdown links, title mentions, shared entities, shared subjects, explicit references, and existing reciprocal relationships. |
-| Optional model confirmation | Send only the current file profile, bounded source view, and selected candidate cards to the configured model. The model can confirm, reject, classify, weight, and explain provided candidates. |
+A relationship is published only when both ends resolve to readable documents. A broad tag, common status, generic type, or similar title is not sufficient by itself.
 
-The model cannot invent target files. If model confirmation rejects a candidate, that candidate is not published as an accepted relationship. If model confirmation fails, deterministic relationships can still be published when they have strong content evidence.
+The generated page may contain a `Related` section with ordinary relative Markdown links. Adding, replacing, renaming, moving, or deleting a document updates the affected links and relationship files. Unrelated documents remain available while that work completes.
 
-Generic metadata such as one shared status, one broad type, one low-information tag, or a generated system heading does not create a page `Related` link by itself. Metadata can support a relationship when the body profile already shows content evidence.
+## Portable Files
 
-## Generated Files
-
-Graph files live under `_graph/` in the generated bundle.
+Relationship and discovery files use paths that point back to readable Markdown under `pages/`.
 
 ```text
+index.md
+log.md
+pages/
+  index.md
+  index-directory-leaf-<stable-id>.md
+  guides/
+    index.md
+    index-directory-leaf-<stable-id>.md
+    install.md
+_index/
+  index.md
+  index-extension-leaf-<stable-id>.md
+  catalog.json
+  pages/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    all-documents.json
+    guides/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      guides-documents.json
+  terms/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    han/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      han-terms-part-0001.json
 _graph/
   index.md
-  graph_node/v1/
-    {shard}.json
-  graph_edge/v1/
-    {shard}.json
+  index-extension-leaf-<stable-id>.md
+  catalog.json
+  by-directory/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    guides/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      guides-relationships.json
   by-file/
-    {fileId}.json
+    index.md
+    index-extension-leaf-<stable-id>.md
+    guides/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      install.json
 ```
 
-| File | Purpose |
+This is an illustrative tree. `pages/` mirrors the uploaded directory structure. `_index/pages/` and both `_graph/` branches mirror only the applicable `pages/` directories. Every non-empty generated directory has an `index.md` and one or more stable navigation leaves. Human-readable directories use `index-directory-leaf-<stable-id>.md`; `_index/` and `_graph/` directories use `index-extension-leaf-<stable-id>.md`.
+
+Each machine-readable directory uses `index.json` as its router. Document packets use semantic names such as `all-documents.json` or `<directory>-documents.json`; relationship packets use `<directory>-relationships.json`. Additional shards append `-part-NNNN`. A per-file graph record mirrors the readable page path without the `pages/` prefix or `.md` suffix, for example `pages/guides/install.md` becomes `_graph/by-file/guides/install.json`.
+
+Only directories and data that currently exist are generated. Term bucket directories are created only for populated writing systems. `_graph/by-directory/`, `_graph/by-file/`, and their navigation leaves are omitted when no accepted relationship requires them. A document without accepted relationships has no per-file graph JSON.
+
+| Resource | Purpose |
 | --- | --- |
-| `_graph/index.md` | Human and Agent entry point for graph navigation. |
-| `_index/catalog.json` | Bounded descriptors for active graph-node and graph-edge projection shards. |
-| `_graph/graph_node/v1/*.json` | Sharded graph-node records. |
-| `_graph/graph_edge/v1/*.json` | Sharded relationship records for exports and audits. |
-| `_graph/by-file/{fileId}.json` | Bounded local neighborhood for one generated source-backed page. This is the primary Agent exploration file. |
+| `pages/**/*.md` | Complete readable documents and final citation evidence. |
+| `_index/pages/**` | Bounded directory and document discovery records. |
+| `_index/terms/**` | Bounded language-aware navigation terms. This is not a complete full-text index. |
+| `_graph/by-directory/**` | Relationships grouped by readable document directory. |
+| `_graph/by-file/**` | A bounded neighborhood for one readable document. |
+| `index-*-leaf-<stable-id>.md` | Bounded Markdown navigation pages linked from the `index.md` in the same directory. |
 
-The root `index.md` links to `_graph/index.md` whenever graph output is available. Normal Agent reading should start from generated Markdown pages and then use `_graph/by-file/{fileId}.json`. Agents rarely need to read full edge shards.
-
-## Page References
-
-Source-backed pages include stable graph references in frontmatter when graph data exists.
-
-```yaml
-fileId: "source-file-123"
-graph: "../_graph/by-file/source-file-123.json"
-```
-
-The generated page body can also include a `Related` section derived from persisted graph edges. The same graph edges drive `_index/links.json`, so relationship data stays consistent across Markdown pages, JSON indexes, and per-file graph files.
+Generated JSON uses bundle-root-relative document paths. Generated Markdown uses relative links. The portable files do not expose database IDs, model names, service URLs, storage keys, or processing identifiers.
 
 ## Relationship Fields
 
-Each relationship record contains safe public fields.
+Relationship records use public document fields:
 
 | Field | Meaning |
 | --- | --- |
-| `fileId` | Related source-backed file identifier. |
-| `path` | Related generated Markdown path, such as `pages/example.md`. |
-| `title` | Related file title. |
-| `relationType` | Relationship type, such as `direct_reference`, `same_entity`, `same_specific_subject`, or `metadata_supported_content`. |
-| `direction` | `outgoing` when the current file points to the related file, `incoming` when another file points to the current file. |
-| `weight` | Bounded priority score from `0` to `1`. |
-| `reason` | Safe explanation for users, developers, and Agents. |
-| `source` | Relationship source, such as `deterministic` or `model_confirmed`. |
-| `contentAvailable` | Whether generated Markdown content is available through the file read API. |
+| `path`, `from`, `to`, `targetPath` | Current readable `pages/*.md` paths. |
+| `title`, `fromTitle`, `toTitle`, `targetTitle` | Titles of the linked documents. |
+| `relationType` | `references` for directional source evidence or `related` for an accepted association. |
+| `direction` | `outgoing` or `incoming` relative to the current document. |
+| `weight` | Bounded relationship priority from `0` to `1`. |
+| `reason` | A safe explanation of why the documents are connected. |
 
-Graph files expose logical identifiers and paths. They do not expose S3 object keys, local filesystem paths, Redis keys, SQL details, provider payloads, or secrets.
+## Online Agent Flow
 
-## Agent Exploration Flow
+For an Agent connected through Developer OpenAPI:
 
-1. Read `index.md` to understand the knowledge base.
-2. Follow the graph entry in `index.md` when relationship discovery is useful.
-3. Read `schema.md` when metadata or generated file conventions are unclear.
-4. Inspect `_index/*` when the task needs generated search, link, manifest, or tree hints.
-5. List the generated file tree with pagination.
-6. Open relevant `pages/*.md` files and read complete Markdown content.
-7. Read the page frontmatter and find `fileId`, `path`, and `graph`.
-8. Open `_graph/by-file/{fileId}.json`, call the related-file endpoint, or use Developer OpenAPI graph expansion with the known file ID.
-9. Read related page paths returned by graph expansion or graph files.
-10. Continue following Markdown links, tree entries, `_index/*`, search candidates, and graph relationships while the task needs more evidence.
+1. Send the complete user question to file search. Omit `mode` to use `hybrid`.
+2. Treat returned items as candidates.
+3. Follow a returned read action and read the full Markdown file.
+4. If evidence is incomplete, call the related-file endpoint or graph expansion with the returned `fileId`.
+5. Read the returned related Markdown files before using them as evidence.
+6. Stop when the files cover the question or no new useful candidate remains.
 
-Developer OpenAPI also exposes a bounded related-file endpoint for backend integrations that prefer JSON lists. File reads remain the primary Agent-facing contract.
+Graph expansion requires one current readable `fileId`. It does not accept a free-text query, node ID, or edge ID as its starting value.
 
-Admin previews copy a Developer OpenAPI content URL for the selected generated file. Safe Unicode page paths such as `pages/示例.md` are encoded in the copied URL and resolved back to the active generated file by the Developer OpenAPI.
+Search modes have these public meanings:
 
-## Graph Search
+| Mode | Use |
+| --- | --- |
+| `hybrid` | Recommended default that combines eligible file and relationship discovery. |
+| `file` | Focus discovery on file content, titles, paths, metadata, and content embeddings. |
+| `graph` | Focus discovery on document relationships and graph-derived signals. |
 
-Developer OpenAPI file search uses generated file discovery by default. `mode=file` searches generated file documents and preserves the existing file-search contract. `mode=hybrid` combines file and graph candidates into one deduplicated file-level result list. `mode=graph` searches persisted graph node and relationship search documents.
+Search results, excerpts, scores, relationship summaries, and reranker output are navigation aids. Read the returned Markdown before presenting a factual answer.
 
-Graph search reads the same active relationship projection that generates `_graph/` files and `Related` sections. It does not parse graph files during the request. This keeps large knowledge-base queries bounded and lets ingestion, deletion, and publication update graph reads through one active generation.
+## Static Bundle Flow
 
-Each graph result can include `matchType`, `graphContext.graphRef`, `graphContext.relationships`, `graphContext.graphPaths`, and result-level `readActions`. Use graph fields as navigation hints, then follow `readActions` to read the generated Markdown file by ID or path. The generated Markdown file content remains the evidence source that should be read before producing an answer.
+When only a copied bundle or static HTTP host is available:
 
-Graph expansion accepts a file, node, edge, or query seed and returns bounded relationship paths with file read actions. Use it after an Agent has a promising file or graph candidate, then continue the same loop by reading the returned Markdown files. Search and graph expansion are discovery tools. Complete Markdown files remain the evidence that supports the final answer.
+1. Start at `index.md`.
+2. Browse `pages/` through its directory indexes.
+3. Use `_index/catalog.json` and declared page or term routes only when additional discovery is needed.
+4. Follow ordinary Markdown links or the matching `_graph/by-file/**` record.
+5. Read the target `pages/*.md` files and cite those files.
 
-## Operational Notes
+The term index is intentionally bounded. Use Developer OpenAPI search for online full-text and hybrid retrieval.
 
-PostgreSQL stores relationship facts, projection impacts, active graph nodes, and active graph edges. Redis coordinates scoped locks, cursors, and short-lived graph caches. S3-compatible storage keeps generated `_graph/` Markdown and machine shards as immutable objects referenced by the active generation.
+## Document Availability
 
-Processing is file-level. A graph failure for one source file does not require unrelated files to stop processing. Failed files can be retried manually through the same source-file retry flow.
+Each uploaded document is indexed independently. One document can become available while other files from the same upload are still processing.
 
-The first implementation does not add embeddings, vector search, rerankers, a graph database, or a graph visualization UI. Search and vector systems can still be added by developers as separate access layers on top of the generated bundle.
+Use the document `state` as the public lifecycle:
+
+- `waiting`: accepted and waiting to start.
+- `processing`: indexing is in progress.
+- `available`: the current document is readable and searchable.
+- `error`: processing ended with a safe error and may expose an allowed retry action.
+- `deleting`: deletion is in progress.
+
+When a replacement fails, `generatedOutputStatus=previous_available` can keep the earlier readable content available. A failed first upload is not returned by tree, content, relationship, or search reads.
+
+Large imports should begin with the documented defaults. Increase concurrency only after observing the Admin processing view, external model latency, search latency, CPU, and memory.

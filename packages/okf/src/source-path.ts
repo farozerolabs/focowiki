@@ -1,9 +1,9 @@
 const MAX_PATH_LENGTH = 2_048;
-const MAX_SEGMENT_LENGTH = 240;
+const MAX_SEGMENT_LENGTH = 1_000;
 const MARKDOWN_EXTENSION = ".md";
-const GENERATED_ROOT_FILES = new Set(["index.md", "log.md", "schema.md"]);
-const GENERATED_DIRECTORY_ROOTS = new Set(["pages", "_index", "_graph", "_segments"]);
-const RESERVED_SOURCE_NAME = /^(?:index(?:-map)?|log)(?:-\d+)?\.md$/iu;
+const GENERATED_ROOT_FILES = new Set(["index.md", "log.md"]);
+const GENERATED_DIRECTORY_ROOTS = new Set(["pages", "_index", "_graph"]);
+const RESERVED_SOURCE_NAME = /^(?:index|log)(?:-\d+)?\.md$/iu;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u;
 const WINDOWS_DRIVE_PREFIX = /^[a-z]:[\\/]/iu;
 
@@ -103,11 +103,7 @@ export function normalizeGeneratedLogicalPath(input: string): string {
 
   if (segments.length === 1) {
     const name = segments[0]?.toLocaleLowerCase("en-US") ?? "";
-    if (
-      GENERATED_ROOT_FILES.has(name)
-      || /^schema-[a-z0-9-]+\.md$/u.test(name)
-      || /^log-\d{6}\.md$/u.test(name)
-    ) {
+    if (GENERATED_ROOT_FILES.has(name)) {
       return logicalPath;
     }
     throw new SourcePathValidationError("generated_root", input);
@@ -154,7 +150,7 @@ function normalizePath(input: string): string {
 }
 
 function validateSegment(segment: string, path: string): void {
-  if (!segment || segment.length > MAX_SEGMENT_LENGTH) {
+  if (!segment || [...segment].length > MAX_SEGMENT_LENGTH) {
     throw new SourcePathValidationError("segment", path);
   }
   if (segment === "." || segment === "..") {

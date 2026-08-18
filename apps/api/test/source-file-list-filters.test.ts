@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createSourceFileFilterSignature } from "../src/admin/source-file-list-filter-signature.js";
 import { readSourceFileListFilters } from "../src/admin/source-file-list-filters.js";
 
 describe("source file list filters", () => {
@@ -7,10 +6,10 @@ describe("source file list filters", () => {
     const result = readSourceFileListFilters({
       fileNameQuery: " intro ",
       fileIdQuery: "source-file-001",
-      state: "visible",
-      currentStage: "generation_activation",
-      modelInvocationStatus: "not_recorded",
-      generatedOutputStatus: "visible",
+      state: "available",
+      currentStage: "available",
+      modelInvocationStatus: "completed",
+      generatedOutputStatus: "current_available",
       startedFrom: "2026-06-14T00:00:00.000Z",
       startedTo: "2026-06-15T00:00:00.000Z",
       endedFrom: undefined,
@@ -25,10 +24,10 @@ describe("source file list filters", () => {
       filters: {
         fileNameQuery: "intro",
         fileIdQuery: "source-file-001",
-        state: "visible",
-        currentStage: "generation_activation",
-        modelInvocationStatus: "not_recorded",
-        generatedOutputStatus: "visible",
+        state: "available",
+        currentStage: "available",
+        modelInvocationStatus: "completed",
+        generatedOutputStatus: "current_available",
         startedFrom: "2026-06-14T00:00:00.000Z",
         startedTo: "2026-06-15T00:00:00.000Z",
         endedFrom: null,
@@ -77,6 +76,69 @@ describe("source file list filters", () => {
     });
   });
 
+  it("accepts the blocking fixed work kind produced by the document job", () => {
+    expect(readSourceFileListFilters({
+      fileNameQuery: undefined,
+      fileIdQuery: undefined,
+      state: undefined,
+      currentStage: "graphrag",
+      modelInvocationStatus: undefined,
+      generatedOutputStatus: undefined,
+      startedFrom: undefined,
+      startedTo: undefined,
+      endedFrom: undefined,
+      endedTo: undefined,
+      errorState: undefined,
+      errorCodeQuery: undefined,
+      actionState: undefined
+    })).toMatchObject({
+      ok: true,
+      filters: { currentStage: "graphrag" }
+    });
+  });
+
+  it("accepts a terminal lifecycle value shown in the current-stage column", () => {
+    expect(readSourceFileListFilters({
+      fileNameQuery: undefined,
+      fileIdQuery: undefined,
+      state: undefined,
+      currentStage: "available",
+      modelInvocationStatus: undefined,
+      generatedOutputStatus: undefined,
+      startedFrom: undefined,
+      startedTo: undefined,
+      endedFrom: undefined,
+      endedTo: undefined,
+      errorState: undefined,
+      errorCodeQuery: undefined,
+      actionState: undefined
+    })).toMatchObject({
+      ok: true,
+      filters: { currentStage: "available" }
+    });
+  });
+
+  it.each(["correctable", "details_only"] as const)(
+    "accepts the truthful %s action filter",
+    (actionState) => {
+      expect(readSourceFileListFilters({
+        fileNameQuery: undefined,
+        fileIdQuery: undefined,
+        state: undefined,
+        currentStage: undefined,
+        modelInvocationStatus: undefined,
+        generatedOutputStatus: undefined,
+        startedFrom: undefined,
+        startedTo: undefined,
+        endedFrom: undefined,
+        endedTo: undefined,
+        errorState: undefined,
+        errorCodeQuery: undefined,
+        actionState
+      })).toMatchObject({ ok: true, filters: { actionState } });
+    }
+  );
+
   it("rejects unsafe text and time filters", () => {
     expect(
       readSourceFileListFilters({
@@ -113,24 +175,5 @@ describe("source file list filters", () => {
         actionState: undefined
       })
     ).toEqual({ ok: false, code: "SOURCE_FILE_FILTER_TIME_RANGE_INVALID" });
-  });
-
-  it("creates stable bounded signatures for cursor and cache scope", () => {
-    const first = createSourceFileFilterSignature({
-      fileNameQuery: "intro",
-      state: "visible"
-    });
-    const second = createSourceFileFilterSignature({
-      fileNameQuery: "intro",
-      state: "visible"
-    });
-    const third = createSourceFileFilterSignature({
-      fileNameQuery: "setup",
-      state: "visible"
-    });
-
-    expect(first).toBe(second);
-    expect(first).not.toBe(third);
-    expect(first).toMatch(/^[a-f0-9]{32}$/);
   });
 });

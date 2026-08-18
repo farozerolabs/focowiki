@@ -12,8 +12,12 @@ function sourceFile(input: Partial<SourceFileRecord> & Pick<SourceFileRecord, "i
   return {
     name: `${input.id}.md`,
     relativePath: `${input.id}.md`,
-    state: "queued",
-    currentStage: "upload_storage",
+    state: "waiting",
+    blockingWorkKind: "prepare",
+    requiredWorkCount: 8,
+    completedWorkCount: 0,
+    activeWorkKinds: [],
+    retryingWorkKind: null,
     failure: null,
     actions: [],
     createdAt: "2026-06-14T00:00:00.000Z",
@@ -41,8 +45,8 @@ describe("source file refresh decisions", () => {
     const previous = rememberSourceFileRefreshSnapshots([
       sourceFile({
         id: "source-001",
-        state: "running",
-        currentStage: "metadata_resolution",
+        state: "processing",
+        blockingWorkKind: "prepare",
         failure: null,
         actions: [],
         generatedFileAvailable: false,
@@ -51,8 +55,8 @@ describe("source file refresh decisions", () => {
       }),
       sourceFile({
         id: "source-002",
-        state: "running",
-        currentStage: "llm_suggestion",
+        state: "processing",
+        blockingWorkKind: "first_layer",
         failure: null,
         actions: [],
         generatedFileAvailable: false,
@@ -65,8 +69,8 @@ describe("source file refresh decisions", () => {
       shouldRefreshGeneratedFiles(previous, [
         sourceFile({
           id: "source-001",
-          state: "visible",
-          currentStage: "generation_activation",
+          state: "available",
+          blockingWorkKind: null,
           failure: null,
           actions: [],
           generatedFileAvailable: true,
@@ -75,8 +79,8 @@ describe("source file refresh decisions", () => {
         }),
         sourceFile({
           id: "source-002",
-          state: "running",
-          currentStage: "llm_suggestion",
+          state: "processing",
+          blockingWorkKind: "first_layer",
           failure: null,
           actions: [],
           generatedFileAvailable: false,
@@ -91,8 +95,8 @@ describe("source file refresh decisions", () => {
     const previous = rememberSourceFileRefreshSnapshots([
       sourceFile({
         id: "source-001",
-        state: "visible",
-        currentStage: "generation_activation",
+        state: "available",
+        blockingWorkKind: null,
         failure: null,
         actions: [],
         generatedFileAvailable: true,
@@ -112,11 +116,11 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            state: "running",
-            currentStage: "metadata_resolution",
+            state: "processing",
+            blockingWorkKind: "prepare",
             failure: null,
             actions: [],
-            generatedOutputStatus: "pending"
+            generatedOutputStatus: "unavailable"
           })
         ]
       })
@@ -129,11 +133,11 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            state: "visible",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
             failure: null,
             actions: [],
-            generatedOutputStatus: "visible"
+            generatedOutputStatus: "current_available"
           })
         ]
       })
@@ -146,11 +150,11 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            state: "running",
-            currentStage: "metadata_resolution",
+            state: "processing",
+            blockingWorkKind: "prepare",
             failure: null,
             actions: [],
-            generatedOutputStatus: "pending"
+            generatedOutputStatus: "unavailable"
           })
         ]
       })
@@ -163,15 +167,35 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            state: "running",
-            currentStage: "metadata_resolution",
+            state: "processing",
+            blockingWorkKind: "prepare",
             failure: null,
             actions: [],
-            generatedOutputStatus: "pending"
+            generatedOutputStatus: "unavailable"
           })
         ]
       })
     ).toBe(false);
+  });
+
+  it("keeps refreshing filtered terminal rows while background work remains active", () => {
+    expect(
+      shouldScheduleSourceFileRefresh({
+        activeView: "processing",
+        isVisible: true,
+        sourceFiles: [
+          sourceFile({
+            id: "source-visible",
+            state: "available",
+            blockingWorkKind: null,
+            failure: null,
+            actions: [],
+            generatedOutputStatus: "current_available"
+          })
+        ],
+        hasBackgroundActivity: true
+      })
+    ).toBe(true);
   });
 
   it("normalizes server refresh hints into a bounded interval", () => {

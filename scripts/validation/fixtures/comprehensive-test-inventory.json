@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "count": 397,
+  "suites": {
+    "admin-ui": 27,
+    "api": 283,
+    "documentation": 1,
+    "okf-package": 13,
+    "python-adapter": 3,
+    "validation": 70
+  },
+  "taxonomies": {
+    "admin-ui": 39,
+    "architecture": 8,
+    "database": 22,
+    "docker-runtime": 3,
+    "embedding-vector": 17,
+    "generated-content": 29,
+    "graph": 12,
+    "lifecycle-cleanup": 16,
+    "model-transport": 8,
+    "openapi": 18,
+    "performance": 2,
+    "redis": 6,
+    "reranker": 7,
+    "s3": 5,
+    "search-provider": 22,
+    "security": 5,
+    "unit-utility": 178
+  },
+  "fingerprint": "7209086e7f24191c4ac501161cdf8f03b58278c268eb3593a1c1479f37e921fa"
+}

@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 
+const CONTENT_UPLOAD_MAX_ATTEMPTS = 3;
+const CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS = 25;
+
 export async function uploadMarkdownFilesWithSession(input) {
   const files = input.files.map(normalizeInputFile);
   const declaredByteCount = files.reduce((total, file) => total + file.bytes.byteLength, 0);
@@ -66,19 +69,49 @@ export async function uploadMarkdownFilesWithSession(input) {
       if (!file) {
         throw new Error(`Upload entry has no matching local file: ${entry.relativePath}`);
       }
-      await requestData(
-        input.request,
-        `${input.routeBase}/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entry.id)}/content`,
-        {
-          method: "PUT",
-          headers: { "content-type": "text/markdown; charset=utf-8" },
-          rawBody: file.bytes
-        }
-      );
+      const startedAt = Date.now();
+      try {
+        const transfer = await requestEntryContentWithRetry(
+          input.request,
+          `${input.routeBase}/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entry.id)}/content`,
+          {
+            method: "PUT",
+            headers: { "content-type": "text/markdown; charset=utf-8" },
+            rawBody: file.bytes
+          }
+        );
+        const finishedAt = Date.now();
+        await input.onFileTransfer?.({
+          relativePath: entry.relativePath,
+          status: "completed",
+          attempts: transfer.attempts,
+          startedAt,
+          finishedAt,
+          elapsedMs: finishedAt - startedAt
+        });
+      } catch (error) {
+        const finishedAt = Date.now();
+        await input.onFileTransfer?.({
+          relativePath: entry.relativePath,
+          status: "failed",
+          attempts: CONTENT_UPLOAD_MAX_ATTEMPTS,
+          startedAt,
+          finishedAt,
+          elapsedMs: finishedAt - startedAt
+        });
+        throw error;
+      }
       }
     );
     cursor = page.entries?.nextCursor ?? null;
   } while (cursor);
+
+  const sealedEntries = await listAllEntries({
+    request: input.request,
+    routeBase: input.routeBase,
+    sessionId,
+    limit: transport.manifestPageSize
+  });
 
   const finalized = await requestData(
     input.request,
@@ -93,26 +126,86 @@ export async function uploadMarkdownFilesWithSession(input) {
     pollIntervalMs: input.finalizationPollIntervalMs,
     timeoutMs: input.finalizationTimeoutMs
   });
-  const entries = await listAllEntries({
+  const terminalEntries = await listAllEntries({
     request: input.request,
     routeBase: input.routeBase,
     sessionId,
     limit: transport.manifestPageSize
   });
+  const entries = terminalEntries.length > 0 ? terminalEntries : sealedEntries;
+  const entryFiles = toSourceFiles(entries);
+  const resolvedFiles = entryFiles.length === files.length
+    ? entryFiles
+    : await listMatchingSourceFiles({
+        request: input.request,
+        routeBase: input.routeBase,
+        files,
+        entries
+      });
   return {
     session: completed,
     transport,
     entries,
-    files: entries
-      .filter((entry) => entry.sourceFileId)
-      .map((entry) => ({
-        sourceFileId: entry.sourceFileId,
-        name: entry.name,
-        relativePath: entry.relativePath,
-        generatedPath: entry.generatedPath,
-        disposition: entry.disposition
-      }))
+    files: resolvedFiles
   };
+}
+
+function toSourceFiles(entries) {
+  return entries
+    .filter((entry) => entry.sourceFileId)
+    .map((entry) => ({
+      sourceFileId: entry.sourceFileId,
+      name: entry.name,
+      relativePath: entry.relativePath,
+      generatedPath: entry.generatedPath,
+      disposition: entry.disposition
+    }));
+}
+
+async function listMatchingSourceFiles(input) {
+  const suffix = "/upload-sessions";
+  if (!input.routeBase.endsWith(suffix)) {
+    throw new Error("Upload session route does not expose its source-file collection.");
+  }
+  const sourceRoute = `${input.routeBase.slice(0, -suffix.length)}/source-files`;
+  const expectedPaths = new Set(input.files.map((file) => file.relativePath));
+  const sourceByPath = new Map();
+  const dispositionByPath = new Map(
+    input.entries.map((entry) => [entry.relativePath, entry.disposition])
+  );
+  const visitedCursors = new Set();
+  let cursor = null;
+  do {
+    const page = await requestData(input.request, sourceRoute, {
+      query: { limit: 200, ...(cursor ? { cursor } : {}) }
+    });
+    for (const source of page.items ?? []) {
+      if (expectedPaths.has(source.relativePath)) {
+        sourceByPath.set(source.relativePath, source);
+      }
+    }
+    cursor = page.nextCursor ?? null;
+    if (cursor) {
+      if (visitedCursors.has(cursor)) {
+        throw new Error("Source-file pagination repeated a cursor.");
+      }
+      visitedCursors.add(cursor);
+    }
+  } while (cursor && sourceByPath.size < expectedPaths.size);
+
+  if (sourceByPath.size !== expectedPaths.size) {
+    throw new Error("Completed upload source-file identities are incomplete.");
+  }
+  return input.files.map((file) => {
+    const source = sourceByPath.get(file.relativePath);
+    return {
+      sourceFileId: source.sourceFileId,
+      name: source.name ?? file.relativePath.split("/").at(-1),
+      relativePath: source.relativePath,
+      generatedPath: source.generatedPath,
+      disposition: dispositionByPath.get(file.relativePath) ?? null
+    };
+  });
 }
 
 async function waitForFinalization(input) {
@@ -160,6 +253,24 @@ async function requestData(request, pathname, options) {
   return response && typeof response === "object" && "data" in response
     ? response.data
     : response;
+}
+
+async function requestEntryContentWithRetry(request, pathname, options) {
+  let lastFailure = null;
+  for (let attempt = 1; attempt <= CONTENT_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return {
+        value: await requestData(request, pathname, options),
+        attempts: attempt
+      };
+    } catch (error) {
+      lastFailure = error;
+    }
+    if (attempt < CONTENT_UPLOAD_MAX_ATTEMPTS) {
+      await sleep(CONTENT_UPLOAD_RETRY_DELAY_MILLISECONDS * attempt);
+    }
+  }
+  throw lastFailure ?? new Error("Upload entry content failed");
 }
 
 function normalizeInputFile(file) {

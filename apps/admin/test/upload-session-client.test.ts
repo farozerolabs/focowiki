@@ -201,6 +201,44 @@ describe("folder upload session client", () => {
     }));
   });
 
+  it("retries a transient entry-body transfer without cancelling the batch", async () => {
+    vi.mocked(sealUploadManifest).mockResolvedValue({
+      session: uploadSession("manifest_sealed", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      sample: [],
+      nextCursor: null
+    });
+    vi.mocked(getUploadSession).mockResolvedValue({
+      session: uploadSession("uploading", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      entries: {
+        items: [uploadEntry("upload-entry-retry", "handbook/retry.md")],
+        nextCursor: null
+      }
+    });
+    let attempts = 0;
+    vi.mocked(uploadSessionContent).mockImplementation(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? { messageKey: "errors.uploadFailed" }
+        : { entry: uploadEntry("upload-entry-retry", "handbook/retry.md", "uploaded") };
+    });
+
+    const result = await runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Retry", "handbook/retry.md")],
+      onProgress: vi.fn()
+    });
+
+    expect(result.ok).toBe(true);
+    expect(uploadSessionContent).toHaveBeenCalledTimes(2);
+    expect(cancelUploadSession).not.toHaveBeenCalled();
+  });
+
   it("cancels a session when classification rejects a deleting path", async () => {
     vi.mocked(sealUploadManifest).mockResolvedValue({
       session: uploadSession("manifest_sealed", {
@@ -267,6 +305,7 @@ describe("folder upload session client", () => {
       knowledgeBaseId: "kb-docs",
       sessionId: "upload-session-test"
     });
+    expect(uploadSessionContent).toHaveBeenCalledTimes(3);
   });
 
   it("cancels a created session after an unexpected client exception", async () => {
@@ -285,6 +324,73 @@ describe("folder upload session client", () => {
     });
     expect(cancelUploadSession).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-docs",
+      sessionId: "upload-session-test"
+    });
+  });
+
+  it("cancels the durable session after the caller aborts an in-flight transfer", async () => {
+    vi.mocked(sealUploadManifest).mockResolvedValue({
+      session: uploadSession("manifest_sealed", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      sample: [],
+      nextCursor: null
+    });
+    vi.mocked(getUploadSession).mockResolvedValue({
+      session: uploadSession("uploading", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      entries: {
+        items: [uploadEntry("upload-entry-aborted", "handbook/aborted.md")],
+        nextCursor: null
+      }
+    });
+    let resolveFirstTransfer!: (value: { messageKey: string }) => void;
+    const firstTransfer = new Promise<{ messageKey: string }>((resolve) => {
+      resolveFirstTransfer = resolve;
+    });
+    vi.mocked(uploadSessionContent)
+      .mockImplementationOnce(async () => firstTransfer)
+      .mockResolvedValue({ messageKey: "errors.uploadFailed" });
+    const controller = new AbortController();
+
+    const resultPromise = runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Aborted", "handbook/aborted.md")],
+      onProgress: vi.fn(),
+      signal: controller.signal
+    } as Parameters<typeof runUploadSession>[0]);
+    await vi.waitFor(() => expect(uploadSessionContent).toHaveBeenCalledTimes(1));
+    controller.abort();
+    resolveFirstTransfer({ messageKey: "errors.uploadFailed" });
+
+    await expect(resultPromise).resolves.toEqual({
+      ok: false,
+      failure: { messageKey: "errors.uploadCancelled" },
+      sessionId: null
+    });
+    expect(uploadSessionContent).toHaveBeenCalledTimes(1);
+    expect(cancelUploadSession).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      sessionId: "upload-session-test"
+    });
+  });
+
+  it("retains the session identity when automatic cleanup fails", async () => {
+    vi.mocked(addUploadManifestEntries).mockRejectedValueOnce(new Error("network unavailable"));
+    vi.mocked(cancelUploadSession).mockResolvedValueOnce({
+      messageKey: "errors.uploadSessionUnavailable"
+    });
+
+    await expect(runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Interrupted", "handbook/interrupted.md")],
+      onProgress: vi.fn()
+    })).resolves.toEqual({
+      ok: false,
+      failure: { messageKey: "errors.uploadCleanupFailed" },
       sessionId: "upload-session-test"
     });
   });
@@ -314,6 +420,7 @@ function uploadSession(
   const now = "2026-07-10T00:00:00.000Z";
   return {
     id: "upload-session-test",
+    operationId: "upload-operation-test",
     knowledgeBaseId: "kb-docs",
     state,
     declaredFileCount: counts.selected ?? 2,

@@ -3,23 +3,21 @@ import {
   RuntimeSettingsValidationError,
   serializePublicModel,
   type RuntimeGraphSettings,
+  type RuntimeGeneratedSettings,
   type RuntimeMaintenanceSettings,
   type RuntimeModelConfigDraft,
-  type RuntimePublicationSettings,
+  type RuntimeModelConfigUpdate,
   type RuntimeRateLimitSettings,
+  type RuntimeSemanticSettings,
+  type RuntimeSearchSettings,
   type RuntimeSettingsSnapshot
 } from "../runtime-settings/types.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
-import type { ObjectProtectionRepository } from "../application/ports/object-protection-repository.js";
 
 export function registerAdminRuntimeSettingsRoutes(
   app: Hono,
   services: {
     runtimeSettings: RuntimeSettingsService | null;
-    storageReconciliation: StorageReconciliationRepository | null;
-    objectProtection: ObjectProtectionRepository | null;
-    storagePrefix: string;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
@@ -33,17 +31,13 @@ export function registerAdminRuntimeSettingsRoutes(
       return service;
     }
 
-    const [snapshot, models, maintenanceStatus, objectProtectionStatus] = await Promise.all([
+    const [snapshot, models] = await Promise.all([
       service.getPublicSnapshot(),
-      service.listModels(),
-      services.storageReconciliation?.getStatus(`${services.storagePrefix}/generated/`) ?? null,
-      services.objectProtection?.getStatus() ?? null
+      service.listModels()
     ]);
     return context.json({
       settings: snapshot,
-      models,
-      maintenanceStatus,
-      objectProtectionStatus
+      models
     });
   });
 
@@ -65,25 +59,48 @@ export function registerAdminRuntimeSettingsRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) =>
-      writeSettingsResponse(context, async (service, body) =>
-        service.updateWorker({
-          value: body as RuntimeSettingsSnapshot["worker"],
+      writeSettingsResponse(context, async (service, body) => {
+        assertExactFields(body, [
+          "sourceFileConcurrency",
+          "jobMaxAttempts",
+          "jobRetryDelayMs",
+          "completedJobRetentionDays"
+        ]);
+        const snapshot = await service.getSnapshot();
+        const publicWorker = body as RuntimeSettingsSnapshot["worker"];
+        return service.updateWorker({
+          value: {
+            ...snapshot.worker,
+            ...publicWorker,
+            sourceObjectReadConcurrency: publicWorker.sourceFileConcurrency,
+            claimBatchSize: Math.max(
+              snapshot.worker.claimBatchSize,
+              publicWorker.sourceFileConcurrency
+            )
+          },
           actor: "admin"
-        })
-      )
+        });
+      })
   );
 
   app.put(
-    "/admin/api/settings/publication",
+    "/admin/api/settings/generated",
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) =>
-      writeSettingsResponse(context, async (service, body) =>
-        service.updatePublication({
-          value: body as RuntimePublicationSettings,
+      writeSettingsResponse(context, async (service, body) => {
+        assertExactFields(body, [
+          "directoryIndexMaxEntries",
+          "directoryIndexMaxBytes",
+          "rootSummaryLimit",
+          "okfLogMaxEntries",
+          "okfLogMaxBytes"
+        ]);
+        return service.updateGenerated({
+          value: body as RuntimeGeneratedSettings,
           actor: "admin"
-        })
-      )
+        });
+      })
   );
 
   app.put(
@@ -104,9 +121,47 @@ export function registerAdminRuntimeSettingsRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) =>
-      writeSettingsResponse(context, async (service, body) =>
-        service.updateMaintenance({
+      writeSettingsResponse(context, async (service, body) => {
+        assertExactFields(body, [
+          "reconciliationEnabled",
+          "scanBatchSize",
+          "maxAttempts",
+          "retryDelayMs",
+          "hardDeleteConcurrency",
+          "hardDeleteDatabaseBatchSize",
+          "hardDeleteObjectBatchSize",
+          "hardDeleteMaxAttempts",
+          "hardDeleteRetryDelayMs",
+          "hardDeleteFailedRetentionDays"
+        ]);
+        return service.updateMaintenance({
           value: body as RuntimeMaintenanceSettings,
+          actor: "admin"
+        });
+      })
+  );
+
+  app.put(
+    "/admin/api/settings/search",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) =>
+      writeSettingsResponse(context, async (service, body) =>
+        service.updateSearch({
+          value: body as RuntimeSearchSettings,
+          actor: "admin"
+        })
+      )
+  );
+
+  app.put(
+    "/admin/api/settings/semantic",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) =>
+      writeSettingsResponse(context, async (service, body) =>
+        service.updateSemantic({
+          value: body as RuntimeSemanticSettings,
           actor: "admin"
         })
       )
@@ -129,6 +184,28 @@ export function registerAdminRuntimeSettingsRoutes(
           actor: "admin"
         });
         return context.json({ model }, 201);
+      } catch (error) {
+        return writeSettingsError(context, error);
+      }
+    }
+  );
+
+  app.put(
+    "/admin/api/settings/models/:modelId",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
+      const service = requireRuntimeSettings(context, services.runtimeSettings);
+      if (service instanceof Response) return service;
+      try {
+        const model = await service.updateModel({
+          id: context.req.param("modelId"),
+          value: (await readJsonBody(context.req.raw)) as RuntimeModelConfigUpdate,
+          actor: "admin"
+        });
+        return model
+          ? context.json({ model })
+          : context.json({ error: { code: "NOT_FOUND" } }, 404);
       } catch (error) {
         return writeSettingsError(context, error);
       }
@@ -213,20 +290,29 @@ export function registerAdminRuntimeSettingsRoutes(
     }
 
     try {
-      const snapshot = await apply(service, await readJsonBody(context.req.raw));
-      return context.json({
-        settings: {
-          rateLimits: snapshot.rateLimits,
-          worker: snapshot.worker,
-          publication: snapshot.publication,
-          graph: snapshot.graph,
-          maintenance: snapshot.maintenance,
-          activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
-        }
-      });
+      await apply(service, await readJsonBody(context.req.raw));
+      const publicSnapshot = await service.getPublicSnapshot();
+      return context.json({ settings: publicSnapshot });
     } catch (error) {
       return writeSettingsError(context, error);
     }
+  }
+}
+
+function assertExactFields(input: unknown, allowedFields: readonly string[]): void {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new RuntimeSettingsValidationError([{
+      field: "settings",
+      message: "settings must be an object"
+    }]);
+  }
+  const allowed = new Set(allowedFields);
+  const removed = Object.keys(input).filter((field) => !allowed.has(field));
+  if (removed.length > 0) {
+    throw new RuntimeSettingsValidationError(removed.map((field) => ({
+      field,
+      message: `${field} is not a supported runtime setting`
+    })));
   }
 }
 

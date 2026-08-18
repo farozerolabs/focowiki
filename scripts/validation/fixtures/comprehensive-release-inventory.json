@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "categories": [
+    "developerOpenApi",
+    "adminApi",
+    "adminUi",
+    "configuration",
+    "postgres",
+    "redis",
+    "s3",
+    "opensearch",
+    "meilisearch",
+    "vector",
+    "workers",
+    "generated",
+    "docker",
+    "docs"
+  ],
+  "counts": {
+    "developerOpenApi": 7249,
+    "adminApi": 519,
+    "adminUi": 892,
+    "configuration": 1719,
+    "postgres": 2294,
+    "redis": 17,
+    "s3": 66,
+    "opensearch": 569,
+    "meilisearch": 566,
+    "vector": 1397,
+    "workers": 1253,
+    "generated": 2887,
+    "docker": 167,
+    "docs": 122
+  },
+  "categoryFingerprints": {
+    "developerOpenApi": "7545b0b94de47c28d569dab344bed8001e7ac6273f8c66fbf70962fa1fa7658b",
+    "adminApi": "787f33fe5a87b0ba108426641db22866c648a549ca3f511d1ceaa362f83f5bbf",
+    "adminUi": "312226fc905b43ed746ac8fd2a5dd6d13f9e183143b57c28162617755a78fde0",
+    "configuration": "ca6250a7b57bbad6e51a73d4aa9e8f1eed13235213d04cb4afd5afa079e9bae5",
+    "postgres": "1086117be0cc7ba1c694621d02fb8e60ff62d33359ced70a1aac9d420661ab60",
+    "redis": "1fe872ff1713cfa61da610bb239b7d8408abe73ec862477214ad45f5ad6ff460",
+    "s3": "464b40e34409bd470911a1fc83be2d7f0c5a4197b14101e6ed74e04b34a72bf3",
+    "opensearch": "e46cd8d14e570e613557e8b6f9e93967a654d2cb2bb3067e45c723f94bc5547f",
+    "meilisearch": "2b2dac7108dc3bf25ee30a2f5296fa422434275730ed3cc7b1fa58d650019257",
+    "vector": "cd6788020aa4e92399bc6ca598d0266366e2ec0270b3ab4b582ce27fdc1bde0b",
+    "workers": "897db424050e855a8e88c12b6d9fc6164d958abde5d10cb7d45f96ac5f81f8fc",
+    "generated": "0549bfd4ca0ea10782a7cbc1d3068b47c3ed297dcca1c53fb47ad049275158c9",
+    "docker": "40b474bc90ae35f238983004743475cbf3fe4ebe942a685eb5deb92d9b59f94c",
+    "docs": "42effd21e9bb56b9dcebad607f73604ad12e0a3d7d5cb14243fb83893a7e78e6"
+  },
+  "inventoryFingerprint": "63be5727c83707e56fda79cca84c474540721d1b1d5361f5c7881cc0f8be0216"
+}

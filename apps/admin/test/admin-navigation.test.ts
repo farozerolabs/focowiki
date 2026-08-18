@@ -25,6 +25,20 @@ describe("admin navigation", () => {
     expect(readAdminView()).toEqual({ type: "home" });
   });
 
+  it("round-trips the OpenAPI key view through the URL", () => {
+    navigateAdminView({ type: "openapi-keys" });
+
+    expect(window.location.search).toBe("?view=openapi-keys");
+    expect(readAdminView()).toEqual({ type: "openapi-keys" });
+  });
+
+  it("round-trips the model settings view through the URL", () => {
+    navigateAdminView({ type: "model-settings" });
+
+    expect(window.location.search).toBe("?view=model-settings");
+    expect(readAdminView()).toEqual({ type: "model-settings" });
+  });
+
   it("treats incomplete knowledge base routes as home", () => {
     window.history.replaceState(null, "", "/?view=knowledge-base");
 

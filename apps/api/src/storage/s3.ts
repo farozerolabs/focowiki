@@ -11,6 +11,7 @@ import {
   S3Client,
   type S3ClientConfig
 } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { Readable } from "node:stream";
 import type { RuntimeConfig } from "../config.js";
 import {
@@ -104,6 +105,13 @@ type S3StorageOptions = {
   keyspace: StorageKeyspace;
 };
 
+export const S3_HTTP_TIMEOUTS = {
+  connectionTimeout: 10_000,
+  requestTimeout: 60_000,
+  socketTimeout: 60_000,
+  throwOnRequestTimeout: true
+} as const;
+
 export function createS3ClientConfig(
   storage: RuntimeConfig["storage"]
 ): S3ClientConfig {
@@ -114,7 +122,8 @@ export function createS3ClientConfig(
       accessKeyId: storage.accessKeyId,
       secretAccessKey: storage.secretAccessKey
     },
-    forcePathStyle: storage.forcePathStyle
+    forcePathStyle: storage.forcePathStyle,
+    requestHandler: new NodeHttpHandler(S3_HTTP_TIMEOUTS)
   };
 }
 
@@ -285,52 +294,59 @@ export class S3StorageAdapter implements StorageAdapter {
   }
 
   public async deleteObjectVersions(keys: string[]): Promise<void> {
-    for (const key of uniqueKeys(keys)) {
-      let keyMarker: string | undefined;
-      let versionIdMarker: string | undefined;
+    const unique = uniqueKeys(keys);
+    try {
+      for (const key of unique) {
+        let keyMarker: string | undefined;
+        let versionIdMarker: string | undefined;
 
-      do {
-        const listed = await this.client.send(
-          new ListObjectVersionsCommand({
-            Bucket: this.bucket,
-            Prefix: key,
-            KeyMarker: keyMarker,
-            VersionIdMarker: versionIdMarker
-          })
-        );
-        const versionedObjects = [
-          ...(listed.Versions ?? []),
-          ...(listed.DeleteMarkers ?? [])
-        ]
-          .filter((version) => version.Key === key && version.VersionId)
-          .map((version) => ({
-            Key: key,
-            VersionId: version.VersionId
-          }));
-
-        for (const chunk of chunkArray(versionedObjects, 1_000)) {
-          if (chunk.length === 0) {
-            continue;
-          }
-
-          await this.client.send(
-            new DeleteObjectsCommand({
+        do {
+          const listed = await this.client.send(
+            new ListObjectVersionsCommand({
               Bucket: this.bucket,
-              Delete: {
-                Objects: chunk,
-                Quiet: true
-              }
+              Prefix: key,
+              KeyMarker: keyMarker,
+              VersionIdMarker: versionIdMarker
             })
           );
-        }
+          const versionedObjects = [
+            ...(listed.Versions ?? []),
+            ...(listed.DeleteMarkers ?? [])
+          ]
+            .filter((version) => version.Key === key && version.VersionId)
+            .map((version) => ({
+              Key: key,
+              VersionId: version.VersionId
+            }));
 
-        keyMarker = listed.NextKeyMarker;
-        versionIdMarker = listed.NextVersionIdMarker;
-      } while (keyMarker);
+          for (const chunk of chunkArray(versionedObjects, 1_000)) {
+            if (chunk.length === 0) {
+              continue;
+            }
+
+            await this.client.send(
+              new DeleteObjectsCommand({
+                Bucket: this.bucket,
+                Delete: {
+                  Objects: chunk,
+                  Quiet: true
+                }
+              })
+            );
+          }
+
+          keyMarker = listed.NextKeyMarker;
+          versionIdMarker = listed.NextVersionIdMarker;
+        } while (keyMarker);
+      }
+    } catch (error) {
+      if (!isS3VersionListingUnsupported(error)) throw error;
+      await this.deleteObjects(unique);
     }
   }
 
   public async purgePrefix(prefix: string): Promise<{ deleted: number; remaining: number }> {
+    assertListingPrefix(this.keyspace.prefix, prefix);
     let deleted = 0;
     try {
       let keyMarker: string | undefined;
@@ -365,7 +381,7 @@ export class S3StorageAdapter implements StorageAdapter {
         versionIdMarker = listed.IsTruncated ? listed.NextVersionIdMarker : undefined;
       } while (keyMarker);
     } catch (error) {
-      if (!isVersionListingUnsupported(error)) {
+      if (!isS3VersionListingUnsupported(error)) {
         throw error;
       }
     }
@@ -401,6 +417,7 @@ export class S3StorageAdapter implements StorageAdapter {
   }
 
   public async countPrefix(prefix: string): Promise<number> {
+    assertListingPrefix(this.keyspace.prefix, prefix);
     const verification = await this.client.send(
       new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, MaxKeys: 1 })
     );
@@ -412,7 +429,7 @@ export class S3StorageAdapter implements StorageAdapter {
         (versionVerification.Versions?.length ?? 0) +
         (versionVerification.DeleteMarkers?.length ?? 0);
     } catch (error) {
-      if (!isVersionListingUnsupported(error)) {
+      if (!isS3VersionListingUnsupported(error)) {
         throw error;
       }
       return verification.Contents?.length ?? 0;
@@ -522,7 +539,7 @@ function assertListingPrefix(configuredPrefix: string, requestedPrefix: string):
   }
 }
 
-function isVersionListingUnsupported(error: unknown): boolean {
+export function isS3VersionListingUnsupported(error: unknown): boolean {
   if (!error || typeof error !== "object") {
     return false;
   }
@@ -532,9 +549,14 @@ function isVersionListingUnsupported(error: unknown): boolean {
     Code?: unknown;
     $metadata?: { httpStatusCode?: unknown };
   };
-  return candidate.name === "NotImplemented"
-    || candidate.Code === "NotImplemented"
-    || candidate.$metadata?.httpStatusCode === 501;
+  return ["NotImplemented", "MethodNotAllowed", "UnsupportedOperation"].includes(
+    String(candidate.name ?? "")
+  )
+    || ["NotImplemented", "MethodNotAllowed", "UnsupportedOperation"].includes(
+      String(candidate.Code ?? "")
+    )
+    || candidate.$metadata?.httpStatusCode === 501
+    || candidate.$metadata?.httpStatusCode === 405;
 }
 
 function uniqueKeys(keys: string[]): string[] {

@@ -25,4 +25,13 @@ describe("upload selection path policy", () => {
 
     expect(invalidSelectedUploadPaths([file])).toEqual([]);
   });
+
+  it("accepts index-map source names because only generated navigation names are reserved", () => {
+    const file = setFileRelativePath(
+      new File(["# Source"], "index-map-000001.md", { type: "text/markdown" }),
+      "handbook/index-map-000001.md"
+    );
+
+    expect(invalidSelectedUploadPaths([file])).toEqual([]);
+  });
 });

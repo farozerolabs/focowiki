@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  LANGUAGE_PREFERENCE_KEY,
+  persistLanguagePreference,
+  resolveInitialLocale
+} from "../src/i18n/preference";
 import { DEFAULT_LOCALE, resources, resolveLocale } from "../src/i18n/resources";
 
 describe("admin i18n resources", () => {
@@ -28,6 +33,29 @@ describe("admin i18n resources", () => {
     expect(resolveLocale("zh")).toBe("zh-CN");
     expect(resolveLocale("fr-FR")).toBe(DEFAULT_LOCALE);
     expect(resolveLocale(undefined)).toBe(DEFAULT_LOCALE);
+  });
+
+  it("prefers and persists an explicit language selection", () => {
+    const values = new Map<string, string>([[LANGUAGE_PREFERENCE_KEY, "en-US"]]);
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value)
+    };
+
+    expect(resolveInitialLocale("zh-CN", storage)).toBe("en-US");
+
+    persistLanguagePreference("zh-CN", storage);
+    expect(values.get(LANGUAGE_PREFERENCE_KEY)).toBe("zh-CN");
+    expect(resolveInitialLocale("en-US", storage)).toBe("zh-CN");
+  });
+
+  it("ignores an invalid persisted language", () => {
+    const storage = {
+      getItem: () => "invalid-locale",
+      setItem: () => undefined
+    };
+
+    expect(resolveInitialLocale("zh-CN", storage)).toBe("zh-CN");
   });
 });
 

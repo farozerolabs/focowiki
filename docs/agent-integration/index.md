@@ -22,7 +22,7 @@ flowchart LR
   Tools --> Backend["Developer backend"]
   Endpoint --> Backend
   Backend --> OpenAPI["Focowiki Developer OpenAPI"]
-  OpenAPI --> Bundle["Generated knowledge-base bundle"]
+  OpenAPI --> Knowledge["Current readable knowledge base"]
 ```
 
 The backend is the control point. It stores the Developer OpenAPI base URL and key, maps product users to allowed knowledge bases, and decides which read operations are available to the Agent.
@@ -37,11 +37,11 @@ The backend usually calls these Focowiki interfaces:
 | --- | --- |
 | Resolve available knowledge bases | `listKnowledgeBases` |
 | Create and maintain knowledge bases | `createKnowledgeBase`, `updateKnowledgeBase`, `deleteKnowledgeBase` |
-| Upload Markdown files and folders | `createUploadSession`, `addUploadManifestEntries`, `sealUploadManifest`, `uploadSessionContentBatch`, `getUploadSession`, `finalizeUploadSession` |
-| Observe source-file processing | `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `listKnowledgeBaseSourceFileEvents`, `retryKnowledgeBaseSourceFile` |
+| Upload Markdown files and folders | `createUploadSession`, `addUploadManifestEntries`, `sealUploadManifest`, `uploadSessionEntryContent`, `getUploadSession`, `finalizeUploadSession` |
+| Observe source-file processing | `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `retryKnowledgeBaseSourceFile` |
 | Maintain source files and directories | `moveSourceFile`, `replaceSourceFileContent`, `deleteSourceFile`, `listSourceDirectories`, `moveSourceDirectory`, `deleteSourceDirectory` |
 | Observe asynchronous changes | `listResourceOperations`, `getResourceOperation` |
-| Read the generated file tree | `listKnowledgeBaseTree` |
+| Read the current file tree | `listKnowledgeBaseTree` |
 | Read file metadata | `getFileById` |
 | Read file content by stable identifier | `getFileContentById` |
 | Read file content by logical path | `getFileContentByPath` |
@@ -56,12 +56,12 @@ A minimal Agent-facing backend can expose these operations. In an own Agent clie
 
 | Agent-facing operation | Purpose |
 | --- | --- |
-| `list_tree` | Return paginated generated file entries for one selected knowledge base. |
+| `list_tree` | Return paginated current file and directory entries for one selected knowledge base. |
 | `read_file` | Return Markdown content by `fileId` or logical `path`. |
 | `get_file` | Return safe metadata for a file. |
-| `search_files` | Optional candidate lookup for Agent-generated search phrases, backed by `searchGeneratedFiles` or your own read layer. |
-| `read_related` | Optional shortcut for related files. Agents can also follow the `graphRef` returned with a generated page. |
-| `expand_graph` | Optional relationship exploration from a file or query, backed by Developer OpenAPI graph expansion. |
+| `search_files` | Primary candidate discovery for a complete standalone question, backed by `searchGeneratedFiles` or an equivalent read layer. |
+| `read_related` | Optional shortcut for related files. Agents can also follow the returned `graphRef`. |
+| `expand_graph` | Optional relationship exploration from a returned `fileId`, backed by Developer OpenAPI graph expansion. |
 
 Keep this interface small. Agents work better when they can discover a file tree, read one file, follow links, and repeat the loop.
 
@@ -70,20 +70,22 @@ Keep this interface small. Agents work better when they can discover a file tree
 | Mode | Interface example |
 | --- | --- |
 | Own Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "limit=50"`, `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"` |
-| Third-party Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`, `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>"` |
+| Third-party Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`, `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<complete standalone user question>"` |
 
 ## Exploration Flow
 
-Agent reads should run as a small loop with broad discovery, deep file reading, lead extraction, and evidence checks before answering.
+Uploads use resumable sessions only for transport. After finalization, every accepted Markdown document is indexed independently and can become readable without waiting for sibling documents. A source file is ready for Agent reads when `state` is `available` and `generatedOutputStatus` is `current_available`. A replacement failure can retain `previous_available` content.
 
-1. Start with `index.md`, then read `schema.md` when file conventions or metadata are unclear.
-2. Inspect the file tree and `_index/*` when generated index, link, manifest, or directory hints can narrow the next read.
-3. Discover candidate files through search, tree entries, graph expansion, graph files, related files, or Markdown links.
-4. Read useful candidates by `fileId` or logical `path`.
-5. Extract new phrases, paths, links, titles, headings, metadata terms, graph relations, and remaining gaps from the files read.
-6. Repeat breadth and depth while new leads can add useful evidence.
-7. Track visited `fileId` and `path` values.
-8. Stop after the collected evidence covers the user's scope, no new relevant candidates remain for the remaining gap, or additional rounds repeat already-visited files.
+Agent reads use one bounded source-first loop:
+
+1. Send the complete standalone user question as one initial search and use default `hybrid` retrieval unless the task explicitly needs `file` or `graph` mode.
+2. Treat every search item as a discovery candidate. Follow its returned `readActions` and read the useful source-backed Markdown under `pages/**`.
+3. Preserve `activeContentRevision`, `fileId`, `path`, and `nextCursor`. Reuse a cursor only with the same query, filters, and readable content revision.
+4. Track visited `fileId` and `path` values and never read the same source twice in one loop.
+5. If source evidence remains incomplete, optionally use `listRelatedFiles` or call `expandGraph` with a returned `fileId`. Run at most two follow-up searches derived from terms, paths, links, headings, or gaps found in source Markdown already read.
+6. Use `index.md` and the tree when the first search is empty or scope remains unclear. For a static exported bundle, `_index/**` is bounded discovery data and `_graph/**` describes file relationships; neither replaces the source Markdown.
+7. Stop when source files cover the user's scope, no new relevant source remains, or the two follow-up rounds are complete.
+8. Build the answer only from source-backed Markdown reads. Search snippets, navigation indexes, relationship records, and reranker output are discovery aids, not answer evidence.
 
 This keeps requests predictable while reducing shallow answers from one-file reads.
 

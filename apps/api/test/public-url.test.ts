@@ -7,14 +7,14 @@ describe("public URL builder", () => {
       "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md"
     );
     expect(
-      buildPublicFileUrl("https://kb.example.com/base", "kb-001", "_index/search.json")
+      buildPublicFileUrl("https://kb.example.com/base", "kb-001", "_index/catalog.json")
     ).toBe(
-      "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json"
+      "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fcatalog.json"
     );
     expect(
-      buildPublicFileUrl("https://kb.example.com/base", "kb-001", "_index/search/000001.jsonl")
+      buildPublicFileUrl("https://kb.example.com/base", "kb-001", "_index/pages/all-documents-part-0001.json")
     ).toBe(
-      "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch%2F000001.jsonl"
+      "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fpages%2Fall-documents-part-0001.json"
     );
   });
 

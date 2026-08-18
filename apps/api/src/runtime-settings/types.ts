@@ -1,65 +1,95 @@
-import type {
-  PublicationMode,
-  RateLimitConfig,
-  RuntimeConfig,
-  RuntimeSecurityConfig,
-  WorkerRuntimeConfig
-} from "../config.js";
+import type { RateLimitConfig, RuntimeSecurityConfig } from "../config.js";
 
-export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "graph" | "maintenance";
+export type RuntimeSettingKey =
+  | "rate_limits"
+  | "worker"
+  | "generated"
+  | "graph"
+  | "maintenance"
+  | "semantic"
+  | "search";
 export type ModelConfigStatus = "active" | "paused" | "deleted";
 export type ModelApiMode = "responses" | "chat_completions";
 
 export type RuntimeRateLimitSettings = RuntimeSecurityConfig["rateLimits"];
-export type RuntimeWorkerSettings = Required<WorkerRuntimeConfig> & {
-  sourceObjectReadConcurrency: number;
-  graphQueryConcurrency: number;
-  databaseMutationConcurrency: number;
+export type RuntimeWorkerPublicSettings = {
+  sourceFileConcurrency: number;
+  jobMaxAttempts: number;
+  jobRetryDelayMs: number;
+  completedJobRetentionDays: number;
 };
 
-export type RuntimePublicationSettings = Required<RuntimeConfig["publication"]> & {
+export type RuntimeWorkerSettings = RuntimeWorkerPublicSettings & {
+  sourceObjectReadConcurrency: number;
+  claimBatchSize: number;
+  pollIntervalMs: number;
+  lockTtlSeconds: number;
+  heartbeatIntervalMs: number;
+};
+
+export type RuntimeGeneratedSettings = {
   directoryIndexMaxEntries: number;
   directoryIndexMaxBytes: number;
+  rootSummaryLimit: number;
   okfLogMaxEntries: number;
   okfLogMaxBytes: number;
-  generationAssemblyConcurrency: number;
-  projectionPartitionConcurrency: number;
-  generatedObjectWriteConcurrency: number;
-  directoryMaterializationConcurrency: number;
 };
-export type RuntimeGraphSettings = Required<NonNullable<RuntimeConfig["graph"]>>;
-export type KnowledgeBaseMaintenanceMode = "manual" | "automatic";
+export type RuntimeGraphSettings = {
+  candidateLimit: number;
+  acceptedEdgeLimit: number;
+  searchDefaultDepth: 0 | 1 | 2;
+  searchMaxDepth: 0 | 1 | 2;
+  searchDefaultFanout: number;
+  searchMaxFanout: number;
+  shardSize: number;
+  genericPhraseThreshold: number;
+};
 export type RuntimeMaintenanceSettings = {
   reconciliationEnabled: boolean;
-  knowledgeBaseMaintenanceMode: KnowledgeBaseMaintenanceMode;
-  knowledgeBaseMaintenanceScanIntervalSeconds: number;
-  knowledgeBaseMaintenanceConcurrency: number;
-  scanIntervalSeconds: number;
   scanBatchSize: number;
-  deletionBatchSize: number;
-  quarantineGracePeriodSeconds: number;
-  confirmationPasses: number;
   maxAttempts: number;
   retryDelayMs: number;
-  migrationBackfillConcurrency: number;
-  compactionConcurrency: number;
-  projectionRepairConcurrency: number;
-  projectionRepairDatabaseBatchSize: number;
-  projectionRepairObjectWriteConcurrency: number;
-  lexicalRebuildConcurrency: number;
-  lexicalRebuildSourceReadConcurrency: number;
-  lexicalRebuildDatabaseWriteConcurrency: number;
-  lexicalRebuildClaimBatchSize: number;
-  lexicalRebuildDatabaseBatchSize: number;
-  lexicalRebuildMaxInFlightSourceBytes: number;
+  hardDeleteConcurrency: number;
+  hardDeleteDatabaseBatchSize: number;
+  hardDeleteObjectBatchSize: number;
+  hardDeleteMaxAttempts: number;
+  hardDeleteRetryDelayMs: number;
+  hardDeleteFailedRetentionDays: number;
+};
+
+export type RuntimeSearchSettings = {
+  requestTimeoutMs: number;
+  engineSearchCutoffMs: number;
+  overfetchFactor: number;
+  indexBatchDocumentCount: number;
+  indexBatchCompressedBytes: number;
+  maxInFlightTasks: number;
+  taskPollIntervalMs: number;
+  taskTimeoutMs: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  cleanupBatchSize: number;
+  cropLength: number;
+};
+
+export type RuntimeSemanticSettings = {
+  maximumChunkCharacters: number;
+  maximumChunks: number;
+  maximumEvidenceTargets: number;
+  graphRagAdapterTimeoutMs: number;
+  searchLaneCutoffMs: number;
+  queryEmbeddingConcurrency: number;
+  queryEmbeddingCacheEntries: number;
 };
 
 export type RuntimeSettingsSnapshot = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
-  publication: RuntimePublicationSettings;
+  generated: RuntimeGeneratedSettings;
   graph: RuntimeGraphSettings;
   maintenance: RuntimeMaintenanceSettings;
+  semantic: RuntimeSemanticSettings;
+  search: RuntimeSearchSettings;
   activeModel: RuntimeModelConfigPrivate | null;
 };
 
@@ -94,6 +124,7 @@ export type RuntimeModelConfigPublic = {
 
 export type RuntimeModelConfigPrivate = RuntimeModelConfigPublic & {
   apiKey: string;
+  configurationRevision?: number;
 };
 
 export type RuntimeModelConfigDraft = {
@@ -131,9 +162,11 @@ export type RuntimeModelConfigUpdate = Partial<
 export type RuntimeSettingsDefaults = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
-  publication: RuntimePublicationSettings;
+  generated: RuntimeGeneratedSettings;
   graph: RuntimeGraphSettings;
   maintenance: RuntimeMaintenanceSettings;
+  semantic: RuntimeSemanticSettings;
+  search: RuntimeSearchSettings;
   model: RuntimeModelConfigDraft | null;
 };
 
@@ -179,10 +212,6 @@ export function serializePublicModel(
 
 export function modelApiModeValues(): ModelApiMode[] {
   return ["responses", "chat_completions"];
-}
-
-export function publicationModeValues(): PublicationMode[] {
-  return ["batch", "manual", "per_file"];
 }
 
 export function rateLimitKeys(): Array<keyof RuntimeRateLimitSettings> {

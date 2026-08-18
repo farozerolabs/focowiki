@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { CursorPage } from "../db/admin-repositories.js";
+import type { CursorPage } from "../runtime/bounded.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 
 const RAW_KEY_PREFIX = "fwok_";
@@ -25,7 +25,6 @@ export type PublicOpenApiKeyRecord = {
 };
 
 export type PublicOpenApiKeyRepository = {
-  countActivePublicOpenApiKeys: () => Promise<number>;
   listPublicOpenApiKeys: (request: {
     limit: number;
     cursor: string | null;
@@ -84,23 +83,12 @@ export function createPublicOpenApiKeyService(options: {
   }
 
   return {
-    async listKeysWithBootstrap(input: { limit: number; cursor: string | null }) {
-      let oneTimeKey: { id: string; rawKey: string } | null = null;
-
-      if ((await repository.countActivePublicOpenApiKeys()) === 0) {
-        const created = await createDefaultKey();
-        oneTimeKey = {
-          id: created.key.id,
-          rawKey: created.rawKey
-        };
-      }
-
+    async listKeys(input: { limit: number; cursor: string | null }) {
       const page = await repository.listPublicOpenApiKeys(input);
 
       return {
         items: page.items.map(toPublicOpenApiKeyView),
-        nextCursor: page.nextCursor,
-        oneTimeKey
+        nextCursor: page.nextCursor
       };
     },
     createKey,
@@ -142,23 +130,6 @@ export function createPublicOpenApiKeyService(options: {
       return { authorized: true as const };
     }
   };
-
-  async function createDefaultKey() {
-    const rawKey = createRawPublicOpenApiKey();
-    const record = await repository.createPublicOpenApiKey({
-      id: createPublicOpenApiKeyId(),
-      name: "Default key",
-      keyHash: hashPublicOpenApiKey(rawKey),
-      keyPrefix: rawKey.slice(0, KEY_PREFIX_LENGTH),
-      keySuffix: rawKey.slice(-KEY_SUFFIX_LENGTH),
-      createdAt: new Date().toISOString()
-    });
-
-    return {
-      key: toPublicOpenApiKeyView(record),
-      rawKey
-    };
-  }
 
   async function touchLastUsed(id: string) {
     if (redis && !(await redis.markPublicOpenApiKeyUsed(id, LAST_USED_WRITE_TTL_SECONDS))) {

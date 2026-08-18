@@ -49,6 +49,7 @@ lerna-debug.log*
 
 # Runtime generated backend secrets
 runtime-secrets/
+opensearch-security/
 
 # Local Docker Compose persisted data and backups
 data/
@@ -70,7 +71,6 @@ docs/.vitepress/dist/
 docs/.vitepress/generated/
 docs/openapi/operations/
 docs/zh-CN/openapi/operations/
-docs/public/openapi/focowiki-openapi.json
 out/
 .next/
 .nuxt/
@@ -109,3 +109,5 @@ temp/
 AGENTS.md
 .codex/
 openspec/
+# Generated documentation vendor assets
+docs/public/vendor/swagger-ui/

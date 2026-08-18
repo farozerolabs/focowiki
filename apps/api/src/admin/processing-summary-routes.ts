@@ -1,114 +1,28 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import type { AdminRepositories } from "../db/admin-repositories.js";
-import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
-import type { SourceDispatchRepository } from "../application/ports/source-dispatch-repository.js";
-import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
-import type {
-  KnowledgeBaseIndexMaintenanceRepository
-} from "../application/ports/knowledge-base-index-maintenance-repository.js";
+import type { StorageVnextAdminProcessingApplication } from "../storage-vnext/api/admin-processing-application.js";
 
 export function registerAdminProcessingSummaryRoutes(
   app: Hono,
   services: {
-    repositories: AdminRepositories | null;
-    roleJobs: RoleJobRepository | null;
-    publicationGenerations: PublicationGenerationRepository | null;
-    sourceDispatch: SourceDispatchRepository | null;
-    maintenanceProgress: MaintenanceProgressRepository | null;
-    knowledgeBaseIndexMaintenance: KnowledgeBaseIndexMaintenanceRepository | null;
+    application: StorageVnextAdminProcessingApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
   }
 ): void {
-  const {
-    repositories,
-    roleJobs,
-    publicationGenerations,
-    sourceDispatch,
-    maintenanceProgress,
-    knowledgeBaseIndexMaintenance
-  } = services;
-
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/processing-summary",
     middlewares.requireAuth,
     async (context) => {
-      if (
-        !repositories ||
-        !roleJobs ||
-        !publicationGenerations ||
-        !sourceDispatch ||
-        !maintenanceProgress
-      ) {
-        return missingRepositoryBackend(context);
-      }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
-      const now = new Date().toISOString();
-      const [
-        sourceFileJobs,
-        publicationJobs,
-        pendingDispatch,
-        publicationProgress,
-        maintenanceProgressSummary,
-        indexMaintenance
-      ] = await Promise.all([
-        roleJobs.getQueueSummary({
-          role: "source",
-          knowledgeBaseId: knowledgeBase.id,
-          now
-        }),
-        roleJobs.getQueueSummary({
-          role: "publication",
-          knowledgeBaseId: knowledgeBase.id,
-          now
-        }),
-        sourceDispatch.getSummary({ knowledgeBaseId: knowledgeBase.id }),
-        publicationGenerations.getProgressSummary({ knowledgeBaseId: knowledgeBase.id }),
-        maintenanceProgress.getSummary({ knowledgeBaseId: knowledgeBase.id }),
-        knowledgeBaseIndexMaintenance?.getSummary({ knowledgeBaseId: knowledgeBase.id })
-          ?? Promise.resolve({
-            requestId: null,
-            state: "idle" as const,
-            trigger: null,
-            stage: null,
-            active: false,
-            completedCount: 0,
-            expectedCount: 0,
-            retryCount: 0,
-            lastProgressAt: null,
-            lastCompletedAt: null,
-            maintenanceRequired: false,
-            safeErrorCode: null,
-            safeErrorMessage: null
-          })
-      ]);
-
-      return context.json({
-        activeGenerationId: knowledgeBase.activeGenerationId,
-        pendingDispatch,
-        sourceFileJobs,
-        publicationJobs,
-        publicationProgress,
-        maintenanceProgress: maintenanceProgressSummary,
-        indexMaintenance,
-        dirtySourceFiles: {
-          count: Math.max(
-            0,
-            publicationProgress.totalImpactCount - publicationProgress.processedImpactCount
-          ),
-          oldestDirtyAt: publicationProgress.oldestDirtyAt
-        }
+      const result = await services.application.getProcessingSummary({
+        knowledgeBaseId: context.req.param("knowledgeBaseId")
       });
+      if (!result.ok) {
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
+      }
+      return context.json(result.value);
     }
   );
 }

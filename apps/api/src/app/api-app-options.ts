@@ -1,37 +1,69 @@
-import type { OpenAIModelClient } from "@focowiki/okf";
-import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
-import type { KnowledgeBaseIndexMaintenanceRepository } from "../application/ports/knowledge-base-index-maintenance-repository.js";
-import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
-import type { ObjectProtectionRepository } from "../application/ports/object-protection-repository.js";
-import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
-import type { SourceDispatchRepository } from "../application/ports/source-dispatch-repository.js";
-import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
-import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
-import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
 import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RuntimeLogger } from "../logger.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageAdapter } from "../storage/s3.js";
+import type { StorageVnextAuditPort } from "../storage-vnext/audit/ports.js";
+import type { StorageVnextAdminReadApplication } from "../storage-vnext/api/admin-read-application.js";
+import type { PublicOpenApiKeyRepository } from "../public-openapi/keys.js";
+import type { StorageVnextAdminProcessingApplication } from "../storage-vnext/api/admin-processing-application.js";
+import type { StorageVnextCatalogReadPort } from "../storage-vnext/catalog/ports.js";
+import type { createStorageVnextMaintenanceRequestService } from "../storage-vnext/maintenance/maintenance-coordinator.js";
+import type { StorageVnextMaintenanceRepository } from "../storage-vnext/maintenance/ports.js";
+import type { StorageVnextAdminSourceApplication } from "../storage-vnext/api/admin-source-application.js";
+import type { StorageVnextAdminUploadApplication } from "../storage-vnext/api/admin-upload-application.js";
+import type { StorageVnextAdminMutationApplication } from "../storage-vnext/api/admin-mutation-application.js";
+import type { StorageVnextAdminCoreApplication } from "../storage-vnext/api/admin-core-application.js";
+import type { StorageVnextAdminMaintenanceApplication } from "../storage-vnext/api/admin-maintenance-application.js";
+import type { DeveloperOpenApiApplication } from "../storage-vnext/api/openapi-application.js";
+import type { EmbeddingConfigurationService } from
+  "../semantic/embedding/service.js";
+import type { RerankerConfigurationService } from
+  "../semantic/reranker/service.js";
+import type { StorageVnextSemanticAdoptionSnapshot } from
+  "../storage-vnext/maintenance/ports.js";
+import type { createStorageVnextMaintenanceCancellationCleanup } from
+  "../storage-vnext/maintenance/cancellation-cleanup.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
-  storage?: StorageAdapter;
-  modelClient?: OpenAIModelClient;
   redis?: RedisCoordinator;
-  repositories?: AdminRepositories;
   runtimeSettings?: RuntimeSettingsService;
   logger?: RuntimeLogger;
-  activeGenerationReads?: ActiveGenerationReadRepository;
-  roleJobs?: RoleJobRepository;
-  publicationGenerations?: PublicationGenerationRepository;
-  sourceDispatch?: SourceDispatchRepository;
-  sourceFileRetries?: SourceFileRetryRepository;
-  sourceFileTaskDeletions?: SourceFileTaskDeletionRepository;
-  storageReconciliation?: StorageReconciliationRepository;
-  objectProtection?: ObjectProtectionRepository;
-  maintenanceProgress?: MaintenanceProgressRepository;
-  knowledgeBaseIndexMaintenance?: KnowledgeBaseIndexMaintenanceRepository;
+  storageVnextAudit?: Pick<StorageVnextAuditPort, "append">;
+  storageVnextAdminRead?: StorageVnextAdminReadApplication;
+  storageVnextApiKeys?: PublicOpenApiKeyRepository;
+  storageVnextAdminProcessing?: StorageVnextAdminProcessingApplication;
+  storageVnextCatalog?: StorageVnextCatalogReadPort;
+  storageVnextMaintenanceRequests?: ReturnType<typeof createStorageVnextMaintenanceRequestService>;
+  storageVnextMaintenanceStatus?: Pick<
+    StorageVnextMaintenanceRepository,
+    "getStatus" | "cancel"
+  >;
+  storageVnextAdminSource?: StorageVnextAdminSourceApplication;
+  storageVnextAdminUpload?: StorageVnextAdminUploadApplication;
+  storageVnextAdminMutation?: StorageVnextAdminMutationApplication;
+  storageVnextAdminCore?: StorageVnextAdminCoreApplication;
+  storageVnextAdminMaintenance?: StorageVnextAdminMaintenanceApplication;
+  storageVnextOpenApi?: DeveloperOpenApiApplication;
+  embeddingConfigurations?: EmbeddingConfigurationService;
+  rerankerConfigurations?: RerankerConfigurationService;
+  semanticAdoption?: {
+    resolve(input: {
+      knowledgeBaseId: string;
+      settingsRevisionPublicId: string;
+    }): Promise<
+      | { available: true; snapshot: StorageVnextSemanticAdoptionSnapshot | null }
+      | { available: false; safeCode: string }
+    >;
+  };
+  semanticCancellation?: {
+    cancel(input: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+      requestedAt: string;
+    }): Promise<unknown>;
+  };
+  maintenanceCancellationCleanup?: ReturnType<
+    typeof createStorageVnextMaintenanceCancellationCleanup
+  >;
 };

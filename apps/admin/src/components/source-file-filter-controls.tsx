@@ -17,19 +17,21 @@ import { cn } from "@/lib/utils";
 import {
   fromDatetimeLocalValue,
   SOURCE_FILE_ACTION_STATES,
+  SOURCE_FILE_CURRENT_STAGES,
   SOURCE_FILE_ERROR_STATES,
   SOURCE_FILE_GENERATED_OUTPUT_STATUSES,
   SOURCE_FILE_MODEL_INVOCATION_STATUSES,
-  SOURCE_FILE_CURRENT_STAGES,
+  SOURCE_FILE_WORK_KINDS,
   SOURCE_FILE_LIFECYCLE_STATES,
   sourceFileFilterCount,
   toDatetimeLocalValue,
   type SourceFileActionState,
+  type SourceFileCurrentStage,
   type SourceFileErrorState,
   type SourceFileGeneratedOutputStatus,
   type SourceFileListFilters,
   type SourceFileModelInvocationStatus,
-  type SourceFileCurrentStage,
+  type SourceFileWorkKind,
   type SourceFileLifecycleState
 } from "@/lib/source-file-list-filters";
 
@@ -146,9 +148,14 @@ export function SourceFileStageFilterHeader({
       value={filters.currentStage}
       options={SOURCE_FILE_CURRENT_STAGES.map((stage) => ({
         value: stage,
-        label: t(`tasks.phase.${toCamelCase(stage)}`)
+        label: isSourceFileWorkKind(stage)
+          ? t(`tasks.workKind.${toCamelCase(stage)}`)
+          : t(`tasks.fileStatus.${stage}`)
       }))}
-      onChange={(currentStage) => onFiltersChange({ ...filters, currentStage })}
+      onChange={(currentStage) => onFiltersChange({
+        ...filters,
+        currentStage
+      })}
     />
   );
 }
@@ -244,8 +251,9 @@ export function SourceFileErrorFilterHeader({
         value: state,
         label: t(`tasks.filters.errorState.${state}`)
       }))}
-      onTextChange={(errorCodeQuery) => onFiltersChange({ ...filters, errorCodeQuery })}
-      onEnumChange={(errorState) => onFiltersChange({ ...filters, errorState })}
+      onChange={({ textValue: errorCodeQuery, enumValue: errorState }) =>
+        onFiltersChange({ ...filters, errorCodeQuery, errorState })
+      }
     />
   );
 }
@@ -296,15 +304,13 @@ function TextAndEnumFilterHeader<T extends string>({
   textValue,
   enumValue,
   options,
-  onTextChange,
-  onEnumChange
+  onChange
 }: {
   label: string;
   textValue: string;
   enumValue: T | null;
   options: Array<{ value: T; label: string }>;
-  onTextChange: (value: string) => void;
-  onEnumChange: (value: T | null) => void;
+  onChange: (value: { textValue: string; enumValue: T | null }) => void;
 }) {
   const { t } = useTranslation();
 
@@ -315,14 +321,20 @@ function TextAndEnumFilterHeader<T extends string>({
         <Input
           aria-label={t("tasks.filters.errorCode")}
           value={textValue}
-          onChange={(event) => onTextChange(event.target.value)}
+          onChange={(event) => onChange({
+            textValue: event.target.value,
+            enumValue
+          })}
           onKeyDown={(event) => event.stopPropagation()}
         />
       </div>
       <DropdownMenuSeparator />
       <DropdownMenuRadioGroup
         value={enumValue ?? ALL_VALUE}
-        onValueChange={(value) => onEnumChange(value === ALL_VALUE ? null : (value as T))}
+        onValueChange={(value) => onChange({
+          textValue,
+          enumValue: value === ALL_VALUE ? null : (value as T)
+        })}
       >
         <DropdownMenuRadioItem value={ALL_VALUE}>{t("tasks.filters.all")}</DropdownMenuRadioItem>
         {options.map((option) => (
@@ -334,10 +346,7 @@ function TextAndEnumFilterHeader<T extends string>({
       <DropdownMenuSeparator />
       <DropdownMenuItem
         disabled={!textValue.trim() && !enumValue}
-        onSelect={() => {
-          onTextChange("");
-          onEnumChange(null);
-        }}
+        onSelect={() => onChange({ textValue: "", enumValue: null })}
       >
         {t("tasks.filters.clear")}
       </DropdownMenuItem>
@@ -454,5 +463,9 @@ function toCamelCase(value: string): string {
 }
 
 function generatedStatusKey(value: SourceFileGeneratedOutputStatus): string {
-  return value === "visible" ? "available" : value;
+  return toCamelCase(value);
+}
+
+function isSourceFileWorkKind(value: SourceFileCurrentStage): value is SourceFileWorkKind {
+  return SOURCE_FILE_WORK_KINDS.includes(value as SourceFileWorkKind);
 }

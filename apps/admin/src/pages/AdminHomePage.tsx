@@ -53,6 +53,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { showAdminToast } from "@/hooks/use-admin-toast";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -85,15 +86,22 @@ type AdminHomePageProps = {
   hasPreviousKnowledgeBasePage: boolean;
   hasNextKnowledgeBasePage: boolean;
   isLoading: boolean;
+  knowledgeBaseListError: string;
   publicOpenApiKeys: PublicOpenApiKey[];
   publicOpenApiKeysNextCursor: string | null;
   publicOpenApiKeysOneTimeKey: OneTimePublicOpenApiKey | null;
   isLoadingPublicOpenApiKeys: boolean;
+  publicOpenApiKeysError: string;
   onCreate: (input: {
     name: string;
     description: string;
   }) => Promise<{ knowledgeBase: KnowledgeBase } | ApiFailure>;
-  onDelete: (knowledgeBase: KnowledgeBase) => Promise<{ deleted: true } | ApiFailure>;
+  onDelete: (knowledgeBase: KnowledgeBase) => Promise<{
+    accepted: true;
+    operationId: string;
+    affectedDirectoryCount: number;
+    affectedFileCount: number;
+  } | ApiFailure>;
   onUpdate: (input: {
     knowledgeBase: KnowledgeBase;
     name: string;
@@ -122,10 +130,12 @@ export function AdminHomePage({
   hasPreviousKnowledgeBasePage,
   hasNextKnowledgeBasePage,
   isLoading,
+  knowledgeBaseListError,
   publicOpenApiKeys,
   publicOpenApiKeysNextCursor,
   publicOpenApiKeysOneTimeKey,
   isLoadingPublicOpenApiKeys,
+  publicOpenApiKeysError,
   onCreate,
   onUpdate,
   onDelete,
@@ -226,6 +236,13 @@ export function AdminHomePage({
       return;
     }
 
+    showAdminToast({
+      title: t("delete.knowledgeBaseAcceptedTitle"),
+      description: t("delete.knowledgeBaseAcceptedDescription", {
+        directories: result.affectedDirectoryCount,
+        files: result.affectedFileCount
+      })
+    });
     setDeleteTarget(null);
   }
 
@@ -255,6 +272,7 @@ export function AdminHomePage({
           toggleSidebarRail: t("home.toggleSidebarRail"),
           knowledgeBases: t("home.knowledgeBasesTab"),
           openApiKeys: t("home.openapiKeysTab"),
+          modelSettings: t("modelSettings.title"),
           settings: t("settings.title"),
           logout: t("auth.logout")
         }}
@@ -273,7 +291,9 @@ export function AdminHomePage({
                     ? t("home.knowledgeBasesTab")
                     : activeSection === "openapi-keys"
                       ? t("home.openapiKeysTab")
-                      : t("settings.title")}
+                      : activeSection === "model-settings"
+                        ? t("modelSettings.title")
+                        : t("settings.title")}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">{t("app.name")}</p>
               </div>
@@ -331,6 +351,12 @@ export function AdminHomePage({
             {isLoading && knowledgeBases.length === 0 ? (
               <Alert>
                 <AlertTitle>{t("home.loading")}</AlertTitle>
+              </Alert>
+            ) : null}
+
+            {knowledgeBaseListError ? (
+              <Alert variant="destructive">
+                <AlertTitle>{t(knowledgeBaseListError)}</AlertTitle>
               </Alert>
             ) : null}
 
@@ -514,11 +540,22 @@ export function AdminHomePage({
               oneTimeKey={publicOpenApiKeysOneTimeKey}
               nextCursor={publicOpenApiKeysNextCursor}
               isLoading={isLoadingPublicOpenApiKeys}
+              error={publicOpenApiKeysError}
               onCreate={onCreatePublicOpenApiKey}
               onDelete={onDeletePublicOpenApiKey}
               onDismissOneTimeKey={onDismissPublicOpenApiOneTimeKey}
               onLoadMore={() => onLoadPublicOpenApiKeys({ replace: false })}
             />
+          ) : activeSection === "model-settings" ? (
+            <Suspense
+              fallback={
+                <Alert>
+                  <AlertTitle>{t("settings.loading")}</AlertTitle>
+                </Alert>
+              }
+            >
+              <SettingsPanel section="models" />
+            </Suspense>
           ) : (
             <Suspense
               fallback={
@@ -527,7 +564,7 @@ export function AdminHomePage({
                 </Alert>
               }
             >
-              <SettingsPanel />
+              <SettingsPanel section="runtime" />
             </Suspense>
           )}
         </section>

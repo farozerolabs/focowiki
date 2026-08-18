@@ -16,21 +16,21 @@ Focowiki 上传 Markdown 文件。团队从 PDF、Word、HTML、表格、OCR 文
 
 | 部分 | 作用 |
 | --- | --- |
-| YAML frontmatter | 保存稳定元数据，用于展示、过滤、搜索、来源追踪和 Agent context。 |
+| YAML 前置元数据 | 保存稳定元数据，用于展示、筛选、搜索、来源追踪和 Agent 上下文。 |
 | Markdown 正文 | 保存完整可读文档，包括标题、段落、表格、列表、引用和链接。 |
 | 来源说明 | 保存来源证据、转换说明、未解决问题和更新记录。 |
 
-Focowiki 会解析安全的 frontmatter 字段，保留领域元数据，读取标题和链接，并生成包含 `index.md`、`schema.md`、`_index/`、`pages/` 和 `_graph/` 文件的 OKF-style 文件知识库。
+Focowiki 会解析安全的前置元数据，保留领域字段，读取标题和链接，并生成包含 `index.md`、`log.md`、`_index/`、`pages/` 和 `_graph/` 的 OKF 风格文件知识库。
 
 ## 文件夹路径与生成路径
 
-Admin 上传弹窗支持选择零散 Markdown 文件，也支持选择包含多层子目录的文件夹。文件夹上传会保留经过 NFC 规范化的相对路径。来源文件 `handbook/onboarding/guide.md` 会发布为 `pages/handbook/onboarding/guide.md`，零散文件按 basename 放在 `pages/` 下。
+Admin 上传弹窗支持选择零散 Markdown 文件，也支持选择包含多层子目录的文件夹。文件夹上传会保留经过 NFC 规范化的相对路径。来源文件 `handbook/onboarding/guide.md` 会生成 `pages/handbook/onboarding/guide.md`，零散文件按原文件名放在 `pages/` 下。
 
-再次选择同一个文件夹时，系统只添加知识库中尚不存在的路径。已有 active path 会被跳过，并保留原 source ID 和 revision。已有路径的内容变更通过明确的 source-file replacement 操作完成。
+再次选择同一个文件夹时，系统只添加知识库中尚不存在的路径，并跳过已有路径。需要更新已有路径时，应使用该文件的**替换内容**操作。
 
-选择内容中的每一项都必须是 `.md` 文件。路径 segment 应保持稳定，并避开绝对路径、`.`、`..`、反斜杠、控制字符和只有大小写差异的重复路径。Focowiki 保留符合 `index.md`、`index-<number>.md`、`index-map-<number>.md`、`log.md` 和 `log-<number>.md` 形式的生成导航文件名。上传前需要重命名使用这些 basename 的来源文件。
+选择内容中的每一项都必须是 `.md` 文件。路径段应保持稳定且不超过 1000 个 Unicode 码位，并避开绝对路径、`.`、`..`、反斜杠、控制字符和只有大小写差异的重复路径。Focowiki 保留符合 `index.md`、`index-<number>.md`、`log.md` 和 `log-<number>.md` 形式的生成导航文件名。上传前需要重命名使用这些文件名的来源文件。
 
-当一个目录的直接列表超过配置预算时，Focowiki 会生成目录 `index.md`、编号 index 页面和 index-map 页面。这些导航页面互相链接，并继续通过文件树和内容接口提供。Agent 使用它们寻找 source-backed Markdown 页面，再读取这些页面作为证据。
+当一个目录的直接列表超过配置预算时，Focowiki 会生成目录 `index.md` 和有界的稳定续页。这些导航页面会链接相邻页面，并继续通过文件树和内容接口提供。Agent 使用它们寻找由上传文件生成的 Markdown 页面，再读取这些页面作为证据。
 
 ## 清洗流程
 
@@ -41,15 +41,15 @@ Admin 上传弹窗支持选择零散 Markdown 文件，也支持选择包含多�
 | 盘点 | 列出源文件、来源系统、文件负责人、发布日期、更新日期、标识符、语言和已知重复文件。 |
 | 抽取 | 从原始资料中提取文本、表格、标题、链接、图注、脚注和来源 URL。 |
 | 规范化 | 修复编码、标题层级、段落断行、表格布局、引用格式、重复页眉和重复页脚。 |
-| 映射元数据 | 将来源元数据转换为安全的 YAML frontmatter。领域字段有助于阅读和 Agent 探索时可以保留。 |
+| 映射元数据 | 将来源元数据转换为安全的 YAML 前置元数据。领域字段有助于阅读和 Agent 探索时可以保留。 |
 | 渲染 Markdown | 按文档或明确的拆分单元写入稳定 `.md` 文件。 |
-| 校验 | 检查 frontmatter、链接、重复标题、来源证据、不安全字段、文件大小和可读性。 |
+| 校验 | 检查前置元数据、链接、重复标题、来源证据、不安全字段、文件大小和可读性。 |
 | 抽样复核 | 在大批量上传前复核代表性文档。 |
 | 上传 | 通过 Admin UI 或 Developer OpenAPI 上传清洗后的 Markdown，并检查生成结果。 |
 
 ## Markdown 结构
 
-清洗后的 Markdown 文件应从 YAML frontmatter 开始。
+存在可靠元数据时，清洗后的 Markdown 文件可以从 YAML 前置元数据开始；普通 Markdown 仍然可以上传。
 
 ```md
 ---
@@ -87,13 +87,15 @@ This policy applies to support, operations, and account management teams.
 - [Support escalation policy](./support-escalation.md)
 ```
 
-每个文件使用一个清晰文档标题。标题层级保持稳定。可读表格保留为 Markdown table。来源链接保留为 Markdown link。脚注和附录在版式无法安全表达时转换为普通 Markdown section。
+每个文件使用一个清晰的文档标题，并保持标题层级稳定。可读表格保留为 Markdown 表格，来源链接保留为 Markdown 链接。脚注和附录在原版式无法安全表达时转换为普通 Markdown 小节。
 
 ## 元数据规范
 
 常见元数据字段：
 
-这些字段是推荐示例，用于提升 Markdown 文件的互操作性。上传文件可以包含领域专有元数据。Focowiki 会保留安全且合法的 frontmatter 字段，并透传到生成结果中。
+这些字段是推荐示例，用于提升 Markdown 文件的互操作性。上传文件可以包含领域专有元数据。Focowiki 会保留安全且合法的前置元数据字段，并传递到生成结果中。
+
+OKF 0.2 还定义了可选的 `sources`、`usage_window`、`generated`、`verified`、`status`、`stale_after` 和 Attested Computation 字段。来源存在证据时应保留这些字段，不要编造缺失的来源或验证信息。安全值即使不符合推荐的 OKF 结构仍可上传和读取，但对应派生信号可能为 `null`。
 
 | 字段 | 用途 |
 | --- | --- |
@@ -108,15 +110,15 @@ This policy applies to support, operations, and account management teams.
 | `version` | 来源版本、发布号、版次或状态标记。 |
 | `language` | 文档主要语言。 |
 | `externalId` | 来源系统中的稳定 ID。 |
-| `sourceHash` | 清洗来源或原始抽取输入的 hash。 |
+| `sourceHash` | 清洗来源或原始抽取输入的哈希值。 |
 
 领域专有元数据示例包括但不限于 `owner`、`department`、`region`、`product`、`category`、`status`、`jurisdiction`、`standard`、`reviewCycle` 或 `sourceSystem`。
 
-需要移除的字段包括 secrets、本地文件路径、私有对象存储路径、临时转换目录、provider payload、原始凭证、内部队列 ID 和一次性处理 run ID。
+需要移除的字段包括密钥、本地文件路径、私有对象存储路径、临时转换目录、服务商原始响应、凭据、内部队列 ID 和一次性处理 ID。
 
 ## 清洗 Skill 示例
 
-开发者可以在自己的 Agent 环境中放置一个轻量 Skill，用来规范重复的数据清洗工作。这个 Skill 的职责保持收敛：读取源文件、输出 Markdown、基于证据补充 metadata，并写出简短复核报告。
+开发者可以在自己的 Agent 环境中放置一个轻量 Skill，用来规范重复的数据清洗工作。这个 Skill 的职责保持收敛：读取来源文件、输出 Markdown、基于证据补充元数据，并写出简短复核报告。
 
 示例 `SKILL.md`：
 
@@ -169,11 +171,11 @@ Return:
 | --- | --- |
 | Word 和富文本 | 保留标题、列表、表格、关键脚注、重要批注和修订结论。移除只用于视觉展示的样式。 |
 | PDF | 按阅读顺序抽取文本。重建标题和表格。检查页眉、页脚、断词换行和分栏顺序。 |
-| HTML 和网页导出 | 保留语义标题、正文、canonical URL、链接、表格和发布元数据。移除导航、cookie banner、广告和重复布局块。 |
-| 表格和 CSV 记录 | 当独立行、sheet 或记录组代表一个可读知识项时，将其转换为 Markdown。需要直接比较的结构化值可以保留为表格。 |
+| HTML 和网页导出 | 保留语义标题、正文、规范网址、链接、表格和发布元数据。移除导航、Cookie 提示条、广告和重复布局块。 |
+| 表格和 CSV 记录 | 当独立行、工作表或记录组代表一个可读知识项时，将其转换为 Markdown。需要直接比较的结构化值可以保留为表格。 |
 | 扫描件和 OCR 文本 | 复核 OCR 置信度、名称、数字、日期、标题、表格单元格和标点。未解决的 OCR 问题写入来源说明。 |
-| JSON、XML、数据库导出和 API 导出 | 将稳定字段映射到 frontmatter。面向读者的内容渲染为正文、列表或表格。保留原始标识符。 |
-| 既有 Markdown 文件夹 | 统一 frontmatter、标题风格、相对链接、标题层级、文件名和重复页面。保留有意义的 Markdown links。 |
+| JSON、XML、数据库导出和 API 导出 | 将稳定字段映射到前置元数据。面向读者的内容渲染为正文、列表或表格。保留原始标识符。 |
+| 既有 Markdown 文件夹 | 统一前置元数据、标题风格、相对链接、标题层级、文件名和重复页面。保留有意义的 Markdown 链接。 |
 | 混合资料库 | 每类来源使用对应抽取方式，然后统一应用同一套 Markdown 和元数据标准。 |
 
 ## 正文规则
@@ -183,8 +185,8 @@ Return:
 - 保留定义、例外、约束、示例、表格和附录。
 - 章节顺序影响含义时保留原顺序。
 - 保留引用、参考资料、来源 URL 和相关文档链接。
-- 使用普通 Markdown links 表达清洗后文件之间的关系。
-- 存在未解决转换问题时，使用简短的 `## Source Notes` section 记录。
+- 使用普通 Markdown 链接表达清洗后文件之间的关系。
+- 存在未解决的转换问题时，使用简短的 `## Source Notes` 小节记录。
 - 正文中的生成摘要保持简短，原始内容仍然作为主体。
 
 ## 质量检查
@@ -193,7 +195,7 @@ Return:
 
 | 检查项 | 检查内容 |
 | --- | --- |
-| YAML | frontmatter 可以正常解析，并使用有效字符串、数组、日期和布尔值。 |
+| YAML | 前置元数据可以正常解析，并使用有效字符串、数组、日期和布尔值。 |
 | 标题 | 每个文件有一个清晰标题。重复标题有明确原因且可追踪。 |
 | 文件名 | 文件名稳定、可读，并以 `.md` 结尾。 |
 | 编码 | 文件使用 UTF-8，并保留标点、名称、数字和日期。 |
@@ -203,7 +205,7 @@ Return:
 | OCR | 高风险名称、数字、日期和标题经过人工复核。 |
 | 元数据 | 领域字段有用、安全，并且不包含临时处理细节。 |
 | 文件大小 | 超大文档经过拆分点复核。 |
-| 隐私 | secrets、本地路径、私有存储路径、内部 URL 和凭证已移除。 |
+| 隐私 | 密钥、本地路径、私有存储路径、内部 URL 和凭据已移除。 |
 
 大规模上传前，从每种来源类型中抽样复核。样本应包含普通文件、长文件、短文件、表格密集文件、链接密集文件和来源元数据缺失文件。
 
@@ -215,15 +217,15 @@ Return:
 
 | 输出 | 检查内容 |
 | --- | --- |
-| `pages/*.md` | 标题、frontmatter、正文、相关链接和来源说明。 |
-| `index.md` | 知识库概览和页面列表。 |
-| `schema.md` | 元数据约定和生成文件约定。 |
-| `_index/search.json` | 搜索字段、标题、摘要、标签和路径。 |
-| `_index/links.json` | Markdown links 和 graph-backed related links。 |
-| `_graph/by-file/{fileId}.json` | 单文件关系、原因、权重和相关页面路径。 |
-| `log.md` | 最近发布历史和滚动更新记录。 |
+| `pages/*.md` | 标题、前置元数据、正文、相关链接和来源说明。 |
+| `index.md` | 知识库概览，以及文档、关系图、更新历史和机器可读导航入口。 |
+| `_index/pages/**/all-documents*.json` 或 `_index/pages/**/*-documents*.json` | 合并后的标题、元数据、标题层级、词项、完整性信息和当前页面路径。 |
+| `_index/terms/<bucket>/index.json`、`*-terms-part-NNNN.json` | 固定文字类别的路由，以及指向当前页面的有界多语言倒排条目。 |
+| `_graph/by-directory/**/*-relationships*.json` | 按来源页面目录分组的已接受关系。 |
+| `_graph/by-file/<页面相对路径去掉.md>.json` | 单页面关系、原因、权重和可读取目标路径。 |
+| `log.md` | 最近内容更新历史和滚动更新记录。 |
 
-生成文件应暴露逻辑路径和安全元数据。生成文件不应暴露本地路径、S3 object keys、转换目录、凭证或 provider payload。
+生成知识库文件只包含可移植页面路径和安全元数据，不包含运行时 ID、本地路径、对象键、转换目录、凭据、服务 URL、模型或服务商名称，也不包含持久化细节。
 
 ## 入库验收标准
 
@@ -231,7 +233,7 @@ Return:
 
 - 每个文件都是有效 `.md` 文件。
 - 每个文档都有清晰标题。
-- frontmatter 包含有用的来源和领域元数据。
+- 前置元数据包含有用的来源和领域信息。
 - 正文保留文档的完整可读内容。
 - 链接和引用能够帮助人员和 Agent 探索。
 - 可用来源证据已经保留。
@@ -241,5 +243,5 @@ Return:
 ## 相关文档
 
 - [Google OKF 规范](./open-knowledge-format.md)
-- [文件优先图关系](./file-first-graph.md)
+- [来源文件证据与图关系](./file-first-graph.md)
 - [Developer OpenAPI](../openapi/index.md)

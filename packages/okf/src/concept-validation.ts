@@ -3,7 +3,7 @@ import type { OkfBundleFile } from "./bundle-file.js";
 import type { OkfConformanceIssue, OkfValidationProfile } from "./conformance-types.js";
 import { createConformanceIssue } from "./conformance-types.js";
 
-const NUMBERED_NAVIGATION_FILE = /^(?:index|index-map|log)-\d{6}\.md$/u;
+const GENERATED_NAVIGATION_FILE = /^(?:index|log)-(?!map-)[^/]+\.md$/u;
 
 export function validateConceptFile(
   file: OkfBundleFile,
@@ -16,7 +16,7 @@ export function validateConceptFile(
   const type = readString(parsed.data.type);
   if (!type) {
     issues.push(createConformanceIssue(
-      "OKF-0.1-CONCEPT-TYPE",
+      "OKF-0.2-CONCEPT-TYPE",
       profile,
       file.path,
       "Concept frontmatter must contain a non-empty type field."
@@ -25,22 +25,14 @@ export function validateConceptFile(
 
   const title = readString(parsed.data.title);
   const description = readString(parsed.data.description);
-  if (profile === "recommended" && !title) {
-    issues.push(createConformanceIssue(
-      "OKF-0.1-RECOMMENDED-TITLE",
-      profile,
-      file.path,
-      "Concept frontmatter should contain a display title."
-    ));
-  }
   if (
-    profile === "recommended"
+    profile === "focowiki_quality"
     && description
     && title
     && normalizeComparable(description) === normalizeComparable(title)
   ) {
     issues.push(createConformanceIssue(
-      "OKF-0.1-RECOMMENDED-DESCRIPTION",
+      "FOCOWIKI-QUALITY-TITLE",
       profile,
       file.path,
       "Concept description should add information beyond its title."
@@ -58,7 +50,7 @@ export function validateConceptFile(
   const basename = file.path.split("/").at(-1) ?? "";
   if (
     profile === "focowiki_extension"
-    && NUMBERED_NAVIGATION_FILE.test(basename)
+    && GENERATED_NAVIGATION_FILE.test(basename)
     && parsed.data.navigation_only !== true
   ) {
     issues.push(createConformanceIssue(
@@ -82,7 +74,7 @@ export function parseConformanceFrontmatter(input: {
     const parsed = matter(input.file.content);
     if (input.required && !input.file.content.startsWith("---")) {
       input.issues.push(createConformanceIssue(
-        "OKF-0.1-CONCEPT-FRONTMATTER",
+        "OKF-0.2-CONCEPT-FRONTMATTER",
         input.profile,
         input.file.path,
         "Concept document must begin with parseable YAML frontmatter."
@@ -92,10 +84,11 @@ export function parseConformanceFrontmatter(input: {
   } catch (error) {
     const message = error instanceof Error ? error.message : "invalid YAML";
     input.issues.push(createConformanceIssue(
-      "OKF-0.1-CONCEPT-FRONTMATTER",
+      "OKF-0.2-CONCEPT-FRONTMATTER",
       input.profile,
       input.file.path,
-      `Markdown frontmatter is invalid: ${message}`
+      `Markdown frontmatter is invalid: ${message}`,
+      { disposition: "blocking" }
     ));
     return null;
   }

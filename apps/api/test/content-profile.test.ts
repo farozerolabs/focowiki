@@ -266,7 +266,7 @@ describe("content profile", () => {
     );
   });
 
-  it("keeps model candidate links out of content-derived relationship hints", () => {
+  it("keeps model presentation terms out of content-derived relationship hints", () => {
     const profile = buildSourceContentProfile({
       title: "Procurement approval workflow",
       metadata: { title: "Procurement approval workflow", type: "workflow", tags: [] },
@@ -275,10 +275,7 @@ describe("content profile", () => {
         title: "Procurement approval workflow",
         description: "",
         tags: [],
-        keywords: [],
-        related_links: [
-          { title: "Unrelated onboarding guide", path: "pages/onboarding.md" }
-        ]
+        keywords: ["unrelated onboarding guide"]
       },
       body: [
         "# Procurement approval workflow",

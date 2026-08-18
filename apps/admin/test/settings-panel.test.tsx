@@ -6,9 +6,12 @@ import {
   createRuntimeModel,
   deleteRuntimeModel,
   fetchRuntimeSettings,
+  updateGeneratedSettings,
   updateMaintenanceSettings,
-  updatePublicationSettings,
+  updateRuntimeModel,
   updateRateLimitSettings,
+  updateSearchSettings,
+  updateSemanticSettings,
   updateWorkerSettings
 } from "@/lib/admin-api";
 
@@ -23,6 +26,18 @@ globalThis.ResizeObserver = TestResizeObserver;
 vi.mock("@/lib/admin-api", () => ({
   activateRuntimeModel: vi.fn(),
   createRuntimeModel: vi.fn(),
+  updateRuntimeModel: vi.fn(async (modelId, value) => ({
+    model: {
+      id: modelId,
+      ...value,
+      apiKeyFingerprint: "key...test",
+      status: "active",
+      isActive: true,
+      createdAt: "2026-06-14T00:00:00.000Z",
+      updatedAt: "2026-06-14T00:01:00.000Z",
+      lastUsedAt: null
+    }
+  })),
   deleteRuntimeModel: vi.fn(async () => ({
     model: {
       id: "model-001",
@@ -53,61 +68,14 @@ vi.mock("@/lib/admin-api", () => ({
       },
       worker: {
         sourceFileConcurrency: 2,
-        sourceObjectReadConcurrency: 2,
-        graphQueryConcurrency: 2,
-        databaseMutationConcurrency: 2,
-        claimBatchSize: 10,
-        generationBatchSize: 50,
-        pollIntervalMs: 1000,
-        lockTtlSeconds: 900,
-        heartbeatIntervalMs: 15000,
         jobMaxAttempts: 3,
         jobRetryDelayMs: 30000,
-        sourceQueueHardDepth: 5000,
-        sourceQueueResumeDepth: 3000,
-        sourceQueueHardAgeSeconds: 3600,
-        sourceQueueResumeAgeSeconds: 1800,
-        shutdownGraceMs: 30000,
-        completedJobRetentionDays: 7,
-        failedJobRetentionDays: 30,
-        deadLetterJobRetentionDays: 90,
-        retentionCleanupBatchSize: 1000,
-        hardDeleteConcurrency: 1,
-        hardDeleteDatabaseBatchSize: 1000,
-        hardDeleteObjectBatchSize: 1000,
-        hardDeleteMaxAttempts: 3,
-        hardDeleteRetryDelayMs: 60000,
-        hardDeleteFailedRetentionDays: 30,
-        hardDeleteVersionPurgeEnabled: false
+        completedJobRetentionDays: 7
       },
-      publication: {
-        mode: "batch",
-        batchSize: 300,
-        intervalSeconds: 300,
-        roleConcurrency: 1,
-        claimBatchSize: 1,
-        impactBatchSize: 100,
-        impactConcurrency: 8,
-        generationAssemblyConcurrency: 1,
-        projectionPartitionConcurrency: 8,
-        generatedObjectWriteConcurrency: 8,
-        directoryMaterializationConcurrency: 4,
-        dirtyFileHardCount: 2000,
-        dirtyFileResumeCount: 1000,
-        dirtyAgeHardSeconds: 900,
-        dirtyAgeResumeSeconds: 300,
-        pendingImpactHardCount: 20000,
-        pendingImpactResumeCount: 10000,
-        generationRetentionDays: 7,
-        indexShardSize: 1000,
-        linkIndexShardSize: 1000,
-        manifestShardSize: 1000,
-        graphEdgeShardSize: 5000,
-        graphCandidateLimit: 200,
-        graphMaintenanceBatchSize: 500,
-        rootSummaryLimit: 500,
+      generated: {
         directoryIndexMaxEntries: 200,
         directoryIndexMaxBytes: 65536,
+        rootSummaryLimit: 500,
         okfLogMaxEntries: 100,
         okfLogMaxBytes: 65536
       },
@@ -118,34 +86,43 @@ vi.mock("@/lib/admin-api", () => ({
         searchMaxDepth: 2,
         searchDefaultFanout: 10,
         searchMaxFanout: 25,
-        modelReviewEnabled: true,
-        publicationShardSize: 5000,
-        cacheTtlSeconds: 30,
+        shardSize: 5000,
         genericPhraseThreshold: 4
       },
       maintenance: {
-        knowledgeBaseMaintenanceMode: "manual",
-        knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
-        knowledgeBaseMaintenanceConcurrency: 1,
         reconciliationEnabled: true,
-        scanIntervalSeconds: 21600,
         scanBatchSize: 500,
-        deletionBatchSize: 100,
-        quarantineGracePeriodSeconds: 86400,
-        confirmationPasses: 2,
         maxAttempts: 5,
         retryDelayMs: 30000,
-        migrationBackfillConcurrency: 2,
-        compactionConcurrency: 1,
-        projectionRepairConcurrency: 4,
-        projectionRepairDatabaseBatchSize: 2000,
-        projectionRepairObjectWriteConcurrency: 8,
-        lexicalRebuildConcurrency: 4,
-        lexicalRebuildSourceReadConcurrency: 8,
-        lexicalRebuildDatabaseWriteConcurrency: 2,
-        lexicalRebuildClaimBatchSize: 500,
-        lexicalRebuildDatabaseBatchSize: 50,
-        lexicalRebuildMaxInFlightSourceBytes: 67_108_864
+        hardDeleteConcurrency: 1,
+        hardDeleteDatabaseBatchSize: 1000,
+        hardDeleteObjectBatchSize: 1000,
+        hardDeleteMaxAttempts: 3,
+        hardDeleteRetryDelayMs: 60_000,
+        hardDeleteFailedRetentionDays: 30
+      },
+      search: {
+        requestTimeoutMs: 3000,
+        engineSearchCutoffMs: 1000,
+        overfetchFactor: 3,
+        indexBatchDocumentCount: 500,
+        indexBatchCompressedBytes: 8_388_608,
+        maxInFlightTasks: 8,
+        taskPollIntervalMs: 500,
+        taskTimeoutMs: 600_000,
+        maxAttempts: 5,
+        retryDelayMs: 2000,
+        cleanupBatchSize: 1000,
+        cropLength: 1200
+      },
+      semantic: {
+        maximumChunkCharacters: 16000,
+        maximumChunks: 32,
+        maximumEvidenceTargets: 64,
+        graphRagAdapterTimeoutMs: 30000,
+        searchLaneCutoffMs: 1000,
+        queryEmbeddingConcurrency: 4,
+        queryEmbeddingCacheEntries: 1000
       },
       activeModel: {
         id: "model-001"
@@ -172,47 +149,12 @@ vi.mock("@/lib/admin-api", () => ({
         lastUsedAt: null
       }
     ],
-    maintenanceStatus: {
-      state: "scanning",
-      lastScanStartedAt: "2026-07-27T10:00:00.000Z",
-      lastScanCompletedAt: "2026-07-27T09:00:00.000Z",
-      listedCount: 500,
-      quarantinedCount: 2,
-      deletedCount: 1,
-      missingCount: 0,
-      retryCount: 0,
-      lastErrorCode: null,
-      lastErrorMessage: null,
-      resolvedCount: 3,
-      pendingCount: 4,
-      databaseChunkSize: 100,
-      recentObjectsPerSecond: 50.1234,
-      rollingBatchLatencyMs: 20,
-      heartbeatAt: "2099-07-27T10:00:00.000Z",
-      lastProgressAt: "2099-07-27T10:00:00.000Z"
-    },
-    objectProtectionStatus: {
-      readiness: "backfilling",
-      phase: "source_files",
-      processedCount: 400,
-      expectedCount: 1_000,
-      verifiedCount: 0,
-      dirtyCount: 3,
-      retryCount: 0,
-      recentObjectsPerSecond: 80,
-      rollingBatchLatencyMs: 25,
-      lastProgressAt: "2099-07-27T10:00:00.000Z",
-      heartbeatAt: "2099-07-27T10:00:01.000Z",
-      estimatedCompletionAt: "2099-07-27T10:01:00.000Z",
-      lastErrorCode: null,
-      lastErrorMessage: null
-    }
   })),
   pauseRuntimeModel: vi.fn(),
   resumeRuntimeModel: vi.fn(),
-  updatePublicationSettings: vi.fn(async (value) => ({ settings: {
+  updateGeneratedSettings: vi.fn(async (value) => ({ settings: {
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
-    publication: value
+    generated: value
   } })),
   updateRateLimitSettings: vi.fn(),
   updateGraphSettings: vi.fn(),
@@ -220,10 +162,26 @@ vi.mock("@/lib/admin-api", () => ({
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
     maintenance: value
   } })),
+  updateSearchSettings: vi.fn(async (value) => ({ settings: {
+    ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
+    search: value
+  } })),
+  updateSemanticSettings: vi.fn(async (value) => ({ settings: {
+    ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
+    semantic: value
+  } })),
   updateWorkerSettings: vi.fn(async (value) => ({ settings: {
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
     worker: value
   } }))
+}));
+
+vi.mock("@/components/embedding-settings-panel", () => ({
+  EmbeddingSettingsPanel: () => <div>Embedding settings</div>
+}));
+
+vi.mock("@/components/reranker-settings-panel", () => ({
+  RerankerSettingsPanel: () => <div>Reranker settings</div>
 }));
 
 describe("SettingsPanel", () => {
@@ -233,9 +191,9 @@ describe("SettingsPanel", () => {
   });
 
   it("loads runtime settings and confirms model deletion", async () => {
-    render(<SettingsPanel />);
+    render(<SettingsPanel section="models" />);
 
-    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "Models" })).toBeTruthy();
     const modelsTab = screen.getByRole("tab", { name: "Models" });
     fireEvent.pointerDown(modelsTab);
     fireEvent.mouseDown(modelsTab);
@@ -258,6 +216,122 @@ describe("SettingsPanel", () => {
       expect(deleteRuntimeModel).toHaveBeenCalledWith("model-001");
     });
     expect(fetchRuntimeSettings).toHaveBeenCalled();
+  });
+
+  it("updates a generation model while leaving its credential input empty", async () => {
+    render(<SettingsPanel section="models" />);
+
+    expect(await screen.findByRole("tab", { name: "Models" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Models" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    const displayName = document.getElementById("model-display-name") as HTMLInputElement;
+    const apiKey = document.getElementById("model-api-key") as HTMLInputElement;
+    expect(displayName.value).toBe("Primary model");
+    expect(apiKey.value).toBe("");
+    fireEvent.change(displayName, { target: { value: "Primary model updated" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update model" }));
+
+    await waitFor(() => {
+      expect(updateRuntimeModel).toHaveBeenCalledWith(
+        "model-001",
+        expect.objectContaining({
+          displayName: "Primary model updated",
+          apiKey: ""
+        })
+      );
+    });
+  });
+
+  it("keeps a newly created model inactive until the existing activate action is used", async () => {
+    vi.mocked(createRuntimeModel).mockResolvedValue({
+      model: {
+        id: "model-review",
+        displayName: "Review model",
+        apiMode: "responses",
+        baseUrl: "https://example.invalid/v1",
+        modelName: "review-model",
+        contextWindowTokens: 200000,
+        requestMaxTimeoutMs: 600000,
+        requestIdleTimeoutMs: 120000,
+        suggestionConcurrency: 2,
+        transientRetryDelayMs: 60000,
+        requestMinIntervalMs: 2000,
+        apiKeyFingerprint: "review",
+        status: "active",
+        isActive: false,
+        createdAt: "2026-08-13T00:00:00.000Z",
+        updatedAt: "2026-08-13T00:00:00.000Z",
+        deletedAt: null
+      }
+    });
+    render(<SettingsPanel section="models" />);
+
+    expect(await screen.findByRole("tab", { name: "Models" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Models" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add model" }));
+
+    fireEvent.change(document.getElementById("model-display-name")!, {
+      target: { value: "Review model" }
+    });
+    fireEvent.change(document.getElementById("model-base-url")!, {
+      target: { value: "https://example.invalid/v1" }
+    });
+    fireEvent.change(document.getElementById("model-api-key")!, {
+      target: { value: "review-placeholder" }
+    });
+    fireEvent.change(document.getElementById("model-name")!, {
+      target: { value: "review-model" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create model" }));
+
+    await waitFor(() => {
+      expect(createRuntimeModel).toHaveBeenCalledWith(expect.objectContaining({
+        displayName: "Review model",
+        isActive: false
+      }));
+    });
+  });
+
+  it("keeps the released settings page shell while removing only approved fields", async () => {
+    const { container } = render(<SettingsPanel />);
+
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "API limits",
+      "Worker",
+      "Generated knowledge base",
+      "Graph",
+      "Maintenance",
+      "Search",
+      "Semantic"
+    ]);
+    expect(container.querySelector("section.flex.min-w-0.flex-col.gap-6")).toBeTruthy();
+    expect(container.querySelector(".max-w-full.overflow-x-auto [role='tablist']")).toBeTruthy();
+
+    for (const tabName of ["Worker", "Generated knowledge base", "Maintenance", "Search"]) {
+      activateTab(screen.getByRole("tab", { name: tabName }));
+      await waitFor(() => {
+        expect(screen.getByRole("tab", { name: tabName }).getAttribute("data-state"))
+          .toBe("active");
+      });
+      expect(container.querySelector(".grid.gap-4.md\\:grid-cols-2.xl\\:grid-cols-3"))
+        .toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "Save" })).toHaveLength(1);
+    }
+
+    for (const id of [
+      "worker-generationBatchSize",
+      "worker-hardDeleteVersionPurgeEnabled",
+      "publication-generationAssemblyConcurrency",
+      "publication-generationRetentionDays",
+      "maintenance-migrationBackfillConcurrency",
+      "maintenance-lexicalRebuildDatabaseWriteConcurrency",
+      "maintenance-lexicalRebuildClaimBatchSize",
+      "maintenance-lexicalRebuildDatabaseBatchSize"
+    ]) {
+      expect(document.getElementById(id), id).toBeNull();
+    }
   });
 
   it("keeps empty required number fields empty and blocks settings save", async () => {
@@ -293,104 +367,39 @@ describe("SettingsPanel", () => {
       expect(maintenanceTab.getAttribute("data-state")).toBe("active");
     });
     const scanBatchSize = document.getElementById("maintenance-scanBatchSize") as HTMLInputElement;
-    const automaticInterval = document.getElementById(
-      "maintenance-knowledgeBaseMaintenanceScanIntervalSeconds"
-    ) as HTMLInputElement;
-    const knowledgeBaseConcurrency = document.getElementById(
-      "maintenance-knowledgeBaseMaintenanceConcurrency"
-    ) as HTMLInputElement;
     expect(scanBatchSize?.value).toBe("500");
-    expect(automaticInterval?.value).toBe("21600");
-    expect(automaticInterval?.disabled).toBe(true);
-    expect(knowledgeBaseConcurrency?.value).toBe("1");
-    const repairConcurrency = document.getElementById(
-      "maintenance-projectionRepairConcurrency"
-    ) as HTMLInputElement;
-    const repairBatchSize = document.getElementById(
-      "maintenance-projectionRepairDatabaseBatchSize"
-    ) as HTMLInputElement;
-    const repairObjectWrites = document.getElementById(
-      "maintenance-projectionRepairObjectWriteConcurrency"
-    ) as HTMLInputElement;
-    const lexicalConcurrency = document.getElementById(
-      "maintenance-lexicalRebuildConcurrency"
-    ) as HTMLInputElement;
-    const lexicalSourceReads = document.getElementById(
-      "maintenance-lexicalRebuildSourceReadConcurrency"
-    ) as HTMLInputElement;
-    const lexicalDatabaseWrites = document.getElementById(
-      "maintenance-lexicalRebuildDatabaseWriteConcurrency"
-    ) as HTMLInputElement;
-    const lexicalClaimBatch = document.getElementById(
-      "maintenance-lexicalRebuildClaimBatchSize"
-    ) as HTMLInputElement;
-    const lexicalDatabaseBatch = document.getElementById(
-      "maintenance-lexicalRebuildDatabaseBatchSize"
-    ) as HTMLInputElement;
-    const lexicalInFlightBytes = document.getElementById(
-      "maintenance-lexicalRebuildMaxInFlightSourceBytes"
-    ) as HTMLInputElement;
-    expect(repairConcurrency?.value).toBe("4");
-    expect(repairBatchSize?.value).toBe("2000");
-    expect(repairObjectWrites?.value).toBe("8");
-    expect(lexicalConcurrency?.value).toBe("4");
-    expect(lexicalSourceReads?.value).toBe("8");
-    expect(lexicalDatabaseWrites?.value).toBe("2");
-    expect(lexicalClaimBatch?.value).toBe("500");
-    expect(lexicalDatabaseBatch?.value).toBe("50");
-    expect(lexicalInFlightBytes?.value).toBe("67108864");
+    expect(document.getElementById(
+      "maintenance-knowledgeBaseMaintenanceScanIntervalSeconds"
+    )).toBeNull();
+    expect(document.getElementById(
+      "maintenance-knowledgeBaseMaintenanceConcurrency"
+    )).toBeNull();
+    expect(document.getElementById("maintenance-projectionRepairConcurrency")).toBeNull();
+    expect(document.getElementById("maintenance-lexicalRebuildConcurrency")).toBeNull();
     expect(document.getElementById("maintenance-projectionRepairWorkerPoolMax")).toBeNull();
     expect(document.getElementById("maintenance-lexicalRebuildWorkerPoolMax")).toBeNull();
     expect(screen.getByText(/Larger pages also create more bounded database chunks/)).toBeTruthy();
-    expect(screen.getByText(/Concurrent lexical rebuild work lanes/)).toBeTruthy();
-    expect(screen.getByText("Active")).toBeTruthy();
-    expect(screen.getByText("Source file protection")).toBeTruthy();
-    expect(screen.getByText(/Objects resolved/)).toBeTruthy();
-    expect(screen.getByText(/Pending candidates/)).toBeTruthy();
-    expect(screen.getByText(/Database chunk size/)).toBeTruthy();
-    expect(screen.getByText(/Protection verified/)).toBeTruthy();
-    expect(screen.getByText(/Reconciliation heartbeat/)).toBeTruthy();
-    expect(screen.getByText(/Estimated completion/)).toBeTruthy();
-    expect(screen.getByText("50.1")).toBeTruthy();
+    expect(screen.queryByText(/Objects resolved/)).toBeNull();
+    expect(screen.queryByText(/Protection verified/)).toBeNull();
 
-    fireEvent.change(repairConcurrency, { target: { value: "6" } });
-    fireEvent.change(repairBatchSize, { target: { value: "3000" } });
-    fireEvent.change(repairObjectWrites, { target: { value: "10" } });
-    fireEvent.change(lexicalConcurrency, { target: { value: "6" } });
-    fireEvent.change(lexicalSourceReads, { target: { value: "12" } });
-    fireEvent.change(lexicalDatabaseWrites, { target: { value: "3" } });
-    fireEvent.change(lexicalClaimBatch, { target: { value: "750" } });
-    fireEvent.change(lexicalDatabaseBatch, { target: { value: "75" } });
-    fireEvent.change(lexicalInFlightBytes, { target: { value: "134217728" } });
+    fireEvent.change(scanBatchSize, { target: { value: "600" } });
+    fireEvent.click(document.getElementById("maintenance-reconciliationEnabled")!);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(updateMaintenanceSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          knowledgeBaseMaintenanceMode: "manual",
-          knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
-          knowledgeBaseMaintenanceConcurrency: 1,
-          reconciliationEnabled: true,
-          scanBatchSize: 500,
-          confirmationPasses: 2,
-          projectionRepairConcurrency: 6,
-          projectionRepairDatabaseBatchSize: 3000,
-          projectionRepairObjectWriteConcurrency: 10,
-          lexicalRebuildConcurrency: 6,
-          lexicalRebuildSourceReadConcurrency: 12,
-          lexicalRebuildDatabaseWriteConcurrency: 3,
-          lexicalRebuildClaimBatchSize: 750,
-          lexicalRebuildDatabaseBatchSize: 75,
-          lexicalRebuildMaxInFlightSourceBytes: 134_217_728
+          reconciliationEnabled: false,
+          scanBatchSize: 600
         })
       );
     });
   });
 
   it("shows model required-field feedback only after an invalid submit", async () => {
-    render(<SettingsPanel />);
+    render(<SettingsPanel section="models" />);
 
-    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "Models" })).toBeTruthy();
     const modelsTab = screen.getByRole("tab", { name: "Models" });
     fireEvent.pointerDown(modelsTab);
     fireEvent.mouseDown(modelsTab);
@@ -407,6 +416,122 @@ describe("SettingsPanel", () => {
     expect(createRuntimeModel).not.toHaveBeenCalled();
   });
 
+  it("renders model configuration as a separate three-tab surface", async () => {
+    render(<SettingsPanel section="models" />);
+
+    expect(await screen.findByRole("tab", { name: "Models" })).toBeTruthy();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Embedding models",
+      "Reranker models",
+      "Models"
+    ]);
+    expect(screen.getByRole("tab", { name: "Embedding models" }).getAttribute("data-state"))
+      .toBe("active");
+    expect(screen.queryByRole("tab", { name: "API limits" })).toBeNull();
+  });
+
+  it("selects the first available tab when moving between settings surfaces", async () => {
+    const view = render(<SettingsPanel section="models" />);
+
+    expect(await screen.findByRole("tab", { name: "Embedding models" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Models" }));
+    expect(screen.getByRole("tab", { name: "Models" }).getAttribute("data-state"))
+      .toBe("active");
+
+    view.rerender(<SettingsPanel section="runtime" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "API limits" }).getAttribute("data-state"))
+        .toBe("active");
+    });
+    expect(screen.getByText("Update admin and OpenAPI request limits without restarting the service."))
+      .toBeTruthy();
+  });
+
+  it("shows and saves bounded search settings", async () => {
+    render(<SettingsPanel />);
+
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Search" }));
+
+    const requestTimeout = await waitFor(() => {
+      const input = document.getElementById("search-requestTimeoutMs") as HTMLInputElement | null;
+      if (!input) {
+        throw new Error("Expected search request timeout input.");
+      }
+      return input;
+    });
+    const engineCutoff = document.getElementById(
+      "search-engineSearchCutoffMs"
+    ) as HTMLInputElement;
+    const inFlightTasks = document.getElementById(
+      "search-maxInFlightTasks"
+    ) as HTMLInputElement;
+    const overfetchFactor = document.getElementById(
+      "search-overfetchFactor"
+    ) as HTMLInputElement;
+    const cropLength = document.getElementById(
+      "search-cropLength"
+    ) as HTMLInputElement;
+    expect(requestTimeout.value).toBe("3000");
+    expect(engineCutoff.value).toBe("1000");
+    expect(inFlightTasks.value).toBe("8");
+    expect(overfetchFactor.value).toBe("3");
+    expect(document.getElementById("search-stagingRetentionHours")).toBeNull();
+    expect(cropLength.value).toBe("1200");
+    expect(screen.getByText(/Maximum end-to-end time for one search request/)).toBeTruthy();
+
+    fireEvent.change(requestTimeout, { target: { value: "4000" } });
+    fireEvent.change(engineCutoff, { target: { value: "1200" } });
+    fireEvent.change(inFlightTasks, { target: { value: "6" } });
+    fireEvent.change(overfetchFactor, { target: { value: "4" } });
+    fireEvent.change(cropLength, { target: { value: "1500" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(updateSearchSettings).toHaveBeenCalledWith(expect.objectContaining({
+        requestTimeoutMs: 4000,
+        engineSearchCutoffMs: 1200,
+        maxInFlightTasks: 6,
+        overfetchFactor: 4,
+        cropLength: 1500,
+        indexBatchDocumentCount: 500,
+        indexBatchCompressedBytes: 8_388_608
+      }));
+    });
+  });
+
+  it("shows and saves every bounded semantic setting", async () => {
+    render(<SettingsPanel />);
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Semantic" }));
+
+    for (const [field, value] of Object.entries({
+      maximumChunkCharacters: 16000,
+      maximumChunks: 32,
+      maximumEvidenceTargets: 64,
+      graphRagAdapterTimeoutMs: 30000,
+      searchLaneCutoffMs: 1000,
+      queryEmbeddingConcurrency: 4,
+      queryEmbeddingCacheEntries: 1000
+    })) {
+      expect((document.getElementById(`semantic-${field}`) as HTMLInputElement).value)
+        .toBe(String(value));
+    }
+
+    fireEvent.change(document.getElementById("semantic-queryEmbeddingConcurrency")!, {
+      target: { value: "5" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(updateSemanticSettings).toHaveBeenCalledWith(expect.objectContaining({
+        queryEmbeddingConcurrency: 5,
+        maximumChunkCharacters: 16000,
+        searchLaneCutoffMs: 1000
+      }));
+    });
+  });
+
   it("removes upload admission controls from the settings surface", async () => {
     render(<SettingsPanel />);
 
@@ -416,58 +541,52 @@ describe("SettingsPanel", () => {
     expect(screen.queryByRole("tab", { name: "Upload" })).toBeNull();
   });
 
-  it("saves source worker generation and hysteresis settings", async () => {
+  it("saves live document worker concurrency settings", async () => {
     render(<SettingsPanel />);
     expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     activateTab(screen.getByRole("tab", { name: "Worker" }));
 
-    const generationBatchSize = await waitFor(() => {
-      const input = document.getElementById("worker-generationBatchSize") as HTMLInputElement | null;
-      if (!input) {
-        throw new Error("Expected worker generation batch input.");
-      }
-      return input;
-    });
-    const resumeDepth = document.getElementById("worker-sourceQueueResumeDepth") as HTMLInputElement;
-    fireEvent.change(generationBatchSize, { target: { value: "80" } });
-    fireEvent.change(resumeDepth, { target: { value: "2500" } });
+    const maximumAttempts = document.getElementById(
+      "worker-jobMaxAttempts"
+    ) as HTMLInputElement;
+    fireEvent.change(maximumAttempts, { target: { value: "4" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(updateWorkerSettings).toHaveBeenCalledWith(expect.objectContaining({
-        generationBatchSize: 80,
-        sourceQueueHardDepth: 5000,
-        sourceQueueResumeDepth: 2500
+        sourceFileConcurrency: 2,
+        jobMaxAttempts: 4
       }));
     });
   });
 
-  it("saves publication pressure and bounded work settings", async () => {
+  it("saves generated knowledge-base directory limits without publication controls", async () => {
     render(<SettingsPanel />);
     expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
-    activateTab(screen.getByRole("tab", { name: "Publication" }));
+    activateTab(screen.getByRole("tab", { name: "Generated knowledge base" }));
 
-    const impactBatchSize = await waitFor(() => {
-      const input = document.getElementById("publication-impactBatchSize") as HTMLInputElement | null;
+    const directoryLimit = await waitFor(() => {
+      const input = document.getElementById(
+        "generated-directoryIndexMaxEntries"
+      ) as HTMLInputElement | null;
       if (!input) {
-        throw new Error("Expected publication impact batch input.");
+        throw new Error("Expected generated directory limit input.");
       }
       return input;
     });
-    fireEvent.change(impactBatchSize, { target: { value: "120" } });
+    fireEvent.change(directoryLimit, { target: { value: "250" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(updatePublicationSettings).toHaveBeenCalledWith(expect.objectContaining({
-        roleConcurrency: 1,
-        impactBatchSize: 120,
-        impactConcurrency: 8,
-        dirtyFileHardCount: 2000,
-        dirtyFileResumeCount: 1000,
-        pendingImpactHardCount: 20000,
-        pendingImpactResumeCount: 10000
+      expect(updateGeneratedSettings).toHaveBeenCalledWith(expect.objectContaining({
+        directoryIndexMaxEntries: 250,
+        directoryIndexMaxBytes: 65536,
+        rootSummaryLimit: 500,
+        okfLogMaxEntries: 100,
+        okfLogMaxBytes: 65536
       }));
     });
+    expect(document.getElementById("publication-mode")).toBeNull();
   });
 });
 

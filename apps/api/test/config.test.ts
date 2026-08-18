@@ -1,12 +1,21 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { parseRuntimeConfig } from "../src/config.js";
+import { createStorageVnextOwnedScopeProof } from "../src/storage-vnext/bootstrap/owned-scope.js";
 
 const validEnv = {
   ADMIN_USERNAME: "admin",
   ADMIN_PASSWORD: "admin-password",
   DATABASE_URL: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
   REDIS_URL: "redis://127.0.0.1:6379/0",
+  SEARCH_PROVIDER: "meilisearch",
+  SEARCH_INDEX_PREFIX: "focowiki_test",
+  MEILI_HOST: "http://127.0.0.1:7700",
+  MEILI_API_KEY: "development-search-key",
+  MEILI_METRICS_API_KEY: "development-search-metrics-key",
   ADMIN_API_PORT: "43000",
   ADMIN_UI_PORT: "43100",
   PUBLIC_OPENAPI_PORT: "43200",
@@ -21,6 +30,223 @@ const validEnv = {
 };
 
 describe("parseRuntimeConfig", () => {
+  describe("search provider startup configuration", () => {
+    it("requires an explicit supported provider and common index prefix", () => {
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_PROVIDER: ""
+        })
+      ).toThrow(/SEARCH_PROVIDER/);
+
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_PROVIDER: "elasticsearch"
+        })
+      ).toThrow(/SEARCH_PROVIDER/);
+
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_INDEX_PREFIX: ""
+        })
+      ).toThrow(/SEARCH_INDEX_PREFIX/);
+
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_INDEX_PREFIX: "Invalid Prefix"
+        })
+      ).toThrow(/SEARCH_INDEX_PREFIX/);
+    });
+
+    it("validates and exposes only the selected Meilisearch configuration", () => {
+      const config = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "meilisearch",
+        SEARCH_INDEX_PREFIX: "shared_search",
+        MEILI_INDEX_PREFIX: undefined,
+        OPENSEARCH_URL: "not-a-url",
+        OPENSEARCH_AUTH_MODE: "invalid"
+      });
+
+      expect(config.search).toEqual({
+        provider: "meilisearch",
+        endpoint: "http://127.0.0.1:7700",
+        apiKey: "development-search-key",
+        metricsApiKey: "development-search-metrics-key",
+        indexPrefix: "shared_search"
+      });
+    });
+
+    it("validates and exposes only the selected OpenSearch configuration", () => {
+      const config = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        SEARCH_INDEX_PREFIX: "shared_search",
+        MEILI_HOST: undefined,
+        MEILI_API_KEY: undefined,
+        MEILI_METRICS_API_KEY: undefined,
+        MEILI_INDEX_PREFIX: undefined,
+        OPENSEARCH_URL: "http://127.0.0.1:9200",
+        OPENSEARCH_AUTH_MODE: "none"
+      });
+
+      expect(config.search).toEqual({
+        provider: "opensearch",
+        endpoint: "http://127.0.0.1:9200",
+        indexPrefix: "shared_search",
+        auth: {
+          mode: "none"
+        },
+        tls: {}
+      });
+    });
+
+    it("rejects unauthenticated OpenSearch in production", () => {
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          APP_ENV: "production",
+          ADMIN_PASSWORD: "production-admin-password",
+          ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+          ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+          PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+          ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+          S3_ACCESS_KEY_ID: "production-storage-access",
+          S3_SECRET_ACCESS_KEY: "production-storage-secret",
+          SEARCH_PROVIDER: "opensearch",
+          OPENSEARCH_URL: "https://search.example.com",
+          OPENSEARCH_AUTH_MODE: "none"
+        })
+      ).toThrow(/OPENSEARCH_AUTH_MODE/);
+    });
+
+    it("loads OpenSearch basic auth and private CA with secret-file precedence", () => {
+      const directory = mkdtempSync(join(tmpdir(), "focowiki-opensearch-secrets-"));
+      const passwordFile = join(directory, "runtime-password");
+      const caFile = join(directory, "root-ca.pem");
+      writeFileSync(passwordFile, "file-password\n", { mode: 0o600 });
+      writeFileSync(caFile, "test-ca\n", { mode: 0o600 });
+
+      const config = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://search.example.com",
+        OPENSEARCH_AUTH_MODE: "basic",
+        OPENSEARCH_USERNAME: "runtime-user",
+        OPENSEARCH_PASSWORD: "ignored-direct-password",
+        OPENSEARCH_PASSWORD_FILE: passwordFile,
+        OPENSEARCH_CA_FILE: caFile
+      });
+
+      expect(config.search).toEqual({
+        provider: "opensearch",
+        endpoint: "https://search.example.com",
+        indexPrefix: "focowiki_test",
+        auth: {
+          mode: "basic",
+          username: "runtime-user",
+          password: "file-password"
+        },
+        tls: { caFile }
+      });
+      expect(config.search).not.toHaveProperty("bootstrap");
+
+      writeFileSync(passwordFile, "rotated-file-password\n", { mode: 0o600 });
+      const rotated = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://search.example.com",
+        OPENSEARCH_AUTH_MODE: "basic",
+        OPENSEARCH_USERNAME: "runtime-user",
+        OPENSEARCH_PASSWORD_FILE: passwordFile,
+        OPENSEARCH_CA_FILE: caFile
+      });
+      expect(rotated.search).toMatchObject({
+        auth: {
+          mode: "basic",
+          username: "runtime-user",
+          password: "rotated-file-password"
+        }
+      });
+    });
+
+    it.each(["es", "aoss"] as const)(
+      "loads renewable AWS SigV4 metadata for %s",
+      (service) => {
+        const config = parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_PROVIDER: "opensearch",
+          OPENSEARCH_URL: "https://search.us-east-1.amazonaws.com",
+          OPENSEARCH_AUTH_MODE: "aws_sigv4",
+          OPENSEARCH_AWS_REGION: "us-east-1",
+          OPENSEARCH_AWS_SERVICE: service
+        });
+
+        expect(config.search).toMatchObject({
+          provider: "opensearch",
+          auth: {
+            mode: "aws_sigv4",
+            region: "us-east-1",
+            service
+          }
+        });
+      }
+    );
+
+    it("validates only fields required by the selected OpenSearch auth mode", () => {
+      expect(() => parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "",
+        OPENSEARCH_AUTH_MODE: "basic",
+        OPENSEARCH_USERNAME: "",
+        OPENSEARCH_PASSWORD: ""
+      })).toThrow(/OPENSEARCH_URL.*OPENSEARCH_USERNAME.*OPENSEARCH_PASSWORD/su);
+
+      expect(() => parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://search.example.com",
+        OPENSEARCH_AUTH_MODE: "aws_sigv4",
+        OPENSEARCH_AWS_REGION: "",
+        OPENSEARCH_AWS_SERVICE: "execute-api"
+      })).toThrow(/OPENSEARCH_AWS_REGION.*OPENSEARCH_AWS_SERVICE/su);
+
+      expect(() => parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://runtime-user:runtime-password@search.example.com",
+        OPENSEARCH_AUTH_MODE: "none"
+      })).toThrow(/OPENSEARCH_URL/);
+    });
+
+    it("resolves an identical provider descriptor for every runtime role", () => {
+      const roles = [
+        "api",
+        "source-worker",
+        "publication-worker",
+        "maintenance-worker",
+        "migration",
+        "validation"
+      ];
+      const descriptors = roles.map((role) =>
+        parseRuntimeConfig({
+          ...validEnv,
+          FOCOWIKI_RUNTIME_ROLE: role
+        }).search
+      );
+
+      expect(descriptors).toEqual(roles.map(() => descriptors[0]));
+      expect(descriptors[0]).toMatchObject({
+        provider: "meilisearch",
+        indexPrefix: "focowiki_test"
+      });
+    });
+  });
+
   it("parses required runtime settings", () => {
     const config = parseRuntimeConfig(validEnv);
 
@@ -31,13 +257,20 @@ describe("parseRuntimeConfig", () => {
     expect(config.database).toEqual({
       url: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
       poolMax: 10,
-      sourceWorkerPoolMax: 6,
-      publicationWorkerPoolMax: 4,
-      projectionRepairWorkerPoolMax: 8,
-      lexicalRebuildWorkerPoolMax: 8,
-      maintenanceWorkerPoolMax: 2
+      workerPoolMax: 8
     });
-    expect(config.redis.url).toBe("redis://127.0.0.1:6379/0");
+    expect(config.redis).toEqual({
+      url: "redis://127.0.0.1:6379/0",
+      keyPrefix: "focowiki"
+    });
+    expect(config.search).toEqual({
+      provider: "meilisearch",
+      endpoint: "http://127.0.0.1:7700",
+      apiKey: "development-search-key",
+      metricsApiKey: "development-search-metrics-key",
+      indexPrefix: "focowiki_test"
+    });
+    expect(config).not.toHaveProperty("meiliMasterKey");
     expect(config.ports).toEqual({
       adminApi: 43_000,
       adminUi: 43_100,
@@ -53,28 +286,12 @@ describe("parseRuntimeConfig", () => {
       prefix: "tenant/demo"
     });
     expect(config).not.toHaveProperty("upload");
-    expect(config.publication).toEqual({
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      impactBatchSize: 100,
-      impactConcurrency: 8,
-      dirtyFileHardCount: 2_000,
-      dirtyFileResumeCount: 1_000,
-      dirtyAgeHardSeconds: 900,
-      dirtyAgeResumeSeconds: 300,
-      pendingImpactHardCount: 20_000,
-      pendingImpactResumeCount: 10_000,
-      generationRetentionDays: 7,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
+    expect(config.generated).toEqual({
       directoryIndexMaxEntries: 200,
       directoryIndexMaxBytes: 65_536,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(config.graph).toEqual({
       candidateLimit: 200,
@@ -83,17 +300,14 @@ describe("parseRuntimeConfig", () => {
       searchMaxDepth: 2,
       searchDefaultFanout: 10,
       searchMaxFanout: 25,
-      modelReviewEnabled: true,
-      publicationShardSize: 5_000,
-      cacheTtlSeconds: 5,
+      shardSize: 5_000,
       genericPhraseThreshold: 4
     });
     expect(config.worker).toEqual({
       sourceFileConcurrency: 2,
       claimBatchSize: 10,
-      generationBatchSize: 50,
       pollIntervalMs: 1_000,
-      lockTtlSeconds: 900,
+      lockTtlSeconds: 60,
       jobMaxAttempts: 3,
       jobRetryDelayMs: 30_000,
       sourceQueueHardDepth: 5_000,
@@ -111,21 +325,16 @@ describe("parseRuntimeConfig", () => {
       hardDeleteObjectBatchSize: 1_000,
       hardDeleteMaxAttempts: 3,
       hardDeleteRetryDelayMs: 60_000,
-      hardDeleteFailedRetentionDays: 30,
-      hardDeleteVersionPurgeEnabled: false
+      hardDeleteFailedRetentionDays: 30
     });
     expect(config.logging).toEqual({
       level: "debug",
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
-      }
-    });
-    expect(config.okf).toEqual({
-      log: {
-        maxEntries: 100,
-        maxBytes: 65_536
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
     expect("i18n" in config).toBe(false);
@@ -133,6 +342,15 @@ describe("parseRuntimeConfig", () => {
       "https://admin.example.com",
       "https://docs.example.com"
     ]);
+  });
+
+  it("accepts an isolated Redis key prefix", () => {
+    const config = parseRuntimeConfig({
+      ...validEnv,
+      REDIS_KEY_PREFIX: "focowiki:validation:svnext-owned"
+    });
+
+    expect(config.redis.keyPrefix).toBe("focowiki:validation:svnext-owned");
   });
 
   it("parses public OpenAPI URL while leaving key management to the database", () => {
@@ -197,6 +415,87 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/REDIS_URL/);
   });
 
+  it("validates search endpoint and production scoped credentials", () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MEILI_HOST: "file:///tmp/search"
+      })
+    ).toThrow(/MEILI_HOST/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        APP_ENV: "production",
+        ADMIN_PASSWORD: "production-admin-password",
+        ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+        ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+        PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+        ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+        MEILI_API_KEY: ""
+      })
+    ).toThrow(/MEILI_API_KEY/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        APP_ENV: "production",
+        ADMIN_PASSWORD: "production-admin-password",
+        ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+        ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+        PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+        ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+        MEILI_METRICS_API_KEY: ""
+      })
+    ).toThrow(/MEILI_METRICS_API_KEY/);
+  });
+
+  it("accepts the canonical run-owned Meilisearch namespace", () => {
+    const proof = createStorageVnextOwnedScopeProof({
+      runId: "svnext-20260802T101443Z-7aa18b22cafe",
+      nonceHash: "a".repeat(64),
+      createdAt: "2026-08-02T02:14:43.000Z",
+      filesystemScope: join(
+        tmpdir(),
+        "svnext-20260802T101443Z-7aa18b22cafe"
+      )
+    });
+
+    expect(() => parseRuntimeConfig({
+      ...validEnv,
+      SEARCH_INDEX_PREFIX: proof.searchScope
+    })).not.toThrow();
+  });
+
+  it("loads production search credentials from runtime secret files", () => {
+    const directory = mkdtempSync(join(tmpdir(), "focowiki-search-secrets-"));
+    const apiKeyFile = join(directory, "meilisearch-api-key");
+    const metricsKeyFile = join(directory, "meilisearch-metrics-key");
+    writeFileSync(apiKeyFile, "runtime-search-key\n", { mode: 0o600 });
+    writeFileSync(metricsKeyFile, "runtime-metrics-key\n", { mode: 0o600 });
+
+    const config = parseRuntimeConfig({
+      ...validEnv,
+      APP_ENV: "production",
+      ADMIN_PASSWORD: "production-admin-password",
+      ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+      ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+      PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+      ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+      S3_ACCESS_KEY_ID: "production-storage-access",
+      S3_SECRET_ACCESS_KEY: "production-storage-secret",
+      MEILI_API_KEY: "",
+      MEILI_METRICS_API_KEY: "",
+      MEILI_API_KEY_FILE: apiKeyFile,
+      MEILI_METRICS_API_KEY_FILE: metricsKeyFile
+    });
+
+    expect(config.search).toMatchObject({
+      apiKey: "runtime-search-key",
+      metricsApiKey: "runtime-metrics-key"
+    });
+  });
+
   it("parses conservative security defaults for local deployments", () => {
     const config = parseRuntimeConfig(validEnv);
     const security = config.security;
@@ -257,7 +556,9 @@ describe("parseRuntimeConfig", () => {
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
     expect(
@@ -277,7 +578,9 @@ describe("parseRuntimeConfig", () => {
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
     expect(
@@ -290,7 +593,9 @@ describe("parseRuntimeConfig", () => {
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
 
@@ -306,7 +611,9 @@ describe("parseRuntimeConfig", () => {
     expect(parseRuntimeConfig(validEnv).logging?.file).toEqual({
       directory: resolve(process.cwd(), "logs"),
       maxBytes: 10_485_760,
-      maxFiles: 5
+      maxFiles: 5,
+      maxTotalBytes: 1_073_741_824,
+      retentionDays: 7
     });
 
     expect(
@@ -314,12 +621,16 @@ describe("parseRuntimeConfig", () => {
         ...validEnv,
         LOG_FILE_DIR: "runtime-logs",
         LOG_FILE_MAX_BYTES: "1024",
-        LOG_FILE_MAX_FILES: "3"
+        LOG_FILE_MAX_FILES: "3",
+        LOG_FILE_MAX_TOTAL_BYTES: "4096",
+        LOG_FILE_RETENTION_DAYS: "2"
       }).logging?.file
     ).toEqual({
       directory: resolve(process.cwd(), "runtime-logs"),
       maxBytes: 1_024,
-      maxFiles: 3
+      maxFiles: 3,
+      maxTotalBytes: 4_096,
+      retentionDays: 2
     });
 
     expect(() =>
@@ -334,6 +645,19 @@ describe("parseRuntimeConfig", () => {
         LOG_FILE_MAX_FILES: "-1"
       })
     ).toThrow(/LOG_FILE_MAX_FILES/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_FILE_MAX_BYTES: "1024",
+        LOG_FILE_MAX_TOTAL_BYTES: "512"
+      })
+    ).toThrow(/LOG_FILE_MAX_TOTAL_BYTES/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_FILE_RETENTION_DAYS: "0"
+      })
+    ).toThrow(/LOG_FILE_RETENTION_DAYS/);
   });
 
   it("validates trusted origins and CORS settings", () => {
@@ -451,24 +775,26 @@ describe("parseRuntimeConfig", () => {
     expect(parseRuntimeConfig(validEnv).security?.rateLimits).not.toHaveProperty("upload");
   });
 
-  it("uses default OKF log limits managed by runtime settings", () => {
-    expect(parseRuntimeConfig(validEnv).okf).toEqual({
-      log: {
-        maxEntries: 100,
-        maxBytes: 65_536
-      }
+  it("uses default generated knowledge-base limits managed by runtime settings", () => {
+    expect(parseRuntimeConfig(validEnv).generated).toEqual({
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(
       parseRuntimeConfig({
         ...validEnv,
         OKF_LOG_MAX_ENTRIES: "50",
         OKF_LOG_MAX_BYTES: "32768"
-      }).okf
+      }).generated
     ).toEqual({
-      log: {
-        maxEntries: 100,
-        maxBytes: 65_536
-      }
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
   });
 
@@ -477,9 +803,9 @@ describe("parseRuntimeConfig", () => {
       parseRuntimeConfig({
         ...validEnv,
         DATABASE_POOL_MAX: "16",
+        WORKER_DATABASE_POOL_MAX: "9",
         SOURCE_WORKER_DATABASE_POOL_MAX: "9",
         PUBLICATION_WORKER_DATABASE_POOL_MAX: "7",
-        PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX: "8",
         MAINTENANCE_WORKER_DATABASE_POOL_MAX: "5",
         WORKER_SOURCE_FILE_CONCURRENCY: "3",
         WORKER_CLAIM_BATCH_SIZE: "12",
@@ -491,16 +817,12 @@ describe("parseRuntimeConfig", () => {
       })
     ).toMatchObject({
       database: {
-      poolMax: 16,
-      sourceWorkerPoolMax: 9,
-      publicationWorkerPoolMax: 7,
-      projectionRepairWorkerPoolMax: 8,
-      maintenanceWorkerPoolMax: 5
+        poolMax: 16,
+        workerPoolMax: 9
       },
       worker: {
         sourceFileConcurrency: 2,
         claimBatchSize: 10,
-        generationBatchSize: 50,
         heartbeatIntervalMs: 15_000,
         sourceQueueHardDepth: 5_000,
         sourceQueueResumeDepth: 3_000,
@@ -519,58 +841,31 @@ describe("parseRuntimeConfig", () => {
         DATABASE_POOL_MAX: "0"
       })
     ).toThrow(/DATABASE_POOL_MAX/);
-    expect(parseRuntimeConfig({ ...validEnv, WORKER_DATABASE_POOL_MAX: "-1" }).database).toEqual({
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        WORKER_DATABASE_POOL_MAX: "-1"
+      })
+    ).toThrow(/WORKER_DATABASE_POOL_MAX/);
+    expect(parseRuntimeConfig({
+      ...validEnv,
+      SOURCE_WORKER_DATABASE_POOL_MAX: "-1",
+      PUBLICATION_WORKER_DATABASE_POOL_MAX: "-1",
+      MAINTENANCE_WORKER_DATABASE_POOL_MAX: "-1"
+    }).database).toEqual({
       url: validEnv.DATABASE_URL,
       poolMax: 10,
-      sourceWorkerPoolMax: 6,
-      publicationWorkerPoolMax: 4,
-      projectionRepairWorkerPoolMax: 8,
-      lexicalRebuildWorkerPoolMax: 8,
-      maintenanceWorkerPoolMax: 2
+      workerPoolMax: 8
     });
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        PUBLICATION_WORKER_DATABASE_POOL_MAX: "-1"
-      })
-    ).toThrow(/PUBLICATION_WORKER_DATABASE_POOL_MAX/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX: "-1"
-      })
-    ).toThrow(/PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX: "-1"
-      })
-    ).toThrow(/LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX/);
   });
 
-  it("uses default publication settings managed by runtime settings", () => {
-    expect(parseRuntimeConfig(validEnv).publication).toEqual({
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      impactBatchSize: 100,
-      impactConcurrency: 8,
-      dirtyFileHardCount: 2_000,
-      dirtyFileResumeCount: 1_000,
-      dirtyAgeHardSeconds: 900,
-      dirtyAgeResumeSeconds: 300,
-      pendingImpactHardCount: 20_000,
-      pendingImpactResumeCount: 10_000,
-      generationRetentionDays: 7,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
+  it("does not restore removed publication settings from environment variables", () => {
+    expect(parseRuntimeConfig(validEnv).generated).toEqual({
       directoryIndexMaxEntries: 200,
       directoryIndexMaxBytes: 65_536,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(
       parseRuntimeConfig({
@@ -585,29 +880,13 @@ describe("parseRuntimeConfig", () => {
         GRAPH_CANDIDATE_LIMIT: "150",
         GRAPH_MAINTENANCE_BATCH_SIZE: "350",
         ROOT_SUMMARY_LIMIT: "450"
-      }).publication
+      }).generated
     ).toEqual({
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      impactBatchSize: 100,
-      impactConcurrency: 8,
-      dirtyFileHardCount: 2_000,
-      dirtyFileResumeCount: 1_000,
-      dirtyAgeHardSeconds: 900,
-      dirtyAgeResumeSeconds: 300,
-      pendingImpactHardCount: 20_000,
-      pendingImpactResumeCount: 10_000,
-      generationRetentionDays: 7,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
       directoryIndexMaxEntries: 200,
       directoryIndexMaxBytes: 65_536,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
   });
 

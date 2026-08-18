@@ -1,13 +1,10 @@
 import { Hono } from "hono";
-import { createSourceResourceMutationService } from "../application/source-resource-mutations.js";
-import { createSourceResourceService } from "../application/source-resources.js";
-import { resolveWorkerConfig } from "../config.js";
 import { SourceResourceError } from "../domain/source-resource.js";
+import { SourcePathValidationError } from "../domain/source-path.js";
 import {
   deriveSourceFileLifecycle,
   type SourceFileLifecycleActionKind
 } from "../domain/source-file-lifecycle.js";
-import { recordSecurityAudit } from "../security/audit.js";
 import {
   conflict,
   notFound,
@@ -21,26 +18,33 @@ import {
   safe
 } from "./route-helpers.js";
 import type { DeveloperOpenApiRouteServices } from "./routes.js";
+import type { DeveloperOpenApiApplication } from "./services.js";
 import { toDeveloperKnowledgeBase } from "./serializers.js";
-import { INCREMENTAL_PUBLICATION_DEFAULTS } from "../publication/incremental-defaults.js";
 import {
   readSourceResourceCursor,
   sourceResourceCursorScope,
   writeSourceResourceCursor
 } from "./source-resource-pagination.js";
 import { readIdempotencyKey } from "./idempotency-key.js";
+import type { StorageVnextAdminMutationApplication } from
+  "../storage-vnext/api/admin-mutation-application.js";
+import { presentDeveloperResourceOperation } from "./resource-operation-presenter.js";
+import {
+  readKnowledgeBaseDescription,
+  readKnowledgeBaseName
+} from "./knowledge-base-input.js";
 
 export function registerDeveloperOpenApiSourceResourceRoutes(
   app: Hono,
-  services: DeveloperOpenApiRouteServices
+  services: DeveloperOpenApiRouteServices,
+  api: DeveloperOpenApiApplication
 ): void {
-  const requireService = () => {
-    const repository = services.repositories?.sourceResources;
-    if (!repository) throw repositoryUnavailable();
-    return createSourceResourceService(repository, services.applicationRuntime);
+  const requireSourceApplication = () => {
+    if (!services.sourceApplication.available()) throw repositoryUnavailable();
+    return services.sourceApplication;
   };
   const requireKnowledgeBase = async (knowledgeBaseId: string) => {
-    const knowledgeBase = await services.repositories?.knowledgeBases.getKnowledgeBase(knowledgeBaseId);
+    const knowledgeBase = await requireSourceApplication().getKnowledgeBase({ knowledgeBaseId });
     if (!knowledgeBase) throw notFound("Knowledge base was not found.");
     return knowledgeBase;
   };
@@ -48,41 +52,56 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
   app.patch("/openapi/v2/knowledge-bases/:knowledgeBaseId", async (context) =>
     safe(context, async () => {
       const expectedResourceRevision = readExpectedRevision(context.req.header("if-match"));
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(
+        context.req.raw,
+        ["name", "description"]
+      );
       const name = body.name === undefined ? undefined : readOptionalName(body.name);
       const description = readOptionalDescription(body.description);
       if (name === undefined && description === undefined) {
-        throw validationError("At least one mutable knowledge-base field is required.");
+        throw validationError("Provide a knowledge-base name or description to update.");
       }
-      const mutation = await requireMutationService(services);
-      const result = await mutation.service.updateKnowledgeBase(
-        {
+      const result = await runSourceResourceMutation(() =>
+        requireSourceApplication().updateKnowledgeBase({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           expectedResourceRevision,
           ...(name === undefined ? {} : { name }),
           ...(description === undefined ? {} : { description })
-        },
-        mutation.maxAttempts
+        })
       );
-      const updated = result.knowledgeBase;
-      if (!updated) throw conflict("Knowledge-base revision does not match the active resource.");
-      return { knowledgeBase: toDeveloperKnowledgeBase(updated) };
+      if (!result.knowledgeBase) {
+        throw conflict("The knowledge-base version in If-Match is no longer current.");
+      }
+      await recordResourceAudit(services, context, {
+        eventType: "knowledge_base_metadata_updated",
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        targetKind: "knowledge_base",
+        targetPublicId: context.req.param("knowledgeBaseId")
+      });
+      return {
+        knowledgeBase: toDeveloperKnowledgeBase(result.knowledgeBase)
+      };
     })
   );
 
   app.delete("/openapi/v2/knowledge-bases/:knowledgeBaseId", async (context) =>
     safe(context, async () => {
       const knowledgeBaseId = context.req.param("knowledgeBaseId");
-      const mutation = await requireMutationService(services);
       const result = await runSourceResourceMutation(() =>
-        mutation.service.deleteKnowledgeBase({
+        requireSourceApplication().deleteKnowledgeBase({
           knowledgeBaseId,
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-          expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
-          maxAttempts: mutation.maxAttempts
+          expectedResourceRevision: readExpectedRevision(context.req.header("if-match"))
         })
       );
+      await recordResourceAudit(services, context, {
+        eventType: "knowledge_base_delete_accepted",
+        knowledgeBaseId,
+        targetKind: "knowledge_base",
+        targetPublicId: knowledgeBaseId
+      });
       return {
+        operation: presentDeveloperResourceOperation(result.operation),
         deletion: {
           knowledgeBaseId,
           accepted: true,
@@ -103,7 +122,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         knowledgeBaseId,
         { parentDirectoryId }
       );
-      const page = await requireService().listDirectories({
+      const page = await requireSourceApplication().listDirectories({
         knowledgeBaseId,
         parentDirectoryId,
         limit: readLimit(context.req.query("limit"), services.config),
@@ -129,11 +148,11 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
     async (context) =>
       safe(context, async () => {
-        const directory = await requireService().getDirectory({
+        const directory = await requireSourceApplication().getDirectory({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           directoryId: context.req.param("directoryId")
         });
-        if (!directory) throw notFound("Source directory was not found.");
+        if (!directory) throw notFound("Uploaded directory was not found.");
         return { directory: toDirectoryResponse(directory) };
       })
   );
@@ -142,17 +161,22 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
     async (context) =>
       safe(context, async () => {
-        const body = await readDeveloperJsonObjectBody(context.req.raw);
-        const result = await acceptAndEnqueueOperation(services, {
+        const body = await readDeveloperJsonObjectBody(context.req.raw, ["relativePath"]);
+        const result = await runSourceResourceMutation(() =>
+          requireSourceApplication().moveSourceDirectory({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
-          kind: "source_directory_move",
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
-          targetKind: "source_directory",
           targetId: context.req.param("directoryId"),
-          payload: { relativePath: body.relativePath }
+          relativePath: readRequiredRelativePath(body.relativePath)
+        }));
+        await recordResourceAudit(services, context, {
+          eventType: "source_directory_move_accepted",
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_directory",
+          targetPublicId: context.req.param("directoryId")
         });
-        return { operation: toOperationResponse(result.operation) };
+        return { operation: presentDeveloperResourceOperation(result.operation) };
       }, 202)
   );
 
@@ -166,25 +190,22 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         const expectedResourceRevision = readExpectedRevision(context.req.header("if-match"));
         const knowledgeBaseId = context.req.param("knowledgeBaseId");
         const directoryId = context.req.param("directoryId");
-        const mutation = await requireMutationService(services);
         const result = await runSourceResourceMutation(() =>
-          mutation.service.deleteDirectory({
+          requireSourceApplication().deleteSourceDirectory({
             knowledgeBaseId,
             directoryId,
             idempotencyKey,
-            expectedResourceRevision,
-            maxAttempts: mutation.maxAttempts
+            expectedResourceRevision
           })
         );
-        await recordSecurityAudit({
-          repositories: services.repositories,
-          config: services.config,
-          context,
+        await recordResourceAudit(services, context, {
           eventType: "source_directory_delete_accepted",
-          result: "success"
+          knowledgeBaseId,
+          targetKind: "source_directory",
+          targetPublicId: result.effectiveDirectoryId
         });
         return {
-          operation: toOperationResponse(result.operation),
+          operation: presentDeveloperResourceOperation(result.operation),
           deletion: {
             directoryId: result.effectiveDirectoryId,
             affectedDirectoryCount: result.affectedDirectoryCount,
@@ -208,7 +229,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         directoryId: resolvedDirectoryId,
         filters
       });
-      const page = await requireService().listSourceFiles({
+      const page = await requireSourceApplication().listSourceFiles({
         knowledgeBaseId,
         directoryId: resolvedDirectoryId,
         filters,
@@ -235,11 +256,11 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
     async (context) =>
       safe(context, async () => {
-        const sourceFile = await requireService().getSourceFile({
+        const sourceFile = await requireSourceApplication().getSourceFile({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sourceFileId: context.req.param("sourceFileId")
         });
-        if (!sourceFile) throw notFound("Source file was not found.");
+        if (!sourceFile) throw notFound("Uploaded file was not found.");
         return { sourceFile: toSourceFileResponse(sourceFile) };
       })
   );
@@ -248,18 +269,15 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/content",
     async (context) => {
       try {
-        const descriptor = await requireService().getSourceFileContentDescriptor({
+        const source = await api.readSourceContent({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sourceFileId: context.req.param("sourceFileId")
         });
-        if (!descriptor) throw notFound("Source file was not found.");
-        const content = await services.storage.getObjectBody?.(descriptor.objectKey);
-        if (content == null) throw notFound("Source content was not found.");
-        return new Response(content, {
+        return new Response(source.content, {
           headers: {
-            "content-type": descriptor.contentType,
-            etag: `\"${descriptor.resourceRevision}\"`,
-            "x-content-revision": String(descriptor.contentRevision)
+            "content-type": source.contentType,
+            etag: `\"${source.resourceRevision}\"`,
+            "x-content-revision": String(source.contentRevision)
           }
         });
       } catch (error) {
@@ -272,17 +290,22 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
     async (context) =>
       safe(context, async () => {
-        const body = await readDeveloperJsonObjectBody(context.req.raw);
-        const result = await acceptAndEnqueueOperation(services, {
+        const body = await readDeveloperJsonObjectBody(context.req.raw, ["relativePath"]);
+        const result = await runSourceResourceMutation(() =>
+          requireSourceApplication().moveSourceFile({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
-          kind: "source_file_move",
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
-          targetKind: "source_file",
           targetId: context.req.param("sourceFileId"),
-          payload: { relativePath: body.relativePath }
+          relativePath: readRequiredRelativePath(body.relativePath)
+        }));
+        await recordResourceAudit(services, context, {
+          eventType: "source_file_move_accepted",
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: context.req.param("sourceFileId")
         });
-        return { operation: toOperationResponse(result.operation) };
+        return { operation: presentDeveloperResourceOperation(result.operation) };
       }, 202)
   );
 
@@ -290,6 +313,9 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/content",
     async (context) =>
       safe(context, async () => {
+        if (!isMarkdownContentType(context.req.header("content-type"))) {
+          throw validationError("A text/markdown request body is required.");
+        }
         const bytes = new Uint8Array(await context.req.raw.arrayBuffer());
         if (bytes.byteLength === 0) {
           throw validationError("Markdown replacement body is required.");
@@ -297,17 +323,22 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         const knowledgeBaseId = context.req.param("knowledgeBaseId");
         const sourceFileId = context.req.param("sourceFileId");
         const relativePath = context.req.header("x-source-relative-path")?.trim();
-        const mutation = await requireMutationService(services);
-        const result = await runSourceResourceMutation(() => mutation.service.replaceSourceContent({
+        const result = await runSourceResourceMutation(() =>
+          requireSourceApplication().replaceSourceFileContent({
           knowledgeBaseId,
           sourceFileId,
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
           bytes,
-          ...(relativePath ? { relativePath } : {}),
-          maxAttempts: mutation.maxAttempts
+          ...(relativePath ? { relativePath } : {})
         }));
-        return { operation: toOperationResponse(result.operation) };
+        await recordResourceAudit(services, context, {
+          eventType: "source_file_replace_accepted",
+          knowledgeBaseId,
+          targetKind: "source_file",
+          targetPublicId: sourceFileId
+        });
+        return { operation: presentDeveloperResourceOperation(result.operation) };
       }, 202)
   );
 
@@ -317,18 +348,22 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
       safe(context, async () => {
         const knowledgeBaseId = context.req.param("knowledgeBaseId");
         const sourceFileId = context.req.param("sourceFileId");
-        const mutation = await requireMutationService(services);
         const result = await runSourceResourceMutation(() =>
-          mutation.service.deleteSourceFile({
+          requireSourceApplication().deleteSourceFile({
             knowledgeBaseId,
             sourceFileId,
             idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-            expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
-            maxAttempts: mutation.maxAttempts
+            expectedResourceRevision: readExpectedRevision(context.req.header("if-match"))
           })
         );
+        await recordResourceAudit(services, context, {
+          eventType: "source_file_delete_accepted",
+          knowledgeBaseId,
+          targetKind: "source_file",
+          targetPublicId: sourceFileId
+        });
         return {
-          operation: toOperationResponse(result.operation),
+          operation: presentDeveloperResourceOperation(result.operation),
           deletion: { sourceFileId }
         };
       }, 202)
@@ -344,7 +379,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         knowledgeBaseId,
         { state }
       );
-      const page = await requireService().listOperations({
+      const page = await requireSourceApplication().listOperations({
         knowledgeBaseId,
         ...(state ? { states: [state] } : {}),
         limit: readLimit(context.req.query("limit"), services.config),
@@ -355,7 +390,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         )
       });
       return {
-        items: page.items.map(toOperationResponse),
+        items: page.items.map(presentDeveloperResourceOperation),
         nextCursor: await writeSourceResourceCursor(
           services.redis,
           scope,
@@ -370,17 +405,43 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/operations/:operationId",
     async (context) =>
       safe(context, async () => {
-        const operation = await requireService().getOperation({
+        const operation = await requireSourceApplication().getOperation({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           operationId: context.req.param("operationId")
         });
-        if (!operation) throw notFound("Resource operation was not found.");
-        return { operation: toOperationResponse(operation) };
+        if (!operation) throw notFound("File or directory change was not found.");
+        return { operation: presentDeveloperResourceOperation(operation) };
       })
   );
 }
 
-function toDirectoryResponse(directory: Awaited<ReturnType<ReturnType<typeof createSourceResourceService>["getDirectory"]>> & {}) {
+async function recordResourceAudit(
+  services: DeveloperOpenApiRouteServices,
+  context: Parameters<DeveloperOpenApiRouteServices["auditApplication"]["record"]>[0]["context"],
+  input: {
+    eventType: string;
+    knowledgeBaseId: string;
+    targetKind: "knowledge_base" | "source_directory" | "source_file";
+    targetPublicId: string;
+  }
+): Promise<void> {
+  await services.auditApplication.record({
+    context,
+    eventType: input.eventType,
+    result: "success",
+    knowledgeBaseId: input.knowledgeBaseId,
+    targetKind: input.targetKind,
+    targetPublicId: input.targetPublicId
+  });
+}
+
+function isMarkdownContentType(value: string | undefined): boolean {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
+}
+
+function toDirectoryResponse(
+  directory: NonNullable<Awaited<ReturnType<StorageVnextAdminMutationApplication["getDirectory"]>>>
+) {
   if (!directory) throw new SourceResourceError("RESOURCE_NOT_FOUND");
   const base = `/openapi/v2/knowledge-bases/${directory.knowledgeBaseId}`;
   return {
@@ -408,11 +469,13 @@ function toDirectoryResponse(directory: Awaited<ReturnType<ReturnType<typeof cre
   };
 }
 
-export function toSourceFileResponse(sourceFile: NonNullable<Awaited<ReturnType<ReturnType<typeof createSourceResourceService>["getSourceFile"]>>>) {
+export function toSourceFileResponse(
+  sourceFile: NonNullable<Awaited<ReturnType<StorageVnextAdminMutationApplication["getSourceFile"]>>>
+) {
   const base = `/openapi/v2/knowledge-bases/${sourceFile.knowledgeBaseId}`;
   const lifecycle = deriveSourceFileLifecycle({
     processingStatus: sourceFile.processingStatus,
-    processingStage: sourceFile.currentStage,
+    blockingWorkKind: sourceFile.blockingWorkKind,
     generatedOutputStatus: sourceFile.generatedOutputStatus,
     generatedPath: sourceFile.generatedPath,
     failure: sourceFile.terminalFailure
@@ -428,20 +491,21 @@ export function toSourceFileResponse(sourceFile: NonNullable<Awaited<ReturnType<
     sizeBytes: sourceFile.sizeBytes,
     resourceRevision: sourceFile.resourceRevision,
     contentRevision: sourceFile.contentRevision,
-    activeRevisionId: sourceFile.activeRevisionId,
     state: lifecycle.state,
-    currentStage: lifecycle.currentStage,
+    workProgress: {
+      required: sourceFile.requiredWorkCount,
+      completed: sourceFile.completedWorkCount,
+      activeKinds: sourceFile.activeWorkKinds,
+      blockingKind: lifecycle.blockingWorkKind,
+      retryingKind: sourceFile.retryingWorkKind
+    },
     failure: lifecycle.failure,
     generatedOutputStatus: sourceFile.generatedOutputStatus,
-    mutable: !sourceFile.deleting,
-    deletable: !sourceFile.deleting,
-    deleting: sourceFile.deleting,
     actions: lifecycle.actions.map((kind) =>
       developerLifecycleAction(base, sourceFile.id, sourceFile.generatedPath, kind)
     ),
     links: {
       self: `${base}/source-files/${sourceFile.id}`,
-      events: `${base}/source-files/${sourceFile.id}/events`,
       generatedContent: sourceFile.generatedPath
         ? `${base}/files/content?path=${encodeURIComponent(sourceFile.generatedPath)}`
         : null,
@@ -468,18 +532,18 @@ function developerLifecycleAction(
           : sourceBase,
         scope: "source_file" as const
       };
-    case "retry_publication":
+    case "retry_document_processing":
       return {
         kind,
         method: "POST" as const,
         href: `${sourceBase}/retry`,
-        scope: "knowledge_base_publication" as const
+        scope: "source_file" as const
       };
-    case "retry_source_processing":
+    case "replace_source_content":
       return {
         kind,
-        method: "POST" as const,
-        href: `${sourceBase}/retry`,
+        method: "PUT" as const,
+        href: `${sourceBase}/content`,
         scope: "source_file" as const
       };
     case "view_failure_details":
@@ -487,44 +551,11 @@ function developerLifecycleAction(
   }
 }
 
-function toOperationResponse(operation: NonNullable<Awaited<ReturnType<ReturnType<typeof createSourceResourceService>["getOperation"]>>>) {
-  const base = `/openapi/v2/knowledge-bases/${operation.knowledgeBaseId}`;
-  return {
-    operationId: operation.id,
-    knowledgeBaseId: operation.knowledgeBaseId,
-    kind: operation.kind,
-    state: operation.state,
-    expectedResourceRevision: operation.expectedResourceRevision,
-    targetKind: operation.targetKind ?? null,
-    targetId: operation.targetId ?? null,
-    candidateRelativePath: operation.candidateRelativePath ?? null,
-    result: toPublicOperationResult(operation.result),
-    errorCode: operation.errorCode,
-    retryGuidance: operation.state === "accepted" || operation.state === "processing" || operation.state === "publishing"
-      ? "Read the operation again after a short delay."
-      : null,
-    actions: { self: `${base}/operations/${operation.id}` },
-    createdAt: operation.createdAt,
-    updatedAt: operation.updatedAt,
-    completedAt: operation.completedAt
-  };
-}
-
-function toPublicOperationResult(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(toPublicOperationResult);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => key !== "deletionIntentId")
-      .map(([key, nestedValue]) => [key, toPublicOperationResult(nestedValue)])
-  );
-}
-
 function readExpectedRevision(value: string | undefined): number {
   const normalized = value?.trim().replace(/^W\//u, "").replace(/^"|"$/gu, "");
   const revision = Number(normalized);
   if (!Number.isInteger(revision) || revision < 1) {
-    throw validationError("If-Match must contain the active positive resource revision.", {
+    throw validationError("If-Match must contain the current positive `resourceRevision` value.", {
       field: "If-Match"
     });
   }
@@ -532,40 +563,45 @@ function readExpectedRevision(value: string | undefined): number {
 }
 
 function readOptionalName(value: unknown): string {
+  return readKnowledgeBaseName(value);
+}
+
+function readRequiredRelativePath(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw validationError("Knowledge-base name must be a non-empty string.", { field: "name" });
+    throw validationError("Relative path must be a non-empty string.", {
+      field: "relativePath"
+    });
   }
-  return value.trim();
+  return value;
 }
 
 function readOptionalDescription(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (typeof value !== "string") {
-    throw validationError("Knowledge-base description must be a string or null.", {
-      field: "description"
-    });
-  }
-  return value.trim() || null;
+  return readKnowledgeBaseDescription(value);
 }
 
-function readNullableQuery(value: string | undefined): string | null {
-  if (!value || value === "root") return null;
+export function readNullableQuery(value: string | undefined): string | null {
+  if (value === undefined || value === "root") return null;
+  if (!value) {
+    throw validationError("Directory filter must be `root` or a non-empty identifier.");
+  }
+  if (value.length > 200) {
+    throw validationError("Directory filter must not exceed 200 characters.");
+  }
   return value;
 }
 
 function readSourceResourceFilters(query: Record<string, string>) {
-  const lifecycleStates = new Set(["queued", "running", "pending_publication", "visible", "failed"]);
-  const currentStages = new Set([
-    "upload_storage",
-    "metadata_resolution",
-    "llm_suggestion",
-    "graph_generation",
-    "projection_generation",
-    "generation_validation",
-    "generation_activation"
+  const lifecycleStates = new Set([
+    "waiting", "processing", "available", "error", "deleting"
   ]);
-  const generatedOutputStatuses = new Set(["pending", "visible", "unavailable"]);
+  const workKinds = new Set([
+    "prepare", "first_layer", "content_projection", "graphrag",
+    "relation_reconcile", "knowledge_projection", "activate", "cleanup"
+  ]);
+  const generatedOutputStatuses = new Set([
+    "unavailable", "previous_available", "current_available"
+  ]);
   const pathQuery = readBoundedQueryText(query.pathQuery, "pathQuery", 1, 160);
   const sourceFileIdPrefix = readBoundedQueryText(
     query.sourceFileIdPrefix,
@@ -580,17 +616,17 @@ function readSourceResourceFilters(query: Record<string, string>) {
     });
   }
   if (query.state && !lifecycleStates.has(query.state)) {
-    throw validationError("Source-file lifecycle state filter is invalid.", {
+    throw validationError("File processing status filter is invalid.", {
       field: "state"
     });
   }
-  if (query.currentStage && !currentStages.has(query.currentStage)) {
-    throw validationError("Source-file current stage filter is invalid.", {
-      field: "currentStage"
+  if (query.blockingWorkKind && !workKinds.has(query.blockingWorkKind)) {
+    throw validationError("File blocking work filter is invalid.", {
+      field: "blockingWorkKind"
     });
   }
   if (query.generatedOutputStatus && !generatedOutputStatuses.has(query.generatedOutputStatus)) {
-    throw validationError("Generated output status filter is invalid.", {
+    throw validationError("Readable-file availability filter is invalid.", {
       field: "generatedOutputStatus"
     });
   }
@@ -599,17 +635,20 @@ function readSourceResourceFilters(query: Record<string, string>) {
     pathQuery,
     sourceFileIdPrefix,
     state: (query.state || null) as
-      | "queued"
-      | "running"
-      | "pending_publication"
-      | "visible"
-      | "failed"
+      | "waiting"
+      | "processing"
+      | "available"
+      | "error"
+      | "deleting"
       | null,
-    currentStage: query.currentStage || null,
+    blockingWorkKind: (query.blockingWorkKind || null) as
+      | "prepare" | "first_layer" | "content_projection" | "graphrag"
+      | "relation_reconcile" | "knowledge_projection" | "activate"
+      | "cleanup" | null,
     generatedOutputStatus: (query.generatedOutputStatus || null) as
-      | "pending"
-      | "visible"
       | "unavailable"
+      | "previous_available"
+      | "current_available"
       | null
   };
 }
@@ -623,7 +662,7 @@ function readBoundedQueryText(
   if (value === undefined) return null;
   const normalized = value.trim();
   if (normalized.length < minLength || normalized.length > maxLength) {
-    throw validationError("Source-file text filter length is invalid.", { field });
+    throw validationError("Filter text length is invalid.", { field });
   }
   return normalized;
 }
@@ -631,62 +670,30 @@ function readBoundedQueryText(
 function readOperationState(value: string | undefined) {
   if (!value) return undefined;
   const allowed = new Set([
-    "accepted", "validating", "processing", "publishing", "completed", "failed", "cancelled", "superseded"
+    "processing", "completed", "failed", "cancelled", "superseded"
   ]);
-  if (!allowed.has(value)) throw validationError("Resource operation state is invalid.");
-  return value as "accepted" | "validating" | "processing" | "publishing" | "completed" | "failed" | "cancelled" | "superseded";
+  if (!allowed.has(value)) throw validationError("File or directory change status is invalid.");
+  return value as "processing" | "completed" | "failed" | "cancelled" | "superseded";
 }
 
 async function runSourceResourceMutation<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
+    if (error instanceof SourcePathValidationError) {
+      throw validationError("Relative path is invalid.", { field: "relativePath" });
+    }
     if (!(error instanceof SourceResourceError)) throw error;
     if (error.code === "RESOURCE_NOT_FOUND") throw notFound();
+    if (error.code === "INVALID_PAGINATION") {
+      throw validationError("Cursor is invalid.", { field: "cursor" });
+    }
     if (error.code === "INVALID_RESOURCE_MUTATION") {
-      throw validationError("Mutation headers or payload are invalid.");
+      throw validationError("Request headers or body are invalid.");
+    }
+    if (error.code === "RESOURCE_CONTENT_TOO_LARGE") {
+      throw validationError("Markdown replacement body exceeds the configured source limit.");
     }
     throw conflict(error.code);
   }
-}
-
-async function acceptAndEnqueueOperation(
-  services: DeveloperOpenApiRouteServices,
-  input: Parameters<ReturnType<typeof createSourceResourceService>["acceptOperation"]>[0]
-) {
-  const mutation = await requireMutationService(services);
-  return runSourceResourceMutation(() => mutation.service.acceptOperation(input, mutation.maxAttempts));
-}
-
-async function requireMutationService(services: DeveloperOpenApiRouteServices) {
-  const repository = services.repositories?.sourceResources;
-  if (!repository || !services.roleJobs || !services.publicationGenerations) {
-    throw repositoryUnavailable();
-  }
-  const snapshot = await services.runtimeSettings?.getSnapshot();
-  const runtimeWorker = snapshot?.worker;
-  const worker = runtimeWorker ?? resolveWorkerConfig(services.config);
-  return {
-    service: createSourceResourceMutationService({
-      repository,
-      roleJobs: services.roleJobs,
-      generations: services.publicationGenerations,
-      graph: services.repositories?.graph,
-      impactPlanner: INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner,
-      publicationSettingsSnapshot: {
-        publication: snapshot?.publication ?? {},
-        graph: snapshot?.graph ?? {},
-        worker: snapshot?.worker ?? {}
-      },
-      storage: {
-        sourceRevisionKey: services.storage.keyspace.sourceRevisionKey,
-        put: (object) => services.storage.putObject(object),
-        delete: async (key) => {
-          await services.storage.deleteObject?.(key);
-        }
-      },
-      runtime: services.applicationRuntime
-    }),
-    maxAttempts: worker.jobMaxAttempts
-  };
 }

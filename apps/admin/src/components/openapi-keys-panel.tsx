@@ -42,6 +42,7 @@ type OpenApiKeysPanelProps = {
   oneTimeKey: OneTimePublicOpenApiKey | null;
   nextCursor: string | null;
   isLoading: boolean;
+  error: string;
   onCreate: (
     input: { name: string }
   ) => Promise<{ key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey } | ApiFailure>;
@@ -55,6 +56,7 @@ export function OpenApiKeysPanel({
   oneTimeKey,
   nextCursor,
   isLoading,
+  error,
   onCreate,
   onDelete,
   onDismissOneTimeKey,
@@ -132,6 +134,11 @@ export function OpenApiKeysPanel({
           <AlertTitle>{t("home.loading")}</AlertTitle>
         </Alert>
       ) : null}
+      {error ? (
+        <Alert variant="destructive">
+          <AlertTitle>{t(error)}</AlertTitle>
+        </Alert>
+      ) : null}
 
       <div className="rounded-lg border">
         <Table>
@@ -202,6 +209,7 @@ export function OpenApiKeysPanel({
                 <Input
                   id="openapi-key-name"
                   value={name}
+                  maxLength={80}
                   onChange={(event) => setName(event.target.value)}
                 />
               </Field>

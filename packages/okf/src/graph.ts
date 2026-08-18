@@ -15,6 +15,7 @@ export type OkfGraphNode = {
   language?: string | null;
   profileVersion?: string | null;
   profileSource?: string | null;
+  evidenceExcerpt?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -77,10 +78,6 @@ const LOW_INFORMATION_SHARED_TERMS = new Set([
   "当前"
 ]);
 
-export function graphRefForFile(fileId: string): string {
-  return `_graph/by-file/${encodeGraphFileId(fileId)}.json`;
-}
-
 export function deduplicateGraphRelationships(
   relationships: OkfGraphRelationship[]
 ): OkfGraphRelationship[] {
@@ -122,10 +119,6 @@ export function isLowInformationSharedGraphTerm(value: string): boolean {
 
 function normalizeComparableText(value: string): string {
   return value.toLowerCase().trim().replace(/\s+/gu, "");
-}
-
-function encodeGraphFileId(fileId: string): string {
-  return fileId.split("/").map(encodeURIComponent).join("/");
 }
 
 function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {

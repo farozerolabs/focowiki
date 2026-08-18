@@ -16,7 +16,7 @@ describe("generated Markdown preview links", () => {
         previewHtml={"<pre>" + "content\n".repeat(500) + "</pre>"}
         publicUrls={null}
         selectedFileTitle="0019.json"
-        selectedFilePath="_index/search/v1/0019.json"
+        selectedFilePath="_index/pages/all-documents-part-0019.json"
         onCopy={vi.fn()}
         onOpenPreviewPath={vi.fn()}
       />

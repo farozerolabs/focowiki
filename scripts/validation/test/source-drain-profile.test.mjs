@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { buildSourceDrainProfile } from "../lib/source-drain-profile.mjs";
+
+const sourceDrainRuntime = fs.readFileSync(
+  new URL("../source-drain-capacity.mjs", import.meta.url),
+  "utf8"
+);
+
+test("uses storage vNext source lifecycle fields for source drain evidence", () => {
+  assert.match(sourceDrainRuntime, /SELECT public_id, status, created_at, updated_at,/u);
+  assert.match(sourceDrainRuntime, /safe_error_code, safe_error_message/u);
+  assert.doesNotMatch(
+    sourceDrainRuntime,
+    /processing_status|processing_started_at|processing_ended_at|terminal_failure_code|terminal_failure_message/u
+  );
+});
 
 test("builds source drain evidence from persisted worker settings", () => {
   assert.deepEqual(buildSourceDrainProfile({

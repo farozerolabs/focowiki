@@ -1,23 +1,22 @@
 import { resolve } from "node:path";
 import { ValidationError, redactSecrets } from "./errors.js";
+import {
+  parseSearchStartupConfig,
+  type SearchStartupConfig
+} from "./runtime/search-config.js";
 
 const DEFAULT_DATABASE_POOL_MAX = 10;
-const DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX = 6;
-const DEFAULT_PUBLICATION_WORKER_DATABASE_POOL_MAX = 4;
-const DEFAULT_PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX = 8;
-const DEFAULT_LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX = 8;
-const DEFAULT_MAINTENANCE_WORKER_DATABASE_POOL_MAX = 2;
+const DEFAULT_WORKER_DATABASE_POOL_MAX = 8;
 const DEFAULT_ADMIN_LIST_PAGE_SIZE = 50;
 const DEFAULT_ADMIN_LIST_MAX_PAGE_SIZE = 200;
 const DEFAULT_TREE_CHILD_PAGE_SIZE = 100;
 const DEFAULT_TREE_CHILD_MAX_PAGE_SIZE = 500;
 const DEFAULT_PAGINATION_CURSOR_TTL_SECONDS = 900;
 const DEFAULT_GENERATED_CONTENT_MAX_BYTES = 10_485_760;
-const DEFAULT_GENERATION_BATCH_SIZE = 50;
 const DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY = 2;
 const DEFAULT_WORKER_CLAIM_BATCH_SIZE = 10;
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
-const DEFAULT_WORKER_LOCK_TTL_SECONDS = 900;
+const DEFAULT_WORKER_LOCK_TTL_SECONDS = 60;
 const DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WORKER_JOB_MAX_ATTEMPTS = 3;
 const DEFAULT_WORKER_JOB_RETRY_DELAY_MS = 30_000;
@@ -36,25 +35,6 @@ const DEFAULT_WORKER_HARD_DELETE_OBJECT_BATCH_SIZE = 1_000;
 const DEFAULT_WORKER_HARD_DELETE_MAX_ATTEMPTS = 3;
 const DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS = 60_000;
 const DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS = 30;
-const DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED = false;
-const DEFAULT_PUBLICATION_MODE = "batch";
-const DEFAULT_PUBLICATION_BATCH_SIZE = 300;
-const DEFAULT_PUBLICATION_INTERVAL_SECONDS = 300;
-const DEFAULT_PUBLICATION_ROLE_CONCURRENCY = 1;
-const DEFAULT_PUBLICATION_CLAIM_BATCH_SIZE = 1;
-const DEFAULT_PUBLICATION_IMPACT_BATCH_SIZE = 100;
-const DEFAULT_PUBLICATION_IMPACT_CONCURRENCY = 8;
-const DEFAULT_PUBLICATION_DIRTY_FILE_HARD_COUNT = 2_000;
-const DEFAULT_PUBLICATION_DIRTY_FILE_RESUME_COUNT = 1_000;
-const DEFAULT_PUBLICATION_DIRTY_AGE_HARD_SECONDS = 900;
-const DEFAULT_PUBLICATION_DIRTY_AGE_RESUME_SECONDS = 300;
-const DEFAULT_PUBLICATION_PENDING_IMPACT_HARD_COUNT = 20_000;
-const DEFAULT_PUBLICATION_PENDING_IMPACT_RESUME_COUNT = 10_000;
-const DEFAULT_PUBLICATION_GENERATION_RETENTION_DAYS = 7;
-const DEFAULT_INDEX_SHARD_SIZE = 1_000;
-const DEFAULT_LINK_INDEX_SHARD_SIZE = 1_000;
-const DEFAULT_MANIFEST_SHARD_SIZE = 1_000;
-const DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE = 500;
 const DEFAULT_ROOT_SUMMARY_LIMIT = 500;
 const DEFAULT_DIRECTORY_INDEX_MAX_ENTRIES = 200;
 const DEFAULT_DIRECTORY_INDEX_MAX_BYTES = 65_536;
@@ -64,8 +44,7 @@ const DEFAULT_GRAPH_SEARCH_DEFAULT_DEPTH = 1;
 const DEFAULT_GRAPH_SEARCH_MAX_DEPTH = 2;
 const DEFAULT_GRAPH_SEARCH_DEFAULT_FANOUT = 10;
 const DEFAULT_GRAPH_SEARCH_MAX_FANOUT = 25;
-const DEFAULT_GRAPH_PUBLICATION_SHARD_SIZE = 5_000;
-const DEFAULT_GRAPH_CACHE_TTL_SECONDS = 5;
+const DEFAULT_GRAPH_SHARD_SIZE = 5_000;
 const DEFAULT_GRAPH_GENERIC_PHRASE_THRESHOLD = 4;
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
 const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
@@ -73,8 +52,17 @@ const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
 const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
 const DEFAULT_LOG_FILE_MAX_BYTES = 10_485_760;
 const DEFAULT_LOG_FILE_MAX_FILES = 5;
+const DEFAULT_LOG_FILE_MAX_TOTAL_BYTES = 1_073_741_824;
+const DEFAULT_LOG_FILE_RETENTION_DAYS = 7;
 export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
-export type PublicationMode = "batch" | "manual" | "per_file";
+export type GeneratedKnowledgeBaseRuntimeConfig = {
+  directoryIndexMaxEntries: number;
+  directoryIndexMaxBytes: number;
+  rootSummaryLimit: number;
+  okfLogMaxEntries: number;
+  okfLogMaxBytes: number;
+};
+
 export type GraphRuntimeConfig = {
   candidateLimit: number;
   acceptedEdgeLimit: number;
@@ -82,16 +70,13 @@ export type GraphRuntimeConfig = {
   searchMaxDepth: 0 | 1 | 2;
   searchDefaultFanout: number;
   searchMaxFanout: number;
-  modelReviewEnabled: boolean;
-  publicationShardSize: number;
-  cacheTtlSeconds: number;
+  shardSize: number;
   genericPhraseThreshold: number;
 };
 
 export type WorkerRuntimeConfig = {
   sourceFileConcurrency: number;
   claimBatchSize: number;
-  generationBatchSize?: number;
   pollIntervalMs: number;
   lockTtlSeconds: number;
   heartbeatIntervalMs?: number;
@@ -112,7 +97,6 @@ export type WorkerRuntimeConfig = {
   hardDeleteMaxAttempts?: number;
   hardDeleteRetryDelayMs?: number;
   hardDeleteFailedRetentionDays?: number;
-  hardDeleteVersionPurgeEnabled?: boolean;
 };
 
 export type RateLimitConfig = {
@@ -153,15 +137,13 @@ export type RuntimeConfig = {
   database: {
     url: string;
     poolMax?: number;
-    sourceWorkerPoolMax?: number;
-    publicationWorkerPoolMax?: number;
-    projectionRepairWorkerPoolMax?: number;
-    lexicalRebuildWorkerPoolMax?: number;
-    maintenanceWorkerPoolMax?: number;
+    workerPoolMax?: number;
   };
   redis: {
     url: string;
+    keyPrefix?: string;
   };
+  search?: SearchStartupConfig;
   ports: {
     adminApi: number;
     adminUi: number;
@@ -180,31 +162,7 @@ export type RuntimeConfig = {
     forcePathStyle: boolean;
   };
   worker?: WorkerRuntimeConfig;
-  publication: {
-    mode: PublicationMode;
-    batchSize: number;
-    intervalSeconds: number;
-    roleConcurrency?: number;
-    claimBatchSize?: number;
-    impactBatchSize?: number;
-    impactConcurrency?: number;
-    dirtyFileHardCount?: number;
-    dirtyFileResumeCount?: number;
-    dirtyAgeHardSeconds?: number;
-    dirtyAgeResumeSeconds?: number;
-    pendingImpactHardCount?: number;
-    pendingImpactResumeCount?: number;
-    generationRetentionDays?: number;
-    indexShardSize: number;
-    linkIndexShardSize: number;
-    manifestShardSize: number;
-    graphEdgeShardSize?: number;
-    graphCandidateLimit?: number;
-    graphMaintenanceBatchSize: number;
-    rootSummaryLimit: number;
-    directoryIndexMaxEntries?: number;
-    directoryIndexMaxBytes?: number;
-  };
+  generated: GeneratedKnowledgeBaseRuntimeConfig;
   graph?: GraphRuntimeConfig;
   pagination: {
     defaultPageSize: number;
@@ -214,18 +172,14 @@ export type RuntimeConfig = {
     cursorTtlSeconds: number;
     generatedContentMaxBytes: number;
   };
-  okf?: {
-    log: {
-      maxEntries: number;
-      maxBytes: number;
-    };
-  } | undefined;
   logging?: {
     level: RuntimeLogLevel;
     file?: {
       directory: string;
       maxBytes: number;
       maxFiles: number;
+      maxTotalBytes: number;
+      retentionDays: number;
     };
   };
   model:
@@ -273,34 +227,10 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     DEFAULT_DATABASE_POOL_MAX,
     issues
   );
-  const sourceWorkerPoolMax = optionalPositiveInteger(
+  const workerPoolMax = optionalPositiveInteger(
     env,
-    "SOURCE_WORKER_DATABASE_POOL_MAX",
-    DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX,
-    issues
-  );
-  const publicationWorkerPoolMax = optionalPositiveInteger(
-    env,
-    "PUBLICATION_WORKER_DATABASE_POOL_MAX",
-    DEFAULT_PUBLICATION_WORKER_DATABASE_POOL_MAX,
-    issues
-  );
-  const projectionRepairWorkerPoolMax = optionalPositiveInteger(
-    env,
-    "PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX",
-    DEFAULT_PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX,
-    issues
-  );
-  const lexicalRebuildWorkerPoolMax = optionalPositiveInteger(
-    env,
-    "LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX",
-    DEFAULT_LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX,
-    issues
-  );
-  const maintenanceWorkerPoolMax = optionalPositiveInteger(
-    env,
-    "MAINTENANCE_WORKER_DATABASE_POOL_MAX",
-    DEFAULT_MAINTENANCE_WORKER_DATABASE_POOL_MAX,
+    "WORKER_DATABASE_POOL_MAX",
+    DEFAULT_WORKER_DATABASE_POOL_MAX,
     issues
   );
   const redisUrl = requireRedisUrl(env, "REDIS_URL", issues);
@@ -314,11 +244,10 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const secretAccessKey = requireString(env, "S3_SECRET_ACCESS_KEY", issues);
   const prefix = normalizePrefix(requireString(env, "S3_PREFIX", issues), issues);
   const forcePathStyle = optionalBoolean(env, "S3_FORCE_PATH_STYLE", false, issues);
-  const publication = createDefaultPublicationConfig();
+  const generated = createDefaultGeneratedKnowledgeBaseConfig();
   const graph = createDefaultGraphConfig();
   const worker = parseWorkerConfig();
   const pagination = parsePaginationConfig(env, issues);
-  const okf = createDefaultOkfConfig();
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
   const model: RuntimeConfig["model"] = { enabled: false };
   const security = parseSecurityConfig(
@@ -333,6 +262,11 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     issues
   );
   const logging = parseLoggingConfig(env, security.environment, issues);
+  const search = parseSearchStartupConfig({
+    env,
+    environment: security.environment,
+    issues
+  });
 
   if (issues.length > 0) {
     throw new ConfigValidationError(issues.map((issue) => redactSecrets(issue)));
@@ -346,18 +280,15 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     database: {
       url: databaseUrl,
       poolMax: databasePoolMax,
-      sourceWorkerPoolMax,
-      publicationWorkerPoolMax,
-      projectionRepairWorkerPoolMax,
-      lexicalRebuildWorkerPoolMax,
-      maintenanceWorkerPoolMax
+      workerPoolMax
     },
     redis: {
-      url: redisUrl
+      url: redisUrl,
+      keyPrefix: optionalString(env, "REDIS_KEY_PREFIX") ?? "focowiki"
     },
+    search,
     ports,
     pagination,
-    okf,
     publicApi: {
       baseUrl: publicBaseUrl
     },
@@ -371,7 +302,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       forcePathStyle
     },
     worker,
-    publication,
+    generated,
     graph,
     model,
     logging,
@@ -550,29 +481,13 @@ function parsePaginationConfig(env: RuntimeEnv, issues: string[]): RuntimeConfig
   };
 }
 
-function createDefaultPublicationConfig(): RuntimeConfig["publication"] {
+function createDefaultGeneratedKnowledgeBaseConfig(): GeneratedKnowledgeBaseRuntimeConfig {
   return {
-    mode: DEFAULT_PUBLICATION_MODE,
-    batchSize: DEFAULT_PUBLICATION_BATCH_SIZE,
-    intervalSeconds: DEFAULT_PUBLICATION_INTERVAL_SECONDS,
-    roleConcurrency: DEFAULT_PUBLICATION_ROLE_CONCURRENCY,
-    claimBatchSize: DEFAULT_PUBLICATION_CLAIM_BATCH_SIZE,
-    impactBatchSize: DEFAULT_PUBLICATION_IMPACT_BATCH_SIZE,
-    impactConcurrency: DEFAULT_PUBLICATION_IMPACT_CONCURRENCY,
-    dirtyFileHardCount: DEFAULT_PUBLICATION_DIRTY_FILE_HARD_COUNT,
-    dirtyFileResumeCount: DEFAULT_PUBLICATION_DIRTY_FILE_RESUME_COUNT,
-    dirtyAgeHardSeconds: DEFAULT_PUBLICATION_DIRTY_AGE_HARD_SECONDS,
-    dirtyAgeResumeSeconds: DEFAULT_PUBLICATION_DIRTY_AGE_RESUME_SECONDS,
-    pendingImpactHardCount: DEFAULT_PUBLICATION_PENDING_IMPACT_HARD_COUNT,
-    pendingImpactResumeCount: DEFAULT_PUBLICATION_PENDING_IMPACT_RESUME_COUNT,
-    generationRetentionDays: DEFAULT_PUBLICATION_GENERATION_RETENTION_DAYS,
-    indexShardSize: DEFAULT_INDEX_SHARD_SIZE,
-    linkIndexShardSize: DEFAULT_LINK_INDEX_SHARD_SIZE,
-    manifestShardSize: DEFAULT_MANIFEST_SHARD_SIZE,
-    graphMaintenanceBatchSize: DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE,
-    rootSummaryLimit: DEFAULT_ROOT_SUMMARY_LIMIT,
     directoryIndexMaxEntries: DEFAULT_DIRECTORY_INDEX_MAX_ENTRIES,
-    directoryIndexMaxBytes: DEFAULT_DIRECTORY_INDEX_MAX_BYTES
+    directoryIndexMaxBytes: DEFAULT_DIRECTORY_INDEX_MAX_BYTES,
+    rootSummaryLimit: DEFAULT_ROOT_SUMMARY_LIMIT,
+    okfLogMaxEntries: DEFAULT_OKF_LOG_MAX_ENTRIES,
+    okfLogMaxBytes: DEFAULT_OKF_LOG_MAX_BYTES
   };
 }
 
@@ -584,9 +499,7 @@ function createDefaultGraphConfig(): GraphRuntimeConfig {
     searchMaxDepth: DEFAULT_GRAPH_SEARCH_MAX_DEPTH,
     searchDefaultFanout: DEFAULT_GRAPH_SEARCH_DEFAULT_FANOUT,
     searchMaxFanout: DEFAULT_GRAPH_SEARCH_MAX_FANOUT,
-    modelReviewEnabled: true,
-    publicationShardSize: DEFAULT_GRAPH_PUBLICATION_SHARD_SIZE,
-    cacheTtlSeconds: DEFAULT_GRAPH_CACHE_TTL_SECONDS,
+    shardSize: DEFAULT_GRAPH_SHARD_SIZE,
     genericPhraseThreshold: DEFAULT_GRAPH_GENERIC_PHRASE_THRESHOLD
   };
 }
@@ -595,7 +508,6 @@ function parseWorkerConfig(): WorkerRuntimeConfig {
   return {
     sourceFileConcurrency: DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
     claimBatchSize: DEFAULT_WORKER_CLAIM_BATCH_SIZE,
-    generationBatchSize: DEFAULT_GENERATION_BATCH_SIZE,
     pollIntervalMs: DEFAULT_WORKER_POLL_INTERVAL_MS,
     lockTtlSeconds: DEFAULT_WORKER_LOCK_TTL_SECONDS,
     heartbeatIntervalMs: DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
@@ -615,8 +527,7 @@ function parseWorkerConfig(): WorkerRuntimeConfig {
     hardDeleteObjectBatchSize: DEFAULT_WORKER_HARD_DELETE_OBJECT_BATCH_SIZE,
     hardDeleteMaxAttempts: DEFAULT_WORKER_HARD_DELETE_MAX_ATTEMPTS,
     hardDeleteRetryDelayMs: DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS,
-    hardDeleteFailedRetentionDays: DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS,
-    hardDeleteVersionPurgeEnabled: DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
+    hardDeleteFailedRetentionDays: DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS
   };
 }
 
@@ -627,7 +538,6 @@ export function resolveWorkerConfig(
     sourceFileConcurrency:
       config.worker?.sourceFileConcurrency ?? DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
     claimBatchSize: config.worker?.claimBatchSize ?? DEFAULT_WORKER_CLAIM_BATCH_SIZE,
-    generationBatchSize: config.worker?.generationBatchSize ?? DEFAULT_GENERATION_BATCH_SIZE,
     pollIntervalMs: config.worker?.pollIntervalMs ?? DEFAULT_WORKER_POLL_INTERVAL_MS,
     lockTtlSeconds: config.worker?.lockTtlSeconds ?? DEFAULT_WORKER_LOCK_TTL_SECONDS,
     heartbeatIntervalMs:
@@ -664,24 +574,17 @@ export function resolveWorkerConfig(
       config.worker?.hardDeleteRetryDelayMs ?? DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS,
     hardDeleteFailedRetentionDays:
       config.worker?.hardDeleteFailedRetentionDays ??
-      DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS,
-    hardDeleteVersionPurgeEnabled:
-      config.worker?.hardDeleteVersionPurgeEnabled ??
-      DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
+      DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS
   };
 }
 
-export function resolvePublicationConfig(
-  config: Pick<RuntimeConfig, "publication">
-): Required<RuntimeConfig["publication"]> {
+export function resolveGeneratedKnowledgeBaseConfig(
+  config: Pick<RuntimeConfig, "generated">
+): GeneratedKnowledgeBaseRuntimeConfig {
   return {
-    ...createDefaultPublicationConfig(),
-    ...config.publication,
-    graphEdgeShardSize: config.publication.graphEdgeShardSize ?? 5_000,
-    graphCandidateLimit: config.publication.graphCandidateLimit ?? 200,
-    directoryIndexMaxEntries: config.publication.directoryIndexMaxEntries ?? 200,
-    directoryIndexMaxBytes: config.publication.directoryIndexMaxBytes ?? 65_536
-  } as Required<RuntimeConfig["publication"]>;
+    ...createDefaultGeneratedKnowledgeBaseConfig(),
+    ...config.generated
+  };
 }
 
 export function resolveGraphConfig(
@@ -690,15 +593,6 @@ export function resolveGraphConfig(
   return {
     ...createDefaultGraphConfig(),
     ...(config.graph ?? {})
-  };
-}
-
-function createDefaultOkfConfig(): RuntimeConfig["okf"] {
-  return {
-    log: {
-      maxEntries: DEFAULT_OKF_LOG_MAX_ENTRIES,
-      maxBytes: DEFAULT_OKF_LOG_MAX_BYTES
-    }
   };
 }
 
@@ -984,18 +878,39 @@ function parseFileLoggingConfig(
   env: RuntimeEnv,
   issues: string[]
 ): NonNullable<NonNullable<RuntimeConfig["logging"]>["file"]> {
+  const maxBytes = optionalPositiveInteger(
+    env,
+    "LOG_FILE_MAX_BYTES",
+    DEFAULT_LOG_FILE_MAX_BYTES,
+    issues
+  );
+  const maxTotalBytes = optionalPositiveInteger(
+    env,
+    "LOG_FILE_MAX_TOTAL_BYTES",
+    DEFAULT_LOG_FILE_MAX_TOTAL_BYTES,
+    issues
+  );
+  if (maxBytes < 256) {
+    issues.push("LOG_FILE_MAX_BYTES must be at least 256");
+  }
+  if (maxTotalBytes < maxBytes) {
+    issues.push("LOG_FILE_MAX_TOTAL_BYTES must be greater than or equal to LOG_FILE_MAX_BYTES");
+  }
+
   return {
     directory: resolve(process.cwd(), optionalString(env, "LOG_FILE_DIR") ?? "logs"),
-    maxBytes: optionalPositiveInteger(
-      env,
-      "LOG_FILE_MAX_BYTES",
-      DEFAULT_LOG_FILE_MAX_BYTES,
-      issues
-    ),
+    maxBytes,
     maxFiles: optionalPositiveInteger(
       env,
       "LOG_FILE_MAX_FILES",
       DEFAULT_LOG_FILE_MAX_FILES,
+      issues
+    ),
+    maxTotalBytes,
+    retentionDays: optionalPositiveInteger(
+      env,
+      "LOG_FILE_RETENTION_DAYS",
+      DEFAULT_LOG_FILE_RETENTION_DAYS,
       issues
     )
   };

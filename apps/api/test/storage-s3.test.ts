@@ -1,9 +1,32 @@
 import { Readable } from "node:stream";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { describe, expect, it, vi } from "vitest";
-import { S3StorageAdapter } from "../src/storage/s3.js";
+import {
+  S3_HTTP_TIMEOUTS,
+  S3StorageAdapter,
+  createS3ClientConfig
+} from "../src/storage/s3.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 
 describe("S3 storage adapter", () => {
+  it("bounds connection, request, and idle time for every S3-compatible provider", () => {
+    const config = createS3ClientConfig({
+      endpoint: "https://storage.example.com",
+      region: "auto",
+      accessKeyId: "test-access-key",
+      secretAccessKey: "test-secret-key",
+      forcePathStyle: true
+    } as never);
+
+    expect(config.requestHandler).toBeInstanceOf(NodeHttpHandler);
+    expect(S3_HTTP_TIMEOUTS).toEqual({
+      connectionTimeout: 10_000,
+      requestTimeout: 60_000,
+      socketTimeout: 60_000,
+      throwOnRequestTimeout: true
+    });
+  });
+
   it("sends the declared content length for streaming writes", async () => {
     const send = vi.fn(async () => ({}));
     const storage = new S3StorageAdapter({
@@ -204,6 +227,25 @@ describe("S3 storage adapter", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "tenant/other/",
+    "tenant/test/../other/",
+    "tenant/test/%2e%2e/other/",
+    "/tenant/test/"
+  ])("rejects prefix purges outside the configured keyspace: %s", async (prefix) => {
+    const send = vi.fn(async () => ({ Contents: [] }));
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.purgePrefix(prefix)).rejects.toThrow(
+      "Storage listing prefix must stay within the configured keyspace"
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("deletes objects in unique non-empty batches no larger than 1000 keys", async () => {
     const send = vi.fn(async () => ({}));
     const storage = new S3StorageAdapter({
@@ -290,6 +332,41 @@ describe("S3 storage adapter", () => {
     ]);
   });
 
+  it("falls back to current-object deletion when version listing is unsupported", async () => {
+    const send = vi.fn(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "ListObjectVersionsCommand") {
+        throw Object.assign(new Error("ListObjectVersions not implemented"), {
+          name: "NotImplemented",
+          Code: "NotImplemented",
+          $metadata: { httpStatusCode: 501 }
+        });
+      }
+      return {};
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.deleteObjectVersions([
+      "tenant/test/objects/a.md",
+      "tenant/test/objects/b.md"
+    ])).resolves.toBeUndefined();
+
+    expect(send.mock.calls.map(([command]) => command.constructor.name)).toEqual([
+      "ListObjectVersionsCommand",
+      "DeleteObjectsCommand"
+    ]);
+    const deletion = send.mock.calls[1]?.[0] as unknown as {
+      input: { Delete: { Objects: Array<{ Key: string }> } };
+    };
+    expect(deletion.input.Delete.Objects).toEqual([
+      { Key: "tenant/test/objects/a.md" },
+      { Key: "tenant/test/objects/b.md" }
+    ]);
+  });
+
   it("purges versioned and current objects under a prefix before verifying emptiness", async () => {
     let versionListCount = 0;
     let objectListCount = 0;
@@ -334,7 +411,7 @@ describe("S3 storage adapter", () => {
     });
     const storage = new S3StorageAdapter({
       bucket: "bucket-test",
-      keyspace: createStorageKeyspace("tenant/test"),
+      keyspace: createStorageKeyspace("tenant"),
       client: { send } as never
     });
 
@@ -379,7 +456,7 @@ describe("S3 storage adapter", () => {
     });
     const storage = new S3StorageAdapter({
       bucket: "bucket-test",
-      keyspace: createStorageKeyspace("tenant/test"),
+      keyspace: createStorageKeyspace("tenant"),
       client: { send } as never
     });
 

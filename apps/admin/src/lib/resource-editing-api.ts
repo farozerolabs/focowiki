@@ -1,4 +1,9 @@
-import { adminFetch, type ApiFailure, type KnowledgeBase } from "@/lib/admin-api";
+import {
+  adminFetch,
+  fetchSourceFile,
+  type ApiFailure,
+  type KnowledgeBase
+} from "@/lib/admin-api";
 
 export type SourceDirectory = {
   directoryId: string;
@@ -17,7 +22,6 @@ export type ResourceOperationState =
   | "accepted"
   | "validating"
   | "processing"
-  | "publishing"
   | "completed"
   | "failed"
   | "cancelled"
@@ -26,7 +30,15 @@ export type ResourceOperationState =
 export type ResourceOperation = {
   operationId: string;
   knowledgeBaseId: string;
-  kind: "source_file_move" | "source_directory_move" | "source_file_replace";
+  kind:
+    | "knowledge_base_metadata"
+    | "source_file_metadata"
+    | "source_file_move"
+    | "source_directory_move"
+    | "source_file_replace"
+    | "source_file_delete"
+    | "source_directory_delete"
+    | "knowledge_base_delete";
   state: ResourceOperationState;
   expectedResourceRevision: number | null;
   targetKind: "source_file" | "source_directory" | "knowledge_base" | null;
@@ -45,14 +57,17 @@ export async function updateKnowledgeBaseMetadata(input: {
   resourceRevision: number;
   name: string;
   description: string;
-}): Promise<{ knowledgeBase: KnowledgeBase; publicationQueued: boolean } | ApiFailure> {
+}): Promise<{
+  knowledgeBase: KnowledgeBase;
+} | ApiFailure> {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}`,
     {
       method: "PATCH",
       headers: {
         "content-type": "application/json",
-        "if-match": String(input.resourceRevision)
+        "if-match": String(input.resourceRevision),
+        "idempotency-key": crypto.randomUUID()
       },
       body: JSON.stringify({
         name: input.name.trim(),
@@ -61,6 +76,16 @@ export async function updateKnowledgeBaseMetadata(input: {
     }
   );
   return readJsonResult(response, "errors.editKnowledgeBaseFailed");
+}
+
+export async function fetchResourceOperation(input: {
+  knowledgeBaseId: string;
+  operationId: string;
+}): Promise<{ operation: ResourceOperation } | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/operations/${encodeURIComponent(input.operationId)}`
+  );
+  return readJsonResult(response, "errors.loadOperationFailed");
 }
 
 export async function listSourceDirectories(input: {
@@ -144,6 +169,49 @@ export async function replaceSourceFileContent(input: {
   return readJsonResult(response, "errors.replaceSourceContentFailed");
 }
 
+export async function deleteSourceFile(input: {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  resourceRevision: number;
+}): Promise<{
+  operation: ResourceOperation;
+  deletion: { sourceFileId: string };
+} | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/source-files/${encodeURIComponent(input.sourceFileId)}`,
+    {
+      method: "DELETE",
+      headers: {
+        "idempotency-key": crypto.randomUUID(),
+        "if-match": String(input.resourceRevision)
+      }
+    }
+  );
+  return readJsonResult(response, "errors.deleteFailed");
+}
+
+export async function deleteCurrentSourceFile(input: {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+}): Promise<{
+  operation: ResourceOperation;
+  deletion: { sourceFileId: string };
+} | ApiFailure> {
+  let sourceFile;
+  try {
+    sourceFile = await fetchSourceFile(input);
+  } catch (error) {
+    return { messageKey: readErrorMessageKey(error, "errors.serviceUnavailable") };
+  }
+  if (!sourceFile?.resourceRevision) {
+    return { messageKey: "errors.invalidResourceRevision" };
+  }
+  return deleteSourceFile({
+    ...input,
+    resourceRevision: sourceFile.resourceRevision
+  });
+}
+
 export async function listActiveResourceOperations(input: {
   knowledgeBaseId: string;
 }): Promise<{ items: ResourceOperation[]; nextCursor: string | null } | ApiFailure> {
@@ -187,7 +255,14 @@ async function readFailureResponse(response: Response, fallback: string): Promis
 
 function readFailure(body: unknown, fallback: string): ApiFailure {
   const error = body && typeof body === "object"
-    ? (body as { error?: { messageKey?: string } }).error
+    ? (body as { error?: { code?: string; messageKey?: string } }).error
     : undefined;
-  return { messageKey: error?.messageKey ?? fallback };
+  return {
+    messageKey: error?.messageKey ?? fallback,
+    ...(error?.code ? { code: error.code } : {})
+  };
+}
+
+function readErrorMessageKey(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
 }

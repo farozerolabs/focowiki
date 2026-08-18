@@ -19,23 +19,30 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { showAdminToast } from "@/hooks/use-admin-toast";
 import {
+  cancelKnowledgeBaseIndexMaintenance,
   requestKnowledgeBaseIndexMaintenance,
-  type ProcessingSummary
+  type IndexMaintenanceStatus
 } from "@/lib/admin-api";
+import {
+  indexMaintenanceFailureLabel,
+  indexMaintenanceStageLabel
+} from "@/lib/index-maintenance-presentation";
 
 export function KnowledgeBaseMaintenancePanel({
   knowledgeBaseId,
-  summary,
+  maintenance,
+  errorMessageKey,
   onRefresh
 }: {
   knowledgeBaseId: string;
-  summary: ProcessingSummary | null;
+  maintenance: IndexMaintenanceStatus | null;
+  errorMessageKey?: string;
   onRefresh: () => Promise<void>;
 }) {
   const { t, i18n } = useTranslation();
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [confirmationAction, setConfirmationAction] = useState<"start" | "cancel">("start");
   const [submitting, setSubmitting] = useState(false);
-  const maintenance = summary?.indexMaintenance ?? null;
   const active = maintenance?.active ?? false;
   const completed = maintenance?.completedCount ?? 0;
   const expected = maintenance?.expectedCount ?? 0;
@@ -66,6 +73,27 @@ export function KnowledgeBaseMaintenancePanel({
     await onRefresh();
   }
 
+  async function cancel() {
+    setSubmitting(true);
+    const result = await cancelKnowledgeBaseIndexMaintenance({ knowledgeBaseId });
+    setSubmitting(false);
+    setConfirmationOpen(false);
+    if ("messageKey" in result) {
+      showAdminToast({
+        title: t("indexMaintenance.toast.cancelFailed"),
+        description: t(result.messageKey),
+        variant: "destructive"
+      });
+    } else {
+      showAdminToast({
+        title: result.result === "cancelled"
+          ? t("indexMaintenance.toast.cancelled")
+          : t("indexMaintenance.toast.notActive")
+      });
+    }
+    await onRefresh();
+  }
+
   return (
     <>
       <div className="h-full overflow-y-auto">
@@ -89,11 +117,14 @@ export function KnowledgeBaseMaintenancePanel({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  disabled={active || submitting || !summary}
-                  onClick={() => setConfirmationOpen(true)}
+                  disabled={submitting || !maintenance}
+                  onClick={() => {
+                    setConfirmationAction(active ? "cancel" : "start");
+                    setConfirmationOpen(true);
+                  }}
                 >
                   <RefreshCwIcon data-icon="inline-start" />
-                  {active ? t("indexMaintenance.running") : t("indexMaintenance.action")}
+                  {active ? t("indexMaintenance.cancelAction") : t("indexMaintenance.action")}
                 </Button>
               </div>
               <Separator />
@@ -110,7 +141,9 @@ export function KnowledgeBaseMaintenancePanel({
               <Separator />
               <StatusRow
                 label={t("indexMaintenance.status")}
-                value={t(`indexMaintenance.states.${maintenance?.state ?? "idle"}`)}
+                value={errorMessageKey
+                  ? t(errorMessageKey)
+                  : t(`indexMaintenance.states.${maintenance?.state ?? "idle"}`)}
               />
               {active ? (
                 <>
@@ -118,7 +151,7 @@ export function KnowledgeBaseMaintenancePanel({
                   <StatusRow
                     label={t("indexMaintenance.stage")}
                     value={maintenance?.stage
-                      ? maintenanceStageLabel(maintenance.stage, t)
+                      ? indexMaintenanceStageLabel(maintenance.stage, t)
                       : t("indexMaintenance.preparing")}
                   />
                   <Separator />
@@ -140,12 +173,13 @@ export function KnowledgeBaseMaintenancePanel({
                     }).format(new Date(maintenance.lastCompletedAt))
                   : t("indexMaintenance.neverCompleted")}
               />
-              {maintenance?.state === "failed" && maintenance.safeErrorMessage ? (
+              {maintenance?.state === "failed"
+                && (maintenance.safeErrorCode || maintenance.safeErrorMessage) ? (
                 <>
                   <Separator />
                   <StatusRow
                     label={t("indexMaintenance.failure")}
-                    value={maintenanceFailureLabel(
+                    value={indexMaintenanceFailureLabel(
                       maintenance.safeErrorCode,
                       maintenance.safeErrorMessage,
                       t
@@ -160,17 +194,32 @@ export function KnowledgeBaseMaintenancePanel({
       <AlertDialog open={confirmationOpen} onOpenChange={setConfirmationOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t("indexMaintenance.confirmTitle")}</AlertDialogTitle>
+            <AlertDialogTitle>{t(
+              confirmationAction === "cancel"
+                ? "indexMaintenance.cancelConfirmTitle"
+                : "indexMaintenance.confirmTitle"
+            )}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t("indexMaintenance.confirmDescription")}
+              {t(
+                confirmationAction === "cancel"
+                  ? "indexMaintenance.cancelConfirmDescription"
+                  : "indexMaintenance.confirmDescription"
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction disabled={submitting} onClick={() => void submit()}>
+            <AlertDialogAction
+              disabled={submitting}
+              onClick={() => void (confirmationAction === "cancel" ? cancel() : submit())}
+            >
               {submitting
-                ? t("indexMaintenance.submitting")
-                : t("indexMaintenance.confirmAction")}
+                ? t(confirmationAction === "cancel"
+                    ? "indexMaintenance.cancelling"
+                    : "indexMaintenance.submitting")
+                : t(confirmationAction === "cancel"
+                    ? "indexMaintenance.cancelConfirmAction"
+                    : "indexMaintenance.confirmAction")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -188,33 +237,4 @@ function StatusRow({ label, value }: { label: string; value: string }) {
       </span>
     </div>
   );
-}
-
-function maintenanceStageLabel(
-  stage: string,
-  translate: (key: string) => string
-): string {
-  if (stage.startsWith("projection:")) return translate("indexMaintenance.stages.projection");
-  if (stage.startsWith("search:")) return translate("indexMaintenance.stages.search");
-  if (stage === "compaction") return translate("indexMaintenance.stages.compaction");
-  if (stage === "validating") return translate("indexMaintenance.stages.validating");
-  if (stage === "retrying") return translate("indexMaintenance.stages.retrying");
-  return translate("indexMaintenance.stages.preparing");
-}
-
-function maintenanceFailureLabel(
-  code: string | null,
-  fallback: string,
-  translate: (key: string) => string
-): string {
-  if (code === "INDEX_MAINTENANCE_STATISTICS_FAILED") {
-    return translate("indexMaintenance.failures.statistics");
-  }
-  if (code === "INDEX_MAINTENANCE_COMPACTION_FAILED") {
-    return translate("indexMaintenance.failures.compaction");
-  }
-  if (code === "INDEX_MAINTENANCE_FAILED") {
-    return translate("indexMaintenance.failures.general");
-  }
-  return fallback;
 }

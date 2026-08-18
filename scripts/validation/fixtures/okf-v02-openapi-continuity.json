@@ -1,0 +1,12 @@
+{
+  "reviewedChangeIds": [
+    "align-google-okf-v0-2-trust-signals",
+    "add-general-purpose-graphrag-search",
+    "validate-comprehensive-large-scale-release",
+    "replace-upload-processing-with-document-indexing",
+    "make-okf-bundle-path-linked-portable",
+    "review-openapi-agent-continuity"
+  ],
+  "contractSha256": "da04e9da65552797c9d3cd7a71d2259cfeb3eee04eb367fc3023386aaaf078f1",
+  "reviewedSurfaceSha256": "b0f2cbf7d93460fafc8ce2f336260c89aea3912f85af8699cde6137be1d24fd0"
+}

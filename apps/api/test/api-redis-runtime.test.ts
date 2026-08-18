@@ -37,7 +37,7 @@ describe("API Redis runtime", () => {
     expect(result).toBeNull();
     expect(client.destroy).toHaveBeenCalledOnce();
     expect(logger.warn).toHaveBeenCalledWith(
-      "API Redis unavailable; continuing with bounded database reads"
+      "redis.api_unavailable"
     );
   });
 
@@ -101,6 +101,7 @@ function createClient(options: { connectError?: Error; destroyError?: Error } = 
     set: vi.fn(async () => "OK"),
     get: vi.fn(async () => null),
     del: vi.fn(async () => 0),
+    eval: vi.fn(async () => [1, 60]),
     incr: vi.fn(async () => 1),
     expire: vi.fn(async () => 1),
     ttl: vi.fn(async () => 60),

@@ -39,6 +39,7 @@ export type UploadSessionCounts = {
 
 export type UploadSessionRecord = {
   id: string;
+  operationId: string;
   knowledgeBaseId: string;
   state: UploadSessionState;
   idempotencyKey: string;
@@ -94,7 +95,8 @@ export type UploadSessionErrorCode =
   | "UPLOAD_ENTRY_SIZE_MISMATCH"
   | "UPLOAD_ENTRY_CHECKSUM_MISMATCH"
   | "UPLOAD_ENTRY_STORAGE_FAILED"
-  | "UPLOAD_SESSION_INCOMPLETE";
+  | "UPLOAD_SESSION_INCOMPLETE"
+  | "UPLOAD_PROCESSING_CONFIGURATION_REQUIRED";
 
 export class UploadSessionError extends Error {
   public readonly code: UploadSessionErrorCode;

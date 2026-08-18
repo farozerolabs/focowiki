@@ -50,7 +50,7 @@ async function prepare() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       name: `Source drain capacity ${new Date().toISOString()}`,
-      description: "Bounded model-disabled source worker capacity evidence"
+      description: "Bounded model-disabled worker capacity evidence"
     }),
     expectedStatus: 201
   });
@@ -120,22 +120,22 @@ async function measure() {
   try {
     while (Date.now() < deadline) {
       rows = await database`
-        SELECT id, processing_status, processing_started_at, processing_ended_at,
-               terminal_failure_code, terminal_failure_message
+        SELECT public_id, status, created_at, updated_at,
+               safe_error_code, safe_error_message
         FROM focowiki.source_files
         WHERE knowledge_base_id = ${state.knowledgeBaseId}
-          AND id = ANY(${state.sourceFileIds})
-        ORDER BY processing_ended_at NULLS LAST, id
+          AND public_id = ANY(${state.sourceFileIds})
+        ORDER BY updated_at NULLS LAST, public_id
       `;
-      const failed = rows.find((row) => row.processing_status === "failed");
+      const failed = rows.find((row) => row.status === "failed");
       if (failed) {
         throw new Error(
-          `Source drain failed with ${failed.terminal_failure_code ?? "UNKNOWN"}: ${failed.terminal_failure_message ?? "No message"}`
+          `Source drain failed with ${failed.safe_error_code ?? "UNKNOWN"}: ${failed.safe_error_message ?? "No message"}`
         );
       }
       if (
         rows.length === state.sampleCount
-        && rows.every((row) => row.processing_status === "completed" && row.processing_ended_at)
+        && rows.every((row) => row.status === "ready" && row.updated_at)
       ) {
         break;
       }
@@ -143,17 +143,17 @@ async function measure() {
     }
     if (
       rows.length !== state.sampleCount
-      || rows.some((row) => row.processing_status !== "completed" || !row.processing_ended_at)
+      || rows.some((row) => row.status !== "ready" || !row.updated_at)
     ) {
       throw new Error("Source drain measurement timed out before every source completed.");
     }
     const workerSettings = await readWorkerSettings(database);
     const metrics = calculateSourceDrainMetrics(
       rows.map((row) => ({
-        sourceFileId: row.id,
-        status: row.processing_status,
-        startedAt: row.processing_started_at?.toISOString() ?? null,
-        endedAt: row.processing_ended_at?.toISOString() ?? null
+        sourceFileId: row.public_id,
+        status: row.status === "ready" ? "completed" : row.status,
+        startedAt: row.created_at?.toISOString() ?? null,
+        endedAt: row.updated_at?.toISOString() ?? null
       })),
       state.sampleCount
     );
@@ -198,15 +198,17 @@ async function measure() {
 
 async function readWorkerSettings(database) {
   const rows = await database`
-    SELECT value_json
-    FROM focowiki.runtime_settings
-    WHERE key = 'worker'
+    SELECT revision.settings_values -> 'worker' AS worker
+    FROM focowiki.runtime_setting_current AS current
+    JOIN focowiki.runtime_setting_revisions AS revision
+      ON revision.public_id = current.revision_public_id
+    WHERE current.singleton = true
     LIMIT 1
   `;
-  if (!rows[0]?.value_json) {
+  if (!rows[0]?.worker) {
     throw new Error("Persisted worker settings are missing for source drain evidence.");
   }
-  return rows[0].value_json;
+  return rows[0].worker;
 }
 
 async function cleanup() {
@@ -289,7 +291,7 @@ function renderMarkdown(report) {
     "",
     `生成时间：${report.generatedAt}`,
     "",
-    "150 个真实 Markdown 文件先完成上传和接收，再启动 Source Worker。计时只覆盖来源队列排空，外部上传时间与后续发布时间均不计入。",
+    "150 个真实 Markdown 文件先完成上传和接收，再启动 Worker。计时只覆盖来源队列排空，外部上传时间与后续发布时间均不计入。",
     "",
     `- 暖态吞吐：${report.metrics.warmedFilesPerSecond} 文件/秒`,
     `- 全程吞吐：${report.metrics.filesPerSecond} 文件/秒`,

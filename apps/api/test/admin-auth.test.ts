@@ -37,17 +37,12 @@ const config: RuntimeConfig = {
     prefix: "tenant/demo",
     forcePathStyle: true
   },
-  publication: {
-    mode: "batch",
-    batchSize: 300,
-    intervalSeconds: 300,
-    indexShardSize: 1_000,
-    linkIndexShardSize: 1_000,
-    manifestShardSize: 1_000,
-    graphEdgeShardSize: 5_000,
-    graphCandidateLimit: 200,
-    graphMaintenanceBatchSize: 500,
-    rootSummaryLimit: 500
+  generated: {
+    directoryIndexMaxEntries: 200,
+    directoryIndexMaxBytes: 65_536,
+    rootSummaryLimit: 500,
+    okfLogMaxEntries: 100,
+    okfLogMaxBytes: 65_536
   },
   pagination: {
     defaultPageSize: 50,
@@ -160,6 +155,110 @@ describe("Admin API auth", () => {
     expect(session.status).toBe(401);
   });
 
+  it("rejects unsupported media types before parsing an Admin API request body", async () => {
+    const app = createApiApp({ config, redis: createTestRedisCoordinator() });
+    const response = await app.request("/admin/api/login", {
+      method: "POST",
+      headers: {
+        "content-type": "text/plain"
+      },
+      body: JSON.stringify({ username: "admin", password: "admin-secret" })
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "UNSUPPORTED_MEDIA_TYPE"
+      }
+    });
+    expect(response.status).toBe(415);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("rejects malformed JSON before a bodyless Admin action can mutate state", async () => {
+    const app = createApiApp({ config, redis: createTestRedisCoordinator() });
+    const cookie = await loginAndReadSessionCookie(app);
+    const response = await app.request("/admin/api/logout", {
+      method: "POST",
+      headers: withTrustedAdminOrigin({
+        cookie,
+        "content-type": "application/json"
+      }),
+      body: "{"
+    });
+    const session = await app.request("/admin/api/session", {
+      headers: { cookie }
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "MALFORMED_JSON"
+      }
+    });
+    expect(response.status).toBe(400);
+    expect(session.status).toBe(200);
+  });
+
+  it("rejects an Admin API body above the configured source byte ceiling", async () => {
+    const app = createApiApp({
+      config: {
+        ...config,
+        pagination: {
+          ...config.pagination,
+          generatedContentMaxBytes: 16
+        }
+      },
+      redis: createTestRedisCoordinator()
+    });
+    const response = await app.request("/admin/api/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ username: "admin", password: "admin-secret" })
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "PAYLOAD_TOO_LARGE"
+      }
+    });
+    expect(response.status).toBe(413);
+  });
+
+  it("leaves unsupported Admin API methods to the route-level not-found contract", async () => {
+    const app = createApiApp({ config, redis: createTestRedisCoordinator() });
+    const response = await app.request("/admin/api/session", {
+      method: "PROPFIND"
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "NOT_FOUND"
+      }
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("does not treat a zero-length Admin DELETE request as an unsupported body", async () => {
+    const app = createApiApp({ config, redis: createTestRedisCoordinator() });
+    const cookie = await loginAndReadSessionCookie(app);
+    const request = new Request("http://admin.local/admin/api/openapi-keys/missing-key", {
+      method: "DELETE",
+      headers: withTrustedAdminOrigin({
+        cookie
+      }),
+      body: new ReadableStream({
+        start(controller) {
+          controller.close();
+        }
+      }),
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+    const response = await app.request(request);
+
+    expect(response.status).not.toBe(415);
+  });
+
   it("clears the Redis-backed session and cookie on logout", async () => {
     const redisClient = new MemoryRedisCommandClient();
     const app = createApiApp({
@@ -212,22 +311,9 @@ describe("Admin API auth", () => {
     const app = createApiApp({
       config,
       redis: createTestRedisCoordinator(),
-      repositories: {
-        knowledgeBases: {
-          async listKnowledgeBases() {
-            return { items: [], nextCursor: null };
-          },
-          async createKnowledgeBase() {
-            throw new Error("Unused");
-          },
-          async getKnowledgeBase() {
-            return null;
-          }
-        },
-        securityAudit: {
-          async createSecurityAuditEvent(event) {
-            events.push(event);
-          }
+      storageVnextAudit: {
+        async append(event) {
+          events.push(event);
         }
       }
     });
@@ -244,8 +330,9 @@ describe("Admin API auth", () => {
       expect.objectContaining({
         eventType: "admin_login",
         result: "failure",
-        errorCode: "UNAUTHORIZED",
-        username: "admin"
+        reasonCode: "UNAUTHORIZED",
+        actorPublicId: "admin",
+        sourceIp: null
       })
     ]);
     expect(JSON.stringify(events)).not.toContain("wrong");
@@ -286,6 +373,30 @@ describe("Admin API auth", () => {
 
     expect(first.status).toBe(401);
     expect(second.status).toBe(429);
+  });
+
+  it("applies the minimum runtime Admin API limit through the real middleware", async () => {
+    const security = resolveSecurityConfig(config);
+    const app = createApiApp({
+      config,
+      redis: createTestRedisCoordinator(),
+      runtimeSettings: {
+        getSnapshot: async () => ({
+          rateLimits: {
+            ...security.rateLimits,
+            adminApi: { max: 1, windowSeconds: 60 }
+          }
+        })
+      } as never
+    });
+    const request = () => app.request("/admin/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "admin", password: "wrong" })
+    });
+
+    expect((await request()).status).toBe(401);
+    expect((await request()).status).toBe(429);
   });
 
   it("does not expose public OpenAPI file routes from the admin API app", async () => {

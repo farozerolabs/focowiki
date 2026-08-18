@@ -21,16 +21,13 @@ export function registerDeveloperOpenApiGraphExpansionRoutes(
       const graphSettings = (await services.runtimeSettings?.getSnapshot())?.graph;
       const filters = readDeveloperGraphExpansionFilters({
         fileId: context.req.query("fileId"),
-        nodeId: context.req.query("nodeId"),
-        edgeId: context.req.query("edgeId"),
-        query: context.req.query("query"),
         depth: context.req.query("depth"),
         fanout: context.req.query("fanout"),
         graphSettings
       });
 
       if (!filters.ok) {
-        throw validationError("Graph expansion query is invalid.", {
+        throw validationError("Relationship exploration query is invalid.", {
           code: filters.code
         });
       }
@@ -38,9 +35,6 @@ export function registerDeveloperOpenApiGraphExpansionRoutes(
       return services.api.expandGraph({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         fileId: filters.fileId,
-        nodeId: filters.nodeId,
-        edgeId: filters.edgeId,
-        query: filters.query,
         depth: filters.depth,
         fanout: filters.fanout,
         limit: readLimit(context.req.query("limit"), services.config),

@@ -13,6 +13,7 @@ export type FileTreeSearchState = {
   errorMessageKey: string | null;
   isSearchActive: boolean;
   clear: () => void;
+  refresh: () => Promise<void>;
   loadMore: () => Promise<void>;
 };
 
@@ -107,6 +108,14 @@ export function useFileTreeSearch(knowledgeBaseId: string): FileTreeSearchState 
     setQuery("");
   }, []);
 
+  const refresh = useCallback(async () => {
+    if (normalizedQuery.length < MIN_SEARCH_QUERY_LENGTH) {
+      return;
+    }
+
+    await runSearch({ cursor: null, append: false });
+  }, [normalizedQuery.length, runSearch]);
+
   const loadMore = useCallback(async () => {
     if (!nextCursor || isLoading || normalizedQuery.length < MIN_SEARCH_QUERY_LENGTH) {
       return;
@@ -124,6 +133,7 @@ export function useFileTreeSearch(knowledgeBaseId: string): FileTreeSearchState 
     errorMessageKey,
     isSearchActive,
     clear,
+    refresh,
     loadMore
   };
 }

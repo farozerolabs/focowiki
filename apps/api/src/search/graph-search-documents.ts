@@ -1,5 +1,19 @@
-import type { FileGraphRelatedRecord } from "../db/admin-repositories.js";
 import { normalizeGeneratedFileSearchQuery } from "./generated-file-search-documents.js";
+
+export type FileGraphRelatedRecord = {
+  fileId: string;
+  sourceFileId: string;
+  generatedFileId: string | null;
+  path: string;
+  title: string;
+  relationType: string;
+  direction: "outgoing" | "incoming";
+  weight: number;
+  reason: string;
+  source: string;
+  evidence?: Record<string, unknown>;
+  contentAvailable: boolean;
+};
 
 export type GraphSearchMode = "file" | "graph" | "hybrid";
 export type GraphSearchDepth = 0 | 1 | 2;
@@ -30,8 +44,4 @@ export const GRAPH_SEARCH_MAX_FANOUT = 25;
 
 export function normalizeGraphSearchQuery(value: string): string {
   return normalizeGeneratedFileSearchQuery(value);
-}
-
-export function graphRefForSourceFile(sourceFileId: string): string {
-  return `_graph/by-file/${sourceFileId}.json`;
 }

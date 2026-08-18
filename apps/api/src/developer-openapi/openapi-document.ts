@@ -10,7 +10,7 @@ export function createDeveloperOpenApiDocument() {
       title: "Focowiki Developer OpenAPI",
       version: readProductReleaseVersion(),
       description:
-        "Authenticated API for integrating Focowiki knowledge bases, uploads, generated files, and webhooks.",
+        "Authenticated API for creating knowledge bases, uploading Markdown, reading readable files, managing content, and receiving webhooks.",
       license: {
         name: "Modified Apache License 2.0",
         url: "https://www.apache.org/licenses/LICENSE-2.0"
@@ -21,11 +21,11 @@ export function createDeveloperOpenApiDocument() {
     tags: [
       { name: "Metadata", description: "Health, version, and contract discovery." },
       { name: "Knowledge Bases", description: "Knowledge-base creation, metadata, listing, and deletion." },
-      { name: "Upload Sessions", description: "Resumable Markdown uploads that preserve relative paths." },
-      { name: "Source Directories", description: "Source-directory listing, movement, and deletion." },
-      { name: "Source Files", description: "Source-file content, processing, replacement, movement, retry, and deletion." },
-      { name: "Resource Operations", description: "Status and results for asynchronous source changes." },
-      { name: "Files", description: "Generated file tree, content, search, and relationship exploration." },
+      { name: "Upload Sessions", description: "Resumable Markdown uploads that preserve file and folder paths." },
+      { name: "Uploaded Directories", description: "Directories created from uploaded folder paths." },
+      { name: "Uploaded Files", description: "Uploaded Markdown content, processing status, replacement, movement, retry, and deletion." },
+      { name: "File and Directory Changes", description: "Progress and results for document indexing, file and directory moves, replacements, and deletions." },
+      { name: "Files", description: "Readable file tree, content, search, and file relationships." },
       { name: "Webhooks", description: "Webhook subscriptions and delivery operations." }
     ],
     components: {

@@ -60,7 +60,7 @@ function englishThemeConfig(): DefaultTheme.Config {
         items: [
           { text: "Project Introduction", link: "/" },
           { text: "Open Knowledge Format", link: "/guide/open-knowledge-format" },
-          { text: "File-first Graph", link: "/guide/file-first-graph" },
+          { text: "Source Evidence and Graph", link: "/guide/file-first-graph" },
           { text: "Resource Management", link: "/guide/resource-management" },
           { text: "File Cleaning and Ingestion Guide", link: "/guide/file-cleaning-ingestion" }
         ]
@@ -76,7 +76,11 @@ function englishThemeConfig(): DefaultTheme.Config {
       },
       {
         text: "Developer OpenAPI",
-        items: [{ text: "Overview", link: "/openapi/" }, ...readOpenApiSidebar("root")]
+        items: [
+          { text: "Overview", link: "/openapi/" },
+          { text: "API Explorer", link: "/openapi/explorer" },
+          ...readOpenApiSidebar("root")
+        ]
       },
       {
         text: "Agent Integration",
@@ -120,7 +124,7 @@ function chineseThemeConfig(): DefaultTheme.Config {
         items: [
           { text: "项目介绍", link: "/zh-CN/" },
           { text: "Google OKF 规范", link: "/zh-CN/guide/open-knowledge-format" },
-          { text: "文件优先图关系", link: "/zh-CN/guide/file-first-graph" },
+          { text: "来源证据与图关系", link: "/zh-CN/guide/file-first-graph" },
           { text: "知识库资源管理", link: "/zh-CN/guide/resource-management" },
           { text: "文件清洗入库指南", link: "/zh-CN/guide/file-cleaning-ingestion" }
         ]
@@ -136,7 +140,11 @@ function chineseThemeConfig(): DefaultTheme.Config {
       },
       {
         text: "Developer OpenAPI",
-        items: [{ text: "概览", link: "/zh-CN/openapi/" }, ...readOpenApiSidebar("zh-CN")]
+        items: [
+          { text: "概览", link: "/zh-CN/openapi/" },
+          { text: "API 交互文档", link: "/zh-CN/openapi/explorer" },
+          ...readOpenApiSidebar("zh-CN")
+        ]
       },
       {
         text: "Agent 接入",
@@ -168,6 +176,7 @@ function chineseThemeConfig(): DefaultTheme.Config {
 export default defineConfig({
   title: "Focowiki",
   description: "Markdown knowledge-base system with OKF-style bundles and Developer OpenAPI.",
+  head: [["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }]],
   cleanUrls: true,
   lastUpdated: true,
   themeConfig: englishThemeConfig(),

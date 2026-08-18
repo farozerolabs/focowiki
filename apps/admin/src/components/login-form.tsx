@@ -4,9 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import type { AdminLoginResult } from "@/lib/admin-api";
 
 type LoginFormProps = React.ComponentProps<"div"> & {
-  onLogin: (input: { username: string; password: string }) => Promise<boolean>;
+  onLogin: (input: { username: string; password: string }) => Promise<AdminLoginResult>;
   onAuthenticated: () => void;
 };
 
@@ -14,20 +15,32 @@ export function LoginForm({ className, onLogin, onAuthenticated, ...props }: Log
   const { t } = useTranslation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [hasError, setHasError] = useState(false);
+  const [error, setError] = useState<AdminLoginResult["error"]>(null);
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSubmitting(true);
-    setHasError(false);
+    setError(null);
+    setRetryAfterSeconds(null);
 
-    const isLoggedIn = await onLogin({ username, password });
+    let result: AdminLoginResult;
+    try {
+      result = await onLogin({ username, password });
+    } catch {
+      result = {
+        authenticated: false,
+        error: "request_failed",
+        retryAfterSeconds: null
+      };
+    } finally {
+      setIsSubmitting(false);
+    }
 
-    setIsSubmitting(false);
-
-    if (!isLoggedIn) {
-      setHasError(true);
+    if (!result.authenticated) {
+      setError(result.error);
+      setRetryAfterSeconds(result.retryAfterSeconds);
       return;
     }
 
@@ -38,18 +51,18 @@ export function LoginForm({ className, onLogin, onAuthenticated, ...props }: Log
     <div className={cn("flex w-full max-w-sm flex-col gap-6", className)} {...props}>
       <form className="p-4" onSubmit={handleSubmit}>
         <FieldGroup>
-          <Field data-invalid={hasError}>
+          <Field data-invalid={error !== null}>
             <FieldLabel htmlFor="admin-username">{t("auth.usernameLabel")}</FieldLabel>
             <Input
               id="admin-username"
               value={username}
               placeholder={t("auth.usernamePlaceholder")}
               autoComplete="username"
-              aria-invalid={hasError}
+              aria-invalid={error !== null}
               onChange={(event) => setUsername(event.target.value)}
             />
           </Field>
-          <Field data-invalid={hasError}>
+          <Field data-invalid={error !== null}>
             <FieldLabel htmlFor="admin-password">{t("auth.passwordLabel")}</FieldLabel>
             <Input
               id="admin-password"
@@ -57,10 +70,20 @@ export function LoginForm({ className, onLogin, onAuthenticated, ...props }: Log
               value={password}
               placeholder={t("auth.passwordPlaceholder")}
               autoComplete="current-password"
-              aria-invalid={hasError}
+              aria-invalid={error !== null}
               onChange={(event) => setPassword(event.target.value)}
             />
-            {hasError ? <FieldError>{t("auth.invalidCredentials")}</FieldError> : null}
+            {error ? (
+              <FieldError>
+                {error === "rate_limited"
+                  ? retryAfterSeconds === null
+                    ? t("auth.rateLimited")
+                    : t("auth.rateLimitedWithRetry", { seconds: retryAfterSeconds })
+                  : error === "request_failed"
+                    ? t("auth.requestFailed")
+                    : t("auth.invalidCredentials")}
+              </FieldError>
+            ) : null}
           </Field>
           <Button type="submit" disabled={!username || !password || isSubmitting}>
             {isSubmitting ? t("auth.loggingIn") : t("auth.login")}

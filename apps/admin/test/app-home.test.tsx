@@ -18,6 +18,29 @@ import {
 vi.mock("../src/lib/admin-api", () => ({
   activateRuntimeModel: vi.fn(),
   adminFetch: vi.fn(async (path: string) => {
+    if (/\/operations\/[^/?]+$/.test(path)) {
+      return new Response(JSON.stringify({
+        operation: {
+          operationId: "operation-metadata",
+          knowledgeBaseId: "kb-docs",
+          kind: "knowledge_base_metadata",
+          state: "completed",
+          expectedResourceRevision: 3,
+          targetKind: "knowledge_base",
+          targetId: "kb-docs",
+          candidateRelativePath: null,
+          result: null,
+          errorCode: null,
+          retryGuidance: null,
+          createdAt: "2026-07-12T00:00:00.000Z",
+          updatedAt: "2026-07-12T00:00:01.000Z",
+          completedAt: "2026-07-12T00:00:01.000Z"
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
     if (path.includes("/operations")) {
       return new Response(JSON.stringify({ items: [], nextCursor: null }), {
         status: 200,
@@ -30,23 +53,22 @@ vi.mock("../src/lib/admin-api", () => ({
           id: "kb-docs",
           name: "Updated docs",
           description: "Updated description",
-          activeGenerationId: "generation-001",
+          activeContentRevision: 1,
           resourceRevision: 4,
-          catalogGeneration: 3
-        },
-        publicationQueued: true
+        }
       }), { status: 200, headers: { "content-type": "application/json" } });
     }
     return new Response("{}", { status: 404 });
   }),
   checkAdminSession: vi.fn(async () => false),
   createRuntimeModel: vi.fn(),
+  updateRuntimeModel: vi.fn(),
   createKnowledgeBase: vi.fn(async () => ({
     knowledgeBase: {
       id: "kb-created",
       name: "Created docs",
       description: "Created from the home page",
-      activeGenerationId: null
+      activeContentRevision: 0
     }
   })),
   createPublicOpenApiKey: vi.fn(async () => ({
@@ -63,7 +85,12 @@ vi.mock("../src/lib/admin-api", () => ({
       rawKey: "fwok_created-secret"
     }
   })),
-  deleteKnowledgeBase: vi.fn(async () => ({ deleted: true })),
+  deleteKnowledgeBase: vi.fn(async () => ({
+    accepted: true,
+    operationId: "deletion-kb-docs",
+    affectedDirectoryCount: 2,
+    affectedFileCount: 3
+  })),
   deletePublicOpenApiKey: vi.fn(async () => ({ deleted: true })),
   deleteRuntimeModel: vi.fn(),
   fetchKnowledgeBase: vi.fn(async () => null),
@@ -74,47 +101,11 @@ vi.mock("../src/lib/admin-api", () => ({
     nextCursor: null
   })),
   fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
-    activeGenerationId: null,
-    pendingDispatch: {
-      pendingCount: 0,
-      oldestPendingAt: null,
-      paused: false,
-      pausedReason: null
-    },
-    sourceFileJobs: {
-      queuedCount: 0,
-      runningCount: 0,
-      completedCount: 0,
-      failedCount: 0,
-      deadLetterCount: 0,
-      oldestQueuedAt: null,
-      oldestQueuedAgeSeconds: null
-    },
-    publicationJobs: {
-      queuedCount: 0,
-      runningCount: 0,
-      completedCount: 0,
-      failedCount: 0,
-      deadLetterCount: 0,
-      oldestQueuedAt: null,
-      oldestQueuedAgeSeconds: null
-    },
-    publicationProgress: {
-      generationId: null, stage: null, processedImpactCount: 0, totalImpactCount: 0,
-      touchedShardCount: 0, throughputPerMinute: null, oldestDirtyAt: null, queuedAt: null, startedAt: null,
-      heartbeatAt: null, completedAt: null, lastSuccessAt: null,
-      safeErrorCode: null, safeErrorMessage: null
-    },
-    maintenanceProgress: {
-      migration: null,
-      lexicalRebuild: null,
-      projectionRepair: null,
-      compaction: { active: null, latestCompleted: null }
-    },
-    dirtySourceFiles: {
-      count: 0,
-      oldestDirtyAt: null
-    }
+    waitingCount: 0,
+    processingCount: 0,
+    availableCount: 0,
+    errorCount: 0,
+    oldestWaitingAt: null
   })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => null),
   fetchRuntimeSettings: vi.fn(async () => ({ messageKey: "errors.requestFailed" })),
@@ -136,17 +127,13 @@ vi.mock("../src/lib/admin-api", () => ({
         lastUsedAt: null
       }
     ],
-    nextCursor: null,
-    oneTimeKey: {
-      id: "openapi-key-default",
-      rawKey: "fwok_default-secret"
-    }
+    nextCursor: null
   })),
   listSourceFiles: vi.fn(async () => ({
     items: [],
     nextCursor: null
   })),
-  loginAdmin: vi.fn(async () => true),
+  loginAdmin: vi.fn(async () => ({ authenticated: true, error: null, retryAfterSeconds: null })),
   logoutAdmin: vi.fn(async () => undefined),
   pauseRuntimeModel: vi.fn(),
   resumeRuntimeModel: vi.fn(),
@@ -156,7 +143,6 @@ vi.mock("../src/lib/admin-api", () => ({
   uploadSources: vi.fn(),
   updateGraphSettings: vi.fn(),
   updateMaintenanceSettings: vi.fn(),
-  updatePublicationSettings: vi.fn(),
   updateRateLimitSettings: vi.fn(),
   updateWorkerSettings: vi.fn()
 }));
@@ -267,7 +253,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeGenerationId: null
+          activeContentRevision: 0
         }
       ],
       nextCursor: null
@@ -281,12 +267,78 @@ describe("Admin knowledge base home", () => {
     expect(loginAdmin).not.toHaveBeenCalled();
   });
 
+  it("recovers after the knowledge base list response is malformed", async () => {
+    vi.mocked(listKnowledgeBases)
+      .mockRejectedValueOnce(new SyntaxError("Unexpected token in JSON"))
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-recovered",
+            name: "Recovered docs",
+            description: "Loaded after retry",
+            activeContentRevision: 0
+          }
+        ],
+        nextCursor: null
+      });
+
+    render(<App />);
+    await login();
+
+    expect(await screen.findByText("No knowledge bases yet")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Search knowledge bases"), {
+      target: { value: "recovered" }
+    });
+
+    expect(await screen.findByRole("button", { name: "Recovered docs" })).toBeTruthy();
+    expect(listKnowledgeBases).toHaveBeenLastCalledWith({ query: "recovered" });
+  });
+
+  it("keeps the knowledge base load pending until a slow response preserves its durable ID", async () => {
+    let resolvePage: ((page: {
+      items: Array<{
+        id: string;
+        name: string;
+        description: string;
+        activeContentRevision: 0;
+      }>;
+      nextCursor: null;
+    }) => void) | undefined;
+    vi.mocked(listKnowledgeBases).mockReturnValueOnce(new Promise((resolve) => {
+      resolvePage = resolve;
+    }));
+
+    render(<App />);
+    await login();
+
+    expect(await screen.findByText("Loading")).toBeTruthy();
+
+    await act(async () => {
+      resolvePage?.({
+        items: [
+          {
+            id: "kb-slow-stable-id",
+            name: "Slow response docs",
+            description: "Resolved without client duplication",
+            activeContentRevision: 0
+          }
+        ],
+        nextCursor: null
+      });
+    });
+
+    expect(await screen.findByRole("button", { name: "Slow response docs" })).toBeTruthy();
+    expect(screen.getByText("kb-slow-stable-id")).toBeTruthy();
+    expect(listKnowledgeBases).toHaveBeenCalledTimes(1);
+  });
+
   it("restores a knowledge base detail view from the URL after refresh", async () => {
     const knowledgeBase = {
       id: "kb-docs",
       name: "Developer docs",
       description: "Markdown product knowledge",
-      activeGenerationId: null
+      activeContentRevision: 0
     };
     window.history.replaceState(
       null,
@@ -311,7 +363,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeGenerationId: null
+          activeContentRevision: 0
         }
       ],
       nextCursor: null
@@ -331,6 +383,16 @@ describe("Admin knowledge base home", () => {
   });
 
   it("opens the create dialog and appends the created knowledge base card", async () => {
+    vi.mocked(listKnowledgeBases).mockResolvedValueOnce({ items: [], nextCursor: null })
+      .mockResolvedValueOnce({
+        items: [{
+          id: "kb-created",
+          name: "Created docs",
+          description: "Created from the home page",
+          activeContentRevision: 0
+        }],
+        nextCursor: null
+      });
     render(<App />);
 
     await login();
@@ -367,9 +429,8 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeGenerationId: "generation-001",
+          activeContentRevision: 1,
           resourceRevision: 3,
-          catalogGeneration: 2
         }
       ],
       nextCursor: null
@@ -392,6 +453,47 @@ describe("Admin knowledge base home", () => {
     );
   });
 
+  it("uses the durably updated metadata response before reloading the search result", async () => {
+    const original = {
+      id: "kb-docs",
+      name: "Developer docs",
+      description: "Original searchable description",
+      activeContentRevision: 1,
+      resourceRevision: 3,
+    };
+    vi.mocked(listKnowledgeBases)
+      .mockResolvedValueOnce({ items: [original], nextCursor: null })
+      .mockResolvedValueOnce({ items: [original], nextCursor: null })
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
+    render(<App />);
+
+    await login();
+    const search = await screen.findByPlaceholderText("Search by name, description, or ID");
+    fireEvent.change(search, { target: { value: "Original searchable description" } });
+    await waitFor(() => {
+      expect(listKnowledgeBases).toHaveBeenLastCalledWith({
+        query: "Original searchable description"
+      });
+    });
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "Knowledge base actions for Developer docs" }),
+      { button: 0, ctrlKey: false }
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Published replacement description" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(listKnowledgeBases).toHaveBeenLastCalledWith({
+        query: "Original searchable description"
+      });
+    });
+    expect(fetchKnowledgeBase).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Developer docs" })).toBeNull();
+  });
+
   it("navigates from a knowledge base card to the detail page", async () => {
     vi.mocked(listKnowledgeBases).mockResolvedValueOnce({
       items: [
@@ -399,7 +501,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeGenerationId: null
+          activeContentRevision: 0
         }
       ],
       nextCursor: null
@@ -432,7 +534,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeGenerationId: null
+          activeContentRevision: 0
         }
       ],
       nextCursor: null
@@ -483,13 +585,9 @@ describe("Admin knowledge base home", () => {
     fireEvent.click(openApiKeysNavigation);
 
     expect(await screen.findByText("Default key")).toBeTruthy();
+    expect(window.location.search).toBe("?view=openapi-keys");
     expect(openApiKeysNavigation.getAttribute("aria-current")).toBe("page");
-    expect(await screen.findByRole("dialog", { name: "Copy this key now" })).toBeTruthy();
-    expect(screen.getByDisplayValue("fwok_default-secret")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    await waitFor(() => {
-      expect(screen.queryByDisplayValue("fwok_default-secret")).toBeNull();
-    });
+    expect(screen.queryByRole("dialog", { name: "Copy this key now" })).toBeNull();
     expect(listPublicOpenApiKeys).toHaveBeenCalledWith({});
     expect(screen.getAllByText("OpenAPI keys")).toHaveLength(2);
     expect(
@@ -527,6 +625,19 @@ describe("Admin knowledge base home", () => {
     expect(screen.queryByText("Revoked")).toBeNull();
   });
 
+  it("restores the OpenAPI key view from the URL after refresh", async () => {
+    window.history.replaceState(null, "", "/?view=openapi-keys");
+    vi.mocked(checkAdminSession).mockResolvedValueOnce(true);
+
+    render(<App />);
+
+    expect(await screen.findByText("Default key")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Copy this key now" })).toBeNull();
+    expect(screen.getByRole("button", { name: "OpenAPI keys" }).getAttribute("aria-current"))
+      .toBe("page");
+    expect(listPublicOpenApiKeys).toHaveBeenCalledWith({});
+  });
+
   it("navigates paginated knowledge base card pages without appending cards", async () => {
     vi.mocked(listKnowledgeBases)
       .mockResolvedValueOnce({
@@ -535,7 +646,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-one",
             name: "One docs",
             description: null,
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: "cursor-one"
@@ -546,7 +657,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-two",
             name: "Two docs",
             description: null,
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: null
@@ -557,7 +668,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-one",
             name: "One docs",
             description: null,
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: "cursor-one"
@@ -598,7 +709,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: null
@@ -609,7 +720,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-legal-one",
             name: "Legal library",
             description: "Law metadata",
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: "cursor-legal"
@@ -620,7 +731,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-legal-two",
             name: "Legal references",
             description: null,
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: null
@@ -631,7 +742,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: null
@@ -642,7 +753,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: null
@@ -705,7 +816,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeGenerationId: null
+            activeContentRevision: 0
           }
         ],
         nextCursor: null
@@ -738,7 +849,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeGenerationId: null
+          activeContentRevision: 0
         }
       ],
       nextCursor: null
@@ -765,6 +876,10 @@ describe("Admin knowledge base home", () => {
       expect(deleteKnowledgeBase).toHaveBeenCalledWith({ knowledgeBaseId: "kb-docs" });
       expect(screen.queryByRole("button", { name: "Developer docs" })).toBeNull();
     });
+    expect(screen.getByText("Knowledge base deletion accepted")).toBeTruthy();
+    expect(screen.getByText(
+      "The knowledge base is now hidden while 2 directories and 3 files are deleted in the background."
+    )).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   });
 });

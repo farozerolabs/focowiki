@@ -1,8 +1,26 @@
 x-docker-logging: &docker-logging
   driver: json-file
   options:
-    max-size: "50m"
+    max-size: "10m"
     max-file: "3"
+
+x-runtime-environment: &runtime-environment
+  SEARCH_PROVIDER: ${SEARCH_PROVIDER}
+  SEARCH_INDEX_PREFIX: ${SEARCH_INDEX_PREFIX}
+  OPENSEARCH_URL: ${OPENSEARCH_URL-}
+  OPENSEARCH_AUTH_MODE: ${OPENSEARCH_AUTH_MODE-}
+  OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME-}
+  OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD-}
+  OPENSEARCH_PASSWORD_FILE: ${OPENSEARCH_PASSWORD_FILE-}
+  OPENSEARCH_CA_FILE: ${OPENSEARCH_CA_FILE-}
+  OPENSEARCH_AWS_REGION: ${OPENSEARCH_AWS_REGION-}
+  OPENSEARCH_AWS_SERVICE: ${OPENSEARCH_AWS_SERVICE-}
+  OPENSEARCH_ADMIN_PASSWORD: ""
+  MEILI_HOST: ${MEILI_HOST-}
+  MEILI_API_KEY: ${MEILI_API_KEY-}
+  MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY-}
+  MEILI_API_KEY_FILE: ${MEILI_API_KEY_FILE-}
+  MEILI_METRICS_API_KEY_FILE: ${MEILI_METRICS_API_KEY_FILE-}
 
 services:
   admin:
@@ -10,7 +28,7 @@ services:
     environment:
       ADMIN_API_PROXY_TARGET: ${ADMIN_API_PROXY_TARGET:?Set ADMIN_API_PROXY_TARGET in .env}
     ports:
-      - "${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080"
+      - "127.0.0.1:${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080"
     depends_on:
       api:
         condition: service_healthy
@@ -27,9 +45,10 @@ services:
     image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
     env_file:
       - .env
+    environment: *runtime-environment
     ports:
-      - "${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"
-      - "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
+      - "127.0.0.1:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"
+      - "127.0.0.1:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -41,19 +60,20 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const check=(port)=>fetch('http://127.0.0.1:'+port+'/healthz').then(async(r)=>{const body=await r.json().catch(()=>null);return r.ok&&body?.status==='ok';});const adminPort=process.env.ADMIN_API_PORT||'43000';const publicPort=process.env.PUBLIC_OPENAPI_PORT||'43200';Promise.all([check(adminPort),check(publicPort)]).then((checks)=>process.exit(checks.every(Boolean)?0:1)).catch(()=>process.exit(1));\""]
+      test: ["CMD", "node", "apps/api/runtime/main.mjs", "--healthcheck"]
       interval: 10s
-      timeout: 5s
+      timeout: 15s
       retries: 12
       start_period: 20s
     logging: *docker-logging
     restart: unless-stopped
 
-  source-worker:
+  worker:
     image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
-    command: ["node", "apps/api/runtime/source-worker.mjs"]
+    command: ["node", "--max-old-space-size=512", "apps/api/runtime/worker.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -65,124 +85,57 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/source-worker.mjs", "--healthcheck"]
+      test: ["CMD", "node", "apps/api/runtime/worker.mjs", "--healthcheck"]
       interval: 15s
-      timeout: 10s
+      timeout: 15s
       retries: 8
       start_period: 20s
+    cpus: ${WORKER_CPUS:-2.0}
+    mem_limit: ${WORKER_MEMORY_LIMIT:-2g}
+    pids_limit: ${WORKER_PIDS_LIMIT:-128}
     stop_grace_period: 30s
     logging: *docker-logging
     restart: unless-stopped
 
-  publication-worker:
+  search-init:
+    profiles: ["opensearch", "meilisearch"]
     image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
-    command: ["node", "apps/api/runtime/publication-worker.mjs"]
-    env_file:
-      - .env
+    command: ["node", "apps/api/runtime/search-init.mjs"]
+    environment:
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER}
+      SEARCH_INDEX_PREFIX: ${SEARCH_INDEX_PREFIX}
+      MEILI_HOST: ${MEILI_HOST-}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}
+      MEILI_API_KEY: ${MEILI_API_KEY-}
+      MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY-}
+      MEILI_SECRET_DIR: /app/runtime-secrets
+      BUNDLED_OPENSEARCH_SECURITY_ENABLED: "true"
+      OPENSEARCH_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD-}
+      OPENSEARCH_RUNTIME_USERNAME: ${OPENSEARCH_USERNAME-focowiki-runtime}
+      OPENSEARCH_SECURITY_DIR: /app/opensearch-security
+      OPENSEARCH_SECRET_DIR: /app/runtime-secrets
     volumes:
-      - ./logs:/app/logs
+      - ./opensearch-security:/app/opensearch-security
       - ./runtime-secrets:/app/runtime-secrets
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/publication-worker.mjs", "--healthcheck"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 20s
-    stop_grace_period: 30s
     logging: *docker-logging
-    restart: unless-stopped
-
-  projection-repair-worker:
-    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
-    command: ["node", "apps/api/runtime/projection-repair-worker.mjs"]
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime-secrets:/app/runtime-secrets
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/projection-repair-worker.mjs", "--healthcheck"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 20s
-    stop_grace_period: 30s
-    logging: *docker-logging
-    restart: unless-stopped
-
-  lexical-rebuild-worker:
-    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
-    command: ["node", "apps/api/runtime/lexical-rebuild-worker.mjs"]
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime-secrets:/app/runtime-secrets
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/lexical-rebuild-worker.mjs", "--healthcheck"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 20s
-    stop_grace_period: 30s
-    logging: *docker-logging
-    restart: unless-stopped
-
-  maintenance-worker:
-    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
-    command: ["node", "apps/api/runtime/maintenance-worker.mjs"]
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime-secrets:/app/runtime-secrets
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/maintenance-worker.mjs", "--healthcheck"]
-      interval: 30s
-      timeout: 10s
-      retries: 8
-      start_period: 20s
-    stop_grace_period: 30s
-    logging: *docker-logging
-    restart: unless-stopped
+    restart: "no"
 
   migrate:
     image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
     command: ["node", "apps/api/runtime/migrate.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
     depends_on:
+      search-init:
+        condition: service_completed_successfully
+        required: false
+      opensearch:
+        condition: service_healthy
+        required: false
       postgres:
         condition: service_healthy
       redis:
@@ -209,7 +162,7 @@ services:
 
   redis:
     image: redis:8-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--auto-aof-rewrite-percentage", "100", "--auto-aof-rewrite-min-size", "8mb"]
     volumes:
       - ./data/redis:/data
     healthcheck:
@@ -218,5 +171,77 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    logging: *docker-logging
+    restart: unless-stopped
+
+  # Optional Meilisearch alternative. Uncomment this entire service block and
+  # set both SEARCH_PROVIDER and COMPOSE_PROFILES to meilisearch to enable it.
+  # meilisearch:
+  #   image: getmeili/meilisearch:v1.51.0
+  #   profiles: ["meilisearch"]
+  #   environment:
+  #     MEILI_ENV: production
+  #     MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}
+  #     MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY-}
+  #     MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS-}
+  #     MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR-}
+  #     MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT-}
+  #     MEILI_DUMP_DIR: ${MEILI_DUMP_DIR-}
+  #     TMPDIR: /meili_data/tmp
+  #     MEILI_NO_ANALYTICS: "true"
+  #     MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+  #   volumes:
+  #     - ./data/meilisearch:/meili_data
+  #     - ./data/meilisearch/tmp:/meili_data/tmp
+  #     - ./data/meilisearch-snapshots:/meili_snapshots
+  #     - ./data/meilisearch-dumps:/meili_dumps
+  #   healthcheck:
+  #     test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7700/health"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 20
+  #     start_period: 15s
+  #   logging: *docker-logging
+  #   restart: unless-stopped
+
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    profiles: ["opensearch"]
+    environment:
+      discovery.type: "single-node"
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS-}
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: "true"
+      plugins.security.allow_default_init_securityindex: true
+      plugins.security.ssl.transport.pemcert_filepath: focowiki-security/node.pem
+      plugins.security.ssl.transport.pemkey_filepath: focowiki-security/node-key.pem
+      plugins.security.ssl.transport.pemtrustedcas_filepath: focowiki-security/root-ca.pem
+      plugins.security.ssl.http.enabled: "true"
+      plugins.security.ssl.http.pemcert_filepath: focowiki-security/node.pem
+      plugins.security.ssl.http.pemkey_filepath: focowiki-security/node-key.pem
+      plugins.security.ssl.http.pemtrustedcas_filepath: focowiki-security/root-ca.pem
+      plugins.security.authcz.admin_dn: '["CN=focowiki-opensearch-admin"]'
+      plugins.security.nodes_dn: '["CN=opensearch"]'
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ./data/opensearch:/usr/share/opensearch/data
+      - ./opensearch-security/current:/usr/share/opensearch/config/focowiki-security:ro
+      - ./opensearch-security/current/opensearch-security:/usr/share/opensearch/config/opensearch-security:ro
+    depends_on:
+      search-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --cacert /usr/share/opensearch/config/focowiki-security/root-ca.pem --cert /usr/share/opensearch/config/focowiki-security/admin.pem --key /usr/share/opensearch/config/focowiki-security/admin-key.pem https://127.0.0.1:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
     logging: *docker-logging
     restart: unless-stopped

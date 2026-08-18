@@ -34,6 +34,8 @@ We tested RAG-style search first. Chunk recall often missed document context, cr
 
 Focowiki uses readable Markdown as the core knowledge representation. It preserves metadata, generates indexes and graph files, records related links, and gives Agents a corpus they can explore in a loop: read the index, open files, follow leads, search again, compare evidence, and answer with cited sources.
 
+In a generated bundle, `pages/` is the authoritative readable content, `_index/` contains path-linked page indexes, and `_graph/` contains path-linked page relationships. Markdown links are relative and per-file graph resources mirror page paths, so the complete directory remains navigable after it is copied without the service or API.
+
 <img src="./docs/public/images/focowiki-architecture.png" alt="Focowiki architecture" width="880" />
 
 ## Quick Start
@@ -42,8 +44,8 @@ Run Focowiki with Docker Compose and the published images on GHCR.
 
 Before installing Focowiki, make sure your machine meets these requirements:
 
-- Minimum: CPU >= 2 cores, RAM >= 4 GiB; 6 GiB RAM is preferred for background processing
-- Recommended: CPU >= 4 cores, RAM >= 8 GiB or more
+- Minimum: CPU >= 4 cores, RAM >= 8 GiB
+- Recommended with semantic enrichment enabled: CPU >= 6 cores, RAM >= 12 GiB or more
 
 ```bash
 git clone https://github.com/farozerolabs/focowiki.git && cd focowiki
@@ -68,9 +70,11 @@ Read README.md and help me deploy Focowiki with Docker Compose.
 The Docker Compose template uses `latest` by default. To pin a release, set the image tags in `.env`:
 
 ```env
-FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.1.0
-FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:<release-tag>
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:<release-tag>
 ```
+
+Pin both images to the same release tag.
 
 Read the [Docker Compose deployment guide](https://docs.focowiki.com/deployment/docker-compose) for configuration details.
 
@@ -84,7 +88,7 @@ Full documentation is available at [docs.focowiki.com](https://docs.focowiki.com
 - [Developer OpenAPI](https://docs.focowiki.com/openapi/)
 - [Agent integration](https://docs.focowiki.com/agent-integration/)
 - [Open Knowledge Format guide](https://docs.focowiki.com/guide/open-knowledge-format)
-- [File-first graph guide](https://docs.focowiki.com/guide/file-first-graph)
+- [Source-file evidence and graph guide](https://docs.focowiki.com/guide/file-first-graph)
 - [File cleaning and ingestion guide](https://docs.focowiki.com/guide/file-cleaning-ingestion)
 
 ## What Focowiki Provides
@@ -93,10 +97,12 @@ Focowiki takes Markdown files and folders and turns them into a knowledge base t
 
 - **Upload documents and folders.** Add individual Markdown files or complete folder trees. Focowiki keeps their paths, names, metadata, links, and content.
 - **Browse organized knowledge.** Open documents from a file tree, move or rename files and folders, replace content, and remove outdated material.
-- **Find relevant documents.** Search file content, browse directory indexes, follow related documents, and explore relationships through the knowledge graph.
-- **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow graph relationships, and manage document changes.
+- **Navigate an interconnected document collection.** Generated indexes, relationship views, and source pages use navigable document links, so readers can move between directories, related files, and supporting context instead of treating each document as an isolated item.
+- **Search, then read the complete source.** Ask a full natural-language question with hybrid retrieval and optional reranking. Focowiki uses search to locate relevant documents and always leads back to readable Markdown; it does not use traditional chunk-only RAG output as the final knowledge-reading mode.
+- **Give AI agents a native reading workflow.** Agents can browse indexes, open complete Markdown files, follow document links and relationships, search again, and compare source evidence through the Developer OpenAPI or the portable linked knowledge bundle.
+- **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow relationships, and manage document changes.
 - **Manage the system from the Admin UI.** Create knowledge bases, monitor file processing, configure models and runtime settings, and manage API keys.
-- **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, and S3-compatible storage.
+- **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, OpenSearch or Meilisearch, and S3-compatible storage.
 
 ## Admin UI Preview
 
@@ -114,24 +120,31 @@ See the [Agent demo result documentation](https://docs.focowiki.com/agent-integr
 
 ## Why File-First
 
-[Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes a portable way to represent knowledge as Markdown files with YAML frontmatter. The [pinned OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) defines metadata, Markdown pages, links, indexes, and update logs.
+[Google's OKF 0.2 announcement](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals) describes portable provenance, verification, lifecycle, and Attested Computation signals for Markdown knowledge. Focowiki pins the [OKF 0.2 specification at revision `930b65fc`](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md).
 
 Focowiki turns this model into an open-source product workflow. Teams upload cleaned Markdown files, Focowiki parses document signals, generates an OKF-style knowledge base, stores every generated file, and exposes the result through the Admin UI and Developer OpenAPI.
 
 ## Markdown Input
 
-Uploads accept `.md` files only. A Markdown file can include YAML frontmatter followed by Markdown body content.
+Uploads accept `.md` files only. A file can be plain Markdown or include YAML frontmatter. OKF 0.2 standard fields are optional product inputs; safe missing or malformed standard fields do not by themselves block upload or reading.
 
 ```md
 ---
-type: "page"
+okf_version: "0.2"
+type: "Guide"
 title: "Customer Support Playbook"
 description: "How the support team handles priority customer requests."
-resource: "https://example.com/docs/support-playbook"
 tags:
   - support
   - operations
-timestamp: "2026-06-16T00:00:00Z"
+sources:
+  - id: "support-handbook"
+    resource: "references/support-handbook.md"
+verified:
+  - by: "human:support-reviewer"
+    at: "2026-06-16T01:00:00Z"
+status: "stable"
+stale_after: "2026-12-16"
 ---
 
 # Customer Support Playbook
@@ -139,7 +152,7 @@ timestamp: "2026-06-16T00:00:00Z"
 Use this playbook when a priority customer request arrives.
 ```
 
-Additional safe frontmatter fields can be preserved as pass-through metadata. Detailed input guidance is documented in the [project introduction](https://docs.focowiki.com/).
+Additional safe frontmatter fields are preserved as pass-through metadata. Developer OpenAPI exposes raw frontmatter plus nullable derived `okfSignals`, and file search can optionally filter by normalized status, trust tier, or freshness. Detailed input guidance is documented in the [project introduction](https://docs.focowiki.com/).
 
 ## Local Development
 
@@ -147,12 +160,17 @@ Focowiki uses pnpm, TypeScript, Vite, React, Hono, PostgreSQL, Redis, and S3-com
 
 ```bash
 pnpm install
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r apps/api/python/requirements.lock
 cp .env.dev.example .env
 cp docker-compose.local.yml.example docker-compose.local.yml
-docker compose -f docker-compose.local.yml up -d postgres redis
+docker compose -f docker-compose.local.yml up -d postgres redis minio minio-init opensearch
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
+
+`pnpm dev` starts the Admin UI, both API listeners, and the unified worker. Keep the Python virtual environment active while the development runtime is running.
 
 Local service URLs:
 
@@ -160,7 +178,7 @@ Local service URLs:
 - Admin API: `http://127.0.0.1:43000`
 - Developer OpenAPI: `http://127.0.0.1:43200`
 
-Parsing real uploads requires S3-compatible storage settings in `.env`.
+The local environment template selects OpenSearch by default. To use the bundled Meilisearch service, uncomment the complete `meilisearch` service block in the Compose template, set both `SEARCH_PROVIDER` and `COMPOSE_PROFILES` to `meilisearch`, then start `meilisearch search-init` instead of `opensearch`. The template exposes Meilisearch only on loopback at `MEILI_PORT` (default `57700`) for the host development runtime.
 
 ## License
 
@@ -168,8 +186,8 @@ Focowiki is distributed under a modified Apache License 2.0. See [LICENSE](./LIC
 
 ## References
 
-- [Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-- [OKF v0.1 specification, pinned revision](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md)
+- [Open Knowledge Format 0.2 announcement](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals)
+- [OKF 0.2 specification, pinned revision](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md)
 - [Focowiki documentation](https://docs.focowiki.com)
 
 <p><sub><small>Related links: <a href="https://linux.do/">linux.do</a> · <a href="https://www.v2ex.com/">V2EX</a></small></sub></p>

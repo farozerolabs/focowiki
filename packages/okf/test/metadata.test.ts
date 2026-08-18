@@ -1,7 +1,29 @@
+import matter from "gray-matter";
 import { describe, expect, it } from "vitest";
 import { parseUploadedMarkdownSource, resolveSourceMetadata } from "../src/metadata.js";
 
+const matterWithCache = matter as typeof matter & {
+  cache: Record<string, unknown>;
+  clearCache(): void;
+};
+
 describe("resolveSourceMetadata", () => {
+  it("does not retain unique source bodies in the parser cache", () => {
+    matterWithCache.clearCache();
+    try {
+      for (let index = 0; index < 10; index += 1) {
+        parseUploadedMarkdownSource({
+          fileName: `source-${index}.md`,
+          content: `---\ntitle: Source ${index}\n---\n# Body ${index}`
+        });
+      }
+
+      expect(Object.keys(matterWithCache.cache)).toHaveLength(0);
+    } finally {
+      matterWithCache.clearCache();
+    }
+  });
+
   it("uses Markdown frontmatter metadata", () => {
     const result = resolveSourceMetadata({
       fileName: "intro.md",
@@ -48,7 +70,7 @@ describe("resolveSourceMetadata", () => {
     expect(result.body).toBe("# Body");
   });
 
-  it("normalizes YAML timestamps into JSON-compatible metadata", () => {
+  it("preserves YAML 1.2 core-schema date-like scalars as strings", () => {
     const result = parseUploadedMarkdownSource({
       fileName: "release.md",
       content: [
@@ -64,11 +86,11 @@ describe("resolveSourceMetadata", () => {
     });
 
     expect(result.metadata).toEqual({
-      updatedAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20",
       schedule: {
         publishedAt: "2026-06-21T10:30:00.000Z"
       },
-      milestones: ["2026-06-22T00:00:00.000Z"]
+      milestones: ["2026-06-22"]
     });
   });
 
@@ -201,11 +223,13 @@ describe("resolveSourceMetadata", () => {
     });
   });
 
-  it("rejects unsafe generated identity before publication", () => {
-    expect(() => resolveSourceMetadata({
+  it("falls back safely without rewriting an unsafe source heading", () => {
+    const result = resolveSourceMetadata({
       fileName: "unsafe.md",
       content: "# unsafe\u202etitle",
       metadata: {}
-    })).toThrow(/identity/i);
+    });
+    expect(result.metadata.title).toBe("unsafe");
+    expect(result.body).toBe("# unsafe\u202etitle");
   });
 });

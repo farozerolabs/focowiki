@@ -9,10 +9,7 @@ import {
   loginAdmin,
   logoutAdmin
 } from "../src/lib/admin-api";
-import {
-  cancelFolderUpload,
-  runUploadSession
-} from "../src/lib/upload-session-client";
+import { runUploadSession } from "../src/lib/upload-session-client";
 import { selectDirectoryFiles } from "../src/lib/directory-picker";
 
 vi.mock("../src/lib/admin-api", () => ({
@@ -36,47 +33,11 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   fetchKnowledgeBase: vi.fn(async () => null),
   fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
-    activeGenerationId: null,
-    pendingDispatch: {
-      pendingCount: 0,
-      oldestPendingAt: null,
-      paused: false,
-      pausedReason: null
-    },
-    sourceFileJobs: {
-      queuedCount: 0,
-      runningCount: 0,
-      completedCount: 0,
-      failedCount: 0,
-      deadLetterCount: 0,
-      oldestQueuedAt: null,
-      oldestQueuedAgeSeconds: null
-    },
-    publicationJobs: {
-      queuedCount: 0,
-      runningCount: 0,
-      completedCount: 0,
-      failedCount: 0,
-      deadLetterCount: 0,
-      oldestQueuedAt: null,
-      oldestQueuedAgeSeconds: null
-    },
-    publicationProgress: {
-      generationId: null, stage: null, processedImpactCount: 0, totalImpactCount: 0,
-      touchedShardCount: 0, throughputPerMinute: null, oldestDirtyAt: null, queuedAt: null, startedAt: null,
-      heartbeatAt: null, completedAt: null, lastSuccessAt: null,
-      safeErrorCode: null, safeErrorMessage: null
-    },
-    maintenanceProgress: {
-      migration: null,
-      lexicalRebuild: null,
-      projectionRepair: null,
-      compaction: { active: null, latestCompleted: null }
-    },
-    dirtySourceFiles: {
-      count: 0,
-      oldestDirtyAt: null
-    }
+    waitingCount: 0,
+    processingCount: 0,
+    availableCount: 0,
+    errorCount: 0,
+    oldestWaitingAt: null
   })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => null),
   fetchResultFile: vi.fn(),
@@ -88,7 +49,7 @@ vi.mock("../src/lib/admin-api", () => ({
         id: "kb-docs",
         name: "Developer docs",
         description: "Markdown product knowledge",
-        activeGenerationId: null
+        activeContentRevision: 0
       }
     ],
     nextCursor: null
@@ -97,7 +58,7 @@ vi.mock("../src/lib/admin-api", () => ({
     items: [],
     nextCursor: null
   })),
-  loginAdmin: vi.fn(async () => true),
+  loginAdmin: vi.fn(async () => ({ authenticated: true, error: null, retryAfterSeconds: null })),
   logoutAdmin: vi.fn(async () => undefined),
   setAdminAuthFailureHandler: vi.fn(),
   renderPreview: vi.fn(),
@@ -138,8 +99,12 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "queued",
-            currentStage: "upload_storage",
+            state: "waiting",
+            blockingWorkKind: "prepare",
+            requiredWorkCount: 8,
+            completedWorkCount: 0,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: null,
             processingEndedAt: null,
             failure: null,
@@ -150,8 +115,12 @@ describe("Admin upload file picker", () => {
             id: "source-ongoing",
             name: "ongoing.md",
             relativePath: "ongoing.md",
-            state: "running",
-            currentStage: "llm_suggestion",
+            state: "processing",
+            blockingWorkKind: "first_layer",
+            requiredWorkCount: 8,
+            completedWorkCount: 1,
+            activeWorkKinds: ["first_layer"],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:01.000Z",
             processingEndedAt: null,
             failure: null,
@@ -199,8 +168,12 @@ describe("Admin upload file picker", () => {
             id: "source-page-one",
             name: "page-one.md",
             relativePath: "page-one.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:01.000Z",
             failure: null,
@@ -216,8 +189,12 @@ describe("Admin upload file picker", () => {
             id: "source-page-two",
             name: "page-two.md",
             relativePath: "page-two.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:01.000Z",
             processingEndedAt: "2026-06-14T00:00:02.000Z",
             failure: null,
@@ -233,8 +210,12 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "new.md",
             relativePath: "new.md",
-            state: "queued",
-            currentStage: "upload_storage",
+            state: "waiting",
+            blockingWorkKind: "prepare",
+            requiredWorkCount: 8,
+            completedWorkCount: 0,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: null,
             processingEndedAt: null,
             failure: null,
@@ -404,7 +385,7 @@ describe("Admin upload file picker", () => {
 
     const reservedNavigation = fileWithRelativePath(
       "Reserved",
-      "handbook/index-map-000001.md"
+      "handbook/index-000001.md"
     );
     vi.mocked(selectDirectoryFiles).mockResolvedValueOnce({
       status: "selected",
@@ -412,8 +393,8 @@ describe("Admin upload file picker", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
 
-    expect(await screen.findByText("Upload cleaned .md files only")).toBeTruthy();
-    expect(screen.getAllByText("handbook/index-map-000001.md").length).toBeGreaterThan(0);
+    expect(await screen.findByText(/Use a relative Markdown path/)).toBeTruthy();
+    expect(screen.getAllByText("handbook/index-000001.md").length).toBeGreaterThan(0);
     expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
       true
     );
@@ -454,12 +435,17 @@ describe("Admin upload file picker", () => {
     });
   });
 
-  it("ignores a stale upload completion after the user cancels", async () => {
-    let resolveUpload: ((result: ReturnType<typeof createCompletedUploadResult>) => void) | null = null;
-    vi.mocked(cancelFolderUpload).mockResolvedValueOnce(undefined);
+  it("waits for durable cleanup after the user cancels", async () => {
+    let resolveUpload: ((result: {
+      ok: false;
+      failure: { messageKey: string };
+      sessionId: null;
+    }) => void) | null = null;
+    let uploadSignal: AbortSignal | undefined;
     vi.mocked(runUploadSession).mockImplementationOnce(
       (input) =>
         new Promise((resolve) => {
+          uploadSignal = (input as typeof input & { signal?: AbortSignal }).signal;
           input.onSessionReady?.("upload-session-cancel", createUploadTransport());
           resolveUpload = resolve;
         })
@@ -475,19 +461,22 @@ describe("Admin upload file picker", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Cancel upload" }));
 
     await waitFor(() => {
-      expect(cancelFolderUpload).toHaveBeenCalledWith({
-        knowledgeBaseId: "kb-docs",
-        sessionId: "upload-session-cancel"
-      });
-      expect(screen.getByText("No Markdown files selected")).toBeTruthy();
+      expect(uploadSignal).toBeInstanceOf(AbortSignal);
+      expect(uploadSignal?.aborted).toBe(true);
+      expect(screen.getByRole("button", { name: "Cancel upload" })).toBeTruthy();
     });
     await act(async () => {
-      resolveUpload?.(createCompletedUploadResult());
+      resolveUpload?.({
+        ok: false,
+        failure: { messageKey: "errors.uploadCancelled" },
+        sessionId: null
+      });
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText("No Markdown files selected")).toBeTruthy();
+    expect(screen.getByText("Upload cancelled")).toBeTruthy();
   });
 
   it("refreshes active source file pages with bounded polling", async () => {
@@ -527,8 +516,12 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "running",
-            currentStage: "metadata_resolution",
+            state: "processing",
+            blockingWorkKind: "prepare",
+            requiredWorkCount: 8,
+            completedWorkCount: 1,
+            activeWorkKinds: ["prepare"],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: null,
             failure: null,
@@ -544,8 +537,12 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "visible",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:05.000Z",
             failure: null,
@@ -566,8 +563,12 @@ describe("Admin upload file picker", () => {
             id: "source-ongoing",
             name: "ongoing.md",
             relativePath: "ongoing.md",
-            state: "running",
-            currentStage: "llm_suggestion",
+            state: "processing",
+            blockingWorkKind: "first_layer",
+            requiredWorkCount: 8,
+            completedWorkCount: 1,
+            activeWorkKinds: ["first_layer"],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:01.000Z",
             processingEndedAt: null,
             failure: null,
@@ -582,13 +583,13 @@ describe("Admin upload file picker", () => {
     await openKnowledgeBaseDetailPage();
 
     expect(
-      within(await screen.findByTestId("source-file-row-source-new")).getByText("Running")
+      within(await screen.findByTestId("source-file-row-source-new")).getByText("Processing")
     ).toBeTruthy();
 
     await waitFor(
       () => {
         expect(
-          within(screen.getByTestId("source-file-row-source-new")).getByText("Visible")
+          within(screen.getByTestId("source-file-row-source-new")).getAllByText("Available")
         ).toBeTruthy();
       },
       { timeout: 3_000 }
@@ -765,7 +766,11 @@ describe("Admin upload file picker", () => {
   });
 
   it("keeps protected UI unavailable when login fails", async () => {
-    vi.mocked(loginAdmin).mockResolvedValueOnce(false);
+    vi.mocked(loginAdmin).mockResolvedValueOnce({
+      authenticated: false,
+      error: "invalid_credentials",
+      retryAfterSeconds: null
+    });
     render(<App />);
 
     expect(await screen.findByLabelText("Username")).toBeTruthy();
@@ -828,6 +833,7 @@ function createCompletedUploadResult() {
     ok: true as const,
     session: {
       id: "upload-session-test",
+      operationId: "upload-operation-test",
       knowledgeBaseId: "kb-docs",
       state: "completed" as const,
       declaredFileCount: 1,

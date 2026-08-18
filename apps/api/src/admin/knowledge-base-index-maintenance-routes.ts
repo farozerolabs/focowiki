@@ -1,36 +1,26 @@
 import { Hono, type MiddlewareHandler } from "hono";
-import type { AdminRepositories } from "../db/admin-repositories.js";
-import type { RuntimeConfig } from "../config.js";
-import type {
-  KnowledgeBaseIndexMaintenanceRepository,
-  KnowledgeBaseIndexMaintenanceState
-} from "../application/ports/knowledge-base-index-maintenance-repository.js";
-import {
-  createKnowledgeBaseIndexMaintenanceService,
-  InvalidKnowledgeBaseIndexMaintenanceRequestError
-} from "../maintenance/knowledge-base-index-maintenance.js";
-import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import { recordAdminAudit } from "./security.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
+import type { StorageVnextAdminMaintenanceApplication } from "../storage-vnext/api/admin-maintenance-application.js";
 
 export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
   app: Hono,
   services: {
-    config: RuntimeConfig;
-    repositories: AdminRepositories | null;
-    requests: KnowledgeBaseIndexMaintenanceRepository | null;
-    runtimeSettings: RuntimeSettingsService | null;
+    application: StorageVnextAdminMaintenanceApplication;
+    audit: StorageVnextAdminAuditApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  app.post(
+  app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/index-maintenance",
     middlewares.requireAuth,
-    middlewares.requireWriteProtection,
     async (context) => {
-      if (!services.requests || !services.runtimeSettings) {
+      const result = await services.application.getMaintenanceStatus({
+        knowledgeBaseId: context.req.param("knowledgeBaseId")
+      });
+      if (!result.available) {
         return context.json({
           error: {
             code: "INDEX_MAINTENANCE_UNAVAILABLE",
@@ -38,21 +28,41 @@ export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
           }
         }, 503);
       }
-
+      return context.json({ maintenance: result.status });
+    }
+  );
+  app.post(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/index-maintenance",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
       try {
         const body = await readJsonBody(context.req.raw);
         const idempotencyKey = readIdempotencyKey(
           context.req.header("idempotency-key"),
           body.idempotencyKey
         );
-        const result = await createKnowledgeBaseIndexMaintenanceService({
-          requests: services.requests,
-          runtimeSettings: services.runtimeSettings
-        }).requestManual({
+        if (!idempotencyKey || idempotencyKey.length > 200) {
+          return context.json({
+            error: {
+              code: "INVALID_INDEX_MAINTENANCE_REQUEST",
+              messageKey: "errors.invalidIndexMaintenanceRequest"
+            }
+          }, 400);
+        }
+        const request = await services.application.requestMaintenance({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
-          idempotencyKey,
-          actor: "admin"
+          idempotencyKey
         });
+        if (!request.available) {
+          return context.json({
+            error: {
+              code: "INDEX_MAINTENANCE_UNAVAILABLE",
+              messageKey: "errors.indexMaintenanceUnavailable"
+            }
+          }, 503);
+        }
+        const result = request.result;
 
         if (result.outcome === "not_found") {
           return context.json({
@@ -70,6 +80,15 @@ export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
             }
           }, 409);
         }
+        if (result.outcome === "configuration_required") {
+          return context.json({
+            error: {
+              code: "SEMANTIC_CONFIGURATION_REQUIRED",
+              messageKey: "errors.semanticConfigurationRequired",
+              safeCode: result.safeCode ?? "semantic_configuration_required"
+            }
+          }, 409);
+        }
         if (!("request" in result)) {
           return context.json({
             error: {
@@ -79,9 +98,7 @@ export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
           }, 500);
         }
 
-        await recordAdminAudit({
-          repositories: services.repositories,
-          config: services.config,
+        await services.audit.record({
           context,
           eventType: result.outcome === "accepted"
             ? "knowledge_base_index_maintenance_requested"
@@ -106,19 +123,44 @@ export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
             safeErrorMessage: result.request.lastErrorMessage
           }
         }, 202);
-      } catch (error) {
-        if (error instanceof InvalidKnowledgeBaseIndexMaintenanceRequestError) {
-          return context.json({
-            error: {
-              code: error.code,
-              messageKey: "errors.invalidIndexMaintenanceRequest"
-            }
-          }, 400);
-        }
+      } catch {
         return context.json({
           error: {
             code: "INDEX_MAINTENANCE_REQUEST_FAILED",
             messageKey: "errors.indexMaintenanceRequestFailed"
+          }
+        }, 500);
+      }
+    }
+  );
+  app.post(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/index-maintenance/cancel",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
+      try {
+        const result = await services.application.cancelMaintenance({
+          knowledgeBaseId: context.req.param("knowledgeBaseId")
+        });
+        if (!result.available) {
+          return context.json({
+            error: {
+              code: "INDEX_MAINTENANCE_UNAVAILABLE",
+              messageKey: "errors.indexMaintenanceUnavailable"
+            }
+          }, 503);
+        }
+        await services.audit.record({
+          context,
+          eventType: "knowledge_base_index_maintenance_cancelled",
+          result: "success"
+        });
+        return context.json({ result: result.outcome }, 200);
+      } catch {
+        return context.json({
+          error: {
+            code: "INDEX_MAINTENANCE_CANCEL_FAILED",
+            messageKey: "errors.indexMaintenanceCancelFailed"
           }
         }, 500);
       }
@@ -142,6 +184,6 @@ function readIdempotencyKey(header: string | undefined, body: unknown): string {
   return typeof body === "string" ? body.trim() : "";
 }
 
-function isActive(state: KnowledgeBaseIndexMaintenanceState): boolean {
+function isActive(state: string): boolean {
   return ["queued", "planning", "running", "validating"].includes(state);
 }

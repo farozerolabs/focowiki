@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { hasSecretLikeAuditData } from "../cleaned-markdown-flow.mjs";
-import { redactPotentialPathText, redactReportText } from "../lib/redaction.mjs";
+import {
+  hasSecretLikeAuditData,
+  redactPotentialPathText,
+  redactReportText
+} from "../lib/redaction.mjs";
 
 test("redactPotentialPathText removes local paths, bearer tokens, and object keys", () => {
   const redacted = redactPotentialPathText(

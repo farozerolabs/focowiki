@@ -46,7 +46,8 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarRail,
-  SidebarSeparator
+  SidebarSeparator,
+  useSidebar
 } from "@/components/ui/sidebar";
 
 export type AdminSidebarTreeNode = {
@@ -67,7 +68,7 @@ export type AdminSidebarTreeNode = {
 
 export type AdminSidebarSourceFile = {
   id: string;
-  state: "queued" | "running" | "pending_publication" | "visible" | "failed";
+  state: "waiting" | "processing" | "available" | "error" | "deleting";
 };
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
@@ -101,6 +102,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   rootNextCursor: string | null;
   rootLoading: boolean;
   sourceFiles: AdminSidebarSourceFile[];
+  sourceProcessingActive: boolean;
   onBack: () => void;
   onLogout: () => void;
   onOpenProcessing: () => void;
@@ -140,6 +142,7 @@ export function AppSidebar({
   rootNextCursor,
   rootLoading,
   sourceFiles,
+  sourceProcessingActive,
   onBack,
   onLogout,
   onOpenProcessing,
@@ -155,9 +158,17 @@ export function AppSidebar({
   resizeRail,
   ...props
 }: AppSidebarProps) {
-  const runningSourceFiles = sourceFiles.filter(
-    (file) => file.state === "queued" || file.state === "running"
-  ).length;
+  const { isMobile, setOpenMobile } = useSidebar();
+  const sourceProcessingRunning = sourceProcessingActive || sourceFiles.some(
+    (file) => file.state === "waiting" || file.state === "processing"
+      || file.state === "deleting"
+  );
+  const navigateFromSidebar = (action: () => void) => {
+    action();
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+  };
 
   return (
     <Sidebar {...props}>
@@ -165,25 +176,28 @@ export function AppSidebar({
         appName={appName}
         contextName={knowledgeBaseName}
         backLabel={labels.back}
-        onBack={onBack}
+        onBack={() => navigateFromSidebar(onBack)}
       />
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton isActive={activeView === "processing"} onClick={onOpenProcessing}>
+                <SidebarMenuButton
+                  isActive={activeView === "processing"}
+                  onClick={() => navigateFromSidebar(onOpenProcessing)}
+                >
                   <ListChecksIcon />
                   <span>{labels.uploadProgress}</span>
                 </SidebarMenuButton>
-                {sourceFiles.length > 0 ? (
-                  <SidebarMenuBadge>{runningSourceFiles > 0 ? labels.running : labels.ended}</SidebarMenuBadge>
+                {sourceFiles.length > 0 || sourceProcessingActive ? (
+                  <SidebarMenuBadge>{sourceProcessingRunning ? labels.running : labels.ended}</SidebarMenuBadge>
                 ) : null}
               </SidebarMenuItem>
               <SidebarMenuItem>
                 <SidebarMenuButton
                   isActive={activeView === "settings"}
-                  onClick={onOpenSettings}
+                  onClick={() => navigateFromSidebar(onOpenSettings)}
                 >
                   <SettingsIcon />
                   <span>{labels.settings}</span>
@@ -235,7 +249,7 @@ export function AppSidebar({
                   key={node.id}
                   labels={labels}
                   node={node}
-                  onOpenFile={onOpenFile}
+                  onOpenFile={(node) => navigateFromSidebar(() => onOpenFile(node))}
                   onDeleteFile={onDeleteFile}
                   onDeleteDirectory={onDeleteDirectory}
                   onEditResource={onEditResource}
@@ -264,7 +278,12 @@ export function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
-        <Button type="button" variant="ghost" className="w-full justify-start" onClick={onLogout}>
+        <Button
+          type="button"
+          variant="ghost"
+          className="w-full justify-start"
+          onClick={() => navigateFromSidebar(onLogout)}
+        >
           <LogOutIcon data-icon="inline-start" />
           {labels.logout}
         </Button>

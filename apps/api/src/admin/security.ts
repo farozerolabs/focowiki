@@ -1,13 +1,13 @@
 import { Hono, type MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminSessionManager } from "../auth/session.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import { applyAdminCors } from "../security/headers.js";
-import { recordSecurityAudit } from "../security/audit.js";
 import { requireRateLimit } from "../security/rate-limit.js";
 import { isTrustedAdminOrigin } from "../security/request.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
 
 type RequestContext = Parameters<MiddlewareHandler>[0];
 
@@ -15,7 +15,7 @@ export type AdminSecurityServices = {
   config: RuntimeConfig;
   sessionManager: AdminSessionManager | null;
   redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
+  audit: StorageVnextAdminAuditApplication;
   runtimeSettings?: RuntimeSettingsService | null | undefined;
 };
 
@@ -24,6 +24,18 @@ export function registerAdminSecurityMiddlewares(
   services: Omit<AdminSecurityServices, "sessionManager">
 ): void {
   app.use("/admin/api/*", applyAdminCors(services.config));
+  app.use("/admin/api/*", bodyLimit({
+    maxSize: services.config.pagination.generatedContentMaxBytes,
+    onError: (context) => context.json(
+      {
+        error: {
+          code: "PAYLOAD_TOO_LARGE"
+        }
+      },
+      413
+    )
+  }));
+  app.use("/admin/api/*", createSupportedAdminContentType(app));
   app.use("/admin/api/*", async (context, next) => {
     const limited = await requireRateLimit({
       config: services.config,
@@ -47,6 +59,95 @@ export function registerAdminSecurityMiddlewares(
     });
     return limited;
   });
+}
+
+function createSupportedAdminContentType(app: Hono): MiddlewareHandler {
+  return async (context, next) => {
+    if (
+      !isAdminWriteMethod(context.req.method)
+      || !isRegisteredAdminOperation(app, context.req.method, context.req.path)
+      || !hasAdminRequestBody(context.req.raw)
+    ) {
+      await next();
+      return;
+    }
+
+    const mediaType = context.req.header("content-type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    const expectedMediaType = isMarkdownBodyRoute(context.req.method, context.req.path)
+      ? "text/markdown"
+      : "application/json";
+
+    if (mediaType !== expectedMediaType) {
+      return context.json(
+        {
+          error: {
+            code: "UNSUPPORTED_MEDIA_TYPE",
+            ...(expectedMediaType === "text/markdown" ? {
+              messageKey: "errors.sourceContentTypeUnsupported"
+            } : {})
+          }
+        },
+        415
+      );
+    }
+
+    if (expectedMediaType === "application/json") {
+      try {
+        await context.req.raw.clone().json();
+      } catch {
+        return context.json(
+          {
+            error: {
+              code: "MALFORMED_JSON"
+            }
+          },
+          400
+        );
+      }
+    }
+
+    await next();
+  };
+}
+
+function isRegisteredAdminOperation(app: Hono, method: string, pathname: string): boolean {
+  return app.routes.some((route) =>
+    route.method === method && matchesRegisteredPath(route.path, pathname));
+}
+
+function matchesRegisteredPath(routePath: string, pathname: string): boolean {
+  const routeSegments = routePath.split("/");
+  const pathSegments = pathname.split("/");
+  if (routeSegments.at(-1) !== "*" && routeSegments.length !== pathSegments.length) return false;
+  return routeSegments.every((segment, index) =>
+    segment === "*" || segment.startsWith(":") || segment === pathSegments[index]);
+}
+
+function hasAdminRequestBody(request: Request): boolean {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) === 0) return false;
+  if (declaredLength !== null && Number(declaredLength) > 0) return true;
+  return Boolean(
+    request.body
+    && (
+      request.headers.has("transfer-encoding")
+      || request.headers.has("content-type")
+    )
+  );
+}
+
+function isAdminWriteMethod(method: string): boolean {
+  return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
+}
+
+function isMarkdownBodyRoute(method: string, pathname: string): boolean {
+  return method === "PUT" && (
+    /\/source-files\/[^/]+\/content$/u.test(pathname)
+    || /\/upload-sessions\/[^/]+\/entries\/[^/]+\/content$/u.test(pathname)
+  );
 }
 
 export function createAdminAuthMiddleware(
@@ -84,7 +185,7 @@ export function createAdminAuthMiddleware(
 }
 
 export function createAdminWriteProtectionMiddleware(
-  services: Pick<AdminSecurityServices, "config" | "repositories">
+  services: Pick<AdminSecurityServices, "config" | "audit">
 ): MiddlewareHandler {
   return async (context, next) => {
     if (isTrustedAdminOrigin(services.config, context)) {
@@ -114,7 +215,7 @@ export function createAdminWriteProtectionMiddleware(
 export async function limitAdminLoginRequest(input: {
   config: RuntimeConfig;
   redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
+  audit: StorageVnextAdminAuditApplication;
   runtimeSettings?: RuntimeSettingsService | null | undefined;
   context: RequestContext;
   username: string;
@@ -173,7 +274,7 @@ function defaultRateLimit(
 }
 
 export async function recordAdminAudit(input: {
-  repositories: AdminRepositories | null;
+  audit: StorageVnextAdminAuditApplication;
   config: RuntimeConfig;
   context: RequestContext;
   eventType: string;
@@ -181,7 +282,13 @@ export async function recordAdminAudit(input: {
   errorCode?: string | null;
   username?: string | null;
 }): Promise<void> {
-  await recordSecurityAudit(input);
+  await input.audit.record({
+    context: input.context,
+    eventType: input.eventType,
+    result: input.result,
+    errorCode: input.errorCode ?? null,
+    username: input.username ?? null
+  });
 }
 
 export function adminUnauthorized(context: RequestContext, messageKey?: string): Response {

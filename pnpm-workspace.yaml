@@ -4,16 +4,20 @@ packages:
 overrides:
   "@hono/node-server": 2.0.11
   "@modelcontextprotocol/sdk>zod": ^3.25.76
-  "brace-expansion": 5.0.8
-  "js-yaml@4.2.0": 4.3.0
+  "brace-expansion": 5.0.9
+  "js-yaml@4.2.0": 4.3.1
+  "js-yaml@4.3.0": 4.3.1
   "shadcn>zod": ^3.25.76
   "@redocly/openapi-core@1.34.15>js-yaml": 4.2.0
   "@vitejs/plugin-vue>vite": 6.4.3
   "@mapbox/node-pre-gyp>tar": 7.5.21
-  "postcss@8.5.16": 8.5.18
-  "gray-matter>js-yaml": 3.15.0
-  "jsdom>undici": 7.28.0
-  "fast-uri": 3.1.4
+  "nanoid@3.3.17": 3.3.18
+  "postcss@8.5.16": 8.5.23
+  "gray-matter>js-yaml": 3.15.1
+  "undici@7.28.0": 7.29.0
+  "fast-uri": 3.1.5
+  "hono@4.12.27": 4.12.34
+  "ip-address@10.2.0": 10.3.1
   "redoc>dompurify": 3.4.12
   "vitepress>vite": 6.4.3
 peerDependencyRules:
@@ -23,6 +27,7 @@ peerDependencyRules:
 patchedDependencies:
   nodejieba@3.5.8: patches/nodejieba@3.5.8.patch
 allowBuilds:
+  '@scarf/scarf': false
   core-js: false
   esbuild: true
   nodejieba: true

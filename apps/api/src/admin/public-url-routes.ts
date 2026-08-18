@@ -1,34 +1,38 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
 import { buildPublicFileUrl } from "../public-url.js";
+import type { StorageVnextAdminReadApplication } from "../storage-vnext/api/admin-read-application.js";
 
 export function registerAdminPublicUrlRoutes(
   app: Hono,
   services: {
     config: RuntimeConfig;
-    repositories: AdminRepositories | null;
+    application: StorageVnextAdminReadApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
   }
 ): void {
-  const { config, repositories } = services;
+  const { config, application } = services;
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/public-urls",
     middlewares.requireAuth,
     async (context) => {
-      if (!repositories) {
-        return missingRepositoryBackend(context);
+      const result = await application.getKnowledgeBase({
+        knowledgeBaseId: context.req.param("knowledgeBaseId")
+      });
+      if (!result.ok) {
+        return result.code === "DATABASE_REPOSITORY_UNAVAILABLE"
+          ? missingRepositoryBackend(context)
+          : notFound(context);
       }
+      const knowledgeBase = result.value;
 
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
+      if (!knowledgeBase) return notFound(context);
 
-      if (!knowledgeBase?.activeGenerationId) {
-        return notFound(context);
+      if (!knowledgeBase.activeVersionId) {
+        return context.json({ publicUrls: null });
       }
 
       return context.json({
@@ -37,12 +41,12 @@ export function registerAdminPublicUrlRoutes(
           search: buildPublicFileUrl(
             config.publicApi.baseUrl,
             knowledgeBase.id,
-            "_index/search.json"
+            "_index/catalog.json"
           ),
           links: buildPublicFileUrl(
             config.publicApi.baseUrl,
             knowledgeBase.id,
-            "_index/links.json"
+            "_graph/catalog.json"
           )
         }
       });

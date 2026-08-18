@@ -96,16 +96,33 @@ export function readLimit(
 }
 
 export async function readDeveloperJsonObjectBody(
-  request: Request
+  request: Request,
+  allowedFields?: readonly string[]
 ): Promise<Record<string, unknown>> {
+  const mediaType = request.headers.get("content-type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  if (mediaType !== "application/json") {
+    throw validationError("An application/json request body is required.");
+  }
   try {
     const bytes = await request.arrayBuffer();
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     const value = JSON.parse(text) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value)
+    const body = value && typeof value === "object" && !Array.isArray(value)
       ? value as Record<string, unknown>
       : {};
-  } catch {
+    if (allowedFields) {
+      const allowed = new Set(allowedFields);
+      const fields = Object.keys(body).filter((field) => !allowed.has(field)).sort();
+      if (fields.length > 0) {
+        throw validationError("Request body contains unsupported fields.", { fields });
+      }
+    }
+    return body;
+  } catch (error) {
+    if (error instanceof DeveloperOpenApiError) throw error;
     throw validationError("Request body must contain valid UTF-8 JSON.");
   }
 }

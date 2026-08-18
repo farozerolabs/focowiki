@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { getDeveloperOpenApiRequestId } from "./diagnostic-context.js";
+import { sanitizeStorageVnextPublicRecord } from "../storage-vnext/api/public-output-sanitizer.js";
 
 export type DeveloperOpenApiErrorCode =
   | "UNAUTHORIZED"
@@ -11,7 +12,10 @@ export type DeveloperOpenApiErrorCode =
   | "RATE_LIMITED"
   | "UNSUPPORTED_ROUTE"
   | "INTERNAL_ERROR"
-  | "DATABASE_REPOSITORY_UNAVAILABLE";
+  | "DATABASE_REPOSITORY_UNAVAILABLE"
+  | "SEARCH_UNAVAILABLE"
+  | "SEARCH_TIMEOUT"
+  | "SEARCH_OVERLOADED";
 
 export class DeveloperOpenApiError extends Error {
   public readonly code: DeveloperOpenApiErrorCode;
@@ -51,7 +55,7 @@ export function repositoryUnavailable(): DeveloperOpenApiError {
   return createDeveloperOpenApiError(
     "DATABASE_REPOSITORY_UNAVAILABLE",
     503,
-    "The database-backed read model is temporarily unavailable. Retry later with the same request ID for support correlation."
+    "The requested data is temporarily unavailable. Retry later and keep the request ID if support assistance is needed."
   );
 }
 
@@ -109,7 +113,9 @@ export function writeDeveloperOpenApiError(
         code: normalized.code,
         message: normalized.message,
         httpStatus: normalized.httpStatus,
-        ...(normalized.details ? { details: normalized.details } : {})
+        ...(normalized.details
+          ? { details: sanitizeStorageVnextPublicRecord(normalized.details) }
+          : {})
       },
       requestId
     },

@@ -4,166 +4,175 @@ title: Admin Settings
 
 # Admin Settings
 
-Open **Settings** from the Admin UI knowledge-base page. Saved values apply to later requests and background work and remain available after service restarts.
+Open **Settings** from the Admin sidebar for runtime controls. Open **Model configuration** for generation, embedding, and reranker models. Saved values remain available after a restart. Changes affect new requests and newly started jobs; a job that is already running may finish with the values it started with.
+
+The values below match the fields currently shown across those two Admin pages. Start with the defaults and increase concurrency only after checking CPU, memory, PostgreSQL, the selected search provider, and S3 latency.
 
 ## API Rate Limits
 
-| Field | Meaning | Recommended value |
+| Setting | Purpose | Default |
 | --- | --- | --- |
-| Admin login / Max requests | Login attempts allowed in one window. | `8`; use 5 to 10 for public deployments. |
-| Admin login / Window seconds | Length of the login counting window. | `900`. |
-| Admin API / Max requests | Admin UI API requests allowed in one window. | `600`. |
-| Admin API / Window seconds | Length of the Admin API counting window. | `60`. |
-| Developer OpenAPI / Max requests | Developer OpenAPI requests allowed in one window. | `1200`, then tune by server capacity. |
-| Developer OpenAPI / Window seconds | Length of the Developer OpenAPI counting window. | `60`. |
+| Admin login / Maximum requests | Login attempts allowed during one window. | `8` |
+| Admin login / Window seconds | Length of the login window. | `900` |
+| Admin API / Maximum requests | Admin UI API requests allowed during one window. | `600` |
+| Admin API / Window seconds | Length of the Admin API window. | `60` |
+| Developer OpenAPI / Maximum requests | Developer OpenAPI requests allowed during one window. | `1200` |
+| Developer OpenAPI / Window seconds | Length of the Developer OpenAPI window. | `60` |
 
-Upload registration follows the authenticated upload-session contract and has no separate product rate or logical file-count quota. Reverse proxies and storage providers can still enforce infrastructure limits outside Focowiki.
+These limits apply inside Focowiki. Configure compatible limits at the reverse proxy or edge service.
 
 ## Worker
 
-Worker settings control source processing, durable dispatch, retries, retention, and asynchronous deletion. Hard and resume values form hysteresis: dispatch pauses at a hard value and resumes only after pressure falls below the lower resume value. Upload registration continues while dispatch is paused.
-
-| Field | Meaning | Recommended value |
+| Setting | Purpose | Default or starting value |
 | --- | --- | --- |
-| Source file concurrency | Source files processed concurrently. | 8 to 16 on an 8C/32G server after measuring database and storage latency. |
-| Source object read concurrency | Source Markdown objects read concurrently by one source-worker process. | 8 to 16 and no higher than source file concurrency. |
-| Graph query concurrency | Graph-candidate database queries running concurrently in one source-worker process. | 8 to 16 and no higher than source file concurrency. |
-| Database mutation concurrency | Source-processing database mutation groups running concurrently in one source-worker process. | 4 to 8 and no higher than source file concurrency. |
-| Claim batch size | Source jobs claimed per polling cycle. | At least source file concurrency; use 32 on an 8C/32G server. |
-| Generation batch size | Source records committed in one bounded generation-input batch. | 50 to 200. |
-| Poll interval ms | Delay between queue polls. | 1000 to 3000 ms. |
-| Lock TTL seconds | Validity period for a claimed job lock. | Longer than normal processing time; commonly 900 seconds. |
-| Heartbeat interval ms | Interval for refreshing a running claim. | 10000 to 30000 ms. |
-| Job max attempts | Attempts allowed before a job becomes dead letter. | `3`. |
-| Job retry delay ms | Delay before retrying a transient failure. | 30000 to 120000 ms. |
-| Source queue hard depth | Queued source-job count that pauses new dispatch. | 5000 to 20000. |
-| Source queue resume depth | Queued source-job count that permits dispatch to resume. | 50% to 70% of the hard depth. |
-| Source queue hard age seconds | Oldest queued source-job age that pauses dispatch. | 3600 to 7200 seconds. |
-| Source queue resume age seconds | Oldest queued source-job age that permits dispatch to resume. | About half of the hard age. |
-| Shutdown grace ms | Time allowed for an orderly Worker shutdown. | 30000 to 120000 ms. |
-| Completed retention days | Retention for completed job records. | 7 to 30 days. |
-| Failed retention days | Retention for failed job records. | 30 days or longer. |
-| Dead-letter retention days | Retention for dead-letter job records. | 90 days. |
-| Retention cleanup batch size | Job rows removed in one maintenance page. | 500 to 2000. |
-| Cleanup concurrency | Asynchronous deletion jobs processed concurrently. | `1` for most deployments. |
-| Cleanup database batch size | Database rows deleted in one cleanup page. | 500 to 2000. |
-| Cleanup object batch size | S3 objects deleted in one request page. | `1000`; the maximum is 1000. |
-| Cleanup max attempts | Attempts allowed for asynchronous deletion. | `3`. |
-| Cleanup retry delay ms | Delay before retrying asynchronous deletion. | 60000 to 300000 ms. |
-| Cleanup failed retention days | Retention for failed cleanup evidence. | 30 days. |
-| Versioned cleanup | Enables deletion of versioned S3 objects. | Leave disabled unless the storage lifecycle requires it. |
+| Document concurrency | Maximum document jobs processed at the same time. Model, GraphRAG, embedding, storage, database, and search limits can reduce effective concurrency. | `2`; increase gradually after measuring. Maximum `32`. |
+| Processing maximum attempts | Attempts allowed before a file remains failed. | `3` |
+| Processing retry delay milliseconds | Delay before retrying a temporary failure. | `30000` |
+| Completed record retention days | Days to keep completed processing records. | `7` |
 
-## Publication
+Lower document concurrency first when CPU, database latency, provider latency, or storage latency rises during large imports.
 
-Publication creates immutable generated objects, updates affected projection shards, validates the changed closure, and atomically switches the active generation. Later uploads can continue into one successor generation while the current generation is frozen.
+## Generated Knowledge Base
 
-| Field | Meaning | Recommended value |
+| Setting | Purpose | Default or starting value |
 | --- | --- | --- |
-| Mode | `batch`, `per_file`, or `manual` publication scheduling. | `batch` for large imports; `per_file` for fast visibility. |
-| Batch size | Completed source changes that make a batch immediately eligible. | 100 to 500. |
-| Interval seconds | Maximum batching wait from the generation creation time. | 120 to 600 seconds. |
-| Role concurrency | Publication jobs processed concurrently by the role. | `1` until database and S3 capacity are measured. |
-| Generation assembly concurrency | Bounded generation-input pages assembled concurrently. | 1 to 2 and no higher than role concurrency. |
-| Projection partition concurrency | Independent physical projection partitions processed concurrently. | 8 to 16 and no higher than impact concurrency. |
-| Generated object write concurrency | Immutable generated objects uploaded and verified concurrently. | 8 to 16 and no higher than projection partition concurrency. |
-| Directory materialization concurrency | Independent directory navigation outputs generated concurrently. | 4 to 8 and no higher than projection partition concurrency. |
-| Claim batch size | Publication jobs claimed per polling cycle. | 1 to 4 and no lower than role concurrency. |
-| Impact batch size | Projection impacts processed in one bounded page. | 100 to 500. |
-| Dirty file hard count | Dirty source-file count that pauses source dispatch. | 2000 to 10000. |
-| Dirty file resume count | Dirty count that permits source dispatch to resume. | Lower than the hard count. |
-| Dirty age hard seconds | Oldest dirty-file age that pauses source dispatch. | 900 to 3600 seconds. |
-| Dirty age resume seconds | Dirty age that permits source dispatch to resume. | Lower than the hard age. |
-| Pending impact hard count | Pending projection-impact count that pauses source dispatch. | 20000 to 100000. |
-| Pending impact resume count | Pending impact count that permits source dispatch to resume. | Lower than the hard count. |
-| Generation retention days | Inactive generation references retained before garbage collection. | 7 to 30 days. |
-| Index shard size | Search records assigned to one stable machine shard. | 1000 to 5000. |
-| Link index shard size | Link records assigned to one stable machine shard. | 1000 to 5000. |
-| Manifest shard size | Manifest records assigned to one stable machine shard. | 1000 to 5000. |
-| Graph edge shard size | Graph edges assigned to one stable machine shard. | 5000 to 20000. |
-| Graph candidate limit | Relationship candidates evaluated in one bounded projection operation. | 100 to 300. |
-| Graph maintenance batch size | Graph records refreshed in one maintenance page. | 200 to 1000. |
-| Root summary limit | Entries included in bounded root summaries. | 200 to 1000. |
-| Directory index entries per page | Direct entries in one generated directory navigation page. | 100 to 500. |
-| Directory index bytes per page | UTF-8 byte boundary for one directory navigation page. | 65536 to 262144. |
-| Log max entries | Recent generation changes kept in `log.md`. | 50 to 200. |
-| Log max bytes | UTF-8 byte boundary for `log.md`. | 65536 or higher. |
+| Directory entries per page | Direct entries listed on one generated directory page. This does not limit files in a directory. | `200` |
+| Directory page bytes | Maximum UTF-8 size of one generated directory page. | `65536` |
+| Root summary characters | Maximum knowledge-base description characters shown in root `index.md`. | `500` |
+| Log entries | Maximum recent document events kept in `log.md`. | `100` |
+| Log bytes | Maximum UTF-8 size of generated `log.md`. | `65536` |
+
+Every successful document job updates its affected generated pages before it becomes available. There is no batch, per-file, or manual publication mode.
 
 ## Graph
 
-Graph settings control body-grounded file relationship discovery, graph search, traversal bounds, generated graph shards, and short-lived query caching.
-
-| Field | Meaning | Recommended value |
+| Setting | Purpose | Default |
 | --- | --- | --- |
-| Graph candidate limit | Candidate files considered during relationship generation. | 100 to 300. |
-| Accepted edge limit | Accepted relationships retained per file. | 20 to 80. |
-| Default search depth | Graph expansion depth used when OpenAPI omits `depth`. | `1`. |
-| Max search depth | Maximum graph expansion depth accepted by OpenAPI. | `2`. |
-| Default search fanout | Related files followed per graph hop by default. | `10`. |
-| Max search fanout | Maximum related files followed per graph hop. | `25`. |
-| Model relationship review | Allows the active model to review candidate relationships. | Enable when the model service is stable. |
-| Graph publication shard size | Graph nodes and edges assigned to one generated shard. | 5000 to 20000. |
-| Graph cache TTL seconds | Redis cache lifetime for graph search and expansion. | 5 to 60 seconds. |
-| Generic phrase threshold | Minimum normalized phrase length used by generic phrase filtering. | `4`. |
+| Candidate file limit | Files considered when discovering relationships for one file. | `200` |
+| Accepted relationship limit | Relationships kept for one file. | `50` |
+| Default search depth | Relationship depth used when an API request omits it. | `1` |
+| Maximum search depth | Highest relationship depth accepted by the API. | `2` |
+| Default search fanout | Related files explored at each step when omitted by the request. | `10` |
+| Maximum search fanout | Highest fanout accepted by the API. | `25` |
+| Model relationship review | Allows the active model to review relationship suggestions. | Enabled |
+| Graph shard size | Maximum records in one generated `_graph` shard. | `5000` |
+| Generic phrase threshold | Minimum normalized phrase length used to ignore overly broad shared phrases. | `4` |
+
+Default depth and fanout must not exceed their maximum values. The review toggle controls whether the active generation model evaluates discovered relationship candidates. Document finalization still requires the active generation and embedding configurations described below.
 
 ## Maintenance
 
-Maintenance settings control knowledge-base index maintenance and bounded reconciliation of Focowiki-managed generated objects. Knowledge-base maintenance updates file navigation, search, relationships, and statistics. Storage reconciliation keeps its own enablement and interval and continues in either knowledge-base maintenance mode.
-
-| Field | Meaning | Recommended value |
+| Setting | Purpose | Default or starting value |
 | --- | --- | --- |
-| Knowledge-base maintenance mode | `Manual` starts maintenance from the selected knowledge base. `Automatic` also checks periodically for knowledge bases that need maintenance. Manual maintenance remains available in both modes. | `Manual` for deployments that want explicit resource control. |
-| Automatic maintenance interval seconds | Time between automatic maintenance eligibility checks. This value is preserved but inactive in manual mode. | `21600` seconds. |
-| Knowledge-base maintenance concurrency | Maximum knowledge bases maintained at the same time. Additional requests wait until capacity is available. | `1`; increase after observing database and object-storage capacity. |
-| Storage reconciliation | Enables bounded generated-object reconciliation. | Keep enabled for normal deployments. |
-| Scan interval seconds | Time between complete reconciliation cycles. | `21600` seconds. |
-| Scan batch size | Generated-object metadata records listed in one bounded storage page. Larger pages create more short database batches and increase temporary database pressure. | `500`; maximum `1000`. |
-| Deletion batch size | Confirmed orphan objects deleted in one bounded batch. | `100`; maximum `1000`. |
-| Quarantine grace seconds | Minimum time an unregistered candidate remains quarantined before deletion. | `86400` seconds or longer. |
-| Confirmation passes | Completed discovery passes required before deletion eligibility. | `2` or more. |
-| Maximum attempts | Deletion attempts retained for one candidate. | `5`. |
-| Retry delay ms | Delay after a transient reconciliation failure. | `30000` to `300000` ms. |
-| Migration backfill concurrency | Bounded source and projection pages processed concurrently during compatible optimization migration. | 1 to 2. |
-| Projection compaction concurrency | Independent projection partitions compacted concurrently. | 1 to 2. |
-| Projection repair concurrency | Projection repair subtasks processed concurrently by the dedicated repair worker. | 4 to 8 on an 8C/32G server; range 1 to 16. |
-| Projection repair database batch size | Projection records handled by one bounded set-based database batch. | `2000`; range 100 to 10000. |
-| Projection repair object write concurrency | Generated projection objects uploaded and verified concurrently during repair. | `8`; range 1 to 32. |
-| Lexical rebuild concurrency | Source-processing lanes used by one dedicated lexical-rebuild worker. | `4` on an 8C/32G server; range 1 to 16. |
-| Lexical source read concurrency | Source Markdown objects read concurrently from S3-compatible storage. | `2` on an 8C/32G server; range 1 to 32. Increase only after verifying content-read latency against the storage service. |
-| Lexical database write concurrency | Lexical projection batches committed concurrently. | `2` on an 8C/32G server; range 1 to 16 and no higher than lexical rebuild concurrency. |
-| Lexical claim batch size | Durable source work items claimed in one cycle. | `500`; range 50 to 2000. |
-| Lexical database batch size | Source files committed in one atomic lexical database batch. | `50`; range 1 to 250 and no higher than the claim batch size. |
-| Lexical in-flight source bytes | Maximum total source Markdown bytes retained by active lexical reads. | `67108864` bytes (64 MiB); range 1 MiB to 512 MiB. |
+| Storage consistency checks | Periodically finds storage entries that can be safely cleaned up. | Enabled |
+| Storage scan batch size | Stored entries checked in one batch. | `500`; maximum `1000`. |
+| Storage cleanup maximum attempts | Attempts allowed for a cleanup action. | `5` |
+| Storage cleanup retry delay milliseconds | Delay after a temporary cleanup failure. | `30000` |
+| Hard-delete concurrency | Resource-deletion cleanup actions processed at the same time. | `1`; maximum `16`. |
+| Hard-delete database batch size | Database records removed in one cleanup page. | `1000` |
+| Hard-delete object batch size | Stored objects removed in one cleanup page. | `1000` |
+| Hard-delete maximum attempts | Attempts allowed for one cleanup action. | `3` |
+| Hard-delete retry delay milliseconds | Delay before retrying temporary cleanup failures. | `60000` |
+| Failed hard-delete retention days | Days to retain terminal cleanup failure records. | `30` |
 
-Open a knowledge base, select **Settings** below **File processing**, and choose **Maintain index** to start one maintenance run for that knowledge base. The action is unavailable while that knowledge base already has maintenance waiting or running. Existing readable content stays available while maintenance completes.
+Use **Maintain index** to apply a changed model, prompt, output format, embedding dimension, or search provider to an existing knowledge base, or to run an explicit repair, recovery, or full rebuild. Ordinary uploads and body replacements complete all required processing in one document job. Rename, move, metadata update, and delete operations update the affected content automatically. Existing readable files remain available while maintenance runs.
 
-Projection repair runs in its own Worker role. Saved values apply to later repair claims; already-running subtasks keep the settings captured when they were claimed. The status section reports bounded aggregate phase, task, record, directory, object, retry, throughput, and estimated-completion values without counting work tables during each request.
+Knowledge bases and content from an earlier incompatible release cannot be updated through **Maintain index**. Follow [Update an Existing Deployment](./docker-compose.md#update-an-existing-deployment), import the source Markdown into the empty target deployment, and use **Maintain index** only for knowledge bases created by the current release.
 
-Lexical rebuild also runs in its own Worker role. Saved values apply to later claims; active claims keep their captured revision. Maintenance status reports exact completed, active, waiting, retrying, failed, and total file counts together with active workers, recent throughput, retries, last progress, heartbeat, and estimated completion. The current active generation remains readable while the candidate is built.
+## Search
 
-The maintenance status also reports protection readiness, bounded progress, recent throughput, batch latency, heartbeat freshness, safe retry information, and aggregate scan, quarantine, resolution, deletion, and registered-but-missing counts.
+The same settings remain visible for both providers; changing `SEARCH_PROVIDER` does not add, remove, or rename a field.
 
-After an upgrade changes the search representation, maintenance rebuilds search, lexical, and graph-term data in bounded background pages. The currently active knowledge base remains readable until the rebuilt data has been validated and activated. Existing source files do not need to be uploaded again, accepted relationships are retained, and the rebuild does not call a model.
+| Setting | Meilisearch behavior | OpenSearch behavior | Default |
+| --- | --- | --- | --- |
+| Search request timeout milliseconds | Bounds the complete application search request. | Bounds the complete application search request. | `3000` |
+| Search service timeout milliseconds | Native search cutoff and client deadline. | Provider request/query deadline and application cutoff. | `1000` |
+| Result refill factor | Overfetches candidates before hydration. | Overfetches collapsed candidates before hydration. | `3` |
+| Index update document count | Maximum documents in one indexing task. | Maximum documents in one Bulk request. | `10000` |
+| Index update compressed bytes | Maximum serialized indexing batch bytes. | Maximum serialized Bulk request bytes. | `8388608` |
+| In-flight search tasks | Concurrent pending indexing tasks. | Concurrent Bulk or provider operations. | `8` |
+| Search task poll interval milliseconds | Delay between task-status checks. | Delay between retry or final visibility checks. | `500` |
+| Search task timeout milliseconds | Total indexing-task deadline. | Total Bulk, indexing, and visibility deadline. | `600000` |
+| Search task maximum attempts | Maximum task and request retries. | Maximum transient request and item retries. | `5` |
+| Search retry delay milliseconds | Delay before a task or request retry. | Delay before a transient retry, with a limited random adjustment. | `2000` |
+| Search cleanup batch size | Maximum old-index records cleaned at once. | Maximum exact-index records cleaned at once. | `1000` |
+| Search result excerpt length | Native crop length. | Maximum highlighted fragment and normalized excerpt length. | `1200` |
+
+Keep the search-service timeout below the total request timeout. Reduce update size or in-flight tasks when the selected provider's memory or disk latency rises.
+
+## Semantic Search
+
+Semantic settings are shared by OpenSearch and Meilisearch. They bound optional GraphRAG and embedding work without changing the generated file tree or source Markdown.
+
+| Setting | Purpose | Default |
+| --- | --- | --- |
+| Maximum chunk characters | Maximum characters in one extraction chunk. | `8000` |
+| Maximum chunks | Maximum extraction chunks from one uploaded document. | `32` |
+| Maximum evidence targets | Maximum source evidence targets retained for one semantic unit. | `64` |
+| GraphRAG adapter timeout milliseconds | Maximum time for one GraphRAG extraction request. | `30000` |
+| Semantic search lane cutoff milliseconds | Independent cutoff for optional semantic search lanes. Must not exceed the total search request timeout. | `2500` |
+| Query embedding concurrency | Maximum concurrent query-embedding requests per process. | `4` |
+| Query embedding cache entries | Maximum query-embedding cache entries per process. | `1000` |
+
+Start with the defaults. Lower chunk or query-embedding limits when worker CPU or memory, model latency, or search latency rises. A failed optional semantic search lane reports a safe semantic status while completed exact and lexical lanes can still return results.
+
+The file-processing list reports committed progress for preparation, model assistance, generated content, GraphRAG, relationship coordination, indexing, availability, and cleanup. Independent work can be active concurrently. A file becomes available only after its required source, generated pages, relationships, embeddings, and search documents are active and readable.
+
+## Embedding Models
+
+Embedding configurations are managed in the **Embedding models** tab under **Model configuration** and apply to both supported search providers. Use authenticated HTTPS endpoints for cloud services. Authentication mode `none` is limited to trusted local or private-network endpoints.
+
+| Setting | Purpose | Default or starting value |
+| --- | --- | --- |
+| Display name | Name shown in Admin UI. | Include provider and purpose. |
+| Authentication mode | `api_key` sends a server-side key; `none` uses no credential. | `api_key` |
+| Base URL | OpenAI-compatible embedding API base URL. | `https://api.openai.com/v1` |
+| API key | Server-side provider credential for `api_key` mode. | Required for `api_key`; never shown in full after save. |
+| Model name | Provider embedding-model identifier. | Match provider documentation exactly. |
+| Requested dimension | Optional output dimension requested from a compatible provider. | Empty to use the model's resolved dimension. |
+| Normalization | Vector normalization applied by Focowiki. | `l2`; `none` is also supported. |
+| Maximum input tokens | Maximum input budget declared for one embedding input. | `8192` |
+| Batch size | Maximum embedding inputs sent in one request. | `32` |
+| Timeout milliseconds | Maximum time for one embedding request. | `30000` |
+| Retry count | Maximum retries after a temporary provider failure. | `2` |
+| Minimum interval milliseconds | Minimum interval between provider requests. | `0` |
+| Concurrency | Maximum concurrent embedding requests. | `4` |
+| Maximum response bytes | Maximum accepted provider response size. | `8388608` |
+
+Create a configuration, use **Test** to validate the endpoint and resolved embedding dimension, then use **Activate**. New document work uses the active configuration. Editing a saved configuration creates a new revision; existing knowledge bases adopt that revision only after **Maintain index** completes. Compatible embeddings can be reused when only the search provider changes, without making the same model calls again.
+
+The table shows the resolved dimension, validation state, and lifecycle state as read-only status. Pause prevents new work from selecting the configuration. Resume makes a paused revision selectable again. Delete is blocked while a configuration revision is still referenced by active or in-progress work. Secrets remain redacted in lists, status, errors, logs, and API responses.
+
+## Reranker Models
+
+Reranking is optional and query-time only. The **Reranker models** tab under **Model configuration** stores the model connection, credential, identity, validation, lifecycle, timeout, retry, minimum interval, and concurrency. Create a configuration, use **Test**, then **Activate** it. Pausing, replacing, or deleting a Reranker does not rebuild a knowledge base or change its semantic generation. Missing, paused, or failed reranking leaves search available through deterministic hybrid ranking.
+
+Enter the provider base URL, such as `https://provider.example/v1`. Focowiki appends `/rerank` and sends the standard rerank request to `https://provider.example/v1/rerank`. Do not enter `/rerank` or `/v1/chat/completions` in this field; Chat Completions is not a supported Reranker protocol.
+
+The final result `limit`, `rerankTopK`, and `rerankScoreThreshold` are Developer OpenAPI request fields. They are intentionally absent from Admin Settings. `rerank` defaults to `false`; when enabled, the API sends only title, path, and limited source-grounded excerpts from already authorized candidates. The embedding cosine relevance threshold remains part of the active embedding query policy and is independent of the Reranker score threshold.
 
 ## Models
 
-Model assistance is optional. Source processing continues with deterministic metadata, navigation, search, and graph inputs when no model is active. One model can be active at a time.
+Generation models are managed in the **Models** tab under **Model configuration**. Completing an upload requires both one active generation model and one active, validated embedding configuration. This ensures every accepted document follows the same indexing contract before it becomes available. Only one generation model can be active at a time.
 
-| Field | Meaning | Recommended value |
+| Setting | Purpose | Recommended value |
 | --- | --- | --- |
 | Display name | Name shown in Admin UI. | Include provider and purpose. |
-| API mode | `responses` or `chat_completions` provider protocol. | Match the provider endpoint. |
-| Base URL | OpenAI-compatible API base URL. | Include `/v1` when required. |
-| API key | Credential sent only by the backend. | Use a scoped, regularly rotated key. |
+| API mode | Provider protocol. Responses sends strict JSON Schema through `text.format`; Chat Completions first sends strict JSON Schema through `response_format` and uses JSON-object compatibility only when the provider explicitly rejects that feature. | `responses` or `chat_completions`, matching the provider endpoint. |
+| Base URL | OpenAI-compatible API base URL. | Include `/v1` when required by the provider. |
+| API key | Server-side provider credential. | Use a dedicated key and rotate it regularly. |
 | Model name | Provider model identifier. | Match provider documentation exactly. |
-| Context window tokens | Model context-window capacity. | Use the provider's real limit. |
-| Request max timeout ms | Maximum total model request time. | 600000 ms or higher for long documents. |
-| Request idle timeout ms | Maximum time without model response activity. | 120000 to 300000 ms. |
-| Suggestion concurrency | Concurrent model suggestion requests. | Start with 1 to 2. |
-| Transient retry delay ms | Delay before retrying a transient provider failure. | 60000 ms. |
-| Request min interval ms | Minimum interval between model requests. | 0 for stable providers; 1000 to 5000 ms for strict limits. |
+| Context window tokens | Model context capacity. | Use the provider's published limit. |
+| Request maximum timeout milliseconds | Maximum total time for one model request. | `600000` or higher for long files. |
+| Request idle timeout milliseconds | Maximum time with no response activity. | `120000` to `300000`. |
+| Suggestion concurrency | Model requests made at the same time. | Start with `1` or `2`. |
+| Temporary-error retry delay milliseconds | Delay before retrying a temporary provider failure. | `60000` |
+| Request minimum interval milliseconds | Minimum delay between model requests. | `0` for stable providers; increase for strict rate limits. |
 
-Saved API keys remain hidden after creation. Pausing a model prevents new jobs from selecting it. Deletion is blocked while running work still references the model.
+The complete API key is not displayed after creation. Pausing a model prevents new jobs from selecting it. A model still used by running work cannot be deleted until that work finishes.
 
-## Apply and Observe
+The selected structured-output capability is reused by the effective model revision. Authentication, quota, timeout, content, and unrelated request errors do not switch formats. Model execution facts retain safe request IDs, finish states, token counts when supplied by the provider, timing, and retry classification; prompts, source bodies, credentials, and reasoning content are not stored in those observations.
 
-Saved runtime settings are durable. Running jobs keep their captured settings where consistency requires a stable snapshot. Later claims and requests use the new values. Startup-only ports, origins, credentials, database pools, storage credentials, and log paths remain in `.env` and require service restart when changed.
+## Applying Changes
+
+Admin runtime settings and model configurations are stored by Focowiki and do not belong in `.env`. Ports, domains, infrastructure credentials, database connection limits, storage credentials, and log paths remain startup configuration. Restart the affected service after changing startup configuration.

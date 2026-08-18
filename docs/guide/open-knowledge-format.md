@@ -4,40 +4,47 @@ title: Open Knowledge Format
 
 # Open Knowledge Format
 
-Focowiki generates a Markdown knowledge base aligned with the Google Open Knowledge Format (OKF) v0.1 Draft. The format keeps knowledge portable and readable through Markdown files, YAML frontmatter, standard links, directory indexes, and update logs.
+Focowiki generates a portable Markdown knowledge base aligned with Google Open Knowledge Format (OKF) 0.2. Uploaded Markdown remains readable even when optional OKF metadata is absent.
 
 ## Official Baseline
 
-Focowiki pins one retrieved specification revision so upstream edits cannot silently change validation behavior.
+- [Google Cloud OKF 0.2 announcement](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals)
+- [OKF 0.2 specification, pinned revision `930b65fc`](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md)
 
-- [Google Cloud announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-- [OKF v0.1 Draft, pinned revision `ee67a5ca`](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md)
+The product applies three distinct rules:
 
-The implementation distinguishes official rules from Focowiki producer rules.
-
-| Classification | Behavior |
+| Rule | Meaning |
 | --- | --- |
-| Official required | Concept frontmatter is parseable, concept `type` is non-empty, and reserved `index.md` and `log.md` files use their defined structures. |
-| Official recommended | Concepts use helpful titles, descriptions, resources, tags, timestamps, structured Markdown, links, index descriptions, and numbered citations when evidence exists. |
-| Focowiki producer | Generated links resolve, labels agree with target concepts, navigation remains complete, and large directories use bounded continuation concepts. |
+| Official OKF 0.2 | Defines recommended provenance, generation, verification, lifecycle, and Attested Computation metadata. |
+| Upload safety | Requires a supported path, UTF-8 Markdown, parseable YAML when frontmatter is present, safe values, and an accepted size. |
+| Generated knowledge base | Requires complete navigation, valid generated links, portable paths, and bounded index files. |
 
-Missing optional metadata and unknown safe metadata do not invalidate a concept. Focowiki preserves safe producer-defined fields and does not impose a domain taxonomy.
+OKF fields are optional upload inputs. Missing, incomplete, or wrong-format OKF metadata does not by itself block upload, normal file reading, or unfiltered search. Safe original frontmatter remains visible; only successfully normalized values participate in OKF filters.
 
-## Concept Files
+## Markdown Input
 
-Every non-reserved Markdown concept uses UTF-8 Markdown and YAML frontmatter with a non-empty `type`.
+Files can contain plain Markdown or YAML frontmatter followed by Markdown.
 
 ```md
 ---
+okf_version: "0.2"
 type: "Guide"
 title: "Incident response"
 description: "Steps for responding to a production incident."
-resource: "https://docs.example.com/incident-response"
 tags:
   - operations
   - reliability
-timestamp: "2026-07-13T00:00:00Z"
-owner: "Platform team"
+sources:
+  - id: "service-handbook"
+    resource: "references/service-handbook.md"
+generated:
+  by: "publisher:docs"
+  at: "2026-07-13T00:00:00Z"
+verified:
+  - by: "human:platform-reviewer"
+    at: "2026-07-13T01:00:00Z"
+status: "stable"
+stale_after: "2026-10-13"
 ---
 
 # Incident response
@@ -45,120 +52,130 @@ owner: "Platform team"
 Start by confirming the affected service and current impact.
 ```
 
-`title`, `description`, `resource`, `tags`, and `timestamp` are recommended when the source provides reliable evidence. Fields such as `owner` remain available as producer metadata.
+Use metadata only when the source provides reliable evidence:
 
-## Reserved Files
+- `sources` records provenance.
+- `generated` records a production event.
+- `verified` records review events.
+- `status` and `stale_after` describe lifecycle.
+- Safe domain-specific fields can remain in frontmatter.
 
-The exact filenames `index.md` and `log.md` are reserved.
+Do not invent provenance, verification, ownership, or lifecycle values.
 
-The root `index.md` may declare only `okf_version: "0.1"` in frontmatter. Nested `index.md` files contain no frontmatter. Both use headings and standard Markdown links.
+## Decision Signals And Filters
 
-```md
----
-okf_version: "0.1"
----
-# Product knowledge
+Developer OpenAPI file and search responses include the preserved `frontmatter` and normalized `okfSignals`.
 
-Generated at: 2026-07-13T00:00:00.000Z
+The normalized signals cover status, verification tier, freshness, stale date, generated time, latest verification time, and source count. Invalid supplied values normalize to `null`. Omitted values use documented defaults only where the contract defines a default.
 
-## Explore
+File search accepts optional `okfStatus`, `okfTrustTier`, and `okfFreshness` filters. A filter excludes files whose corresponding normalized signal is `null`. Omit these filters for unrestricted search.
 
-- [Browse documents](/pages/index.md) - Explore source-backed Markdown files by directory.
-- [Metadata and navigation schema](/schema.md) - Review concept metadata and navigation conventions.
-- [Update history](/log.md) - Review bounded publication history.
-- [Machine-readable indexes](/_index/index.md) - Access generated manifests, search records, links, and changes.
-```
+These signals are advisory. They do not grant authorization and do not execute document content.
 
-A nested directory index keeps the same direct form without frontmatter:
+## Attested Computation
 
-```md
-# Runbooks
+OKF 0.2 can describe an Attested Computation with runtime, parameters, computation content, executor, and attester metadata. Focowiki preserves safe metadata and exposes the Markdown through normal read and search operations.
 
-- [Incident response](/pages/runbooks/incident-response.md) - Steps for responding to a production incident.
-```
-
-The root `log.md` contains no frontmatter. It starts with `# Directory Update Log`, groups entries under ISO dates, and orders newer groups first.
-
-```md
-# Directory Update Log
-
-## 2026-07-13
-
-* **Publication**: Published 12 Markdown pages.
-
-## 2026-07-12
-
-* **Publication**: Published 10 Markdown pages.
-```
-
-## Links And Citations
-
-Focowiki-generated internal links use bundle-relative paths beginning with `/`. A generated relationship must resolve to a source-backed Markdown file or to a typed navigation concept that leads to source-backed evidence.
-
-Generated citations use one trailing section with consecutive numbers:
-
-```md
-# Citations
-
-[1] [Source](https://docs.example.com/incident-response)
-[2] [Service handbook](/pages/handbooks/service.md)
-```
-
-Focowiki preserves source-authored links and source-authored citation sections without restyling or renumbering them.
+Focowiki does not execute the described computation and does not treat its metadata as authorization. A referenced local file is discoverable only when that file was also uploaded and is currently readable.
 
 ## Generated Structure
+
+The generated knowledge base uses ordinary Markdown navigation plus bounded JSON discovery and relationship records.
 
 ```text
 index.md
 log.md
-log-000001.md
-schema.md
-schema-frontmatter.md
-schema-navigation.md
-schema-extensions.md
 pages/
   index.md
+  index-directory-leaf-<stable-id>.md
   runbooks/
     index.md
+    index-directory-leaf-<stable-id>.md
     incident-response.md
-  large-directory/
-    index.md
-    index-000001.md
-    index-map-000001.md
 _index/
   index.md
-  manifest.json
-  search.json
-  links.json
-  changes.json
+  index-extension-leaf-<stable-id>.md
+  catalog.json
+  pages/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    all-documents.json
+    runbooks/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      runbooks-documents.json
+  terms/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    han/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      han-terms-part-0001.json
 _graph/
   index.md
-  manifest.json
-  ...
+  index-extension-leaf-<stable-id>.md
+  catalog.json
+  by-directory/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    runbooks/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      runbooks-relationships.json
+  by-file/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    runbooks/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      incident-response.json
 ```
 
-Source-backed concepts under `pages/` remain the final reading and citation evidence. `schema*.md`, `log-*.md`, directory continuation pages, `_index/`, and `_graph/` are Focowiki producer extensions.
+The tree is illustrative. Every non-empty generated directory has an `index.md` plus bounded stable navigation leaves. Readable document directories use `index-directory-leaf-<stable-id>.md`; machine-readable directories use `index-extension-leaf-<stable-id>.md`. Machine-readable directory routers are named `index.json`. Semantic data files use directory or page names and add `-part-NNNN` only when sharding is required.
 
-Generated Markdown extensions outside exact `index.md` and `log.md` use normal concept frontmatter and a descriptive `type`, such as `Schema Reference`, `Directory Index Page`, `Directory Index Map`, or `Update History Page`. Exact `_index/index.md` and `_graph/index.md` remain reserved nested indexes and contain no frontmatter.
+Only directories and records that currently have content are included. Relationship branches and per-file graph records exist only for accepted relationships.
 
-## Large Directories And Histories
+| Location | Purpose |
+| --- | --- |
+| `pages/**` | Complete readable Markdown derived from uploaded documents. |
+| `_index/pages/**` | Bounded page and directory discovery records. |
+| `_index/terms/**` | Bounded multilingual navigation terms. |
+| `_graph/by-directory/**` | Relationships grouped by document directory. |
+| `_graph/by-file/**` | Relationships for one readable document. |
+| `log.md` | Bounded recent document changes. |
 
-An exact directory `index.md` remains bounded. When a direct listing exceeds the configured entry or byte budget, it links to typed `index-000001.md` continuation concepts. Each continuation exposes directory, previous, and next navigation and lists a deterministic range of direct entries.
+`pages/**` is the final reading and citation evidence. `_index/**` and `_graph/**` help discovery and navigation.
 
-If the continuation catalog also exceeds the budget, the exact index links to typed `index-map-000001.md` concepts. Focowiki does not create artificial domain folders or omit source concepts. Each source-backed concept appears exactly once in its directory navigation sequence.
+## Reserved Navigation Files
 
-The root `log.md` retains a bounded recent window. Older retained entries move to typed `log-000001.md` concepts with root, previous, and next navigation.
+The exact filenames `index.md` and `log.md` are reserved for generated navigation and update history.
 
-## Publication Validation
+The root `index.md` may contain `okf_version: "0.2"` frontmatter. Nested `index.md` files use headings and ordinary relative links. The root `log.md` has no frontmatter.
 
-A candidate generation becomes readable after concept, reserved-file, generated-link, continuation-chain, source-navigation, shard-schema, and deletion-absence checks pass. Validation returns bounded rule IDs and logical paths when generated output is invalid.
+Large directories use stable `index-<stable-id>.md` continuation pages. Each continuation links to its directory and, when present, the previous and next continuation. A source document appears once in its directory navigation sequence.
 
-Optional metadata, unknown types, unknown safe fields, missing optional user indexes, and source-authored broken links remain readable. Focowiki applies the zero-broken-link rule only to links generated by Focowiki.
+Generated Markdown links are relative to the containing file. Generated JSON paths are relative to the knowledge-base root. Copying the complete generated directory to another location therefore preserves internal navigation.
 
-Admin preview and Developer OpenAPI expose the same logical paths and generated Markdown content. Generated files do not contain Admin URLs, storage paths, queue state, credentials, or internal identifiers used only by the service.
+## Portable Public Content
 
-## Scale Profile
+Generated knowledge-base files contain document paths and safe document metadata. They do not contain:
 
-Directory navigation and generation validation use bounded pages, continuation concepts, and generation-scoped durable facts. A large knowledge base does not require one corpus-wide Markdown index or loading all source bodies into one process.
+- Product or service names added by the generator.
+- Database, queue, job, revision, model, or provider identifiers.
+- Service URLs, local filesystem paths, storage locations, object keys, or credentials.
 
-The validation suite covers flat and nested 100,000-concept structures. It verifies bounded Markdown files, complete navigation, deterministic link coverage, and stable resource use.
+Source-authored content is preserved unless a value is unsafe for the supported format. Source-authored links and citation sections are not renumbered or replaced with inferred citations.
+
+## Updates And Validation
+
+Adding, replacing, renaming, moving, or deleting a document updates the affected navigation, index, relationship, and log files. Unrelated readable documents remain available during the update.
+
+Generated files become readable after their paths, links, navigation, and record shapes pass validation. Optional or malformed OKF metadata remains non-blocking when the Markdown and values are safe. User-authored broken links can remain visible so readers can repair the source material.
+
+For large knowledge bases, directory navigation and JSON resources remain bounded and use continuation or `-part-NNNN` files. The service does not require one Markdown page containing the entire corpus.

@@ -1,30 +1,19 @@
 import { Hono } from "hono";
-import type { OpenAIModelClient } from "@focowiki/okf";
-import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
-import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageAdapter } from "../storage/s3.js";
-import { createSourceResourceService } from "../application/source-resources.js";
-import type { ApplicationRuntime } from "../application/ports/runtime.js";
-import type { UploadSessionStoragePort } from "../application/ports/upload-session-storage.js";
 import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 import { readTreeEntryTypeFilter } from "../tree-entry-filters.js";
+import { isAllowedPublicGeneratedDirectoryPath } from "../public-generated-path.js";
 import {
   repositoryUnavailable,
   unsupportedRoute,
   validationError,
   writeDeveloperOpenApiError
 } from "./errors.js";
-import {
-  createDeveloperOpenApiKeyService,
-  requireDeveloperOpenApiAuth
-} from "./security.js";
-import { createDeveloperOpenApiService } from "./services.js";
 import { createDeveloperOpenApiDocument } from "./openapi-document.js";
 import { registerDeveloperOpenApiFileSearchRoutes } from "./file-search-routes.js";
 import { registerDeveloperOpenApiGraphExpansionRoutes } from "./graph-expansion-routes.js";
+import { createDeveloperOpenApiBodyLimit } from "./security.js";
 import { registerDeveloperOpenApiUploadSessionRoutes } from "./upload-session-routes.js";
+import { registerDeveloperOpenApiWebhookRoutes } from "./webhook-routes.js";
 import {
   registerDeveloperOpenApiSourceResourceRoutes,
   toSourceFileResponse
@@ -34,36 +23,20 @@ import {
   readLimit,
   safe
 } from "./route-helpers.js";
-import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
-import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
-import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
-import type { RuntimeLogger } from "../logger.js";
 import { installDeveloperOpenApiDiagnosticBoundary } from "./route-helpers.js";
+import {
+  readKnowledgeBaseDescription,
+  readKnowledgeBaseName
+} from "./knowledge-base-input.js";
+import type { StorageVnextOpenApiRouteContext } from "../storage-vnext/api/openapi-route-context.js";
 
-export type DeveloperOpenApiRouteServices = {
-  config: RuntimeConfig;
-  storage: StorageAdapter;
-  repositories: AdminRepositories | null;
-  redis: RedisCoordinator | null;
-  modelClient: OpenAIModelClient | null;
-  runtimeSettings: RuntimeSettingsService | null;
-  applicationRuntime: ApplicationRuntime;
-  uploadSessionStorage: UploadSessionStoragePort;
-  activeGenerationReads: ActiveGenerationReadRepository | null;
-  roleJobs: RoleJobRepository | null;
-  publicationGenerations: PublicationGenerationRepository | null;
-  sourceFileRetries: SourceFileRetryRepository | null;
-  logger: RuntimeLogger;
-};
+export type DeveloperOpenApiRouteServices = StorageVnextOpenApiRouteContext;
 
 export function registerDeveloperOpenApiRoutes(
   app: Hono,
   services: DeveloperOpenApiRouteServices
 ): void {
-  const keyService = createDeveloperOpenApiKeyService(services);
-  const requireAuth = requireDeveloperOpenApiAuth(services, keyService);
-  const api = createDeveloperOpenApiService(services);
+  const { api, requireAuth } = services;
   const openApiDocument = createDeveloperOpenApiDocument();
 
   installDeveloperOpenApiDiagnosticBoundary(app, {
@@ -72,6 +45,7 @@ export function registerDeveloperOpenApiRoutes(
   });
 
   app.use("/openapi/v2/*", requireAuth);
+  app.use("/openapi/v2/*", createDeveloperOpenApiBodyLimit(services.config));
 
   app.get("/openapi/v2/health", (context) =>
     context.json({
@@ -100,11 +74,28 @@ export function registerDeveloperOpenApiRoutes(
 
   app.post("/openapi/v2/knowledge-bases", async (context) =>
     safe(context, async () => {
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
-      return api.createKnowledgeBase({
-        name: typeof body.name === "string" ? body.name : "",
-        description: typeof body.description === "string" ? body.description : null
+      const body = await readDeveloperJsonObjectBody(
+        context.req.raw,
+        ["name", "description"]
+      );
+      const created = await api.createKnowledgeBase({
+        name: readKnowledgeBaseName(body.name),
+        description: readKnowledgeBaseDescription(body.description)
       });
+      const knowledgeBaseId = readNestedResponseId(
+        created,
+        "knowledgeBase",
+        "knowledgeBaseId"
+      );
+      await services.auditApplication.record({
+        context,
+        eventType: "knowledge_base_create",
+        result: "success",
+        knowledgeBaseId,
+        targetKind: "knowledge_base",
+        targetPublicId: knowledgeBaseId
+      });
+      return created;
     }, 201)
   );
 
@@ -113,20 +104,7 @@ export function registerDeveloperOpenApiRoutes(
   );
 
   registerDeveloperOpenApiUploadSessionRoutes(app, services);
-  registerDeveloperOpenApiSourceResourceRoutes(app, services);
-
-  app.get(
-    "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/events",
-    async (context) =>
-      safe(context, () =>
-        api.listSourceFileEvents({
-          knowledgeBaseId: context.req.param("knowledgeBaseId"),
-          sourceFileId: context.req.param("sourceFileId"),
-          limit: readLimit(context.req.query("limit"), services.config),
-          cursor: context.req.query("cursor") ?? null
-        })
-      )
-  );
+  registerDeveloperOpenApiSourceResourceRoutes(app, services, api);
 
   app.post(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/retry",
@@ -137,16 +115,7 @@ export function registerDeveloperOpenApiRoutes(
           const knowledgeBaseId = context.req.param("knowledgeBaseId");
           const sourceFileId = context.req.param("sourceFileId");
           const retry = await api.retrySourceFile({ knowledgeBaseId, sourceFileId });
-          const sourceResources = services.repositories?.sourceResources;
-
-          if (!sourceResources) {
-            throw repositoryUnavailable();
-          }
-
-          const sourceFile = await createSourceResourceService(
-            sourceResources,
-            services.applicationRuntime
-          ).getSourceFile({
+          const sourceFile = await api.getSourceFile({
             knowledgeBaseId,
             sourceFileId
           });
@@ -154,6 +123,15 @@ export function registerDeveloperOpenApiRoutes(
           if (!sourceFile) {
             throw repositoryUnavailable();
           }
+
+          await services.auditApplication.record({
+            context,
+            eventType: "source_file_retry_accepted",
+            result: "success",
+            knowledgeBaseId,
+            targetKind: "source_file",
+            targetPublicId: sourceFileId
+          });
 
           return {
             sourceFile: toSourceFileResponse(sourceFile),
@@ -170,6 +148,11 @@ export function registerDeveloperOpenApiRoutes(
 
   app.get("/openapi/v2/knowledge-bases/:knowledgeBaseId/tree", async (context) =>
     safe(context, () => {
+      if (context.req.query("query") !== undefined) {
+        throw validationError("Tree search is not supported. Use the file search endpoint.", {
+          field: "query"
+        });
+      }
       const entryType = readTreeEntryTypeFilter(context.req.query("entryType"));
 
       if (entryType === undefined) {
@@ -180,9 +163,9 @@ export function registerDeveloperOpenApiRoutes(
 
       return api.listTree({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        parentPath: context.req.query("parentPath") ?? "pages",
+        parentPath: readOpenApiTreeParentPath(context.req.query("parentPath")),
         entryType,
-        query: context.req.query("query") ?? null,
+        query: null,
         limit: readLimit(context.req.query("limit"), services.config, {
           defaultPageSize: services.config.pagination.treeDefaultPageSize,
           maxPageSize: services.config.pagination.treeMaxPageSize
@@ -251,47 +234,32 @@ export function registerDeveloperOpenApiRoutes(
     )
   );
 
-  app.post("/openapi/v2/webhooks", async (context) =>
-    safe(context, async () => {
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
-      return api.createWebhook({
-        name: typeof body.name === "string" ? body.name : null,
-        url: typeof body.url === "string" ? body.url : "",
-        events: Array.isArray(body.events)
-          ? body.events.filter((event): event is string => typeof event === "string")
-          : []
-      });
-    }, 201)
-  );
-
-  app.get("/openapi/v2/webhooks", async (context) =>
-    safe(context, () =>
-      api.listWebhooks({
-        limit: readLimit(context.req.query("limit"), services.config),
-        cursor: context.req.query("cursor") ?? null
-      })
-    )
-  );
-
-  app.delete("/openapi/v2/webhooks/:webhookId", async (context) =>
-    safe(context, () => api.deleteWebhook(context.req.param("webhookId")))
-  );
-
-  app.get("/openapi/v2/webhook-deliveries", async (context) =>
-    safe(context, () =>
-      api.listWebhookDeliveries({
-        limit: readLimit(context.req.query("limit"), services.config),
-        cursor: context.req.query("cursor") ?? null
-      })
-    )
-  );
-
-  app.post("/openapi/v2/webhook-deliveries/:deliveryId/redeliver", async (context) =>
-    safe(context, () => api.redeliverWebhook(context.req.param("deliveryId")), 202)
-  );
+  registerDeveloperOpenApiWebhookRoutes(app, services);
 
   app.all("/openapi/v2/*", (context) => writeDeveloperOpenApiError(context, unsupportedRoute()));
   app.all("/kb/*", (context) => writeDeveloperOpenApiError(context, unsupportedRoute()));
+}
+
+export function readOpenApiTreeParentPath(value: string | undefined): string {
+  if (value === undefined || value === "root") return "";
+  if (!isAllowedPublicGeneratedDirectoryPath(value)) {
+    throw validationError("Tree parent path is invalid.", { field: "parentPath" });
+  }
+  return value;
+}
+
+function readNestedResponseId(
+  response: Record<string, unknown>,
+  objectField: string,
+  idField: string
+): string {
+  const nested = response[objectField];
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+    throw repositoryUnavailable();
+  }
+  const id = (nested as Record<string, unknown>)[idField];
+  if (typeof id !== "string" || id.trim() === "") throw repositoryUnavailable();
+  return id;
 }
 
 function createOperationIdMap(

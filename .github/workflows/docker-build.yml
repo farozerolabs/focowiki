@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
   packages: write
   attestations: write
   artifact-metadata: write
@@ -24,6 +25,9 @@ env:
   API_IMAGE: ghcr.io/farozerolabs/focowiki-api
   ADMIN_IMAGE: ghcr.io/farozerolabs/focowiki-admin
   FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+  FOCOWIKI_TEST_OPENSEARCH_URL: http://127.0.0.1:59200
+  FOCOWIKI_TEST_OPENSEARCH_VERSION: 3.8.0
+  FOCOWIKI_TEST_OPENSEARCH_RUN_OWNER: svnext-build0001
   REDIS_URL: redis://127.0.0.1:56379/0
 
 jobs:
@@ -54,6 +58,21 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      opensearch:
+        image: opensearchproject/opensearch:3.8.0
+        env:
+          "discovery.type": single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          DISABLE_INSTALL_DEMO_CONFIG: "true"
+          OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 59200:9200
+        options: >-
+          --health-cmd "curl --fail --silent http://127.0.0.1:9200/"
+          --health-start-period 30s
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
 
     steps:
       - name: Checkout
@@ -125,6 +144,20 @@ jobs:
             fi
           fi
 
+      - name: Verify successful CI for release commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion="$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name == "Validate" and .app.slug == "github-actions")] | sort_by(.completed_at) | .[-1].conclusion // ""')"
+          if [[ "${conclusion}" != "success" ]]; then
+            echo "::error::The release commit must have a successful CI Validate check before image publication."
+            exit 1
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v6.4.0
         with:
@@ -142,6 +175,11 @@ jobs:
         run: |
           pnpm test:validation
           pnpm openapi:validate
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.2.0
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.1.0
@@ -183,15 +221,14 @@ jobs:
             type=sha,prefix=${{ steps.release.outputs.sha_prefix }}
             type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}
 
-      - name: Build and push API image
+      - name: Build API candidate by digest
         id: build-api
         uses: docker/build-push-action@v7.2.0
         with:
           context: .
           file: Dockerfile
           target: api
-          push: true
-          tags: ${{ steps.meta-api.outputs.tags }}
+          platforms: linux/amd64,linux/arm64
           labels: ${{ steps.meta-api.outputs.labels }}
           build-args: |
             FOCOWIKI_RELEASE_VERSION=${{ steps.release.outputs.version }}
@@ -199,6 +236,21 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
+          outputs: type=image,name=${{ env.API_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Build Admin candidate by digest
+        id: build-admin
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          file: Dockerfile
+          target: admin
+          platforms: linux/amd64,linux/arm64
+          labels: ${{ steps.meta-admin.outputs.labels }}
+          provenance: mode=max
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,mode=max,scope=admin
+          outputs: type=image,name=${{ env.ADMIN_IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Start S3 health fixture
         run: |
@@ -209,46 +261,83 @@ jobs:
         shell: bash
         run: |
           image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
-          docker pull "${image}"
-          docker tag "${image}" focowiki-api:release-smoke
-          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
-          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
-          docker run --rm --entrypoint node focowiki-api:release-smoke -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
-          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc '! grep -q nodejieba apps/api/runtime/publication-worker.mjs'
+          for platform in linux/amd64 linux/arm64; do
+            docker image rm --force "${image}" >/dev/null 2>&1 || true
+            docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
+            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
+            docker run --rm --platform "${platform}" --entrypoint node "${image}" -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
+            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'grep -q nodejieba apps/api/runtime/worker.mjs'
+            docker run --rm --platform "${platform}" --entrypoint python "${image}" --version
+            docker run --rm --platform "${platform}" --entrypoint python "${image}" -m graphrag_adapter_check
+          done
 
-      - name: Validate published API image roles
+      - name: Validate candidate API image roles
         shell: bash
         run: |
           image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
-          docker pull "${image}"
-          docker tag "${image}" focowiki-api:release-smoke
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migrate.mjs
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migration-preflight.mjs
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/source-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/publication-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/projection-repair-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/maintenance-worker.mjs --healthcheck
-          api_container="$(docker run -d --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/main.mjs)"
-          trap 'docker rm -f "${api_container}" >/dev/null 2>&1 || true' EXIT
-          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43000/healthz
-          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43200/healthz
-          docker rm -f "${api_container}" >/dev/null
+          runtime_secret_volume="focowiki-build-runtime-secrets-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          search_security_volume="focowiki-build-search-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          search_secret_volume="focowiki-build-search-secrets-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          api_container=""
+          docker volume create "${runtime_secret_volume}" >/dev/null
+          cleanup() {
+            if [[ -n "${api_container}" ]]; then
+              docker rm -f "${api_container}" >/dev/null 2>&1 || true
+            fi
+            docker volume rm -f "${runtime_secret_volume}" >/dev/null 2>&1 || true
+            docker volume rm -f "${search_security_volume}" >/dev/null 2>&1 || true
+            docker volume rm -f "${search_secret_volume}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for platform in linux/amd64 linux/arm64; do
+            docker image rm --force "${image}" >/dev/null 2>&1 || true
+            docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --entrypoint node "${image}" -e "const fs=require('node:fs'); const secret=require('node:crypto').randomBytes(32).toString('base64url'); fs.writeFileSync('/app/runtime-secrets/deployment.key', secret + '\n', { mode: 0o600 });"
+            docker volume create "${search_security_volume}" >/dev/null
+            docker volume create "${search_secret_volume}" >/dev/null
+            search_init=(
+              docker run --rm --platform "${platform}"
+              --mount "type=volume,source=${search_security_volume},target=/app/opensearch-security"
+              --mount "type=volume,source=${search_secret_volume},target=/app/runtime-secrets"
+              -e SEARCH_PROVIDER=opensearch
+              -e SEARCH_INDEX_PREFIX=focowiki_release
+              -e BUNDLED_OPENSEARCH_SECURITY_ENABLED=true
+              -e OPENSEARCH_ADMIN_PASSWORD=focowiki-release-opensearch-admin-password
+              -e OPENSEARCH_RUNTIME_USERNAME=focowiki-runtime
+              -e OPENSEARCH_SECURITY_DIR=/app/opensearch-security
+              -e OPENSEARCH_SECRET_DIR=/app/runtime-secrets
+              "${image}" node apps/api/runtime/search-init.mjs
+            )
+            first="$("${search_init[@]}")"
+            second="$("${search_init[@]}")"
+            grep -F '"source":"generated"' <<< "${first}"
+            grep -F '"source":"reused"' <<< "${second}"
+            docker volume rm "${search_security_volume}" >/dev/null
+            docker volume rm "${search_secret_volume}" >/dev/null
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migrate.mjs
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migration-preflight.mjs
+            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/worker.mjs --healthcheck
+            api_container="$(docker run -d --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/main.mjs)"
+            curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43000/healthz
+            curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43200/healthz
+            docker rm -f "${api_container}" >/dev/null
+            api_container=""
+          done
+          docker volume rm "${runtime_secret_volume}" >/dev/null
           trap - EXIT
 
-      - name: Build and push Admin image
-        id: build-admin
-        uses: docker/build-push-action@v7.2.0
-        with:
-          context: .
-          file: Dockerfile
-          target: admin
-          push: true
-          tags: ${{ steps.meta-admin.outputs.tags }}
-          labels: ${{ steps.meta-admin.outputs.labels }}
-          provenance: mode=max
-          cache-from: type=gha,scope=admin
-          cache-to: type=gha,mode=max,scope=admin
+      - name: Validate candidate Admin image
+        shell: bash
+        run: |
+          image="${ADMIN_IMAGE}@${{ steps.build-admin.outputs.digest }}"
+          for platform in linux/amd64 linux/arm64; do
+            docker image rm --force "${image}" >/dev/null 2>&1 || true
+            docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" \
+              -e ADMIN_API_PROXY_TARGET=http://api:43000 \
+              "${image}" nginx -t
+          done
 
       - name: Attest API image
         uses: actions/attest-build-provenance@v4.1.0
@@ -263,6 +352,34 @@ jobs:
           subject-name: ${{ env.ADMIN_IMAGE }}
           subject-digest: ${{ steps.build-admin.outputs.digest }}
           push-to-registry: true
+
+      - name: Promote validated image tags
+        shell: bash
+        env:
+          API_DIGEST: ${{ steps.build-api.outputs.digest }}
+          API_TAGS: ${{ steps.meta-api.outputs.tags }}
+          ADMIN_DIGEST: ${{ steps.build-admin.outputs.digest }}
+          ADMIN_TAGS: ${{ steps.meta-admin.outputs.tags }}
+        run: |
+          promote() {
+            local image="$1"
+            local digest="$2"
+            local tags="$3"
+            local tag_args=()
+            while IFS= read -r tag; do
+              [[ -n "${tag}" ]] && tag_args+=(--tag "${tag}")
+            done <<< "${tags}"
+            if [[ "${#tag_args[@]}" -eq 0 ]]; then
+              echo "::error::No image tags were resolved for ${image}."
+              return 1
+            fi
+            docker buildx imagetools create "${tag_args[@]}" "${image}@${digest}"
+            while IFS= read -r tag; do
+              [[ -n "${tag}" ]] && docker buildx imagetools inspect "${tag}" >/dev/null
+            done <<< "${tags}"
+          }
+          promote "${ADMIN_IMAGE}" "${ADMIN_DIGEST}" "${ADMIN_TAGS}"
+          promote "${API_IMAGE}" "${API_DIGEST}" "${API_TAGS}"
 
       - name: Stop S3 health fixture
         if: always()
