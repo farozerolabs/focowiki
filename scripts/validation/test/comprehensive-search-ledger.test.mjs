@@ -456,9 +456,9 @@ function reconciliationReport(safeCode) {
 function searchItem(sourceFileId, path, matchedFields, evidenceTypes) {
   return {
     knowledgeBaseId: "knowledge-base-official",
+    fileId: sourceFileId,
     sourceFileId,
     path,
-    generatedFilePath: path,
     matchedFields,
     evidenceTypes,
     matchType: "hybrid",

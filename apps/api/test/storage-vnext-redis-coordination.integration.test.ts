@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "redis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
-import { createRedisStorageVnextDeletionVisibilityCache } from
-  "../src/storage-vnext/deletion/redis-visibility.js";
 
 const redisUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_REDIS_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -66,37 +64,4 @@ describeOwnedRedis("real storage vNext Redis coordination", () => {
     }
   });
 
-  it("removes only deletion-visible knowledge-base caches from the owned namespace", async () => {
-    const scopedRedis = createRedisCoordinator(client, { keyPrefix });
-    const cache = createRedisStorageVnextDeletionVisibilityCache({ redis: scopedRedis });
-    const deletedKnowledgeBaseId = "kb-delete-cache";
-    const keptKnowledgeBaseId = "kb-keep-cache";
-    const deletedKeys = [
-      scopedRedis.buildKey(
-        "knowledge-base-publication-locks",
-        deletedKnowledgeBaseId
-      ),
-      scopedRedis.buildKey("page-cache", "tree", deletedKnowledgeBaseId, "page-one"),
-      scopedRedis.buildKey(
-        "pagination-cursors",
-        "files",
-        deletedKnowledgeBaseId,
-        "cursor-one"
-      )
-    ];
-    const keptKey = scopedRedis.buildKey(
-      "page-cache",
-      "tree",
-      keptKnowledgeBaseId,
-      "page-one"
-    );
-    for (const key of [...deletedKeys, keptKey]) {
-      await client.set(key, "value", { EX: 60 });
-    }
-
-    await cache.invalidateKnowledgeBase({ knowledgeBaseId: deletedKnowledgeBaseId });
-
-    for (const key of deletedKeys) await expect(client.exists(key)).resolves.toBe(0);
-    await expect(client.exists(keptKey)).resolves.toBe(1);
-  });
 });

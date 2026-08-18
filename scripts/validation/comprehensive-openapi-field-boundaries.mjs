@@ -64,7 +64,7 @@ const webhooks = new Set();
 let requestSequence = 0;
 
 try {
-  assert(operations.length === 43, `Expected 43 operations, found ${operations.length}.`);
+  assert(operations.length === 42, `Expected 42 operations, found ${operations.length}.`);
   assert(parameterInventory.length === 127, `Expected 127 parameters, found ${parameterInventory.length}.`);
   assert(parameterFieldInventory.length === 127, `Expected 127 parameter fields, found ${parameterFieldInventory.length}.`);
   assert(requestFieldInventory.length === 34, `Expected 34 request fields, found ${requestFieldInventory.length}.`);

@@ -39,6 +39,9 @@ describe("deployment dependency healthcheck", () => {
       async checkSearch() {
         events.push("search");
       },
+      async checkWorkerRuntime() {
+        events.push("worker-runtime");
+      },
       async checkRole() {
         events.push("role");
       }
@@ -52,6 +55,7 @@ describe("deployment dependency healthcheck", () => {
       "redis-ping",
       "storage",
       "search",
+      "worker-runtime",
       "role",
       "redis-close",
       "database-close"

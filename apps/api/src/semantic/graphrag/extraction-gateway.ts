@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mapWithConcurrency } from "../../runtime/bounded.js";
 import type { BoundedTaskRunner } from "../../runtime/task-runner.js";
 import {
@@ -30,9 +30,21 @@ export type GraphRagModelCompletionPort = {
   }): Promise<string>;
 };
 
+export type GraphRagChunkOutputPort = {
+  resolve(input: {
+    chunkId: string;
+    chunkNumber: number;
+    promptRevision: string;
+    promptFingerprintSha256: string;
+    signal: AbortSignal;
+    complete(): Promise<string>;
+  }): Promise<{ output: string; reused: boolean }>;
+};
+
 export function createGraphRagExtractionGateway(input: {
   pool: GraphRagPythonPool;
   model: GraphRagModelCompletionPort;
+  chunkOutputs?: GraphRagChunkOutputPort;
   requestRunner?: BoundedTaskRunner;
   completionConcurrency?: number;
   maximumChunkCharacters?: number;
@@ -40,6 +52,7 @@ export function createGraphRagExtractionGateway(input: {
   retryAttempt?: number;
   adapterTimeoutMs?: number;
   now?: () => number;
+  onPromptsPrepared?(): void;
   selectSkeleton?(input: {
     sourceRevisionPublicId: string;
     logicalPath: string;
@@ -80,7 +93,7 @@ export function createGraphRagExtractionGateway(input: {
       generationServiceTimeMilliseconds: number;
     }> {
       throwIfAborted(request.signal);
-      const effectiveMaximumChunkCharacters = retryChunkCharacters({
+      const effectiveMaximumChunkCharacters = semanticRetryChunkCharacters({
         configuredMaximum: maximumChunkCharacters,
         maximumChunks,
         sourceCharacters: request.markdown.length,
@@ -142,14 +155,20 @@ export function createGraphRagExtractionGateway(input: {
         limits: adapterLimits(maximumChunks, effectiveMaximumChunkCharacters)
       }, adapterTimeoutMs, request.signal);
       const preparation = parsePreparation(prepared, selectedChunks, selectedInputHash);
+      input.onPromptsPrepared?.();
       const generationServiceTimes: number[] = [];
+      let generationRequestCount = 0;
       const now = input.now ?? Date.now;
       const modelOutputs = await mapWithConcurrency(
-        preparation.prompts,
+        preparation.prompts.map((prompt, chunkNumber) => ({
+          ...prompt,
+          chunkNumber
+        })),
         completionConcurrency,
         async (prompt) => {
         throwIfAborted(request.signal);
         const operation = async () => {
+          generationRequestCount += 1;
           const startedAt = now();
           try {
             return await input.model.complete({
@@ -160,9 +179,26 @@ export function createGraphRagExtractionGateway(input: {
             generationServiceTimes.push(elapsedMilliseconds(startedAt, now()));
           }
         };
-        const output = input.requestRunner
-          ? await input.requestRunner.run(operation)
-          : await operation();
+        const complete = async () => input.requestRunner
+          ? input.requestRunner.run(operation)
+          : operation();
+        const resolved = input.chunkOutputs
+          ? await input.chunkOutputs.resolve({
+              chunkId: prompt.chunkId,
+              chunkNumber: prompt.chunkNumber,
+              promptRevision: preparation.promptRevision,
+              promptFingerprintSha256: createHash("sha256")
+                .update(preparation.promptRevision)
+                .update("\0")
+                .update(prompt.chunkId)
+                .update("\0")
+                .update(prompt.prompt)
+                .digest("hex"),
+              signal: request.signal,
+              complete
+            })
+          : { output: await complete(), reused: false };
+        const output = resolved.output;
         if (!output || output.length > 256_000) {
           throw extractionError("semantic_model_output_invalid", false);
         }
@@ -197,7 +233,7 @@ export function createGraphRagExtractionGateway(input: {
         selection,
         promptRevision: preparation.promptRevision,
         canonicalInputHash,
-        generationRequestCount: modelOutputs.length,
+        generationRequestCount,
         generationServiceTimeMilliseconds: generationServiceTimes.reduce(
           (sum, value) => sum + value,
           0
@@ -237,7 +273,7 @@ function validateSelection(
   });
 }
 
-function retryChunkCharacters(input: {
+export function semanticRetryChunkCharacters(input: {
   configuredMaximum: number;
   maximumChunks: number;
   sourceCharacters: number;

@@ -89,7 +89,7 @@ describe("Focowiki-owned semantic contracts", () => {
     });
 
     expect(closure.generatedLogicalPaths).toEqual([
-      `_graph/by-file/${input.sourceFilePublicId}.json`,
+      "_graph/by-file/guides/alpha.json",
       "pages/guides/alpha.md"
     ]);
   });

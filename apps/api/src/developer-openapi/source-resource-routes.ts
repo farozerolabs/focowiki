@@ -26,8 +26,13 @@ import {
   writeSourceResourceCursor
 } from "./source-resource-pagination.js";
 import { readIdempotencyKey } from "./idempotency-key.js";
-import type { StorageVnextAdminMutationApplication } from "../storage-vnext/api/admin-mutation-application.js";
-import { sanitizeStorageVnextPublicValue } from "../storage-vnext/api/public-output-sanitizer.js";
+import type { StorageVnextAdminMutationApplication } from
+  "../storage-vnext/api/admin-mutation-application.js";
+import { presentDeveloperResourceOperation } from "./resource-operation-presenter.js";
+import {
+  readKnowledgeBaseDescription,
+  readKnowledgeBaseName
+} from "./knowledge-base-input.js";
 
 export function registerDeveloperOpenApiSourceResourceRoutes(
   app: Hono,
@@ -64,9 +69,18 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           ...(description === undefined ? {} : { description })
         })
       );
-      const updated = result.knowledgeBase;
-      if (!updated) throw conflict("The knowledge-base version in If-Match is no longer current.");
-      return { knowledgeBase: toDeveloperKnowledgeBase(updated) };
+      if (!result.knowledgeBase) {
+        throw conflict("The knowledge-base version in If-Match is no longer current.");
+      }
+      await recordResourceAudit(services, context, {
+        eventType: "knowledge_base_metadata_updated",
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        targetKind: "knowledge_base",
+        targetPublicId: context.req.param("knowledgeBaseId")
+      });
+      return {
+        knowledgeBase: toDeveloperKnowledgeBase(result.knowledgeBase)
+      };
     })
   );
 
@@ -80,7 +94,14 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           expectedResourceRevision: readExpectedRevision(context.req.header("if-match"))
         })
       );
+      await recordResourceAudit(services, context, {
+        eventType: "knowledge_base_delete_accepted",
+        knowledgeBaseId,
+        targetKind: "knowledge_base",
+        targetPublicId: knowledgeBaseId
+      });
       return {
+        operation: presentDeveloperResourceOperation(result.operation),
         deletion: {
           knowledgeBaseId,
           accepted: true,
@@ -149,7 +170,13 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           targetId: context.req.param("directoryId"),
           relativePath: readRequiredRelativePath(body.relativePath)
         }));
-        return { operation: toOperationResponse(result.operation) };
+        await recordResourceAudit(services, context, {
+          eventType: "source_directory_move_accepted",
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_directory",
+          targetPublicId: context.req.param("directoryId")
+        });
+        return { operation: presentDeveloperResourceOperation(result.operation) };
       }, 202)
   );
 
@@ -171,13 +198,14 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
             expectedResourceRevision
           })
         );
-        await services.auditApplication.record({
-          context,
+        await recordResourceAudit(services, context, {
           eventType: "source_directory_delete_accepted",
-          result: "success"
+          knowledgeBaseId,
+          targetKind: "source_directory",
+          targetPublicId: result.effectiveDirectoryId
         });
         return {
-          operation: toOperationResponse(result.operation),
+          operation: presentDeveloperResourceOperation(result.operation),
           deletion: {
             directoryId: result.effectiveDirectoryId,
             affectedDirectoryCount: result.affectedDirectoryCount,
@@ -271,7 +299,13 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           targetId: context.req.param("sourceFileId"),
           relativePath: readRequiredRelativePath(body.relativePath)
         }));
-        return { operation: toOperationResponse(result.operation) };
+        await recordResourceAudit(services, context, {
+          eventType: "source_file_move_accepted",
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: context.req.param("sourceFileId")
+        });
+        return { operation: presentDeveloperResourceOperation(result.operation) };
       }, 202)
   );
 
@@ -298,7 +332,13 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           bytes,
           ...(relativePath ? { relativePath } : {})
         }));
-        return { operation: toOperationResponse(result.operation) };
+        await recordResourceAudit(services, context, {
+          eventType: "source_file_replace_accepted",
+          knowledgeBaseId,
+          targetKind: "source_file",
+          targetPublicId: sourceFileId
+        });
+        return { operation: presentDeveloperResourceOperation(result.operation) };
       }, 202)
   );
 
@@ -316,8 +356,14 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
             expectedResourceRevision: readExpectedRevision(context.req.header("if-match"))
           })
         );
+        await recordResourceAudit(services, context, {
+          eventType: "source_file_delete_accepted",
+          knowledgeBaseId,
+          targetKind: "source_file",
+          targetPublicId: sourceFileId
+        });
         return {
-          operation: toOperationResponse(result.operation),
+          operation: presentDeveloperResourceOperation(result.operation),
           deletion: { sourceFileId }
         };
       }, 202)
@@ -344,7 +390,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         )
       });
       return {
-        items: page.items.map(toOperationResponse),
+        items: page.items.map(presentDeveloperResourceOperation),
         nextCursor: await writeSourceResourceCursor(
           services.redis,
           scope,
@@ -364,9 +410,29 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           operationId: context.req.param("operationId")
         });
         if (!operation) throw notFound("File or directory change was not found.");
-        return { operation: toOperationResponse(operation) };
+        return { operation: presentDeveloperResourceOperation(operation) };
       })
   );
+}
+
+async function recordResourceAudit(
+  services: DeveloperOpenApiRouteServices,
+  context: Parameters<DeveloperOpenApiRouteServices["auditApplication"]["record"]>[0]["context"],
+  input: {
+    eventType: string;
+    knowledgeBaseId: string;
+    targetKind: "knowledge_base" | "source_directory" | "source_file";
+    targetPublicId: string;
+  }
+): Promise<void> {
+  await services.auditApplication.record({
+    context,
+    eventType: input.eventType,
+    result: "success",
+    knowledgeBaseId: input.knowledgeBaseId,
+    targetKind: input.targetKind,
+    targetPublicId: input.targetPublicId
+  });
 }
 
 function isMarkdownContentType(value: string | undefined): boolean {
@@ -409,7 +475,7 @@ export function toSourceFileResponse(
   const base = `/openapi/v2/knowledge-bases/${sourceFile.knowledgeBaseId}`;
   const lifecycle = deriveSourceFileLifecycle({
     processingStatus: sourceFile.processingStatus,
-    processingStage: sourceFile.currentStage,
+    blockingWorkKind: sourceFile.blockingWorkKind,
     generatedOutputStatus: sourceFile.generatedOutputStatus,
     generatedPath: sourceFile.generatedPath,
     failure: sourceFile.terminalFailure
@@ -425,20 +491,21 @@ export function toSourceFileResponse(
     sizeBytes: sourceFile.sizeBytes,
     resourceRevision: sourceFile.resourceRevision,
     contentRevision: sourceFile.contentRevision,
-    activeRevisionId: sourceFile.activeRevisionId,
     state: lifecycle.state,
-    currentStage: lifecycle.currentStage,
+    workProgress: {
+      required: sourceFile.requiredWorkCount,
+      completed: sourceFile.completedWorkCount,
+      activeKinds: sourceFile.activeWorkKinds,
+      blockingKind: lifecycle.blockingWorkKind,
+      retryingKind: sourceFile.retryingWorkKind
+    },
     failure: lifecycle.failure,
     generatedOutputStatus: sourceFile.generatedOutputStatus,
-    mutable: !sourceFile.deleting,
-    deletable: !sourceFile.deleting,
-    deleting: sourceFile.deleting,
     actions: lifecycle.actions.map((kind) =>
       developerLifecycleAction(base, sourceFile.id, sourceFile.generatedPath, kind)
     ),
     links: {
       self: `${base}/source-files/${sourceFile.id}`,
-      events: `${base}/source-files/${sourceFile.id}/events`,
       generatedContent: sourceFile.generatedPath
         ? `${base}/files/content?path=${encodeURIComponent(sourceFile.generatedPath)}`
         : null,
@@ -465,48 +532,23 @@ function developerLifecycleAction(
           : sourceBase,
         scope: "source_file" as const
       };
-    case "retry_publication":
-      return {
-        kind,
-        method: "POST" as const,
-        href: `${sourceBase}/retry`,
-        scope: "knowledge_base_publication" as const
-      };
-    case "retry_source_processing":
+    case "retry_document_processing":
       return {
         kind,
         method: "POST" as const,
         href: `${sourceBase}/retry`,
         scope: "source_file" as const
       };
+    case "replace_source_content":
+      return {
+        kind,
+        method: "PUT" as const,
+        href: `${sourceBase}/content`,
+        scope: "source_file" as const
+      };
     case "view_failure_details":
       return { kind, method: "GET" as const, href: sourceBase, scope: "source_file" as const };
   }
-}
-
-function toOperationResponse(
-  operation: NonNullable<Awaited<ReturnType<StorageVnextAdminMutationApplication["getOperation"]>>>
-) {
-  const base = `/openapi/v2/knowledge-bases/${operation.knowledgeBaseId}`;
-  return {
-    operationId: operation.id,
-    knowledgeBaseId: operation.knowledgeBaseId,
-    kind: operation.kind,
-    state: operation.state,
-    expectedResourceRevision: operation.expectedResourceRevision,
-    targetKind: operation.targetKind ?? null,
-    targetId: operation.targetId ?? null,
-    candidateRelativePath: operation.candidateRelativePath ?? null,
-    result: sanitizeStorageVnextPublicValue(operation.result),
-    errorCode: operation.errorCode,
-    retryGuidance: operation.state === "accepted" || operation.state === "processing" || operation.state === "publishing"
-      ? "Check this change again after a short delay."
-      : null,
-    actions: { self: `${base}/operations/${operation.id}` },
-    createdAt: operation.createdAt,
-    updatedAt: operation.updatedAt,
-    completedAt: operation.completedAt
-  };
 }
 
 function readExpectedRevision(value: string | undefined): number {
@@ -521,10 +563,7 @@ function readExpectedRevision(value: string | undefined): number {
 }
 
 function readOptionalName(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) {
-    throw validationError("Knowledge-base name must be a non-empty string.", { field: "name" });
-  }
-  return value.trim();
+  return readKnowledgeBaseName(value);
 }
 
 function readRequiredRelativePath(value: unknown): string {
@@ -538,13 +577,7 @@ function readRequiredRelativePath(value: unknown): string {
 
 function readOptionalDescription(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (typeof value !== "string") {
-    throw validationError("Knowledge-base description must be a string or null.", {
-      field: "description"
-    });
-  }
-  return value.trim() || null;
+  return readKnowledgeBaseDescription(value);
 }
 
 export function readNullableQuery(value: string | undefined): string | null {
@@ -559,23 +592,16 @@ export function readNullableQuery(value: string | undefined): string | null {
 }
 
 function readSourceResourceFilters(query: Record<string, string>) {
-  const lifecycleStates = new Set(["queued", "running", "pending_publication", "visible", "failed"]);
-  const currentStages = new Set([
-    "upload_storage",
-    "metadata_resolution",
-    "llm_suggestion",
-    "graph_generation",
-    "graphrag_processing",
-    "semantic_reconciliation",
-    "embedding_generation",
-    "affected_projection",
-    "search_publication",
-    "semantic_maintenance_required",
-    "projection_generation",
-    "generation_validation",
-    "generation_activation"
+  const lifecycleStates = new Set([
+    "waiting", "processing", "available", "error", "deleting"
   ]);
-  const generatedOutputStatuses = new Set(["pending", "visible", "unavailable"]);
+  const workKinds = new Set([
+    "prepare", "first_layer", "content_projection", "graphrag",
+    "relation_reconcile", "knowledge_projection", "activate", "cleanup"
+  ]);
+  const generatedOutputStatuses = new Set([
+    "unavailable", "previous_available", "current_available"
+  ]);
   const pathQuery = readBoundedQueryText(query.pathQuery, "pathQuery", 1, 160);
   const sourceFileIdPrefix = readBoundedQueryText(
     query.sourceFileIdPrefix,
@@ -594,13 +620,13 @@ function readSourceResourceFilters(query: Record<string, string>) {
       field: "state"
     });
   }
-  if (query.currentStage && !currentStages.has(query.currentStage)) {
-    throw validationError("File processing step filter is invalid.", {
-      field: "currentStage"
+  if (query.blockingWorkKind && !workKinds.has(query.blockingWorkKind)) {
+    throw validationError("File blocking work filter is invalid.", {
+      field: "blockingWorkKind"
     });
   }
   if (query.generatedOutputStatus && !generatedOutputStatuses.has(query.generatedOutputStatus)) {
-    throw validationError("Published-file availability filter is invalid.", {
+    throw validationError("Readable-file availability filter is invalid.", {
       field: "generatedOutputStatus"
     });
   }
@@ -609,17 +635,20 @@ function readSourceResourceFilters(query: Record<string, string>) {
     pathQuery,
     sourceFileIdPrefix,
     state: (query.state || null) as
-      | "queued"
-      | "running"
-      | "pending_publication"
-      | "visible"
-      | "failed"
+      | "waiting"
+      | "processing"
+      | "available"
+      | "error"
+      | "deleting"
       | null,
-    currentStage: query.currentStage || null,
+    blockingWorkKind: (query.blockingWorkKind || null) as
+      | "prepare" | "first_layer" | "content_projection" | "graphrag"
+      | "relation_reconcile" | "knowledge_projection" | "activate"
+      | "cleanup" | null,
     generatedOutputStatus: (query.generatedOutputStatus || null) as
-      | "pending"
-      | "visible"
       | "unavailable"
+      | "previous_available"
+      | "current_available"
       | null
   };
 }
@@ -641,10 +670,10 @@ function readBoundedQueryText(
 function readOperationState(value: string | undefined) {
   if (!value) return undefined;
   const allowed = new Set([
-    "accepted", "validating", "processing", "publishing", "completed", "failed", "cancelled", "superseded"
+    "processing", "completed", "failed", "cancelled", "superseded"
   ]);
   if (!allowed.has(value)) throw validationError("File or directory change status is invalid.");
-  return value as "accepted" | "validating" | "processing" | "publishing" | "completed" | "failed" | "cancelled" | "superseded";
+  return value as "processing" | "completed" | "failed" | "cancelled" | "superseded";
 }
 
 async function runSourceResourceMutation<T>(operation: () => Promise<T>): Promise<T> {
@@ -661,6 +690,9 @@ async function runSourceResourceMutation<T>(operation: () => Promise<T>): Promis
     }
     if (error.code === "INVALID_RESOURCE_MUTATION") {
       throw validationError("Request headers or body are invalid.");
+    }
+    if (error.code === "RESOURCE_CONTENT_TOO_LARGE") {
+      throw validationError("Markdown replacement body exceeds the configured source limit.");
     }
     throw conflict(error.code);
   }

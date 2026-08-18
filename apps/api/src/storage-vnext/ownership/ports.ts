@@ -11,10 +11,8 @@ import type {
 export type StorageVnextObjectState = "reserved" | "verified" | "deleting" | "deleted";
 export type StorageVnextOwnerKind =
   | "source_revision"
-  | "active_root"
-  | "candidate_root"
-  | "rollback_root"
-  | "shared_segment"
+  | "source_receipt"
+  | "generated_page_candidate"
   | "live_reservation"
   | "embedding_artifact";
 
@@ -35,7 +33,10 @@ export type StorageVnextObjectRegistration = {
 export type StorageVnextObjectReservation = Omit<
   StorageVnextObjectRegistration,
   "state" | "verifiedAt" | "zeroOwnerSince"
->;
+> & {
+  reservationExpiresAt?: StorageVnextTimestamp;
+  holdVerifiedUntil?: StorageVnextTimestamp;
+};
 
 export type StorageVnextObjectReservationResult = {
   outcome: "reserved" | "reused";
@@ -59,7 +60,7 @@ export type StorageVnextOwnershipClosure = {
   graceExpiresAt: StorageVnextTimestamp | null;
 };
 
-export type StorageVnextOwnershipReadPort = {
+type StorageVnextOwnershipReadMethods = {
   getRegistration(objectId: string): Promise<StorageVnextObjectRegistration | null>;
   getRegistrationsByStorageKeys(
     storageKeys: readonly string[]
@@ -81,7 +82,7 @@ export type StorageVnextOwnershipReadPort = {
   }): Promise<StorageVnextPage<StorageVnextObjectRegistration>>;
 };
 
-export type StorageVnextOwnershipWritePort = {
+type StorageVnextOwnershipWriteMethods = {
   reserve(input: StorageVnextObjectReservation): Promise<StorageVnextObjectReservationResult>;
   markVerified(input: {
     objectId: string;
@@ -91,7 +92,12 @@ export type StorageVnextOwnershipWritePort = {
     contentType: string;
     format: string;
     verifiedAt: StorageVnextTimestamp;
+    holdVerifiedUntil?: StorageVnextTimestamp;
   }): Promise<StorageVnextObjectRegistration>;
+  releaseVerifiedReservation(input: {
+    objectId: string;
+    writeAttemptPublicId: StorageVnextPublicId;
+  }): Promise<void>;
   attach(owner: StorageVnextObjectOwner): Promise<void>;
   release(input: {
     objectId: string;
@@ -107,5 +113,5 @@ export type StorageVnextOwnershipWritePort = {
 };
 
 export type StorageVnextOwnershipRepository =
-  & StorageVnextOwnershipReadPort
-  & StorageVnextOwnershipWritePort;
+  & StorageVnextOwnershipReadMethods
+  & StorageVnextOwnershipWriteMethods;

@@ -13,6 +13,24 @@ export function registerAdminKnowledgeBaseIndexMaintenanceRoutes(
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
+  app.get(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/index-maintenance",
+    middlewares.requireAuth,
+    async (context) => {
+      const result = await services.application.getMaintenanceStatus({
+        knowledgeBaseId: context.req.param("knowledgeBaseId")
+      });
+      if (!result.available) {
+        return context.json({
+          error: {
+            code: "INDEX_MAINTENANCE_UNAVAILABLE",
+            messageKey: "errors.indexMaintenanceUnavailable"
+          }
+        }, 503);
+      }
+      return context.json({ maintenance: result.status });
+    }
+  );
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/index-maintenance",
     middlewares.requireAuth,

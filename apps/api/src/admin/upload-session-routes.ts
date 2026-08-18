@@ -45,7 +45,14 @@ export function registerAdminUploadSessionRoutes(
         declaredFileCount: body.declaredFileCount,
         declaredByteCount: body.declaredByteCount
       });
-      await recordUploadAudit(services, context, "upload_session_created", "success");
+      await recordUploadAudit(
+        services,
+        context,
+        "upload_session_created",
+        "success",
+        null,
+        session.id
+      );
       return context.json(
         {
           session,
@@ -253,13 +260,18 @@ async function recordUploadAudit(
   context: Context,
   eventType: string,
   result: "success" | "failure" | "blocked",
-  errorCode: string | null = null
+  errorCode: string | null = null,
+  targetPublicId: string | null = context.req.param("sessionId") ?? null
 ): Promise<void> {
+  const knowledgeBaseId = context.req.param("knowledgeBaseId") ?? null;
   await services.audit.record({
     context,
     eventType,
     result,
-    errorCode
+    errorCode,
+    knowledgeBaseId,
+    targetKind: targetPublicId ? "upload_session" : "knowledge_base",
+    targetPublicId: targetPublicId ?? knowledgeBaseId
   });
 }
 

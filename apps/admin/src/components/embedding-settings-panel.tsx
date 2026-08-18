@@ -172,13 +172,14 @@ export function EmbeddingSettingsPanel() {
 
   async function runAction(
     key: string,
+    successTitle: string,
     action: () => Promise<{ configuration: EmbeddingConfiguration } | ApiFailure>
   ) {
     setBusy(key);
     const result = await action();
     setBusy("");
     if (failed(result)) return showFailure(result);
-    showAdminToast({ title: t("settings.embeddings.toast.updated") });
+    showAdminToast({ title: successTitle });
     await load();
   }
 
@@ -265,6 +266,7 @@ export function EmbeddingSettingsPanel() {
                           icon={<TestTube2Icon data-icon="inline-start" />}
                           onClick={() => void runAction(
                             `test-${configuration.publicId}`,
+                            t("settings.embeddings.toast.tested"),
                             () => testEmbeddingConfiguration(configuration.publicId)
                           )}
                         />
@@ -279,6 +281,7 @@ export function EmbeddingSettingsPanel() {
                             icon={<PauseIcon data-icon="inline-start" />}
                             onClick={() => void runAction(
                               `pause-${configuration.publicId}`,
+                              t("settings.embeddings.toast.paused"),
                               () => pauseEmbeddingConfiguration(
                                 configuration.publicId, configuration.revision
                               )
@@ -292,6 +295,7 @@ export function EmbeddingSettingsPanel() {
                                 icon={<PlayIcon data-icon="inline-start" />}
                                 onClick={() => void runAction(
                                   `resume-${configuration.publicId}`,
+                                  t("settings.embeddings.toast.resumed"),
                                   () => resumeEmbeddingConfiguration(
                                     configuration.publicId, configuration.revision
                                   )
@@ -303,6 +307,7 @@ export function EmbeddingSettingsPanel() {
                               icon={<CheckIcon data-icon="inline-start" />}
                               onClick={() => void runAction(
                                 `activate-${configuration.publicId}`,
+                                t("settings.embeddings.toast.activated"),
                                 () => activateEmbeddingConfiguration(
                                   configuration.publicId, configuration.revision
                                 )

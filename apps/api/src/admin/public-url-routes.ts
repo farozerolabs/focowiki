@@ -41,12 +41,12 @@ export function registerAdminPublicUrlRoutes(
           search: buildPublicFileUrl(
             config.publicApi.baseUrl,
             knowledgeBase.id,
-            "_index/search.json"
+            "_index/catalog.json"
           ),
           links: buildPublicFileUrl(
             config.publicApi.baseUrl,
             knowledgeBase.id,
-            "_index/links.json"
+            "_graph/catalog.json"
           )
         }
       });

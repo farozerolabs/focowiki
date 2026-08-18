@@ -14,10 +14,6 @@ class MemoryPublicOpenApiKeyRepository implements PublicOpenApiKeyRepository {
   public readonly records: Awaited<ReturnType<PublicOpenApiKeyRepository["createPublicOpenApiKey"]>>[] = [];
   public lastUsedWrites = 0;
 
-  public async countActivePublicOpenApiKeys(): Promise<number> {
-    return this.records.filter((record) => record.status === "active").length;
-  }
-
   public async listPublicOpenApiKeys(input: {
     limit: number;
     cursor: string | null;
@@ -81,22 +77,16 @@ class MemoryPublicOpenApiKeyRepository implements PublicOpenApiKeyRepository {
 }
 
 describe("public OpenAPI key service", () => {
-  it("bootstraps a default key with one-time raw disclosure and hash-only records", async () => {
+  it("lists keys without creating credentials as a read side effect", async () => {
     const repository = new MemoryPublicOpenApiKeyRepository();
     const service = createPublicOpenApiKeyService({
       repository,
       redis: createTestRedisCoordinator()
     });
-    const page = await service.listKeysWithBootstrap({ limit: 10, cursor: null });
+    const page = await service.listKeys({ limit: 10, cursor: null });
 
-    expect(page.items).toHaveLength(1);
-    expect(page.oneTimeKey?.rawKey).toMatch(/^fwok_/);
-    expect(page.oneTimeKey?.id).toBe(page.items[0]?.id);
-    expect(repository.records[0]?.keyHash).toBe(hashPublicOpenApiKey(page.oneTimeKey?.rawKey ?? ""));
-    expect(JSON.stringify(repository.records)).not.toContain(page.oneTimeKey?.rawKey);
-
-    const secondPage = await service.listKeysWithBootstrap({ limit: 10, cursor: null });
-    expect(secondPage.oneTimeKey).toBeNull();
+    expect(page).toEqual({ items: [], nextCursor: null });
+    expect(repository.records).toHaveLength(0);
   });
 
   it("creates, authorizes, throttles last-used writes, and revokes keys", async () => {

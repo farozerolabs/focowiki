@@ -1,5 +1,6 @@
 import { receiveWithProgressTimeout } from "@focowiki/okf";
-import type { ModelAssistanceOptions } from "../../admin/model-suggestions.js";
+import type { ModelAssistanceOptions } from
+  "../../runtime-settings/model-assistance-options.js";
 import type { GraphRagModelCompletionPort } from "./extraction-gateway.js";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -19,12 +20,14 @@ type ChatTextClient = {
 };
 
 export function createGraphRagGenerationModelCompletion(
-  assistance: ModelAssistanceOptions
+  assistance: ModelAssistanceOptions,
+  onProviderRequest?: () => void
 ): GraphRagModelCompletionPort {
   return createSemanticTextModelCompletion(assistance, {
     instructions: "Return only the requested GraphRAG tuple records.",
     maximumOutputCharacters: 256_000,
-    stopSequence: "<|COMPLETE|>"
+    stopSequence: "<|COMPLETE|>",
+    ...(onProviderRequest ? { onProviderRequest } : {})
   });
 }
 
@@ -34,6 +37,7 @@ export function createSemanticTextModelCompletion(
     instructions: string;
     maximumOutputCharacters: number;
     stopSequence?: string;
+    onProviderRequest?: () => void;
   }
 ): GraphRagModelCompletionPort {
   if (!options.instructions.trim()
@@ -55,6 +59,7 @@ export function createSemanticTextModelCompletion(
           requestController.signal
         ]);
         try {
+          options.onProviderRequest?.();
           const operation = () => receiveWithProgressTimeout({
             timeouts: assistance.receiveTimeouts,
             start: (progress) => sendTextRequest(
@@ -92,7 +97,7 @@ export function createSemanticTextModelCompletion(
             await waitForRetry(assistance.transientRetryDelayMs, input.signal);
             continue;
           }
-          throw error;
+          throw normalizeCompletionError(error);
         } finally {
           requestController.abort();
         }
@@ -235,6 +240,52 @@ function isTransient(error: unknown): boolean {
       || status >= 500 && status <= 599;
   }
   return false;
+}
+
+function normalizeCompletionError(error: unknown): Error {
+  if (error instanceof Error
+    && "code" in error
+    && "retryable" in error
+    && typeof error.retryable === "boolean"
+    && /^semantic_[a-z0-9_]+$/u.test(String(error.code))) {
+    return error;
+  }
+  const status = providerHttpStatus(error);
+  if (status !== null) {
+    if (status === 408 || status === 409 || status === 425 || status === 429
+      || status >= 500 && status <= 599) {
+      return completionError("semantic_generation_provider_unavailable", true);
+    }
+    if (status === 401) {
+      return completionError("semantic_generation_configuration_invalid", false);
+    }
+    if (status === 403) {
+      return completionError("semantic_generation_request_forbidden", false);
+    }
+    if (status >= 400 && status <= 499) {
+      return completionError("semantic_generation_request_rejected", false);
+    }
+  }
+  if (error instanceof Error && error.name === "ModelReceiveTimeoutError") {
+    return completionError("semantic_generation_timeout", true);
+  }
+  if (error instanceof TypeError) {
+    return completionError("semantic_generation_transport_failed", true);
+  }
+  if (error instanceof Error
+    && "retryable" in error
+    && typeof error.retryable === "boolean") {
+    return error;
+  }
+  return completionError("semantic_generation_failed", true);
+}
+
+function providerHttpStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object" || !("status" in error)) return null;
+  const status = Number(error.status);
+  return Number.isSafeInteger(status) && status >= 100 && status <= 599
+    ? status
+    : null;
 }
 
 async function waitForRetry(milliseconds: number, signal: AbortSignal): Promise<void> {

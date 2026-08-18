@@ -18,7 +18,7 @@ Production deployment requires:
 | S3-compatible storage | Uploaded Markdown and generated knowledge-base files. |
 | Reverse proxy | HTTPS access to Admin UI, Admin API, and Developer OpenAPI. |
 
-The template starts PostgreSQL, Redis, and the selected private search service. Configure an external S3-compatible service in `.env`. An external OpenSearch or Meilisearch service can replace the bundled search container. Optional semantic enrichment runs inside the existing `source-worker` service through its dedicated release image; it does not add another long-running service.
+The template starts PostgreSQL, Redis, and the selected private search service. Configure an external S3-compatible service in `.env`. An external OpenSearch or Meilisearch service can replace the bundled search container. One `worker` service handles document indexing, semantic enrichment, deletion, repair, and maintenance.
 
 ## Prepare Files
 
@@ -36,7 +36,7 @@ Keep the real `.env` and copied `docker-compose.yml` out of git.
 
 The copied environment template starts bundled OpenSearch 3.8.0 by default:
 
-```env
+```dotenv
 SEARCH_PROVIDER=opensearch
 COMPOSE_PROFILES=opensearch
 OPENSEARCH_URL=https://opensearch:9200
@@ -45,7 +45,7 @@ OPENSEARCH_AUTH_MODE=basic
 
 Set one strong administrator password in `.env`:
 
-```env
+```dotenv
 OPENSEARCH_ADMIN_PASSWORD=<generate-an-opensearch-admin-password>
 ```
 
@@ -53,9 +53,9 @@ No TLS files need to be prepared. Before bundled OpenSearch starts, `search-init
 
 API and worker containers receive only the generated runtime identity and trusted CA; they do not receive the administrator password or private keys. The same `search-init` service prepares Meilisearch runtime access when the Meilisearch profile is selected.
 
-To use bundled Meilisearch instead, set:
+To use bundled Meilisearch instead, first uncomment the complete `meilisearch` service block in the Compose template, then set:
 
-```env
+```dotenv
 SEARCH_PROVIDER=meilisearch
 COMPOSE_PROFILES=meilisearch
 MEILI_HOST=http://meilisearch:7700
@@ -69,9 +69,7 @@ To use an external service, leave `COMPOSE_PROFILES` empty and set the selected 
 | --- | --- |
 | `admin` | Admin UI. |
 | `api` | Admin API and Developer OpenAPI. |
-| `source-worker` | Processes uploaded Markdown files and, when both model roles are configured, runs resource-limited semantic enrichment. It uses the dedicated source-worker image. |
-| `publication-worker` | Makes completed file updates available to readers. |
-| `maintenance-worker` | Runs search and storage maintenance. |
+| `worker` | Processes document jobs and runs lower-priority deletion, repair, and maintenance work. |
 | `migrate` | Checks and updates the database before application services start. |
 | `postgres` | PostgreSQL database. |
 | `redis` | Redis service. |
@@ -87,12 +85,11 @@ The production template publishes Admin UI, Admin API, and Developer OpenAPI onl
 docker compose -f docker-compose.yml pull
 ```
 
-The image variables default to `latest`. Pin all three images to the same release tag in production.
+The image variables default to `latest`. Pin both images to the same release tag in production. The `worker` service uses the API image.
 
 ```text
-FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
-FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
-FOCOWIKI_SOURCE_WORKER_IMAGE=ghcr.io/farozerolabs/focowiki-source-worker:0.0.1
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:<release-tag>
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:<release-tag>
 ```
 
 ## Start Services
@@ -118,7 +115,7 @@ Expose these services through the HTTPS origins configured in `.env`.
 
 ```bash
 docker compose -f docker-compose.yml ps
-docker compose -f docker-compose.yml logs --tail=200 api source-worker publication-worker maintenance-worker
+docker compose -f docker-compose.yml logs --tail=200 api worker admin
 ```
 
 All long-running services should report healthy. If startup fails, check the first error from `migrate`, the selected provider init service, or the affected service. Common causes are unreachable infrastructure, incorrect credentials, invalid TLS trust, invalid public origins, or an unsupported database from an older release.
@@ -127,10 +124,10 @@ After startup:
 
 1. Open Admin UI and sign in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
 2. Review Admin Settings.
-3. To enable semantic enrichment, create and test a generation model and an embedding model in Settings, then activate both. No model credentials are required for the base file-first workflow.
+3. In **Model configuration**, create and test a generation model and an embedding model, then activate both. Upload completion requires both configurations.
 4. Create a knowledge base and upload a small Markdown file.
-5. Confirm the file advances through GraphRAG, semantic reconciliation, embedding generation, affected graph and generated-content updates, and final search publication, then becomes visible and can be read and searched.
-6. New ordinary uploads and body replacements in that contracted knowledge base follow the same automatic processing path. Knowledge bases created in this storage baseline without a semantic contract, and knowledge bases adopting a later model, semantic contract, vector dimension, or provider change, require **Maintain index** once for that adoption.
+5. Confirm that the file progresses to `available`, then read it and find it through search.
+6. Later uploads and body replacements follow the same automatic processing path. Run **Maintain index** after changing the model, embedding dimension, or search provider for existing content, or when an explicit repair or rebuild is required.
 7. Create an OpenAPI key and check Developer OpenAPI.
 
 ## Common Commands
@@ -168,19 +165,18 @@ docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 ```
 
-The database command can be run again after a successful completion. It does not process uploaded files or rebuild search indexes. After the clean baseline is running, a later current-baseline contract or provider change may require index maintenance; the knowledge-base page shows the maintenance action, and existing readable files remain available while that maintenance runs.
+The database command can be run again after a successful completion. It does not process uploaded files or rebuild search indexes. After the new deployment is running, changing a model, embedding dimension, output format, or search provider for existing content may require **Maintain index**. Existing readable files remain available while maintenance runs.
 
 ## Processing Failures
 
 The source-file list shows the current state, current step, failure information, and available actions.
 
 - Use **Retry processing** when file processing failed.
-- Use **Retry publication** when processing completed but the update did not become visible.
 - Correct configuration or service errors before retrying a repeatable failure.
 
-Generated content is available after the file reaches `state=visible`. Previously visible content remains readable if a newer update fails.
+Generated content is available after the file reaches `state=available`. Previously available content remains readable if a replacement fails.
 
-Semantic work reports pending, degraded, failed, superseded, or completed state separately from the source Markdown file. For a contracted upload or body replacement, selected-provider search publication is the final required indexing gate, so the file is not reported ready before it succeeds. A safe semantic error or unavailable optional search lane does not replace the source-file error contract or expose provider payloads. Correct the model, embedding, search, or resource-limit problem shown in Admin before retrying the affected work. Run maintenance only for first adoption, a contract or provider change, explicit repair, recovery, or full rebuild.
+A file is reported available only after its required processing finishes and its generated content is readable and searchable. Correct the model, embedding, search, or resource-limit problem shown in Admin before retrying. Use **Maintain index** after a relevant configuration change, or for an explicit repair, recovery, or full rebuild.
 
 ## Backup
 
@@ -189,7 +185,7 @@ Run backup from the directory containing `.env` and `docker-compose.yml`. Stop s
 An archive can be restored only with the same storage schema generation and matching image versions. A backup made by an earlier release is rollback material for that earlier release and cannot seed this breaking target release.
 
 ```bash
-docker compose -f docker-compose.yml stop api source-worker publication-worker maintenance-worker
+docker compose -f docker-compose.yml stop api worker admin
 pnpm compose:backup
 ```
 
@@ -229,7 +225,7 @@ Restore a backup created by this storage baseline into an empty target and keep 
 
 4. If bundled OpenSearch data is being restored, restore its matching complete `opensearch-security` directory before starting OpenSearch. Do not combine its files with assets from another deployment.
 
-5. Use the same API, Admin, and source-worker image versions recorded for the backup.
+5. Use the same API and Admin image versions recorded for the backup.
 
 6. Run the database command and start the stack.
 
@@ -251,7 +247,7 @@ Switching providers does not copy or automatically rebuild indexes.
 3. Start the stack and verify service health.
 4. Existing knowledge bases continue to support tree, content, generated-file, graph, settings, and non-search Developer OpenAPI reads. Search reports a temporary unavailable response until adoption finishes.
 5. Use **Maintain index** once for each existing knowledge base. A new validated index is built in the selected provider before it becomes active. Compatible stored embedding artifacts are reused, so a provider-only switch does not repeat the same model calls.
-6. Verify search and normal publication, then retire the old provider data according to your backup policy.
+6. Verify search and normal document availability, then retire the old provider data according to your backup policy.
 
 Switching back follows the same steps. An old physical index is never reactivated automatically. The Developer OpenAPI request and response schemas do not change when the provider changes.
 
@@ -265,4 +261,4 @@ If startup reports `OpenSearch security assets are incomplete or invalid`, keep 
 
 ## Capacity Notes
 
-The production template caps `source-worker` at 2 CPUs, 2 GiB memory, and 128 processes or threads by default. Adjust those startup ceilings in `.env`, then tune Worker, Publication, Maintenance, Search, Graph, Semantic Search, and Embedding settings from Admin UI only after measuring the deployment. Avoid scripts that read every source file or every relationship into memory at once. See [Environment Configuration](./environment.md#worker-startup-limits) and [Admin Settings](./admin-settings.md).
+The production template caps `worker` at 2 CPUs, 2 GiB memory, and 128 processes or threads by default. Adjust those startup ceilings in `.env`. After measuring the deployment, tune Worker, Generated Knowledge Base, Maintenance, Search, Graph, and Semantic Search under **Settings**, and manage embedding models under **Model configuration**. Avoid scripts that read every source file or every relationship into memory at once. See [Environment Configuration](./environment.md#worker-startup-limits) and [Admin Settings](./admin-settings.md).

@@ -475,8 +475,8 @@ export function evaluateComprehensiveReturnedItems(input) {
     }
     seenSourceFileIds.add(sourceFileId);
     const resultPath = requireString(record.path, "result path");
-    if (record.generatedFilePath !== resultPath) {
-      throw new Error("Comprehensive search result path aliases do not match");
+    if (requireString(record.fileId, "readable file ID") !== sourceFileId) {
+      throw new Error("Comprehensive search result file identity does not match its source file");
     }
     if (record.contentAvailable !== true) {
       throw new Error("Comprehensive search result does not expose readable source evidence");

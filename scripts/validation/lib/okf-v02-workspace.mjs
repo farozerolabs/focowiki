@@ -129,7 +129,6 @@ export async function discoverLegacyOkfFixtures(inputRoot, options = {}) {
 function isReservedGeneratedPath(relativePath) {
   return new Set([
     "index.md",
-    "schema.md",
     "log.md",
     "pages/index.md",
     "_index/index.md",

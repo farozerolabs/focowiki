@@ -9,9 +9,8 @@ export type StorageVnextKnowledgeBaseRecord = {
   id: string;
   name: string;
   description: string | null;
-  activeGenerationId: string | null;
+  activeContentRevision: number;
   resourceRevision?: number;
-  catalogGeneration: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -26,7 +25,10 @@ export type StorageVnextAdminMutationApplication = {
     expectedResourceRevision: number;
     name?: string;
     description?: string | null;
-  }): Promise<{ knowledgeBase: StorageVnextKnowledgeBaseRecord | null; publicationQueued: boolean }>;
+    idempotencyKey?: string;
+  }): Promise<{
+    knowledgeBase: StorageVnextKnowledgeBaseRecord | null;
+  }>;
   deleteKnowledgeBase(request: {
     knowledgeBaseId: string;
     idempotencyKey: string;
@@ -117,8 +119,44 @@ export type StorageVnextAdminMutationApplication = {
 
 export function createStorageVnextAdminMutationApplication(input: {
   backend: StorageVnextAdminMutationApplication | null;
+  onDocumentWorkAccepted?: () => Promise<void>;
+  onDeletionWorkAccepted?: () => Promise<void>;
 }): StorageVnextAdminMutationApplication {
-  return input.backend ?? unavailableApplication();
+  if (!input.backend) return unavailableApplication();
+  const backend = input.backend;
+  return {
+    ...backend,
+    async deleteKnowledgeBase(request) {
+      const result = await backend.deleteKnowledgeBase(request);
+      await input.onDeletionWorkAccepted?.();
+      return result;
+    },
+    async moveSourceDirectory(request) {
+      const result = await backend.moveSourceDirectory(request);
+      await input.onDocumentWorkAccepted?.();
+      return result;
+    },
+    async deleteSourceDirectory(request) {
+      const result = await backend.deleteSourceDirectory(request);
+      await input.onDeletionWorkAccepted?.();
+      return result;
+    },
+    async moveSourceFile(request) {
+      const result = await backend.moveSourceFile(request);
+      await input.onDocumentWorkAccepted?.();
+      return result;
+    },
+    async replaceSourceFileContent(request) {
+      const result = await backend.replaceSourceFileContent(request);
+      await input.onDocumentWorkAccepted?.();
+      return result;
+    },
+    async deleteSourceFile(request) {
+      const result = await backend.deleteSourceFile(request);
+      await input.onDeletionWorkAccepted?.();
+      return result;
+    }
+  };
 }
 
 function unavailableApplication(): StorageVnextAdminMutationApplication {

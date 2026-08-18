@@ -9,11 +9,12 @@ describe("storage vNext maintenance provider gate", () => {
   it("reports maintenance required when the active semantic contract differs from the adoption target", async () => {
     const sql = sqlFixture((source) => {
       if (source.includes("operation_work_items AS work")) return [];
-      if (source.includes("root.navigation_profile_version")) {
+      if (source.includes("FROM focowiki.knowledge_bases knowledge_base")) {
         return [{
-          navigation_profile_version: 1,
           provider_kind: "opensearch",
-          semantic_maintenance_required: true
+          projection_ready: true,
+          semantic_maintenance_required: true,
+          document_projection_missing: false
         }];
       }
       if (source.includes("operation_results AS result")) return [];
@@ -59,8 +60,13 @@ describe("storage vNext maintenance provider gate", () => {
   it("reports maintenance required when the active projection uses another provider", async () => {
     const sql = sqlFixture((source) => {
       if (source.includes("operation_work_items AS work")) return [];
-      if (source.includes("root.navigation_profile_version")) {
-        return [{ navigation_profile_version: 1, provider_kind: "meilisearch" }];
+      if (source.includes("FROM focowiki.knowledge_bases knowledge_base")) {
+        return [{
+          provider_kind: "meilisearch",
+          projection_ready: true,
+          semantic_maintenance_required: false,
+          document_projection_missing: false
+        }];
       }
       if (source.includes("operation_results AS result")) return [];
       return [];
@@ -89,7 +95,7 @@ describe("storage vNext maintenance provider gate", () => {
     );
 
     await expect(repository.claimOne({
-      workerId: "maintenance-worker-opensearch",
+      workerId: "unified-worker-opensearch",
       leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       searchProviderKind: "opensearch"
     })).resolves.toBeNull();

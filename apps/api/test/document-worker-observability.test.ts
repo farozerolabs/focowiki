@@ -1,0 +1,123 @@
+import { describe, expect, it } from "vitest";
+import { createDocumentWorkerObservability } from
+  "../src/document-indexing/application/document-worker-observability.js";
+
+describe("document worker observability", () => {
+  it("records bounded queue, lifecycle, provider, activation, and cleanup facts", () => {
+    const events: unknown[] = [];
+    const observer = createDocumentWorkerObservability({
+      write: (event) => events.push(event)
+    });
+
+    observer.queue({ waiting: 7, oldestAgeMs: 1_250 });
+    observer.queue({ waiting: 7, oldestAgeMs: 2_250 });
+    observer.job({
+      event: "started",
+      jobPublicId: "document-job-one",
+      state: "processing",
+      blockingWorkKind: "prepare",
+      attemptCount: 2,
+      queueAgeMs: 900,
+      serviceTimeMs: null,
+      errorCode: null
+    });
+    observer.provider({
+      resource: "embedding",
+      waitTimeMs: 12,
+      serviceTimeMs: 45,
+      outcome: "success"
+    });
+    observer.work({
+      event: "failed",
+      workPublicId: "document-work-one",
+      documentJobPublicId: "document-job-one",
+      workKind: "knowledge_projection",
+      resourceLane: "activation",
+      attemptCount: 1,
+      errorCode: "portable_endpoint_unreadable",
+      errorConstraint: null,
+      errorResource: "_graph/by-directory/guides/guides-relationships.json",
+      errorTarget: "pages/guides/missing.md"
+    });
+    observer.activation({ attempt: 2, outcome: "conflict" });
+    observer.cleanup({ claimed: 3, completed: 2, retried: 1, failed: 0 });
+
+    expect(events).toEqual([
+      log("worker.queue_metrics", { waiting: 7, oldestAgeMs: 1_250 }),
+      log("worker.document_started", {
+        jobPublicId: "document-job-one",
+        state: "processing",
+        blockingWorkKind: "prepare",
+        attemptCount: 2,
+        queueAgeMs: 900,
+        serviceTimeMs: null,
+        errorCode: null
+      }),
+      log("worker.provider_metrics", {
+        resource: "embedding",
+        waitTimeMs: 12,
+        serviceTimeMs: 45,
+        outcome: "success"
+      }),
+      log("worker.document_work_failed", {
+        workPublicId: "document-work-one",
+        documentJobPublicId: "document-job-one",
+        workKind: "knowledge_projection",
+        resourceLane: "activation",
+        attemptCount: 1,
+        errorCode: "portable_endpoint_unreadable",
+        errorConstraint: null,
+        errorResource: "_graph/by-directory/guides/guides-relationships.json",
+        errorTarget: "pages/guides/missing.md"
+      }),
+      log("worker.activation_attempt", { attempt: 2, outcome: "conflict" }),
+      log("worker.cleanup_metrics", {
+        claimed: 3,
+        completed: 2,
+        retried: 1,
+        failed: 0
+      })
+    ]);
+    expect(JSON.stringify(events)).not.toMatch(/body|prompt|secret|token/u);
+  });
+
+  it("does not emit an unchanged queue depth on every poll", () => {
+    const events: unknown[] = [];
+    const observer = createDocumentWorkerObservability({
+      write: (event) => events.push(event)
+    });
+
+    observer.queue({ waiting: 0, oldestAgeMs: 0 });
+    observer.queue({ waiting: 0, oldestAgeMs: 0 });
+    observer.queue({ waiting: 2, oldestAgeMs: 100 });
+    observer.queue({ waiting: 2, oldestAgeMs: 1_100 });
+    observer.queue({ waiting: 0, oldestAgeMs: 0 });
+
+    expect(events).toEqual([
+      log("worker.queue_metrics", { waiting: 0, oldestAgeMs: 0 }),
+      log("worker.queue_metrics", { waiting: 2, oldestAgeMs: 100 }),
+      log("worker.queue_metrics", { waiting: 0, oldestAgeMs: 0 })
+    ]);
+  });
+
+  it("rejects unbounded or unsafe metric fields", () => {
+    const observer = createDocumentWorkerObservability({ write: () => {} });
+    expect(() => observer.queue({ waiting: -1, oldestAgeMs: 0 })).toThrow(
+      /metric value/u
+    );
+    expect(() => observer.job({
+      event: "failed",
+      jobPublicId: "document-job-one",
+      state: "error",
+      blockingWorkKind: "graphrag",
+      attemptCount: 1,
+      queueAgeMs: 0,
+      serviceTimeMs: 1,
+      errorCode: "provider secret"
+    })).toThrow(/error code/u);
+  });
+});
+
+function log(event: string, fields: Record<string, unknown>) {
+  return { level: "info", event, fields };
+}

@@ -4,6 +4,7 @@ import type {
 } from "../../application/ports/search-provider-runtime.js";
 import {
   STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
+  STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
   STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
 } from "./documents.js";
 
@@ -20,6 +21,8 @@ export function createStorageVnextSearchSettings(input: {
     searchableAttributes: [
       "title",
       "logicalPath",
+      "targetTitle",
+      "targetLogicalPath",
       "searchText",
       "rankingTerms"
     ],
@@ -30,6 +33,12 @@ export function createStorageVnextSearchSettings(input: {
       "fileKind",
       "schemaVersion",
       "sourceFilePublicId",
+      "sourceRevisionPublicId",
+      "relationPublicId",
+      "evidencePublicId",
+      "targetSourceFilePublicId",
+      "targetSourceRevisionPublicId",
+      "visible",
       "okfSignals.status",
       "okfSignals.trustTier",
       "okfSignals.staleAfterEpochDay"
@@ -49,7 +58,16 @@ export function createStorageVnextSearchSettings(input: {
       "headingAncestors",
       "searchText",
       "rankingTerms",
-      "okfSignals"
+      "relationPublicId",
+      "evidencePublicId",
+      "targetSourceFilePublicId",
+      "targetSourceRevisionPublicId",
+      "targetLogicalPath",
+      "targetTitle",
+      "relationKind",
+      "direction",
+      "okfSignals",
+      "visible"
     ],
     rankingRules: [
       "words",
@@ -70,6 +88,7 @@ export function createStorageVnextSearchSchemaChecksum(): string {
   return createHash("sha256").update(JSON.stringify({
     content: STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
     graphSeed: STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION,
+    fileRelationship: STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
     primaryKey: "id"
   })).digest("hex");
 }

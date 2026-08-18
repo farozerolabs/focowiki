@@ -175,7 +175,7 @@ test("projects 20,000-file completion from measured stage distributions and enfo
       { stage: "base", completedUnits: 100, serviceTimeMs: 100_000, concurrency: 4 },
       { stage: "generation", completedUnits: 5, serviceTimeMs: 300_000, concurrency: 2 },
       { stage: "embedding", completedUnits: 300, serviceTimeMs: 150_000, concurrency: 4 },
-      { stage: "publication", completedUnits: 2, serviceTimeMs: 20_000, concurrency: 1 }
+      { stage: "finalizing", completedUnits: 100, serviceTimeMs: 20_000, concurrency: 4 }
     ],
     observedCounts: {
       sourceRevisions: 100,
@@ -186,7 +186,7 @@ test("projects 20,000-file completion from measured stage distributions and enfo
       nonSelectedGenerationRequests: 0,
       embeddingInputs: 300,
       embeddingRequests: 19,
-      publicationBuilds: 2
+      activationWrites: 100
     },
     peakCpuPercent: 180,
     peakRssBytes: 700_000_000

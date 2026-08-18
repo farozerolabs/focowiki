@@ -13,6 +13,7 @@ import {
   testEmbeddingConfiguration,
   updateEmbeddingConfiguration
 } from "@/lib/admin-api";
+import { showAdminToast } from "@/hooks/use-admin-toast";
 
 vi.mock("@/lib/admin-api", () => ({
   fetchEmbeddingConfigurations: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("@/lib/admin-api", () => ({
   resumeEmbeddingConfiguration: vi.fn(),
   deleteEmbeddingConfiguration: vi.fn()
 }));
+vi.mock("@/hooks/use-admin-toast", () => ({ showAdminToast: vi.fn() }));
 
 describe("EmbeddingSettingsPanel", () => {
   beforeEach(async () => {
@@ -110,6 +112,9 @@ describe("EmbeddingSettingsPanel", () => {
     render(<EmbeddingSettingsPanel />);
     await screen.findByText("Primary embedding");
     fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() => expect(showAdminToast).toHaveBeenCalledWith({
+      title: "Embedding model test succeeded"
+    }));
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => {
       expect(testEmbeddingConfiguration).toHaveBeenCalledWith("embedding-config-a");
@@ -233,8 +238,10 @@ describe("EmbeddingSettingsPanel", () => {
       configurations: []
     });
     render(<EmbeddingSettingsPanel />);
-    expect(await screen.findByText("暂无向量模型配置")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "添加向量模型" }));
+    expect(await screen.findByText("暂无嵌入模型配置")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "添加嵌入模型" }));
+    expect(screen.getByLabelText("请求嵌入维度")).toBeTruthy();
+    expect(screen.getByLabelText("最低嵌入相关度")).toBeTruthy();
     expect(screen.getByText(
       "仅在服务商支持自定义维度时填写；如果测试失败，建议留空，由系统使用模型返回的实际维度。"
     )).toBeTruthy();

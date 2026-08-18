@@ -18,21 +18,10 @@ type CapacitySnapshot = Pick<RuntimeSettingsSnapshot, "activeModel"> & {
     RuntimeSettingsSnapshot["worker"],
     | "sourceFileConcurrency"
     | "sourceObjectReadConcurrency"
-    | "hardDeleteConcurrency"
-  >;
-  publication: Pick<
-    RuntimeSettingsSnapshot["publication"],
-    | "roleConcurrency"
-    | "generatedObjectWriteConcurrency"
   >;
   maintenance: Pick<
     RuntimeSettingsSnapshot["maintenance"],
-    | "knowledgeBaseMaintenanceConcurrency"
-    | "projectionRepairConcurrency"
-    | "projectionRepairObjectWriteConcurrency"
-    | "lexicalRebuildConcurrency"
-    | "lexicalRebuildSourceReadConcurrency"
-    | "lexicalRebuildMaxInFlightSourceBytes"
+    "hardDeleteConcurrency"
   >;
   search: Pick<
     RuntimeSettingsSnapshot["search"],
@@ -46,35 +35,22 @@ export function createRuntimeSettingsResourceCapacity(input: {
 }): RuntimeSettingsResourceCapacity {
   const defaultSnapshot: CapacitySnapshot = {
     worker: input.defaults.worker,
-    publication: input.defaults.publication,
     maintenance: input.defaults.maintenance,
     search: input.defaults.search,
     activeModel: null
   };
   const demand = calculateDemand(defaultSnapshot);
-  const modelSuggestionConcurrency = Math.max(
-    input.defaults.worker.sourceFileConcurrency,
-    input.defaults.model?.suggestionConcurrency ?? 0
-  );
-  const databaseConnections = sum([
-      input.config.database.sourceWorkerPoolMax ?? 6,
-      input.config.database.publicationWorkerPoolMax ?? 4,
-      input.config.database.maintenanceWorkerPoolMax ?? 2
-    ]);
+  const databaseConnections = input.config.database.workerPoolMax ?? 8;
   return {
     databaseConnections,
     searchTasks: input.defaults.search.maxInFlightTasks,
     objectStoreRequests: Math.max(
       demand.objectStoreRequests,
-      sum([
-        input.config.database.sourceWorkerPoolMax ?? 6,
-        input.config.database.publicationWorkerPoolMax ?? 4,
-        input.config.database.maintenanceWorkerPoolMax ?? 2
-      ])
+      databaseConnections
     ),
     memoryBytes: demand.memoryBytes,
     cpuConcurrency: Math.max(
-      demand.cpuConcurrency + modelSuggestionConcurrency,
+      demand.cpuConcurrency,
       databaseConnections
     )
   };
@@ -130,52 +106,26 @@ export function validateRuntimeSettingsResourceCapacity(input: {
 }
 
 function calculateDemand(snapshot: CapacitySnapshot): RuntimeSettingsResourceCapacity {
-  const maintenanceConcurrency = Math.min(
-    snapshot.maintenance.knowledgeBaseMaintenanceConcurrency,
-    snapshot.maintenance.projectionRepairConcurrency,
-    snapshot.maintenance.lexicalRebuildConcurrency
-  );
+  const maintenanceConcurrency = 1;
   const databaseConnections = sum([
-    snapshot.worker.sourceFileConcurrency,
-    snapshot.publication.roleConcurrency,
     maintenanceConcurrency,
-    snapshot.worker.hardDeleteConcurrency
+    snapshot.maintenance.hardDeleteConcurrency
   ]);
   const searchTasks = Math.max(
     snapshot.search.maxInFlightTasks,
-    sum([
-      snapshot.publication.roleConcurrency,
-      maintenanceConcurrency
-    ])
+    maintenanceConcurrency
   );
   const objectStoreRequests = sum([
-    snapshot.worker.sourceObjectReadConcurrency,
-    snapshot.publication.generatedObjectWriteConcurrency,
-    multiply(
-      maintenanceConcurrency,
-      Math.max(
-        snapshot.maintenance.projectionRepairObjectWriteConcurrency,
-        snapshot.maintenance.lexicalRebuildSourceReadConcurrency
-      )
-    ),
-    snapshot.worker.hardDeleteConcurrency
-  ]);
-  const memoryBytes = sum([
-    multiply(
-      snapshot.search.maxInFlightTasks,
-      snapshot.search.indexBatchCompressedBytes
-    ),
-    multiply(
-      maintenanceConcurrency,
-      snapshot.maintenance.lexicalRebuildMaxInFlightSourceBytes
-    )
-  ]);
-  const cpuConcurrency = sum([
-    snapshot.worker.sourceFileConcurrency,
-    snapshot.publication.roleConcurrency,
     maintenanceConcurrency,
-    snapshot.worker.hardDeleteConcurrency,
-    snapshot.activeModel?.suggestionConcurrency ?? 0
+    snapshot.maintenance.hardDeleteConcurrency
+  ]);
+  const memoryBytes = multiply(
+    snapshot.search.maxInFlightTasks,
+    snapshot.search.indexBatchCompressedBytes
+  );
+  const cpuConcurrency = sum([
+    maintenanceConcurrency,
+    snapshot.maintenance.hardDeleteConcurrency
   ]);
   return {
     databaseConnections,

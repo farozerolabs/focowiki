@@ -15,9 +15,7 @@ import { buildComprehensiveSourceInventory } from "./comprehensive-release-inven
 
 const WORKER_BINDINGS = Object.freeze({
   api: "apps/api/src/main.ts",
-  "source-worker": "apps/api/src/source-worker-main.ts",
-  "publication-worker": "apps/api/src/publication-worker-main.ts",
-  "maintenance-worker": "apps/api/src/maintenance-worker-main.ts",
+  worker: "apps/api/src/worker-main.ts",
   "search-init": "apps/api/src/search-init-main.ts",
   migrate: "apps/api/src/db/migrate.ts"
 });
@@ -61,32 +59,14 @@ const PRODUCTION_ROOTS = Object.freeze([
   "apps/api/src/db/migrate.ts",
   "apps/api/src/db/migration-preflight-main.ts",
   "apps/api/src/search-init-main.ts",
-  "apps/api/src/source-worker-main.ts",
-  "apps/api/src/publication-worker-main.ts",
-  "apps/api/src/maintenance-worker-main.ts",
+  "apps/api/src/worker-main.ts",
   "apps/admin/src/main.tsx",
   "packages/okf/src/index.ts"
 ]);
 const VALIDATION_ONLY_ROOTS = Object.freeze([
   "apps/api/src/storage-vnext/bootstrap/main.ts"
 ]);
-const REVIEWED_DYNAMIC_TEST_ONLY_MODULES = new Set([
-  "apps/api/src/storage-vnext/cleanup/adapters/mutation.ts",
-  "apps/api/src/storage-vnext/cleanup/adapters/projection-repair.ts",
-  "apps/api/src/storage-vnext/cleanup/adapters/reconciliation.ts",
-  "apps/api/src/storage-vnext/cleanup/adapters/search-rebuild.ts",
-  "apps/api/src/storage-vnext/cleanup/adapters/security.ts",
-  "apps/api/src/storage-vnext/cleanup/adapters/source-processing.ts",
-  "apps/api/src/storage-vnext/cleanup/adapters/upload.ts",
-  "apps/api/src/storage-vnext/cleanup/adapters/webhook.ts",
-  "apps/api/src/storage-vnext/cleanup/terminal-state-machine.ts",
-  "apps/api/src/storage-vnext/maintenance/cleanup.ts",
-  "apps/api/src/storage-vnext/maintenance/phase-runner.ts",
-  "apps/api/src/storage-vnext/maintenance/projection-repair.ts",
-  "apps/api/src/storage-vnext/runtime/graceful-role-shutdown.ts",
-  "apps/api/src/storage-vnext/search/provider-continuity.ts",
-  "apps/api/src/storage-vnext/search/provider-lifecycle-policy.ts"
-]);
+const REVIEWED_DYNAMIC_TEST_ONLY_MODULES = new Set();
 const REVIEWED_DORMANT_LIBRARY_MODULES = new Set([
   "apps/admin/src/components/ui/breadcrumb.tsx"
 ]);
@@ -105,7 +85,6 @@ export function buildProductionWiringGraph(repositoryRoot) {
     "Dockerfile",
     "apps/admin/vite.config.ts",
     "deploy/docker/api-entrypoint.sh",
-    "deploy/docker/source-worker-entrypoint.sh",
     "deploy/nginx/default.conf.template"
   ]) sourceByRelative.set(auxiliary, path.join(repositoryRoot, auxiliary));
   const sourceText = new Map([...sourceByRelative].map(([name, filePath]) => [name, fs.readFileSync(filePath, "utf8")]));
@@ -667,8 +646,8 @@ function acceptedRuntimeFields(repositoryRoot) {
     {
       source: "apps/api/src/runtime-settings/types.ts",
       types: {
-        RuntimeWorkerSettings: "worker",
-        RuntimePublicationSettings: "publication",
+        RuntimeWorkerPublicSettings: "worker",
+        RuntimeGeneratedSettings: "generated",
         RuntimeGraphSettings: "graph",
         RuntimeMaintenanceSettings: "maintenance",
         RuntimeSearchSettings: "search",

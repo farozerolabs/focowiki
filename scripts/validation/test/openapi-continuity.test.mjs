@@ -9,7 +9,7 @@ test("classifies every Developer OpenAPI operation and verifies its next public 
   );
   const result = validateOpenApiContinuity(document);
 
-  assert.equal(result.operationCount, 43);
-  assert.equal(result.classifiedOperationCount, 43);
+  assert.equal(result.operationCount, 42);
+  assert.equal(result.classifiedOperationCount, 42);
   assert.equal(result.ok, true, result.failures.join("; "));
 });

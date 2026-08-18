@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ModelAssistanceOptions } from "../src/admin/model-suggestions.js";
+import type { ModelAssistanceOptions } from
+  "../src/runtime-settings/model-assistance-options.js";
 import {
   createGraphRagGenerationModelCompletion
 } from "../src/semantic/graphrag/generation-model-completion.js";
@@ -147,6 +148,60 @@ describe("GraphRAG generation-model completion", () => {
     expect(create).toHaveBeenCalledOnce();
   });
 
+  it("classifies an HTTP request rejection as a terminal safe failure", async () => {
+    const create = vi.fn().mockRejectedValue(
+      Object.assign(new Error("provider payload must stay private"), { status: 400 })
+    );
+    const completion = createGraphRagGenerationModelCompletion(
+      modelAssistance("responses", create)
+    );
+
+    await expect(completion.complete({
+      prompt: "Extract.",
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      code: "semantic_generation_request_rejected",
+      retryable: false
+    });
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("distinguishes a forbidden provider request from invalid credentials", async () => {
+    const create = vi.fn().mockRejectedValue(
+      Object.assign(new Error("provider payload must stay private"), { status: 403 })
+    );
+    const completion = createGraphRagGenerationModelCompletion(
+      modelAssistance("responses", create)
+    );
+
+    await expect(completion.complete({
+      prompt: "Extract.",
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      code: "semantic_generation_request_forbidden",
+      retryable: false
+    });
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("classifies an exhausted HTTP service failure as retryable", async () => {
+    const create = vi.fn().mockRejectedValue(
+      Object.assign(new Error("provider payload must stay private"), { status: 503 })
+    );
+    const completion = createGraphRagGenerationModelCompletion(
+      modelAssistance("responses", create)
+    );
+
+    await expect(completion.complete({
+      prompt: "Extract.",
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      code: "semantic_generation_provider_unavailable",
+      retryable: true
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["responses", "chat_completions"] as const)(
     "aborts and retries one timed-out %s request inside the same completion",
     async (apiMode) => {
@@ -180,6 +235,35 @@ describe("GraphRAG generation-model completion", () => {
       expect(providerSignals[1]?.aborted).toBe(true);
     }
   );
+
+  it("returns a safe retryable timeout after the bounded provider retry is exhausted", async () => {
+    const providerSignals: AbortSignal[] = [];
+    const create = vi.fn(async (_request: unknown, options?: {
+      signal?: AbortSignal;
+    }) => {
+      if (!options?.signal) throw new Error("missing provider signal");
+      providerSignals.push(options.signal);
+      return new Promise<unknown>((_resolve, reject) => {
+        options.signal!.addEventListener("abort", () => {
+          reject(options.signal!.reason);
+        }, { once: true });
+      });
+    });
+    const assistance = modelAssistance("responses", create);
+    assistance.receiveTimeouts = { maxMs: 100, idleMs: 10 };
+    const completion = createGraphRagGenerationModelCompletion(assistance);
+
+    await expect(completion.complete({
+      prompt: "Extract the bounded text.",
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      code: "semantic_generation_timeout",
+      retryable: true
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(providerSignals).toHaveLength(2);
+    expect(providerSignals.every((signal) => signal.aborted)).toBe(true);
+  });
 });
 
 function modelAssistance(

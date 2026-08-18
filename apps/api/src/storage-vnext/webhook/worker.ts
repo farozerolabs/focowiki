@@ -3,6 +3,7 @@ import type {
   StorageVnextClaimedWebhookDelivery,
   StorageVnextWebhookRepository
 } from "./ports.js";
+import { postPublicWebhook } from "./https-client.js";
 
 type DeliveryOutcome = "completed" | "retried" | "failed";
 
@@ -76,7 +77,8 @@ async function deliver(input: {
     .digest("hex");
   const controller = new AbortController();
   const abort = () => controller.abort(
-    input.signal?.reason ?? new DOMException("Webhook worker shutting down", "AbortError")
+    input.signal?.reason
+      ?? new DOMException("Webhook worker shutting down", "AbortError")
   );
   input.signal?.addEventListener("abort", abort, { once: true });
   if (input.signal?.aborted) abort();
@@ -85,18 +87,27 @@ async function deliver(input: {
   ), input.requestTimeoutMilliseconds);
   timeout.unref?.();
   try {
-    const response = await input.fetchImpl(input.delivery.endpointUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-focowiki-event": input.delivery.eventType,
-        "x-focowiki-delivery-id": input.delivery.publicId,
-        "x-focowiki-signature": `sha256=${signature}`,
-        "x-focowiki-timestamp": timestamp
-      },
-      body,
-      signal: controller.signal
-    });
+    const headers = {
+      "content-type": "application/json",
+      "x-focowiki-event": input.delivery.eventType,
+      "x-focowiki-delivery-id": input.delivery.publicId,
+      "x-focowiki-signature": `sha256=${signature}`,
+      "x-focowiki-timestamp": timestamp
+    };
+    const response = input.fetchImpl === fetch
+      ? await postPublicWebhook({
+          url: input.delivery.endpointUrl,
+          headers,
+          body,
+          signal: controller.signal
+        })
+      : await input.fetchImpl(input.delivery.endpointUrl, {
+          method: "POST",
+          headers,
+          body,
+          signal: controller.signal,
+          redirect: "error"
+        });
     if (response.ok) {
       await settle(input, {
         state: "completed",
@@ -107,9 +118,9 @@ async function deliver(input: {
       });
       return "completed";
     }
-    return await retryOrFail(input, response.status, "WEBHOOK_HTTP_ERROR", timestamp);
+    return retryOrFail(input, response.status, "WEBHOOK_HTTP_ERROR", timestamp);
   } catch {
-    return await retryOrFail(input, null, "WEBHOOK_DELIVERY_FAILED", timestamp);
+    return retryOrFail(input, null, "WEBHOOK_DELIVERY_FAILED", timestamp);
   } finally {
     clearTimeout(timeout);
     input.signal?.removeEventListener("abort", abort);

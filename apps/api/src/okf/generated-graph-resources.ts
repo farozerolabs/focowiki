@@ -5,19 +5,19 @@ export const GENERATED_GRAPH_RESOURCES = Object.freeze({
     description: "Follow generated relationships to source-backed Markdown files."
   }),
   rootDirectoryPath: "_graph",
-  nodeDirectoryPath: "_graph/graph_node/v1",
-  edgeDirectoryPath: "_graph/graph_edge/v1",
+  nodeDirectoryPath: "_index/pages",
+  edgeDirectoryPath: "_graph/by-directory",
   byFileDirectoryPath: "_graph/by-file",
-  catalogPath: "_index/catalog.json"
+  catalogPath: "_graph/catalog.json"
 });
 
 export const REQUIRED_GENERATED_NAVIGATION_RESOURCES = Object.freeze([
   Object.freeze({ path: "index.md", refKind: "root" }),
   Object.freeze({ path: "pages/index.md", refKind: "directory_root" }),
-  Object.freeze({ path: "schema.md", refKind: "root" }),
   Object.freeze({ path: "log.md", refKind: "root" }),
   Object.freeze({ path: "_index/index.md", refKind: "root" }),
   Object.freeze({ path: GENERATED_GRAPH_RESOURCES.index.path, refKind: "root" }),
+  Object.freeze({ path: "_index/catalog.json", refKind: "root" }),
   Object.freeze({ path: GENERATED_GRAPH_RESOURCES.catalogPath, refKind: "root" })
 ]);
 

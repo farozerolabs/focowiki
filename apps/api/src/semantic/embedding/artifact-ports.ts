@@ -56,6 +56,7 @@ export type EmbeddingArtifactStorePort = {
 
 export type EmbeddingArtifactRepositoryPort = {
   findCompatible(identity: EmbeddingArtifactIdentity): Promise<EmbeddingArtifactRecord | null>;
+  findReusable(identity: EmbeddingArtifactIdentity): Promise<EmbeddingArtifactRecord | null>;
   reserveObject(input: {
     descriptor: EmbeddingArtifactDescriptor;
     writeAttemptPublicId: string;
@@ -77,6 +78,17 @@ export type EmbeddingArtifactRepositoryPort = {
       artifactPublicId: string;
       objectId: string;
     };
+  }): Promise<EmbeddingArtifactRecord>;
+  reuseVerified(input: {
+    sourceArtifact: EmbeddingArtifactRecord;
+    identity: EmbeddingArtifactIdentity;
+    artifactPublicId: string;
+    semanticGenerationPublicId: string;
+    operationPublicId: string | null;
+    sourceFilePublicId: string;
+    sourceExcerpt: string;
+    retentionKind: "candidate" | "active" | "retry" | "cleanup";
+    reusedAt: string;
   }): Promise<EmbeddingArtifactRecord>;
   attachReference(input: {
     artifact: EmbeddingArtifactRecord;

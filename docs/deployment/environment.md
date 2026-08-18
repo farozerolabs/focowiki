@@ -34,7 +34,8 @@ The production Compose template stores PostgreSQL data in `./data/postgres`, Red
 | --- | --- | --- |
 | `FOCOWIKI_API_IMAGE` | Optional | API image. Defaults to `ghcr.io/farozerolabs/focowiki-api:latest`. Pin a release tag for production. |
 | `FOCOWIKI_ADMIN_IMAGE` | Optional | Admin UI image. Defaults to `ghcr.io/farozerolabs/focowiki-admin:latest`. Use the same release tag as the API image. |
-| `FOCOWIKI_SOURCE_WORKER_IMAGE` | Optional | Source-processing image. Defaults to `ghcr.io/farozerolabs/focowiki-source-worker:latest`. Use the same release tag as the API and Admin images. |
+
+The `worker`, `migrate`, and API services use `FOCOWIKI_API_IMAGE`; no separate worker image is required.
 
 ## Admin Authentication
 
@@ -102,11 +103,13 @@ Every mode requires `SEARCH_INDEX_PREFIX`. It can contain lowercase letters, num
 | `MEILI_HOST`, `MEILI_MASTER_KEY`, `MEILI_API_KEY`, `MEILI_METRICS_API_KEY`, `MEILI_API_KEY_FILE`, `MEILI_METRICS_API_KEY_FILE` | Meilisearch endpoint and authentication. The bundled service uses a master key and generates two runtime key files; an external service supplies direct keys or key files. |
 | `MEILI_MAX_INDEXING_MEMORY`, `MEILI_MAX_INDEXING_THREADS`, `MEILI_SNAPSHOT_DIR`, `MEILI_SCHEDULE_SNAPSHOT`, `MEILI_DUMP_DIR` | Used only by bundled Meilisearch. |
 
+For host-based local development with `docker-compose.dev.yml` or `docker-compose.local.yml`, `MEILI_PORT` selects the loopback port exposed by the bundled Meilisearch container. It defaults to `57700` and must match the port in the local `MEILI_HOST` URL. Production Compose networking uses `http://meilisearch:7700` and does not expose this port.
+
 ### Bundled OpenSearch
 
 This is the default in `.env.example`. Keep the URL, username, password-file path, and CA-file path below. Replace the administrator password. You may keep `SEARCH_INDEX_PREFIX` or replace it with a name dedicated to this deployment.
 
-```env
+```dotenv
 SEARCH_PROVIDER=opensearch
 SEARCH_INDEX_PREFIX=focowiki
 COMPOSE_PROFILES=opensearch
@@ -127,9 +130,9 @@ On first start, the Docker template automatically generates TLS assets and a ran
 
 ### Bundled Meilisearch
 
-Switch both the provider and Compose profile. Generate a master key containing at least 16 bytes of random material. The template generates the runtime and diagnostics keys, so leave their direct values empty and keep the template file paths.
+Uncomment the complete `meilisearch` service block in the selected Compose template. Then switch both the provider and Compose profile. Generate a master key containing at least 16 bytes of random material. The template generates the runtime and diagnostics keys, so leave their direct values empty and keep the template file paths.
 
-```env
+```dotenv
 SEARCH_PROVIDER=meilisearch
 SEARCH_INDEX_PREFIX=focowiki
 COMPOSE_PROFILES=meilisearch
@@ -155,7 +158,7 @@ Leave `COMPOSE_PROFILES` empty so Compose does not start the bundled OpenSearch 
 
 For Basic authentication:
 
-```env
+```dotenv
 SEARCH_PROVIDER=opensearch
 SEARCH_INDEX_PREFIX=focowiki_prod
 COMPOSE_PROFILES=
@@ -176,7 +179,7 @@ To keep the Basic password out of `.env`, store it in the host `runtime-secrets`
 
 For Amazon OpenSearch Service or OpenSearch Serverless with SigV4:
 
-```env
+```dotenv
 SEARCH_PROVIDER=opensearch
 SEARCH_INDEX_PREFIX=focowiki_prod
 COMPOSE_PROFILES=
@@ -199,7 +202,7 @@ Use `es` for Amazon OpenSearch Service and `aoss` for OpenSearch Serverless. Cre
 
 Leave `COMPOSE_PROFILES` empty. Supply the external endpoint, runtime application key, and diagnostics key. Leave `MEILI_MASTER_KEY` and bundled-container resource fields empty.
 
-```env
+```dotenv
 SEARCH_PROVIDER=meilisearch
 SEARCH_INDEX_PREFIX=focowiki_prod
 COMPOSE_PROFILES=
@@ -264,16 +267,14 @@ All values in this section are optional. The values in `.env.example` are the re
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `SOURCE_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one source worker. Default: `6`; the template uses `8`. |
-| `PUBLICATION_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one publication worker. Default: `4`. |
-| `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one maintenance worker. Default: `2`. |
-| `SOURCE_WORKER_CPUS` | Optional | Hard CPU ceiling for the source-processing container. The template uses `2.0`. |
-| `SOURCE_WORKER_MEMORY_LIMIT` | Optional | Hard memory ceiling for the source-processing container. The template uses `2g`. |
-| `SOURCE_WORKER_PIDS_LIMIT` | Optional | Maximum processes and threads in the source-processing container. The template uses `128`. |
+| `WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one worker. The template uses `8`. |
+| `WORKER_CPUS` | Optional | Hard CPU ceiling for the worker container. The template uses `2.0`. |
+| `WORKER_MEMORY_LIMIT` | Optional | Hard memory ceiling for the worker container. The template uses `2g`. |
+| `WORKER_PIDS_LIMIT` | Optional | Maximum processes and threads in the worker container. The template uses `128`. |
 
 When running multiple replicas, add the pool limits for every API and worker process and leave capacity for migrations and operator access.
 
-The source-processing image contains the optional semantic-enrichment runtime. Keep these startup ceilings in `.env`; tune semantic chunking, evidence, query-vector concurrency, and cache limits from Admin Settings after measuring CPU, memory, provider latency, and workload size.
+The API image used by `worker` contains the optional semantic-enrichment runtime. Keep these startup ceilings in `.env`; tune document concurrency, semantic chunking, evidence, query-vector concurrency, and cache limits from Admin Settings after measuring CPU, memory, provider latency, and workload size.
 
 ## Security Audit
 
@@ -286,7 +287,7 @@ The source-processing image contains the optional semantic-enrichment runtime. K
 Before starting the stack, confirm:
 
 1. Every placeholder in `.env` has been replaced.
-2. API, Admin UI, and source-worker image tags are pinned to the same Focowiki release.
+2. API and Admin UI image tags are pinned to the same Focowiki release.
 3. Public origins use HTTPS and match the reverse-proxy domains.
 4. `ALLOWED_HOSTS` includes every hostname forwarded to the API.
 5. PostgreSQL, Redis, the selected search provider, and S3 are reachable from the containers.

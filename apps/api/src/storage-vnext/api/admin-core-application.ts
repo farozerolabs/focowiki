@@ -1,22 +1,30 @@
 import type {
-  SourceFileFailureStage,
-  SourceFileLifecycleState
+  SourceFileGeneratedOutputStatus,
+  SourceFileLifecycleState,
+  SourceFileWorkKind
 } from "../../domain/source-file-lifecycle.js";
 
 export type StorageVnextAdminSourceFileFilters = {
   fileNameQuery?: string | null;
   fileIdQuery?: string | null;
   state?: SourceFileLifecycleState | null;
-  currentStage?: SourceFileFailureStage | null;
-  modelInvocationStatus?: "running" | "completed" | "failed" | "skipped" | "not_recorded" | null;
-  generatedOutputStatus?: "pending" | "visible" | "unavailable" | null;
+  currentStage?: SourceFileWorkKind | SourceFileLifecycleState | null;
+  modelInvocationStatus?:
+    "not_required" | "running" | "completed" | "failed" | "not_recorded" | null;
+  generatedOutputStatus?: SourceFileGeneratedOutputStatus | null;
   startedFrom?: string | null;
   startedTo?: string | null;
   endedFrom?: string | null;
   endedTo?: string | null;
   errorState?: "with_error" | "without_error" | null;
   errorCodeQuery?: string | null;
-  actionState?: "openable" | "retryable" | "none" | null;
+  actionState?:
+    | "openable"
+    | "retryable"
+    | "correctable"
+    | "details_only"
+    | "none"
+    | null;
 };
 
 export type StorageVnextAdminCoreErrorCode =

@@ -41,6 +41,7 @@ type ObjectRow = {
   object_format: string;
   state: "reserved" | "verified" | "deleting" | "deleted";
   write_attempt_public_id: string;
+  reservation_expires_at: Date | string | null;
   zero_owner_since: Date | string | null;
 };
 
@@ -84,6 +85,29 @@ export function createPostgresEmbeddingArtifactRepository(
       `;
       return rows[0] ? mapArtifact(rows[0]) : null;
     },
+    async findReusable(identity) {
+      const rows = await sql<ArtifactRow[]>`
+        SELECT ${sql.unsafe(ARTIFACT_COLUMNS)}
+        FROM focowiki.embedding_artifacts artifact
+        JOIN focowiki.object_registrations object
+          ON object.object_id = artifact.object_id
+         AND object.state = 'verified'
+        WHERE artifact.knowledge_base_id = ${identity.knowledgeBaseId}
+          AND artifact.owner_kind = ${identity.ownerKind}
+          AND artifact.canonical_input_sha256 = ${identity.canonicalInputSha256}
+          AND artifact.input_kind = ${identity.inputKind}
+          AND artifact.embedding_configuration_revision_public_id
+            = ${identity.embeddingConfigurationRevisionPublicId}
+          AND artifact.normalization = ${identity.normalization}
+          AND artifact.dimension = ${identity.dimension}
+          AND artifact.artifact_schema_version = ${identity.artifactSchemaVersion}
+          AND artifact.state IN ('verified', 'orphaned')
+          AND artifact.deleted_at IS NULL
+        ORDER BY artifact.created_at DESC, artifact.public_id COLLATE "C"
+        LIMIT 1
+      `;
+      return rows[0] ? mapArtifact(rows[0]) : null;
+    },
     async reserveObject(input) {
       return sql.begin(async (transaction) => {
         const existing = await lockObject(transaction, input.descriptor.objectId);
@@ -95,7 +119,10 @@ export function createPostgresEmbeddingArtifactRepository(
             && existing.write_attempt_public_id === input.writeAttemptPublicId
           ) return "reserved" as const;
           if (
-            (existing.state === "reserved" && existing.zero_owner_since !== null)
+            (existing.state === "reserved"
+              && existing.reservation_expires_at !== null
+              && new Date(existing.reservation_expires_at).getTime()
+                <= Date.parse(input.createdAt))
             || existing.state === "deleted"
           ) {
             const reclaimed = await transaction<Array<{ object_id: string }>>`
@@ -103,6 +130,7 @@ export function createPostgresEmbeddingArtifactRepository(
               SET state = 'reserved',
                   write_attempt_public_id = ${input.writeAttemptPublicId},
                   verified_at = NULL,
+                  reservation_expires_at = ${reservationExpiresAt(input.createdAt)},
                   zero_owner_since = NULL,
                   created_at = ${input.createdAt}
               WHERE registration.object_id = ${input.descriptor.objectId}
@@ -119,12 +147,14 @@ export function createPostgresEmbeddingArtifactRepository(
         await transaction`
           INSERT INTO focowiki.object_registrations (
             object_id, storage_key, checksum_sha256, byte_count, content_type,
-            object_format, state, write_attempt_public_id, created_at
+            object_format, state, write_attempt_public_id,
+            reservation_expires_at, created_at
           ) VALUES (
             ${input.descriptor.objectId}, ${input.descriptor.storageKey},
             ${input.descriptor.checksumSha256}, ${input.descriptor.byteCount},
             ${input.descriptor.contentType}, ${input.descriptor.objectFormat},
-            'reserved', ${input.writeAttemptPublicId}, ${input.createdAt}
+            'reserved', ${input.writeAttemptPublicId},
+            ${reservationExpiresAt(input.createdAt)}, ${input.createdAt}
           )
         `;
         return "reserved" as const;
@@ -143,7 +173,7 @@ export function createPostgresEmbeddingArtifactRepository(
         await transaction`
           UPDATE focowiki.object_registrations
           SET state = 'verified', verified_at = COALESCE(verified_at, ${input.verifiedAt}),
-              zero_owner_since = NULL
+              reservation_expires_at = NULL, zero_owner_since = NULL
           WHERE object_id = ${input.descriptor.objectId}
         `;
         const artifact = input.replaceUnavailable
@@ -161,6 +191,78 @@ export function createPostgresEmbeddingArtifactRepository(
           retentionKind: input.retentionKind
         });
         return mapArtifact(artifact);
+      }) as Promise<EmbeddingArtifactRecord>;
+    },
+    async reuseVerified(input) {
+      return sql.begin(async (transaction) => {
+        const sources = await transaction<ArtifactRow[]>`
+          SELECT ${transaction.unsafe(ARTIFACT_COLUMNS)}
+          FROM focowiki.embedding_artifacts artifact
+          JOIN focowiki.object_registrations object
+            ON object.object_id = artifact.object_id
+           AND object.state = 'verified'
+          WHERE artifact.public_id = ${input.sourceArtifact.publicId}
+            AND artifact.knowledge_base_id = ${input.identity.knowledgeBaseId}
+            AND artifact.canonical_input_sha256
+              = ${input.identity.canonicalInputSha256}
+            AND artifact.input_kind = ${input.identity.inputKind}
+            AND artifact.embedding_configuration_revision_public_id
+              = ${input.identity.embeddingConfigurationRevisionPublicId}
+            AND artifact.normalization = ${input.identity.normalization}
+            AND artifact.dimension = ${input.identity.dimension}
+            AND artifact.artifact_schema_version
+              = ${input.identity.artifactSchemaVersion}
+            AND artifact.state IN ('verified', 'orphaned')
+            AND artifact.deleted_at IS NULL
+          FOR UPDATE OF artifact, object
+        `;
+        const source = requireArtifact(sources[0]);
+        await transaction`
+          INSERT INTO focowiki.embedding_artifacts (
+            public_id, knowledge_base_id, object_id, owner_kind,
+            owner_public_id, source_revision_public_id,
+            canonical_input_sha256, input_kind,
+            embedding_configuration_revision_public_id, normalization,
+            dimension, artifact_schema_version, vector_checksum_sha256,
+            byte_count, state, created_at
+          ) VALUES (
+            ${input.artifactPublicId}, ${input.identity.knowledgeBaseId},
+            ${source.object_id}, ${input.identity.ownerKind},
+            ${input.identity.ownerPublicId}, ${input.identity.sourceRevisionPublicId},
+            ${input.identity.canonicalInputSha256}, ${input.identity.inputKind},
+            ${input.identity.embeddingConfigurationRevisionPublicId},
+            ${input.identity.normalization}, ${input.identity.dimension},
+            ${input.identity.artifactSchemaVersion},
+            ${source.vector_checksum_sha256}, ${source.byte_count}, 'verified',
+            ${input.reusedAt}
+          )
+          ON CONFLICT (public_id) DO NOTHING
+        `;
+        const targets = await transaction<ArtifactRow[]>`
+          SELECT ${transaction.unsafe(ARTIFACT_COLUMNS)}
+          FROM focowiki.embedding_artifacts artifact
+          JOIN focowiki.object_registrations object
+            ON object.object_id = artifact.object_id
+          WHERE artifact.public_id = ${input.artifactPublicId}
+          FOR UPDATE OF artifact, object
+        `;
+        const target = requireArtifact(targets[0]);
+        assertArtifactIdentity(target, input.identity);
+        if (target.object_id !== source.object_id
+          || target.vector_checksum_sha256 !== source.vector_checksum_sha256
+          || Number(target.byte_count) !== Number(source.byte_count)) {
+          throw new Error("Embedding artifact reuse conflicts");
+        }
+        await attachObjectOwner(transaction, target, input.reusedAt);
+        await attachSemanticOwnerAndReference(transaction, {
+          artifact: target,
+          semanticGenerationPublicId: input.semanticGenerationPublicId,
+          operationPublicId: input.operationPublicId,
+          sourceFilePublicId: input.sourceFilePublicId,
+          sourceExcerpt: input.sourceExcerpt,
+          retentionKind: input.retentionKind
+        });
+        return mapArtifact(target);
       }) as Promise<EmbeddingArtifactRecord>;
     },
     async attachReference(input) {
@@ -691,34 +793,13 @@ async function attachSemanticOwnerAndReference(
     WHERE generation.knowledge_base_id = ${input.artifact.knowledge_base_id}
       AND generation.public_id = ${input.semanticGenerationPublicId}
       AND generation.state IN ('building', 'validating', 'ready', 'active')
-      AND (
-        EXISTS (
-          SELECT 1
-          FROM focowiki.source_file_current_revisions current_revision
-          WHERE current_revision.knowledge_base_id = source.knowledge_base_id
-            AND current_revision.source_file_public_id = source.public_id
-            AND current_revision.source_revision_public_id
-              = ${input.artifact.source_revision_public_id}
-        )
-        OR (
-          ${input.retentionKind} = 'candidate'
-          AND ${input.operationPublicId}::text IS NOT NULL
-          AND EXISTS (
-            SELECT 1
-            FROM focowiki.operation_work_items work
-            JOIN focowiki.source_revisions revision
-              ON revision.knowledge_base_id = work.knowledge_base_id
-             AND revision.source_file_public_id = source.public_id
-             AND revision.public_id = ${input.artifact.source_revision_public_id}
-             AND revision.revision_role = 'candidate'
-            WHERE work.knowledge_base_id = source.knowledge_base_id
-              AND work.operation_public_id = ${input.operationPublicId}
-              AND work.work_kind = 'mutation'
-              AND work.state IN ('queued', 'running', 'retry')
-              AND work.checkpoint ->> 'candidateRevisionPublicId'
-                = revision.public_id
-          )
-        )
+      AND EXISTS (
+        SELECT 1
+        FROM focowiki.source_file_active_revisions current_revision
+        WHERE current_revision.knowledge_base_id = source.knowledge_base_id
+          AND current_revision.source_file_public_id = source.public_id
+          AND current_revision.current_source_revision_public_id
+            = ${input.artifact.source_revision_public_id}
       )
     FOR UPDATE OF generation
   `;
@@ -757,12 +838,17 @@ async function attachSemanticOwnerAndReference(
 async function lockObject(sql: TransactionSql, objectId: string): Promise<ObjectRow | null> {
   const rows = await sql<ObjectRow[]>`
     SELECT object_id, storage_key, checksum_sha256, byte_count, content_type,
-      object_format, state, write_attempt_public_id, zero_owner_since
+      object_format, state, write_attempt_public_id,
+      reservation_expires_at, zero_owner_since
     FROM focowiki.object_registrations
     WHERE object_id = ${objectId}
     FOR UPDATE
   `;
   return rows[0] ?? null;
+}
+
+function reservationExpiresAt(createdAt: string): string {
+  return new Date(Date.parse(createdAt) + 30_000).toISOString();
 }
 
 function assertObjectMetadata(row: ObjectRow, descriptor: EmbeddingArtifactDescriptor): void {

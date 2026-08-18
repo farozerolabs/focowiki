@@ -45,7 +45,3 @@ export const GRAPH_SEARCH_MAX_FANOUT = 25;
 export function normalizeGraphSearchQuery(value: string): string {
   return normalizeGeneratedFileSearchQuery(value);
 }
-
-export function graphRefForSourceFile(sourceFileId: string): string {
-  return `_graph/by-file/${sourceFileId}.json`;
-}

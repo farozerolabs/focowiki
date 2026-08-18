@@ -47,7 +47,7 @@ function rankedLanes(
     "exact_path",
     "exact_title",
     ...(mode === "graph" ? [] : ["lexical", "jieba"] as const),
-    ...(mode === "file" ? [] : ["file_graph"] as const)
+    ...(mode === "file" ? [] : ["file_graph", "file_relationship"] as const)
   ];
 }
 

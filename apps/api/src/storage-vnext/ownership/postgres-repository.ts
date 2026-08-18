@@ -26,7 +26,6 @@ import {
   mapStorageVnextOwner,
   mapStorageVnextOwnershipDatabaseError,
   mapStorageVnextRegistration,
-  sameMappedStorageVnextRegistrationMetadata,
   sameStorageVnextRegistrationMetadata,
   storageVnextOwnerTarget,
   type StorageVnextOwnerRow,
@@ -45,7 +44,16 @@ export function createPostgresStorageVnextOwnershipRepository(
   options: { zeroOwnerGraceMilliseconds: number | (() => number) } = {
     zeroOwnerGraceMilliseconds: 86_400_000
   }
-): StorageVnextOwnershipRepository {
+): StorageVnextOwnershipRepository & {
+  listRegistrationsForKnowledgeBase(input: {
+    knowledgeBaseId: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<{
+    items: readonly StorageVnextObjectRegistration[];
+    nextCursor: string | null;
+  }>;
+} {
   resolveZeroOwnerGraceMilliseconds(options.zeroOwnerGraceMilliseconds);
   return {
     async getRegistration(objectId) {
@@ -74,6 +82,40 @@ export function createPostgresStorageVnextOwnershipRepository(
         SELECT ${sql.unsafe(REGISTRATION_COLUMNS)}
         FROM focowiki.object_registrations registration
         WHERE TRUE
+          ${cursor
+            ? sql`AND (registration.storage_key, registration.object_id)
+                > (${cursor.storageKey}, ${cursor.objectId})`
+            : sql``}
+        ORDER BY registration.storage_key, registration.object_id
+        LIMIT ${limit + 1}
+      `;
+      const items = rows.slice(0, limit).map(mapStorageVnextRegistration);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor: rows.length > limit && last
+          ? encodeStorageVnextOwnershipCursor({
+            kind: "registration",
+            storageKey: last.storageKey,
+            objectId: last.objectId
+          })
+          : null
+      };
+    },
+
+    async listRegistrationsForKnowledgeBase(input) {
+      assertStorageVnextPublicId(input.knowledgeBaseId);
+      const limit = assertStorageVnextOwnershipPageLimit(input.limit);
+      const cursor = decodeStorageVnextRegistrationCursor(input.cursor);
+      const rows = await sql<StorageVnextRegistrationRow[]>`
+        SELECT ${sql.unsafe(REGISTRATION_COLUMNS)}
+        FROM focowiki.object_registrations registration
+        WHERE EXISTS (
+          SELECT 1
+          FROM focowiki.object_owners owner
+          WHERE owner.object_id = registration.object_id
+            AND owner.knowledge_base_id = ${input.knowledgeBaseId}
+        )
           ${cursor
             ? sql`AND (registration.storage_key, registration.object_id)
                 > (${cursor.storageKey}, ${cursor.objectId})`
@@ -135,12 +177,8 @@ export function createPostgresStorageVnextOwnershipRepository(
             WHERE revision.object_id = registration.object_id
           )
           AND NOT EXISTS (
-            SELECT 1 FROM focowiki.release_catalog_entries entry
-            WHERE entry.object_id = registration.object_id
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM focowiki.release_shards shard
-            WHERE shard.object_id = registration.object_id
+            SELECT 1 FROM focowiki.generated_page_candidates candidate
+            WHERE candidate.object_id = registration.object_id
           )
           AND NOT EXISTS (
             SELECT 1 FROM focowiki.upload_entries entry
@@ -179,7 +217,7 @@ export function createPostgresStorageVnextOwnershipRepository(
         SELECT ${sql.unsafe(REGISTRATION_COLUMNS)}
         FROM focowiki.object_registrations registration
         WHERE registration.state = 'reserved'
-          AND registration.created_at <= ${staleBefore}
+          AND registration.reservation_expires_at <= ${staleBefore}
           AND NOT EXISTS (
             SELECT 1 FROM focowiki.object_owners owner
             WHERE owner.object_id = registration.object_id
@@ -226,7 +264,24 @@ export function createPostgresStorageVnextOwnershipRepository(
         if (!sameStorageVnextRegistrationMetadata(registration, input)) {
           throw new StorageVnextOwnershipRepositoryError("registration_conflict");
         }
-        if (registration.state === "verified") return mapStorageVnextRegistration(registration);
+        if (registration.state === "verified") {
+          if (input.holdVerifiedUntil === undefined) {
+            return mapStorageVnextRegistration(registration);
+          }
+          const rows = await transaction<StorageVnextRegistrationRow[]>`
+            UPDATE focowiki.object_registrations registration
+            SET reservation_expires_at = ${input.holdVerifiedUntil}
+            WHERE registration.object_id = ${input.objectId}
+              AND registration.state = 'verified'
+              AND registration.write_attempt_public_id
+                    = ${input.writeAttemptPublicId}
+            RETURNING ${transaction.unsafe(REGISTRATION_COLUMNS)}
+          `;
+          if (!rows[0]) {
+            throw new StorageVnextOwnershipRepositoryError("write_attempt_conflict");
+          }
+          return mapStorageVnextRegistration(rows[0]);
+        }
         if (registration.state !== "reserved") {
           throw new StorageVnextOwnershipRepositoryError("state_conflict");
         }
@@ -234,6 +289,7 @@ export function createPostgresStorageVnextOwnershipRepository(
           UPDATE focowiki.object_registrations registration
           SET state = 'verified',
               verified_at = ${input.verifiedAt},
+              reservation_expires_at = ${input.holdVerifiedUntil ?? null},
               zero_owner_since = CASE
                 WHEN EXISTS (
                   SELECT 1 FROM focowiki.object_owners owner
@@ -246,6 +302,30 @@ export function createPostgresStorageVnextOwnershipRepository(
         `;
         return mapStorageVnextRegistration(rows[0]!);
       }) as Promise<StorageVnextObjectRegistration>;
+    },
+
+    async releaseVerifiedReservation(input) {
+      assertStorageVnextPublicId(input.objectId);
+      assertStorageVnextPublicId(input.writeAttemptPublicId);
+      await sql.begin(async (transaction) => {
+        const registration = await lockRegistration(transaction, input.objectId);
+        if (!registration) {
+          throw new StorageVnextOwnershipRepositoryError("object_not_found");
+        }
+        if (registration.state !== "verified") {
+          throw new StorageVnextOwnershipRepositoryError("state_conflict");
+        }
+        if (registration.write_attempt_public_id !== input.writeAttemptPublicId) {
+          throw new StorageVnextOwnershipRepositoryError("write_attempt_conflict");
+        }
+        await transaction`
+          UPDATE focowiki.object_registrations
+          SET reservation_expires_at = NULL
+          WHERE object_id = ${input.objectId}
+            AND state = 'verified'
+            AND write_attempt_public_id = ${input.writeAttemptPublicId}
+        `;
+      });
     },
 
     async attach(owner) {
@@ -265,13 +345,13 @@ export function createPostgresStorageVnextOwnershipRepository(
         const inserted = await transaction<Array<{ public_id: string }>>`
           INSERT INTO focowiki.object_owners (
             public_id, knowledge_base_id, object_id, owner_kind,
-            source_revision_public_id, release_root_public_id,
-            release_shard_public_id, operation_public_id,
+            source_revision_public_id, source_receipt_public_id,
+            generated_page_candidate_public_id, operation_public_id,
             embedding_artifact_public_id, created_at
           ) VALUES (
             ${owner.publicId}, ${owner.knowledgeBaseId}, ${owner.objectId}, ${owner.kind},
-            ${columns.sourceRevisionPublicId}, ${columns.releaseRootPublicId},
-            ${columns.releaseShardPublicId}, ${columns.operationPublicId},
+            ${columns.sourceRevisionPublicId}, ${columns.sourceReceiptPublicId},
+            ${columns.generatedPageCandidatePublicId}, ${columns.operationPublicId},
             ${columns.embeddingArtifactPublicId}, ${owner.createdAt}
           )
           ON CONFLICT (object_id, owner_kind, owner_public_id) DO NOTHING
@@ -336,9 +416,13 @@ export function createPostgresStorageVnextOwnershipRepository(
         if (registration.state !== "verified") {
           throw new StorageVnextOwnershipRepositoryError("state_conflict");
         }
+        if (registration.reservation_expires_at !== null
+          && Date.parse(String(registration.reservation_expires_at)) > Date.now()) {
+          throw new StorageVnextOwnershipRepositoryError("write_in_progress");
+        }
         await transaction`
           UPDATE focowiki.object_registrations
-          SET state = 'deleting'
+          SET state = 'deleting', reservation_expires_at = NULL
           WHERE object_id = ${objectId}
         `;
       });
@@ -431,7 +515,8 @@ const REGISTRATION_COLUMNS = `
   registration.object_id, registration.storage_key, registration.checksum_sha256,
   registration.byte_count, registration.content_type, registration.object_format,
   registration.state, registration.write_attempt_public_id,
-  registration.verified_at, registration.zero_owner_since, registration.created_at
+  registration.reservation_expires_at, registration.verified_at,
+  registration.zero_owner_since, registration.created_at
 `;
 
 async function reserveRegistration(
@@ -453,10 +538,53 @@ async function reserveRegistration(
       throw new StorageVnextOwnershipRepositoryError("registration_conflict");
     }
     if (existing.state === "verified") {
-      return { outcome: "reused", registration: mapStorageVnextRegistration(existing) };
+      if (input.holdVerifiedUntil === undefined) {
+        return { outcome: "reused", registration: mapStorageVnextRegistration(existing) };
+      }
+      if (existing.write_attempt_public_id !== input.writeAttemptPublicId
+        && existing.reservation_expires_at !== null
+        && Date.parse(String(existing.reservation_expires_at))
+          > Date.parse(input.createdAt)) {
+        throw new StorageVnextOwnershipRepositoryError("write_in_progress");
+      }
+      const rows = await transaction<StorageVnextRegistrationRow[]>`
+        UPDATE focowiki.object_registrations registration
+        SET write_attempt_public_id = ${input.writeAttemptPublicId},
+            reservation_expires_at = ${input.holdVerifiedUntil}
+        WHERE registration.object_id = ${input.objectId}
+          AND registration.state = 'verified'
+          AND (
+            registration.write_attempt_public_id = ${input.writeAttemptPublicId}
+            OR registration.reservation_expires_at IS NULL
+            OR registration.reservation_expires_at <= ${input.createdAt}
+          )
+        RETURNING ${transaction.unsafe(REGISTRATION_COLUMNS)}
+      `;
+      if (!rows[0]) {
+        throw new StorageVnextOwnershipRepositoryError("write_in_progress");
+      }
+      return { outcome: "reused", registration: mapStorageVnextRegistration(rows[0]) };
     }
     if (existing.state === "reserved") {
       if (existing.write_attempt_public_id !== input.writeAttemptPublicId) {
+        if (existing.reservation_expires_at !== null
+          && Date.parse(String(existing.reservation_expires_at))
+            <= Date.parse(input.createdAt)) {
+          const rows = await transaction<StorageVnextRegistrationRow[]>`
+            UPDATE focowiki.object_registrations registration
+            SET write_attempt_public_id = ${input.writeAttemptPublicId},
+                created_at = ${input.createdAt},
+                reservation_expires_at = ${reservationExpiresAt(input)}
+            WHERE registration.object_id = ${input.objectId}
+              AND registration.state = 'reserved'
+              AND registration.reservation_expires_at <= ${input.createdAt}
+            RETURNING ${transaction.unsafe(REGISTRATION_COLUMNS)}
+          `;
+          if (rows[0]) return {
+            outcome: "reserved",
+            registration: mapStorageVnextRegistration(rows[0])
+          };
+        }
         throw new StorageVnextOwnershipRepositoryError("write_in_progress");
       }
       return { outcome: "reserved", registration: mapStorageVnextRegistration(existing) };
@@ -467,6 +595,7 @@ async function reserveRegistration(
         SET state = 'reserved',
             write_attempt_public_id = ${input.writeAttemptPublicId},
             verified_at = NULL,
+            reservation_expires_at = ${reservationExpiresAt(input)},
             zero_owner_since = NULL,
             created_at = ${input.createdAt}
         WHERE registration.object_id = ${input.objectId}
@@ -489,11 +618,13 @@ async function reserveRegistration(
   const rows = await transaction<StorageVnextRegistrationRow[]>`
     INSERT INTO focowiki.object_registrations AS registration (
       object_id, storage_key, checksum_sha256, byte_count, content_type,
-      object_format, state, write_attempt_public_id, created_at
+      object_format, state, write_attempt_public_id,
+      reservation_expires_at, created_at
     ) VALUES (
       ${input.objectId}, ${input.storageKey}, ${input.checksum}, ${input.byteCount},
       ${input.contentType}, ${input.format}, 'reserved',
-      ${input.writeAttemptPublicId}, ${input.createdAt}
+      ${input.writeAttemptPublicId}, ${reservationExpiresAt(input)},
+      ${input.createdAt}
     )
     RETURNING ${transaction.unsafe(REGISTRATION_COLUMNS)}
   `;
@@ -508,28 +639,13 @@ async function recoverReservationConflict(
   if (!(error instanceof Error) || !("code" in error) || error.code !== "23505") {
     throw mapStorageVnextOwnershipDatabaseError(error);
   }
-  const existing = await readRegistration(sql, input.objectId);
-  if (existing && sameMappedStorageVnextRegistrationMetadata(existing, input)) {
-    if (existing.state === "verified") {
-      return { outcome: "reused", registration: existing };
-    }
-    if (
-      existing.state === "reserved"
-      && existing.writeAttemptPublicId === input.writeAttemptPublicId
-    ) {
-      return { outcome: "reserved", registration: existing };
-    }
-  }
-  const attempts = await sql<Array<{ object_id: string }>>`
-    SELECT object_id
-    FROM focowiki.object_registrations
-    WHERE write_attempt_public_id = ${input.writeAttemptPublicId}
-    LIMIT 1
-  `;
-  if (attempts[0] && attempts[0].object_id !== input.objectId) {
-    throw new StorageVnextOwnershipRepositoryError("write_attempt_conflict");
-  }
-  throw new StorageVnextOwnershipRepositoryError("registration_conflict");
+  return sql.begin((transaction) => reserveRegistration(transaction, input)) as
+    Promise<StorageVnextObjectReservationResult>;
+}
+
+function reservationExpiresAt(input: StorageVnextObjectReservation): string {
+  return input.reservationExpiresAt
+    ?? new Date(Date.parse(input.createdAt) + 30_000).toISOString();
 }
 
 async function readRegistration(
@@ -578,10 +694,8 @@ async function readDurableReferenceCount(
        WHERE owner.object_id = ${objectId})
       + (SELECT count(*) FROM focowiki.source_revisions revision
          WHERE revision.object_id = ${objectId})
-      + (SELECT count(*) FROM focowiki.release_catalog_entries entry
-         WHERE entry.object_id = ${objectId})
-      + (SELECT count(*) FROM focowiki.release_shards shard
-         WHERE shard.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.generated_page_candidates candidate
+         WHERE candidate.object_id = ${objectId})
       + (SELECT count(*) FROM focowiki.upload_entries entry
          WHERE entry.object_id = ${objectId})
       + (SELECT count(*) FROM focowiki.embedding_artifacts artifact
@@ -603,12 +717,8 @@ function hasNoDurableReferences(sql: ReadSql, alias: string) {
       WHERE revision.object_id = ${registration}.object_id
     )
     AND NOT EXISTS (
-      SELECT 1 FROM focowiki.release_catalog_entries entry
-      WHERE entry.object_id = ${registration}.object_id
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM focowiki.release_shards shard
-      WHERE shard.object_id = ${registration}.object_id
+      SELECT 1 FROM focowiki.generated_page_candidates candidate
+      WHERE candidate.object_id = ${registration}.object_id
     )
     AND NOT EXISTS (
       SELECT 1 FROM focowiki.upload_entries entry
@@ -631,46 +741,21 @@ async function assertOwnerTarget(
       SELECT 1 FROM focowiki.source_revisions
       WHERE knowledge_base_id = ${owner.knowledgeBaseId}
         AND public_id = ${owner.ownerPublicId}
-        AND object_id = ${owner.objectId}
       FOR UPDATE
     `;
-  } else if (["active_root", "candidate_root", "rollback_root"].includes(owner.kind)) {
+  } else if (owner.kind === "source_receipt") {
     rows = await sql`
-      SELECT 1
-      FROM focowiki.release_roots root
-      WHERE root.knowledge_base_id = ${owner.knowledgeBaseId}
-        AND root.public_id = ${owner.ownerPublicId}
-        AND (
-          (${owner.kind} = 'active_root' AND root.root_role IN ('active', 'base'))
-          OR root.root_role = ${owner.kind.replace("_root", "")}
-        )
-        AND (
-          EXISTS (
-            SELECT 1
-            FROM focowiki.release_catalog_entries entry
-            WHERE entry.knowledge_base_id = root.knowledge_base_id
-              AND entry.release_root_public_id = root.public_id
-              AND entry.object_id = ${owner.objectId}
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM focowiki.release_root_shards attached
-            JOIN focowiki.release_shards shard
-              ON shard.knowledge_base_id = attached.knowledge_base_id
-             AND shard.public_id = attached.release_shard_public_id
-            WHERE attached.knowledge_base_id = root.knowledge_base_id
-              AND attached.release_root_public_id = root.public_id
-              AND shard.object_id = ${owner.objectId}
-          )
-        )
+      SELECT 1 FROM focowiki.document_artifact_receipts receipt
+      WHERE receipt.knowledge_base_id = ${owner.knowledgeBaseId}
+        AND receipt.public_id = ${owner.ownerPublicId}
       FOR UPDATE
     `;
-  } else if (owner.kind === "shared_segment") {
+  } else if (owner.kind === "generated_page_candidate") {
     rows = await sql`
-      SELECT 1 FROM focowiki.release_shards
+      SELECT 1 FROM focowiki.generated_page_candidates candidate
       WHERE knowledge_base_id = ${owner.knowledgeBaseId}
-        AND public_id = ${owner.ownerPublicId}
-        AND object_id = ${owner.objectId}
+        AND candidate.public_id = ${owner.ownerPublicId}
+        AND candidate.object_id = ${owner.objectId}
       FOR UPDATE
     `;
   } else if (owner.kind === "live_reservation") {

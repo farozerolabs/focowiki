@@ -185,13 +185,13 @@ export function createPostgresEmbeddingConfigurationRepository(
               = contract.embedding_configuration_revision_public_id
           WHERE revision.configuration_public_id = ${configurationPublicId}
           UNION ALL
-          SELECT work.public_id
-          FROM focowiki.semantic_stage_work_items work
+          SELECT job.public_id
+          FROM focowiki.document_processing_jobs job
           JOIN focowiki.embedding_configuration_revisions revision
             ON revision.public_id
-              = work.embedding_configuration_revision_public_id
+              = job.embedding_configuration_revision_public_id
           WHERE revision.configuration_public_id = ${configurationPublicId}
-            AND work.state IN ('queued', 'running', 'retry')
+            AND job.state IN ('waiting', 'processing')
         ) reference
       `;
       return Number(rows[0]?.reference_count ?? 0);

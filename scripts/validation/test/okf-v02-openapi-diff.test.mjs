@@ -23,8 +23,8 @@ test("requires explicit review for the combined OKF 0.2 and breaking GraphRAG su
   assert.equal(diff.compatibility, "review_required");
   assert.deepEqual(diff.pathsMethodsAndOperationIds, {
     beforeCount: 43,
-    afterCount: 43,
-    unchanged: true
+    afterCount: 42,
+    unchanged: false
   });
   assert.deepEqual(diff.parameters, {
     added: [
@@ -37,8 +37,12 @@ test("requires explicit review for the combined OKF 0.2 and breaking GraphRAG su
     ],
     removed: []
   });
-  assert.deepEqual(diff.responseFields.GeneratedFile.added, ["okfSignals"]);
+  assert.deepEqual(diff.responseFields.GeneratedFile.added, [
+    "activeContentRevision",
+    "okfSignals"
+  ]);
   assert.deepEqual(diff.responseFields.FileSearchResult.added, [
+    "activeContentRevision",
     "okfSignals",
     "evidenceTypes",
     "sourceExcerpt"

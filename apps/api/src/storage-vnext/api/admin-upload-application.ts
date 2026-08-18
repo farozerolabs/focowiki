@@ -64,8 +64,18 @@ export type StorageVnextAdminUploadApplication = {
 
 export function createStorageVnextAdminUploadApplication(input: {
   backend: StorageVnextAdminUploadApplication | null;
+  onWorkAccepted?: () => Promise<void>;
 }): StorageVnextAdminUploadApplication {
-  if (input.backend) return input.backend;
+  if (input.backend) {
+    return {
+      ...input.backend,
+      async finalizeUploadSession(request) {
+        const result = await input.backend!.finalizeUploadSession(request);
+        await input.onWorkAccepted?.();
+        return result;
+      }
+    };
+  }
   const unavailable = async (): Promise<never> => {
     throw new StorageVnextAdminUploadApplicationError("SERVICE_UNAVAILABLE");
   };

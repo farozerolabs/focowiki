@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { createApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
 import {
-  hashPublicOpenApiKey,
   type PublicOpenApiKeyRepository,
   type PublicOpenApiKeyRecord
 } from "../src/public-openapi/keys.js";
@@ -37,17 +36,12 @@ function createConfig(): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+    generated: {
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     },
     pagination: {
       defaultPageSize: 50,
@@ -66,10 +60,6 @@ function createConfig(): RuntimeConfig {
 
 class MemoryPublicOpenApiKeyRepository implements PublicOpenApiKeyRepository {
   public readonly records: PublicOpenApiKeyRecord[] = [];
-
-  public async countActivePublicOpenApiKeys(): Promise<number> {
-    return this.records.filter((record) => record.status === "active").length;
-  }
 
   public async listPublicOpenApiKeys(input: { limit: number; cursor: string | null }) {
     const offset = input.cursor ? Number(input.cursor) : 0;
@@ -130,7 +120,7 @@ class MemoryPublicOpenApiKeyRepository implements PublicOpenApiKeyRepository {
 }
 
 describe("Admin public OpenAPI key API", () => {
-  it("bootstraps, creates, lists, and deletes managed keys through authenticated routes", async () => {
+  it("lists without mutation, then explicitly creates and deletes managed keys", async () => {
     const publicApiKeys = new MemoryPublicOpenApiKeyRepository();
     const app = createApiApp({
       config: createConfig(),
@@ -143,23 +133,12 @@ describe("Admin public OpenAPI key API", () => {
     });
     const firstListBody = (await firstList.json()) as {
       items: Array<{ id: string; fingerprint: string }>;
-      oneTimeKey: { id: string; rawKey: string } | null;
+      nextCursor: string | null;
     };
 
     expect(firstList.status).toBe(200);
-    expect(firstListBody.items).toHaveLength(1);
-    expect(firstListBody.oneTimeKey?.rawKey).toMatch(/^fwok_/);
-    expect(JSON.stringify(firstListBody.items)).not.toContain(firstListBody.oneTimeKey?.rawKey);
-    expect(publicApiKeys.records[0]?.keyHash).toBe(
-      hashPublicOpenApiKey(firstListBody.oneTimeKey?.rawKey ?? "")
-    );
-
-    const secondList = await app.request("/admin/api/openapi-keys", {
-      headers: { cookie }
-    });
-    await expect(secondList.json()).resolves.toMatchObject({
-      oneTimeKey: null
-    });
+    expect(firstListBody).toEqual({ items: [], nextCursor: null });
+    expect(publicApiKeys.records).toHaveLength(0);
 
     const created = await app.request("/admin/api/openapi-keys", {
       method: "POST",
@@ -177,6 +156,17 @@ describe("Admin public OpenAPI key API", () => {
     expect(created.status).toBe(201);
     expect(createdBody.key.name).toBe("Agent key");
     expect(createdBody.oneTimeKey.rawKey).toMatch(/^fwok_/);
+
+    const oversizedName = await app.request("/admin/api/openapi-keys", {
+      method: "POST",
+      headers: withTrustedAdminOrigin({
+        cookie,
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({ name: "x".repeat(81) })
+    });
+    expect(oversizedName.status).toBe(422);
+    expect(publicApiKeys.records.some((record) => record.name === "x".repeat(80))).toBe(false);
 
     const deleted = await app.request(`/admin/api/openapi-keys/${createdBody.key.id}`, {
       method: "DELETE",

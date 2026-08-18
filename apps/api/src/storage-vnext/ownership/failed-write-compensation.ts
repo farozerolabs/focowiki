@@ -1,11 +1,12 @@
 import {
   AbortMultipartUploadCommand,
-  DeleteObjectCommand,
   ListMultipartUploadsCommand,
   type S3Client
 } from "@aws-sdk/client-s3";
 import type { StorageVnextOpaqueCursor, StorageVnextTimestamp } from "../shared/types.js";
 import type { StorageVnextOwnershipRepository } from "./ports.js";
+import { createS3StorageVnextVersionAwareDeletionProvider } from
+  "./version-aware-deletion.js";
 
 export type StorageVnextFailedWriteReason =
   | "upload_failed"
@@ -76,6 +77,11 @@ export function createS3StorageVnextFailedWriteProvider(input: {
 }): StorageVnextFailedWriteProvider {
   const bucket = requireNonempty(input.bucket);
   const prefix = requireNonempty(input.prefix).replace(/\/+$/gu, "");
+  const versionAwareDeletion = createS3StorageVnextVersionAwareDeletionProvider({
+    client: input.client,
+    bucket,
+    prefix
+  });
   return {
     async abortMultipartUploads(storageKey) {
       assertOwnedKey(prefix, storageKey);
@@ -105,10 +111,7 @@ export function createS3StorageVnextFailedWriteProvider(input: {
 
     async deleteCurrentObject(storageKey) {
       assertOwnedKey(prefix, storageKey);
-      await input.client.send(new DeleteObjectCommand({
-        Bucket: bucket,
-        Key: storageKey
-      }));
+      await versionAwareDeletion.purge(storageKey);
     }
   };
 }

@@ -408,9 +408,9 @@ function emptyLivePage(knowledgeBaseId) {
 function liveSearchItem(knowledgeBaseId, sourceFileId, path) {
   return {
     knowledgeBaseId,
+    fileId: sourceFileId,
     sourceFileId,
     path,
-    generatedFilePath: path,
     matchedFields: ["title"],
     evidenceTypes: ["title"],
     matchType: "file_direct",

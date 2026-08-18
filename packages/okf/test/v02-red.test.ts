@@ -43,7 +43,7 @@ type AnalyzeOkfMetadata = (
   options?: AnalyzeOptions
 ) => Analysis;
 
-type BuildPublicationMetadata = (input: {
+type BuildGeneratedMetadata = (input: {
   ownership: "source" | "focowiki";
   metadata: Record<string, unknown>;
   artifactKind?: "concept" | "bundle_root";
@@ -61,13 +61,13 @@ function analyze(
   return implementation!(metadata, options);
 }
 
-function buildPublicationMetadata(input: Parameters<BuildPublicationMetadata>[0]) {
+function buildGeneratedMetadata(input: Parameters<BuildGeneratedMetadata>[0]) {
   const implementation = (okf as unknown as {
-    buildOkfPublicationMetadata?: BuildPublicationMetadata;
-  }).buildOkfPublicationMetadata;
+    buildOkfGeneratedMetadata?: BuildGeneratedMetadata;
+  }).buildOkfGeneratedMetadata;
   expect(
     implementation,
-    "packages/okf must export buildOkfPublicationMetadata"
+    "packages/okf must export buildOkfGeneratedMetadata"
   ).toBeTypeOf("function");
   return implementation!(input);
 }
@@ -105,12 +105,26 @@ describe("OKF 0.2 compatibility", () => {
       disposition: "advisory"
     }));
 
-    expect(buildPublicationMetadata({
+    expect(buildGeneratedMetadata({
       ownership: "focowiki",
       metadata: { okf_version: "0.1", type: "Index" },
       artifactKind: "bundle_root",
       changedAt: "2026-08-07T10:00:00Z"
     }).okf_version).toBe("0.2");
+  });
+
+  it("uses a public product identity for Focowiki-generated concepts", () => {
+    const metadata = buildGeneratedMetadata({
+      ownership: "focowiki",
+      metadata: { type: "Index", title: "Relationship graph entries" },
+      changedAt: "2026-08-16T09:02:54.694Z"
+    });
+
+    expect(metadata.generated).toEqual({
+      by: "Focowiki",
+      at: "2026-08-16T09:02:54.694Z"
+    });
+    expect(JSON.stringify(metadata)).not.toContain("process:focowiki-document-indexing");
   });
 });
 
@@ -236,7 +250,7 @@ describe("OKF 0.2 provenance and citations", () => {
   });
 
   it("does not synthesize numbered citations from legacy resource metadata", () => {
-    const published = buildPublicationMetadata({
+    const published = buildGeneratedMetadata({
       ownership: "source",
       metadata: {
         type: "Guide",

@@ -35,13 +35,17 @@ export function SourceFileFailureDetailDialog({
         {failure ? (
           <dl className="grid gap-3 text-sm sm:grid-cols-[8rem_1fr]">
             <FailureDetail label={t("tasks.failureDetails.stage")}>
-              {t(`tasks.phase.${toCamelCase(failure.stage)}`)}
+              {t(`tasks.workKind.${toCamelCase(failure.workKind)}`)}
             </FailureDetail>
             <FailureDetail label={t("tasks.failureDetails.code")}>
               <span className="break-all font-mono text-xs">{failure.code}</span>
             </FailureDetail>
             <FailureDetail label={t("tasks.failureDetails.message")}>
-              <span className="break-words">{failure.message}</span>
+              <span className="break-words">
+                {t(`tasks.failureDetails.messages.${failure.code}`, {
+                  defaultValue: failure.message
+                })}
+              </span>
             </FailureDetail>
             <FailureDetail label={t("tasks.failureDetails.occurredAt")}>
               {formatSourceFileTime(failure.occurredAt, i18n.language, t("tasks.notRecorded"))}
@@ -76,5 +80,6 @@ function FailureDetail({ label, children }: { label: string; children: ReactNode
 }
 
 function toCamelCase(value: string): string {
-  return value.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+  return value.replace(/_([a-z])/gu, (_, character: string) =>
+    character.toUpperCase());
 }

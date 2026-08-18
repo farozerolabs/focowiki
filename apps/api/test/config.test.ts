@@ -257,9 +257,7 @@ describe("parseRuntimeConfig", () => {
     expect(config.database).toEqual({
       url: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
       poolMax: 10,
-      sourceWorkerPoolMax: 6,
-      publicationWorkerPoolMax: 4,
-      maintenanceWorkerPoolMax: 2
+      workerPoolMax: 8
     });
     expect(config.redis).toEqual({
       url: "redis://127.0.0.1:6379/0",
@@ -288,27 +286,12 @@ describe("parseRuntimeConfig", () => {
       prefix: "tenant/demo"
     });
     expect(config).not.toHaveProperty("upload");
-    expect(config.publication).toEqual({
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      impactBatchSize: 100,
-      impactConcurrency: 8,
-      dirtyFileHardCount: 2_000,
-      dirtyFileResumeCount: 1_000,
-      dirtyAgeHardSeconds: 900,
-      dirtyAgeResumeSeconds: 300,
-      pendingImpactHardCount: 20_000,
-      pendingImpactResumeCount: 10_000,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
+    expect(config.generated).toEqual({
       directoryIndexMaxEntries: 200,
       directoryIndexMaxBytes: 65_536,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(config.graph).toEqual({
       candidateLimit: 200,
@@ -317,16 +300,14 @@ describe("parseRuntimeConfig", () => {
       searchMaxDepth: 2,
       searchDefaultFanout: 10,
       searchMaxFanout: 25,
-      modelReviewEnabled: true,
-      publicationShardSize: 5_000,
-      cacheTtlSeconds: 5,
+      shardSize: 5_000,
       genericPhraseThreshold: 4
     });
     expect(config.worker).toEqual({
       sourceFileConcurrency: 2,
       claimBatchSize: 10,
       pollIntervalMs: 1_000,
-      lockTtlSeconds: 900,
+      lockTtlSeconds: 60,
       jobMaxAttempts: 3,
       jobRetryDelayMs: 30_000,
       sourceQueueHardDepth: 5_000,
@@ -354,12 +335,6 @@ describe("parseRuntimeConfig", () => {
         maxFiles: 5,
         maxTotalBytes: 1_073_741_824,
         retentionDays: 7
-      }
-    });
-    expect(config.okf).toEqual({
-      log: {
-        maxEntries: 100,
-        maxBytes: 65_536
       }
     });
     expect("i18n" in config).toBe(false);
@@ -800,24 +775,26 @@ describe("parseRuntimeConfig", () => {
     expect(parseRuntimeConfig(validEnv).security?.rateLimits).not.toHaveProperty("upload");
   });
 
-  it("uses default OKF log limits managed by runtime settings", () => {
-    expect(parseRuntimeConfig(validEnv).okf).toEqual({
-      log: {
-        maxEntries: 100,
-        maxBytes: 65_536
-      }
+  it("uses default generated knowledge-base limits managed by runtime settings", () => {
+    expect(parseRuntimeConfig(validEnv).generated).toEqual({
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(
       parseRuntimeConfig({
         ...validEnv,
         OKF_LOG_MAX_ENTRIES: "50",
         OKF_LOG_MAX_BYTES: "32768"
-      }).okf
+      }).generated
     ).toEqual({
-      log: {
-        maxEntries: 100,
-        maxBytes: 65_536
-      }
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
   });
 
@@ -826,6 +803,7 @@ describe("parseRuntimeConfig", () => {
       parseRuntimeConfig({
         ...validEnv,
         DATABASE_POOL_MAX: "16",
+        WORKER_DATABASE_POOL_MAX: "9",
         SOURCE_WORKER_DATABASE_POOL_MAX: "9",
         PUBLICATION_WORKER_DATABASE_POOL_MAX: "7",
         MAINTENANCE_WORKER_DATABASE_POOL_MAX: "5",
@@ -839,10 +817,8 @@ describe("parseRuntimeConfig", () => {
       })
     ).toMatchObject({
       database: {
-      poolMax: 16,
-      sourceWorkerPoolMax: 9,
-      publicationWorkerPoolMax: 7,
-      maintenanceWorkerPoolMax: 5
+        poolMax: 16,
+        workerPoolMax: 9
       },
       worker: {
         sourceFileConcurrency: 2,
@@ -865,43 +841,31 @@ describe("parseRuntimeConfig", () => {
         DATABASE_POOL_MAX: "0"
       })
     ).toThrow(/DATABASE_POOL_MAX/);
-    expect(parseRuntimeConfig({ ...validEnv, WORKER_DATABASE_POOL_MAX: "-1" }).database).toEqual({
-      url: validEnv.DATABASE_URL,
-      poolMax: 10,
-      sourceWorkerPoolMax: 6,
-      publicationWorkerPoolMax: 4,
-      maintenanceWorkerPoolMax: 2
-    });
     expect(() =>
       parseRuntimeConfig({
         ...validEnv,
-        PUBLICATION_WORKER_DATABASE_POOL_MAX: "-1"
+        WORKER_DATABASE_POOL_MAX: "-1"
       })
-    ).toThrow(/PUBLICATION_WORKER_DATABASE_POOL_MAX/);
+    ).toThrow(/WORKER_DATABASE_POOL_MAX/);
+    expect(parseRuntimeConfig({
+      ...validEnv,
+      SOURCE_WORKER_DATABASE_POOL_MAX: "-1",
+      PUBLICATION_WORKER_DATABASE_POOL_MAX: "-1",
+      MAINTENANCE_WORKER_DATABASE_POOL_MAX: "-1"
+    }).database).toEqual({
+      url: validEnv.DATABASE_URL,
+      poolMax: 10,
+      workerPoolMax: 8
+    });
   });
 
-  it("uses default publication settings managed by runtime settings", () => {
-    expect(parseRuntimeConfig(validEnv).publication).toEqual({
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      impactBatchSize: 100,
-      impactConcurrency: 8,
-      dirtyFileHardCount: 2_000,
-      dirtyFileResumeCount: 1_000,
-      dirtyAgeHardSeconds: 900,
-      dirtyAgeResumeSeconds: 300,
-      pendingImpactHardCount: 20_000,
-      pendingImpactResumeCount: 10_000,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
+  it("does not restore removed publication settings from environment variables", () => {
+    expect(parseRuntimeConfig(validEnv).generated).toEqual({
       directoryIndexMaxEntries: 200,
       directoryIndexMaxBytes: 65_536,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(
       parseRuntimeConfig({
@@ -916,28 +880,13 @@ describe("parseRuntimeConfig", () => {
         GRAPH_CANDIDATE_LIMIT: "150",
         GRAPH_MAINTENANCE_BATCH_SIZE: "350",
         ROOT_SUMMARY_LIMIT: "450"
-      }).publication
+      }).generated
     ).toEqual({
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      impactBatchSize: 100,
-      impactConcurrency: 8,
-      dirtyFileHardCount: 2_000,
-      dirtyFileResumeCount: 1_000,
-      dirtyAgeHardSeconds: 900,
-      dirtyAgeResumeSeconds: 300,
-      pendingImpactHardCount: 20_000,
-      pendingImpactResumeCount: 10_000,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
       directoryIndexMaxEntries: 200,
       directoryIndexMaxBytes: 65_536,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
   });
 

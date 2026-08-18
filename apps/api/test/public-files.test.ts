@@ -33,17 +33,12 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+    generated: {
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     },
     pagination: {
       defaultPageSize: 50,
@@ -66,10 +61,10 @@ describe("Public file API boundary", () => {
 
     for (const path of [
       "/index.md",
-      "/schema.md",
+      "/legacy.md",
       "/pages/intro.md",
       "/sources/intro.md",
-      "/_index/search.json"
+      "/_index/catalog.json"
     ]) {
       const response = await app.request(path, {
         headers: {

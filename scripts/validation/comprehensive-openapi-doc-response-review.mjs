@@ -78,8 +78,8 @@ async function validateRuntimeContract(expectedDocument) {
   return {
     ok: response.status === 200
       && exactMatch
-      && expectedOperations.length === 43
-      && actualOperations.length === 43,
+      && expectedOperations.length === 42
+      && actualOperations.length === 42,
     status: response.status,
     exactMatch,
     expectedOperationCount: expectedOperations.length,

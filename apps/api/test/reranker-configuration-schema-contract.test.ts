@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const migration = readFileSync(resolve(
   import.meta.dirname,
-  "../migrations/003_general_purpose_semantic_search.sql"
+  "../migrations/001_storage_vnext.sql"
 ), "utf8");
 
 describe("reranker configuration schema contract", () => {
@@ -19,10 +19,13 @@ describe("reranker configuration schema contract", () => {
   });
 
   it("does not persist request ranking or excerpt controls", () => {
-    const section = migration.slice(
-      migration.indexOf("CREATE TABLE focowiki.reranker_configurations"),
-      migration.indexOf("CREATE TABLE focowiki.semantic_generations")
-    );
+    const section = [
+      "reranker_configurations",
+      "reranker_configuration_revisions"
+    ].map((tableName) => {
+      const start = migration.indexOf(`CREATE TABLE focowiki.${tableName}`);
+      return migration.slice(start, migration.indexOf("\n);", start) + 3);
+    }).join("\n");
     for (const forbidden of [
       "rerank_top_k",
       "rerank_score_threshold",

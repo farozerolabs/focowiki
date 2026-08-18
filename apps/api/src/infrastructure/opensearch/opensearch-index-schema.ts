@@ -26,6 +26,13 @@ const GRAPH_DOCUMENT_FIELDS = new Set([
   "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind", "title",
   "searchText", "rankingTerms", "okfSignals"
 ]);
+const RELATIONSHIP_DOCUMENT_FIELDS = new Set([
+  "id", "schemaVersion", "documentKind", "knowledgeBaseId",
+  "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
+  "title", "relationPublicId", "evidencePublicId", "targetSourceFilePublicId",
+  "targetSourceRevisionPublicId", "targetLogicalPath", "targetTitle",
+  "relationKind", "direction", "searchText", "rankingTerms", "okfSignals"
+]);
 
 export function createOpenSearchIndexBody(input: {
   definition: SearchProviderIndexDefinition;
@@ -70,6 +77,14 @@ export function createOpenSearchIndexBody(input: {
         headingAncestors: standardText(),
         searchText: standardText(),
         rankingTerms: standardText(),
+        relationPublicId: keyword(),
+        evidencePublicId: keyword(),
+        targetSourceFilePublicId: keyword(),
+        targetSourceRevisionPublicId: keyword(),
+        targetLogicalPath: standardText(),
+        targetTitle: standardText(),
+        relationKind: keyword(),
+        direction: keyword(),
         okfSignals: {
           type: "object",
           dynamic: "strict",
@@ -116,7 +131,9 @@ export function serializeOpenSearchDocument(input: {
     document.logicalPath,
     ...(document.documentKind === "content" ? document.headingAncestors : []),
     document.searchText,
-    ...(document.documentKind === "graph_seed" ? document.rankingTerms : [])
+    ...(document.documentKind === "graph_seed"
+      || document.documentKind === "file_relationship"
+      ? document.rankingTerms : [])
   ].join("\n");
   let terms: string[];
   try {
@@ -144,6 +161,8 @@ function assertKnownFields(document: Record<string, unknown>): void {
     ? CONTENT_DOCUMENT_FIELDS
     : document.documentKind === "graph_seed"
       ? GRAPH_DOCUMENT_FIELDS
+      : document.documentKind === "file_relationship"
+        ? RELATIONSHIP_DOCUMENT_FIELDS
       : null;
   if (!allowed || Object.keys(document).some((field) => !allowed.has(field))) {
     throw mappingError();
@@ -158,7 +177,8 @@ function assertBoundedMetadata(document: StorageVnextSearchDocument): void {
     )
   )) throw mappingError();
   if (
-    document.documentKind === "graph_seed"
+    (document.documentKind === "graph_seed"
+      || document.documentKind === "file_relationship")
     && document.rankingTerms.length > MAXIMUM_RANKING_TERMS
   ) throw mappingError();
 }

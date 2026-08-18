@@ -7,6 +7,8 @@ import type {
 } from "./ports.js";
 import { createStorageVnextUploadIdentity } from "./identity.js";
 import { finalizePostgresStorageVnextUploadSession } from "./postgres-finalization.js";
+import type { SemanticMaintenanceTarget } from
+  "../../semantic/domain/contracts.js";
 
 type UploadEntryRow = {
   knowledge_base_id: string;
@@ -45,7 +47,12 @@ type RegistrationRow = {
 
 export function createPostgresStorageVnextUploadRepository(
   sql: DatabaseClient,
-  options: { sourceWorkRetentionMilliseconds: number }
+  options: {
+    sourceWorkRetentionMilliseconds: number;
+    resolveSemanticTarget?: (
+      knowledgeBaseId: string
+    ) => Promise<SemanticMaintenanceTarget | null>;
+  }
 ): StorageVnextUploadRepository {
   assertRetention(options.sourceWorkRetentionMilliseconds);
   return {
@@ -187,9 +194,13 @@ export function createPostgresStorageVnextUploadRepository(
 
     async finalizeSession(input) {
       try {
+        const semanticTarget = options.resolveSemanticTarget
+          ? await options.resolveSemanticTarget(input.knowledgeBaseId)
+          : null;
         return await sql.begin((transaction) =>
           finalizePostgresStorageVnextUploadSession(transaction, {
             ...input,
+            semanticTarget,
             sourceWorkRetentionMilliseconds: options.sourceWorkRetentionMilliseconds
           }));
       } catch (error) {

@@ -164,7 +164,6 @@ describe("Knowledge base file Admin API", () => {
       generatedFileAvailable: true,
       generatedFileId: "bundle-file-001",
       generatedFilePath: "pages/intro.md",
-      graphSummary: null
     });
     expect(body.items[0]).not.toHaveProperty("objectKey");
     expect(body.items[0]).not.toHaveProperty("checksumSha256");
@@ -173,31 +172,66 @@ describe("Knowledge base file Admin API", () => {
     expect(body.refreshAfterMs).toBe(30_000);
   });
 
+  it("returns document lifecycle states and fixed-work progress with the cursor", async () => {
+    const fixture = createFixture();
+    fixture.sourceList.items = [
+      lifecycleSourceFile("waiting", "prepare"),
+      lifecycleSourceFile("processing", "content_projection"),
+      lifecycleSourceFile("error", null),
+      lifecycleSourceFile("available", null),
+      lifecycleSourceFile("deleting", null)
+    ];
+    fixture.sourceList.nextCursor = "opaque-continuous-stage-cursor";
+    fixture.sourceList.refreshAfterMs = 2_000;
+    const { app, cookie } = await authenticate(fixture);
+
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=5",
+      { headers: { cookie } }
+    );
+    const body = await response.json() as {
+      items: Array<{ state: string; blockingWorkKind: string | null }>;
+      nextCursor: string | null;
+      refreshAfterMs: number;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.items.map((item) => [item.state, item.blockingWorkKind])).toEqual([
+      ["waiting", "prepare"],
+      ["processing", "content_projection"],
+      ["error", null],
+      ["available", null],
+      ["deleting", null]
+    ]);
+    expect(body.nextCursor).toBe("opaque-continuous-stage-cursor");
+    expect(body.refreshAfterMs).toBe(2_000);
+  });
+
   it("returns terminal failure and authorized actions unchanged", async () => {
     const fixture = createFixture();
     fixture.sourceList.items = [failedSourceFile()];
     const { app, cookie } = await authenticate(fixture);
     const response = await app.request(
-      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&state=failed",
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&state=error",
       { headers: { cookie } }
     );
     const body = await response.json() as { items: Array<Record<string, unknown>> };
 
     expect(response.status).toBe(200);
     expect(body.items[0]).toMatchObject({
-      state: "failed",
-      currentStage: "projection_generation",
+      state: "error",
+      blockingWorkKind: null,
       generatedFileAvailable: false,
       failure: {
         code: "GENERATION_VALIDATION_FAILED",
-        retryKind: "publication",
-        correlationId: "publication-job-1"
+        retryKind: "document_processing",
+        correlationId: "document-job-1"
       },
       actions: expect.arrayContaining([
         expect.objectContaining({ kind: "view_failure_details" }),
         expect.objectContaining({
-          kind: "retry_publication",
-          scope: "knowledge_base_publication"
+          kind: "retry_document_processing",
+          scope: "source_file"
         })
       ])
     });
@@ -208,7 +242,7 @@ describe("Knowledge base file Admin API", () => {
   it("passes lifecycle and column filters to the vNext core application", async () => {
     const fixture = await createAuthenticatedFileApp();
     const response = await fixture.app.request(
-      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&fileNameQuery=intro&fileIdQuery=source-file-001&state=visible&currentStage=generation_activation&modelInvocationStatus=not_recorded&generatedOutputStatus=visible&startedFrom=2026-06-14T00%3A00%3A00.000Z&startedTo=2026-06-15T00%3A00%3A00.000Z&endedFrom=2026-06-14T00%3A00%3A00.000Z&endedTo=2026-06-15T00%3A00%3A00.000Z&errorState=without_error&errorCodeQuery=TIMEOUT&actionState=openable",
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&fileNameQuery=intro&fileIdQuery=source-file-001&state=available&currentStage=available&modelInvocationStatus=completed&generatedOutputStatus=current_available&startedFrom=2026-06-14T00%3A00%3A00.000Z&startedTo=2026-06-15T00%3A00%3A00.000Z&endedFrom=2026-06-14T00%3A00%3A00.000Z&endedTo=2026-06-15T00%3A00%3A00.000Z&errorState=without_error&errorCodeQuery=TIMEOUT&actionState=openable",
       { headers: { cookie: fixture.cookie } }
     );
 
@@ -221,10 +255,10 @@ describe("Knowledge base file Admin API", () => {
         filters: {
           fileNameQuery: "intro",
           fileIdQuery: "source-file-001",
-          state: "visible",
-          currentStage: "generation_activation",
-          modelInvocationStatus: "not_recorded",
-          generatedOutputStatus: "visible",
+          state: "available",
+          currentStage: "available",
+          modelInvocationStatus: "completed",
+          generatedOutputStatus: "current_available",
           startedFrom: "2026-06-14T00:00:00.000Z",
           startedTo: "2026-06-15T00:00:00.000Z",
           endedFrom: "2026-06-14T00:00:00.000Z",
@@ -275,38 +309,11 @@ describe("Knowledge base file Admin API", () => {
     );
 
     await expect(response.json()).resolves.toMatchObject({
-      sourceFileJobs: {
-        queuedCount: 3,
-        runningCount: 2,
-        failedCount: 1,
-        oldestQueuedAgeSeconds: 45
-      },
-      publicationJobs: {
-        queuedCount: 1,
-        runningCount: 0,
-        oldestQueuedAgeSeconds: 30
-      },
-      pendingDispatch: {
-        pendingCount: 2,
-        paused: false,
-        pausedReason: null
-      },
-      publicationProgress: {
-        generationId: "generation-001",
-        stage: "building",
-        processedImpactCount: 3,
-        totalImpactCount: 5
-      },
-      indexMaintenance: {
-        requestId: null,
-        state: "idle",
-        active: false,
-        maintenanceRequired: false
-      },
-      dirtySourceFiles: {
-        count: 2,
-        oldestDirtyAt: "2026-06-14T00:00:00.000Z"
-      }
+      waitingCount: 3,
+      processingCount: 2,
+      availableCount: 8,
+      errorCount: 1,
+      oldestWaitingAt: "2026-06-14T00:00:00.000Z"
     });
     expect(response.status).toBe(200);
     expect(fixture.records.processingCalls).toEqual([
@@ -350,15 +357,15 @@ describe("Knowledge base file Admin API", () => {
         index:
           "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md",
         search:
-          "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
+          "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fcatalog.json",
         links:
-          "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Flinks.json"
+          "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=_graph%2Fcatalog.json"
       }
     });
     expect(response.status).toBe(200);
   });
 
-  it("returns an explicit empty public URL state before first publication", async () => {
+  it("returns an explicit empty public URL state before the first document is available", async () => {
     const fixture = createFixture();
     fixture.adminRead.getKnowledgeBase = async (request) => request.knowledgeBaseId === "kb-001"
       ? {
@@ -426,7 +433,7 @@ function createFixture() {
   };
   const sourceList = {
     items: [visibleSourceFile()] as Array<Record<string, unknown>>,
-    nextCursor: null,
+    nextCursor: null as string | null,
     refreshAfterMs: 30_000
   };
   const adminRead: StorageVnextAdminReadApplication = {
@@ -600,9 +607,12 @@ function visibleSourceFile() {
     generatedFileAvailable: true,
     generatedFileId: "bundle-file-001",
     generatedFilePath: "pages/intro.md",
-    graphSummary: null,
-    state: "visible",
-    currentStage: "generation_activation",
+    state: "available",
+    requiredWorkCount: 8,
+    completedWorkCount: 8,
+    activeWorkKinds: [],
+    blockingWorkKind: null,
+    retryingWorkKind: null,
     failure: null,
     actions: []
   };
@@ -615,65 +625,66 @@ function failedSourceFile() {
     generatedFileAvailable: false,
     generatedFileId: null,
     generatedFilePath: null,
-    graphSummary: null,
-    state: "failed",
-    currentStage: "projection_generation",
+    state: "error",
+    requiredWorkCount: 8,
+    completedWorkCount: 2,
+    activeWorkKinds: [],
+    blockingWorkKind: null,
+    retryingWorkKind: null,
     failure: {
       code: "GENERATION_VALIDATION_FAILED",
-      retryKind: "publication",
-      correlationId: "publication-job-1"
+      retryKind: "document_processing",
+      correlationId: "document-job-1"
     },
     actions: [
       { kind: "view_failure_details" },
       {
-        kind: "retry_publication",
-        scope: "knowledge_base_publication"
+        kind: "retry_document_processing",
+        scope: "source_file"
       }
     ]
   };
 }
 
+function lifecycleSourceFile(
+  state: "waiting" | "processing" | "error" | "available" | "deleting",
+  blockingWorkKind: "prepare" | "first_layer" | "content_projection"
+    | "graphrag" | "relation_reconcile" | "knowledge_projection"
+    | "activate" | "cleanup" | null
+) {
+  return {
+    id: `source-${state}`,
+    name: `${state}.md`,
+    relativePath: `${state}.md`,
+    state,
+    requiredWorkCount: 8,
+    completedWorkCount: state === "available" ? 8 : 0,
+    activeWorkKinds: state === "processing" && blockingWorkKind
+      ? [blockingWorkKind] : [],
+    blockingWorkKind,
+    retryingWorkKind: null,
+    failure: state === "error" ? {
+      workKind: "first_layer",
+      code: "SOURCE_PROCESSING_FAILED",
+      message: "Source processing failed.",
+      occurredAt: "2026-08-13T00:00:00.000Z",
+      retryKind: "document_processing",
+      correlationId: `source-${state}`
+    } : null,
+    actions: [],
+    generatedFileAvailable: state === "available",
+    generatedFileId: state === "available" ? `source-${state}` : null,
+    generatedFilePath: state === "available" ? `${state}.md` : null,
+  };
+}
+
 function processingSummary() {
   return {
-    activeVersionId: "generation-001",
-    sourceFileJobs: {
-      queuedCount: 3,
-      runningCount: 2,
-      failedCount: 1,
-      oldestQueuedAgeSeconds: 45
-    },
-    publicationJobs: {
-      queuedCount: 1,
-      runningCount: 0,
-      oldestQueuedAgeSeconds: 30
-    },
-    pendingDispatch: {
-      pendingCount: 2,
-      paused: false,
-      pausedReason: null
-    },
-    publicationProgress: {
-      generationId: "generation-001",
-      stage: "building",
-      processedImpactCount: 3,
-      totalImpactCount: 5
-    },
-    maintenanceProgress: {
-      migration: null,
-      lexicalRebuild: null,
-      projectionRepair: null,
-      compaction: { active: null, latestCompleted: null }
-    },
-    indexMaintenance: {
-      requestId: null,
-      state: "idle",
-      active: false,
-      maintenanceRequired: false
-    },
-    dirtySourceFiles: {
-      count: 2,
-      oldestDirtyAt: "2026-06-14T00:00:00.000Z"
-    }
+    waitingCount: 3,
+    processingCount: 2,
+    availableCount: 8,
+    errorCount: 1,
+    oldestWaitingAt: "2026-06-14T00:00:00.000Z"
   };
 }
 
@@ -693,17 +704,12 @@ function createConfig(): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+    generated: {
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     },
     pagination: {
       defaultPageSize: 50,

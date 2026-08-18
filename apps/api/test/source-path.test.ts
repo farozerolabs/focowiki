@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isAllowedPublicBundleFilePath } from "@focowiki/okf";
 import {
   SourcePathValidationError,
   generatedPagePath,
@@ -23,6 +24,13 @@ describe("source path policy", () => {
 
   it("normalizes composed Unicode and case for uniqueness", () => {
     expect(normalizeSourceRelativePath("Root/Cafe\u0301.MD").pathKey).toBe("root/café.md");
+  });
+
+  it("keeps an accepted uppercase Markdown source publishable", () => {
+    const source = normalizeSourceRelativePath("Root/Guide.MD");
+
+    expect(source.generatedPath).toBe("pages/Root/Guide.MD");
+    expect(isAllowedPublicBundleFilePath(source.generatedPath)).toBe(true);
   });
 
   it("normalizes a user directory without treating it as a Markdown source", () => {
@@ -86,6 +94,14 @@ describe("source path policy", () => {
     expect(left.pathKey).not.toBe(right.pathKey);
   });
 
+  it("allows 1,000 Unicode code points in one path segment and rejects 1,001", () => {
+    expect(normalizeSourceDirectoryPath("界".repeat(1_000)).name)
+      .toBe("界".repeat(1_000));
+    expect(() => normalizeSourceDirectoryPath("界".repeat(1_001))).toThrow(
+      expect.objectContaining({ code: "segment" })
+    );
+  });
+
   it.each([
     "reports/100%_coverage.md",
     "reports/discount%notes.md",
@@ -101,8 +117,6 @@ describe("source path policy", () => {
   it.each([
     "index.md",
     "log.md",
-    "log-000001.md",
-    "schema.md",
     "pages/root/section/page.md",
     "pages/资料/页面.md",
     "_index/manifest.json",
@@ -112,6 +126,12 @@ describe("source path policy", () => {
   });
 
   it.each([
+    "schema.md",
+    "log-000001.md",
+    "_segments/manifest/v1/0001.json",
+    "schema-frontmatter.md",
+    "schema-navigation.md",
+    "schema-extensions.md",
     "pages/../secret.md",
     "pages/%2e%2e/secret.md",
     "pages/root/%252e%252e/secret.md",

@@ -14,6 +14,8 @@ export const STORAGE_VNEXT_CONTENT_SCHEMA_VERSION =
   "storage-vnext-content-v2";
 export const STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION =
   "storage-vnext-graph-seed-v2";
+export const STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION =
+  "storage-vnext-file-relationship-v1";
 
 export type StorageVnextContentDocument = {
   id: string;
@@ -47,9 +49,33 @@ export type StorageVnextGraphSeedDocument = {
   okfSignals: OkfSearchSignals;
 };
 
+export type StorageVnextFileRelationshipDocument = {
+  id: string;
+  schemaVersion: typeof STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION;
+  documentKind: "file_relationship";
+  knowledgeBaseId: StorageVnextKnowledgeBaseId;
+  sourceFilePublicId: StorageVnextPublicId;
+  sourceRevisionPublicId: StorageVnextPublicId;
+  logicalPath: string;
+  fileKind: string;
+  title: string | null;
+  relationPublicId: StorageVnextPublicId;
+  evidencePublicId: StorageVnextPublicId;
+  targetSourceFilePublicId: StorageVnextPublicId;
+  targetSourceRevisionPublicId: StorageVnextPublicId;
+  targetLogicalPath: string;
+  targetTitle: string | null;
+  relationKind: "references" | "related";
+  direction: "incoming" | "outgoing" | "bidirectional";
+  searchText: string;
+  rankingTerms: readonly string[];
+  okfSignals: OkfSearchSignals;
+};
+
 export type StorageVnextSearchDocument =
   | StorageVnextContentDocument
-  | StorageVnextGraphSeedDocument;
+  | StorageVnextGraphSeedDocument
+  | StorageVnextFileRelationshipDocument;
 
 export function createStorageVnextContentDocument(input: {
   knowledgeBaseId: StorageVnextKnowledgeBaseId;
@@ -152,6 +178,70 @@ export function createStorageVnextGraphSeedDocument(input: {
     searchText: input.searchText,
     rankingTerms,
     okfSignals
+  };
+}
+
+export function createStorageVnextFileRelationshipDocument(input: {
+  knowledgeBaseId: StorageVnextKnowledgeBaseId;
+  sourceFilePublicId: StorageVnextPublicId;
+  sourceRevisionPublicId: StorageVnextPublicId;
+  logicalPath: string;
+  fileKind?: string;
+  title: string | null;
+  relationPublicId: StorageVnextPublicId;
+  evidencePublicId: StorageVnextPublicId;
+  targetSourceFilePublicId: StorageVnextPublicId;
+  targetSourceRevisionPublicId: StorageVnextPublicId;
+  targetLogicalPath: string;
+  targetTitle: string | null;
+  relationKind: "references" | "related";
+  direction: "incoming" | "outgoing" | "bidirectional";
+  searchText: string;
+  rankingTerms: readonly string[];
+  okfSignals?: OkfSearchSignals;
+}): StorageVnextFileRelationshipDocument {
+  assertIdentity(input);
+  if ([input.relationPublicId, input.evidencePublicId,
+    input.targetSourceFilePublicId, input.targetSourceRevisionPublicId,
+    input.targetLogicalPath].some((value) => !value)
+    || input.targetSourceFilePublicId === input.sourceFilePublicId
+    || !["references", "related"].includes(input.relationKind)
+    || !["incoming", "outgoing", "bidirectional"].includes(input.direction)) {
+    throw new Error("File relationship search document identity is invalid");
+  }
+  const fileKind = input.fileKind ?? "page";
+  const rankingTerms = [...new Set(
+    input.rankingTerms.map((value) => value.trim()).filter(Boolean)
+  )].sort().slice(0, 1_000);
+  const okfSignals = normalizeSignals(input.okfSignals);
+  const common = {
+    schemaVersion: STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION as
+      typeof STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
+    documentKind: "file_relationship" as const,
+    knowledgeBaseId: input.knowledgeBaseId,
+    sourceFilePublicId: input.sourceFilePublicId,
+    sourceRevisionPublicId: input.sourceRevisionPublicId,
+    logicalPath: input.logicalPath,
+    fileKind,
+    title: input.title,
+    relationPublicId: input.relationPublicId,
+    evidencePublicId: input.evidencePublicId,
+    targetSourceFilePublicId: input.targetSourceFilePublicId,
+    targetSourceRevisionPublicId: input.targetSourceRevisionPublicId,
+    targetLogicalPath: input.targetLogicalPath,
+    targetTitle: input.targetTitle,
+    relationKind: input.relationKind,
+    direction: input.direction,
+    searchText: input.searchText,
+    rankingTerms,
+    okfSignals
+  };
+  return {
+    id: "file-relationship-" + digest([
+      STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
+      JSON.stringify(common)
+    ]),
+    ...common
   };
 }
 

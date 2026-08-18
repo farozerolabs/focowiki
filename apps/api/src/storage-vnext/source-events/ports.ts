@@ -1,4 +1,3 @@
-import type { SourceFileFailureStage } from "../../domain/source-file-lifecycle.js";
 import type {
   StorageVnextOpaqueCursor,
   StorageVnextPage,
@@ -6,6 +5,7 @@ import type {
 } from "../shared/types.js";
 
 export type StorageVnextSourceEventSeverity = "info" | "warning" | "error";
+export type StorageVnextSourceEventStage = string;
 
 export type StorageVnextSourceEventSummary = {
   publicId: string;
@@ -13,7 +13,7 @@ export type StorageVnextSourceEventSummary = {
   sourceFilePublicId: string;
   sourceRevisionPublicId: string;
   sequence: number;
-  stageKey: SourceFileFailureStage;
+  stageKey: StorageVnextSourceEventStage;
   messageKey: string;
   startedAt: StorageVnextTimestamp | null;
   endedAt: StorageVnextTimestamp | null;
@@ -30,10 +30,3 @@ export type StorageVnextSourceEventReadPort = {
     cursor: StorageVnextOpaqueCursor | null;
   }): Promise<StorageVnextPage<StorageVnextSourceEventSummary>>;
 };
-
-export type StorageVnextSourceEventWritePort = {
-  record(event: StorageVnextSourceEventSummary): Promise<void>;
-};
-
-export type StorageVnextSourceEventRepository =
-  StorageVnextSourceEventReadPort & StorageVnextSourceEventWritePort;

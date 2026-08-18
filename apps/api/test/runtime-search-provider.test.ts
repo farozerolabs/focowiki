@@ -204,7 +204,6 @@ function searchSettingCases(): readonly {
     "maxAttempts",
     "retryDelayMs",
     "cleanupBatchSize",
-    "stagingRetentionHours",
     "cropLength"
   ];
   return (["meilisearch", "opensearch"] as const).flatMap((provider) =>
@@ -291,7 +290,6 @@ function searchSettings(): RuntimeSearchSettings {
     maxAttempts: 3,
     retryDelayMs: 100,
     cleanupBatchSize: 100,
-    stagingRetentionHours: 24,
     cropLength: 1_200
   };
 }

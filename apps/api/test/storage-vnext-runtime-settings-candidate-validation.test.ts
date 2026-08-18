@@ -123,7 +123,7 @@ describe("storage vNext complete runtime settings candidate validation", () => {
     });
     expect(validateCandidate(input)).toEqual(expect.arrayContaining([
       expect.objectContaining({ field: "worker.generationBatchSize" }),
-      expect.objectContaining({ field: "publication.generationRetentionDays" }),
+      expect.objectContaining({ field: "publication" }),
       expect.objectContaining({ field: "maintenance.migrationBackfillConcurrency" })
     ]));
   });
@@ -134,38 +134,48 @@ function candidate(overrides: Record<string, unknown> = {}) {
     worker: {
       sourceFileConcurrency: 1,
       sourceObjectReadConcurrency: 1,
-      hardDeleteConcurrency: 1,
+      claimBatchSize: 1,
+      pollIntervalMs: 500,
+      lockTtlSeconds: 30_000,
+      heartbeatIntervalMs: 10_000,
+      jobMaxAttempts: 3,
+      jobRetryDelayMs: 2_000,
       completedJobRetentionDays: 7
     },
-    publication: {
-      roleConcurrency: 1,
-      generatedObjectWriteConcurrency: 1
+    generated: {
+      directoryIndexMaxEntries: 500,
+      directoryIndexMaxBytes: 1_048_576,
+      rootSummaryLimit: 100,
+      okfLogMaxEntries: 1_000,
+      okfLogMaxBytes: 1_048_576
     },
-    graph: {},
+    graph: {
+      candidateLimit: 100,
+      acceptedEdgeLimit: 50,
+      searchDefaultDepth: 1,
+      searchMaxDepth: 2,
+      searchDefaultFanout: 10,
+      searchMaxFanout: 50,
+      shardSize: 500,
+      genericPhraseThreshold: 10
+    },
     maintenance: {
-      knowledgeBaseMaintenanceConcurrency: 1,
+      reconciliationEnabled: true,
       scanBatchSize: 500,
-      deletionBatchSize: 100,
-      quarantineGracePeriodSeconds: 86_400,
       maxAttempts: 5,
       retryDelayMs: 30_000,
-      projectionRepairConcurrency: 4,
-      projectionRepairDatabaseBatchSize: 2_000,
-      projectionRepairObjectWriteConcurrency: 8,
-      lexicalRebuildConcurrency: 4,
-      lexicalRebuildSourceReadConcurrency: 2,
-      lexicalRebuildMaxInFlightSourceBytes: 67_108_864
+      hardDeleteConcurrency: 1,
+      hardDeleteDatabaseBatchSize: 1_000,
+      hardDeleteObjectBatchSize: 1_000,
+      hardDeleteMaxAttempts: 3,
+      hardDeleteRetryDelayMs: 60_000,
+      hardDeleteFailedRetentionDays: 30
     },
     semantic: {
       maximumChunkCharacters: 16_000,
       maximumChunks: 32,
       maximumEvidenceTargets: 64,
-      maximumCommunityPartitions: 256,
-      maximumCommunityEntities: 10_000,
-      maximumCommunityRelationships: 20_000,
-      maximumCommunityBoundaryRelationships: 10_000,
-      maximumCommunitySummaryCharacters: 8_000,
-      communityAdapterTimeoutMs: 30_000,
+      graphRagAdapterTimeoutMs: 30_000,
       searchLaneCutoffMs: 1_000,
       queryEmbeddingConcurrency: 4,
       queryEmbeddingCacheEntries: 1_000
@@ -177,8 +187,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
       indexBatchCompressedBytes: 65_536,
       taskPollIntervalMs: 500,
       taskTimeoutMs: 600_000,
-      cleanupBatchSize: 1_000,
-      stagingRetentionHours: 24
+      cleanupBatchSize: 1_000
     },
     activeModel: { suggestionConcurrency: 1 }
   }, overrides);
@@ -187,9 +196,9 @@ function candidate(overrides: Record<string, unknown> = {}) {
     capacity: {
       databaseConnections: 4,
       searchTasks: 3,
-      objectStoreRequests: 11,
-      memoryBytes: 67_305_472,
-      cpuConcurrency: 9
+      objectStoreRequests: 4,
+      memoryBytes: 196_608,
+      cpuConcurrency: 4
     },
     backendLimits: {
       maximumCleanupLagSeconds: 21_600,

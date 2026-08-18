@@ -29,15 +29,23 @@ export function registerAdminSourceFileRetryRoutes(
         {
           error: {
             code: result.code,
-            messageKey: result.code === "SOURCE_FILE_RETRY_NOT_ALLOWED"
-              ? "errors.sourceFileRetryNotAllowed"
-              : "errors.sourceFileRetryConflict"
+            messageKey: retryErrorMessageKey(result.code)
           }
         },
         409
       );
     }
   );
+}
+
+function retryErrorMessageKey(code: string): string {
+  if (code === "SOURCE_FILE_RETRY_ALREADY_RUNNING") {
+    return "errors.sourceFileRetryAlreadyRunning";
+  }
+  if (code === "SOURCE_FILE_RETRY_NOT_ALLOWED") {
+    return "errors.sourceFileRetryNotAllowed";
+  }
+  return "errors.sourceFileRetryConflict";
 }
 
 function missingRepositoryBackend(context: Parameters<MiddlewareHandler>[0]): Response {

@@ -1,42 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import * as fullFlow from "../full-flow-e2e.mjs";
-import { resolveOkfV02RunOwnership } from
-  "../lib/okf-v02-http-e2e.mjs";
+import * as fixtures from "../lib/okf-v02-fixtures.mjs";
 
 const PINNED_REVISION = "930b65fc3f5619d5d0591f88c72ebae8b848d60d";
 
-test("OKF 0.2 HTTP stages retain the shared runtime ownership record", () => {
-  const ownership = { runId: "run-shared", resources: {} };
-  assert.equal(resolveOkfV02RunOwnership({ ownership }), ownership);
-});
-
 function requireFunction(name) {
   assert.equal(
-    typeof fullFlow[name],
+    typeof fixtures[name],
     "function",
-    `full-flow-e2e must export ${name}`
+    `okf-v02-fixtures must export ${name}`
   );
-  return fullFlow[name];
+  return fixtures[name];
 }
-
-test("OKF 0.2 full-flow config names only the runtime legacy corpus variable", () => {
-  const privatePath = "/private/legal-corpus";
-  const config = fullFlow.readFullFlowConfig("all", {
-    FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false",
-    OKF_V01_COMPAT_CORPUS_DIR: privatePath
-  });
-
-  assert.equal(config.changeId, "align-google-okf-v0-2-trust-signals");
-  assert.equal(config.okfV01CompatCorpusEnv, "OKF_V01_COMPAT_CORPUS_DIR");
-  assert.equal(JSON.stringify(config).includes(privatePath), false);
-  assert.equal(
-    fullFlow.buildFullFlowPlan(config).some((step) => step.id === "okf-v02-200-file-e2e"),
-    true
-  );
-});
 
 test("OKF 0.2 checkout verification pins HEAD and the exact official census", () => {
   const verify = requireFunction("verifyOkfV02OfficialCheckout");

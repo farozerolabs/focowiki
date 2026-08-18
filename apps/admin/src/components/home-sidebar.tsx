@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { KeyRoundIcon, LibraryIcon, LogOutIcon, SettingsIcon } from "lucide-react";
+import { BotIcon, KeyRoundIcon, LibraryIcon, LogOutIcon, SettingsIcon } from "lucide-react";
 import { AdminSidebarHeader } from "@/components/admin-sidebar-header";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,7 +15,7 @@ import {
   useSidebar
 } from "@/components/ui/sidebar";
 
-export type HomeSection = "knowledge-bases" | "openapi-keys" | "settings";
+export type HomeSection = "knowledge-bases" | "openapi-keys" | "model-settings" | "settings";
 
 type HomeSidebarProps = ComponentProps<typeof Sidebar> & {
   appName: string;
@@ -25,6 +25,7 @@ type HomeSidebarProps = ComponentProps<typeof Sidebar> & {
     toggleSidebarRail: string;
     knowledgeBases: string;
     openApiKeys: string;
+    modelSettings: string;
     settings: string;
     logout: string;
   };
@@ -79,6 +80,18 @@ export function HomeSidebar({
                   >
                     <KeyRoundIcon />
                     <span>{labels.openApiKeys}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    type="button"
+                    isActive={activeSection === "model-settings"}
+                    aria-current={activeSection === "model-settings" ? "page" : undefined}
+                    tooltip={labels.modelSettings}
+                    onClick={() => handleSelect("model-settings")}
+                  >
+                    <BotIcon />
+                    <span>{labels.modelSettings}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>

@@ -27,6 +27,7 @@ describe("storage vNext optional semantic search", () => {
       semantic: { search: semantic },
       fallback: fallback(),
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 200,
@@ -102,7 +103,7 @@ describe("storage vNext optional semantic search", () => {
     expect(pagination.write).toHaveBeenCalledTimes(2);
   });
 
-  it("continues a legacy inline cursor after Redis pagination is enabled", async () => {
+  it("rejects legacy inline cursors", async () => {
     const semantic = {
       search: async () => ({
         items: ["a", "b"].map((id) => semanticItem(id)),
@@ -122,18 +123,27 @@ describe("storage vNext optional semantic search", () => {
         searchLaneCutoffMs: 1000
       })
     };
-    const legacy = createStorageVnextSemanticSearch(common);
-    const first = await legacy.search({ ...request(), limit: 1 });
+    const legacy = createStorageVnextSemanticSearch({
+      ...common,
+      pagination: {
+        read: async () => null,
+        write: async (scopeHash) => Buffer.from(JSON.stringify({
+          version: 1,
+          scopeHash,
+          offset: 1
+        })).toString("base64url")
+      }
+    });
+    const legacyFirstPage = await legacy.search({ ...request(), limit: 1 });
     const current = createStorageVnextSemanticSearch({
       ...common,
       pagination: paginationStore()
     });
 
     await expect(current.search({
-      ...request(), limit: 1, cursor: first.nextCursor
-    })).resolves.toMatchObject({
-      items: [{ sourceFilePublicId: "file-b" }],
-      nextCursor: null
+      ...request(), limit: 1, cursor: legacyFirstPage.nextCursor
+    })).rejects.toMatchObject({
+      code: "INVALID_SEARCH_CURSOR"
     });
   });
 
@@ -150,7 +160,8 @@ describe("storage vNext optional semantic search", () => {
           "content_vector",
           "entity_vector",
           "relationship_vector",
-          "community_vector"
+          "community_vector",
+          "file_relationship"
         ]
       }
     }));
@@ -159,6 +170,7 @@ describe("storage vNext optional semantic search", () => {
       semantic: { search: vi.fn() },
       fallback: { search: fallbackSearch },
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 200,
@@ -178,7 +190,8 @@ describe("storage vNext optional semantic search", () => {
           "content_vector",
           "entity_vector",
           "relationship_vector",
-          "community_vector"
+          "community_vector",
+          "file_relationship"
         ]
       }
     });
@@ -191,6 +204,7 @@ describe("storage vNext optional semantic search", () => {
       semantic: { search: vi.fn() },
       fallback: fallback(),
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 200,
@@ -209,6 +223,7 @@ describe("storage vNext optional semantic search", () => {
           "lexical",
           "jieba",
           "file_graph",
+          "file_relationship",
           "content_vector",
           "entity_vector",
           "relationship_vector",
@@ -227,6 +242,7 @@ describe("storage vNext optional semantic search", () => {
       semantic: { search: semanticSearch },
       fallback: { search: fallbackSearch },
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 200,
@@ -259,6 +275,7 @@ describe("storage vNext optional semantic search", () => {
       }) },
       fallback: fallback(),
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 200,
@@ -283,6 +300,7 @@ describe("storage vNext optional semantic search", () => {
       }) },
       fallback: fallback(),
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 50,
@@ -316,6 +334,7 @@ describe("storage vNext optional semantic search", () => {
       }) },
       fallback: fallback(),
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 50,
@@ -349,6 +368,7 @@ describe("storage vNext optional semantic search", () => {
       }) },
       fallback: fallback(),
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 50,
@@ -379,6 +399,7 @@ describe("storage vNext optional semantic search", () => {
       semantic: { search: semantic },
       fallback: fallback(),
       hydration: hydration(),
+      pagination: paginationStore(),
       providerKind: "opensearch",
       vectorIndexPrefix: "focowiki",
       maxPageSize: 50,

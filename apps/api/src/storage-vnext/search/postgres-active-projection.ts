@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
 import type { SearchProviderKind } from
   "../../application/ports/search-provider-runtime.js";
@@ -13,7 +14,7 @@ type ActiveProjectionRow = {
   provider_index_uid: string;
   schema_checksum_sha256: string;
   settings_checksum_sha256: string;
-  document_checksum_sha256: string;
+  active_contract_revision: number | string;
   document_count: number | string;
 };
 
@@ -24,28 +25,26 @@ export function createPostgresStorageVnextActiveSearchProjectionRepository(
     async getActiveProjection(knowledgeBaseId) {
       assertId(knowledgeBaseId);
       const rows = await sql<ActiveProjectionRow[]>`
-        SELECT projection.public_id, projection.knowledge_base_id,
-               projection.provider_kind,
-               projection.provider_index_uid,
-               projection.schema_checksum_sha256,
-               projection.settings_checksum_sha256,
-               projection.document_checksum_sha256,
-               projection.document_count
-        FROM focowiki.active_snapshots AS snapshot
-        JOIN focowiki.search_projections AS projection
-          ON projection.knowledge_base_id = snapshot.knowledge_base_id
-         AND projection.public_id = snapshot.search_projection_public_id
-        WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
-          AND projection.projection_role = 'active'
-          AND projection.state = 'ready'
-        LIMIT 1
+        SELECT public_id, knowledge_base_id, provider_kind,
+               provider_index_uid, schema_checksum_sha256,
+               settings_checksum_sha256, active_contract_revision,
+               document_count
+        FROM focowiki.search_projections
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND state = 'active'
+        ORDER BY provider_kind COLLATE "C"
+        LIMIT 2
       `;
+      if (rows.length > 1) {
+        throw new Error("Multiple active search providers are configured");
+      }
       return rows[0] ? mapProjection(rows[0]) : null;
     }
   };
 }
 
 function mapProjection(row: ActiveProjectionRow): StorageVnextActiveSearchProjection {
+  const activeContractRevision = toSafeNumber(row.active_contract_revision);
   return {
     publicId: row.public_id,
     knowledgeBaseId: row.knowledge_base_id,
@@ -53,18 +52,23 @@ function mapProjection(row: ActiveProjectionRow): StorageVnextActiveSearchProjec
     providerIndexUid: row.provider_index_uid,
     schemaChecksum: row.schema_checksum_sha256,
     settingsChecksum: row.settings_checksum_sha256,
-    documentChecksum: row.document_checksum_sha256,
+    activeContractRevision,
+    documentChecksum: createHash("sha256").update(JSON.stringify([
+      row.schema_checksum_sha256,
+      row.settings_checksum_sha256,
+      activeContractRevision
+    ])).digest("hex"),
     documentCount: toSafeNumber(row.document_count)
   };
 }
 
-function assertId(value: string) {
+function assertId(value: string): void {
   if (!value || Buffer.byteLength(value) > 255) {
     throw new Error("Storage vNext active search projection input is invalid");
   }
 }
 
-function toSafeNumber(value: number | string) {
+function toSafeNumber(value: number | string): number {
   const result = Number(value);
   if (!Number.isSafeInteger(result) || result < 0) {
     throw new Error("Storage vNext active search projection is invalid");

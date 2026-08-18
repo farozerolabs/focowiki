@@ -6,7 +6,7 @@ const MAXIMUM_DOCUMENT_BYTES = 65_536;
 const SETTING_KEYS: readonly RuntimeSettingKey[] = [
   "rate_limits",
   "worker",
-  "publication",
+  "generated",
   "graph",
   "maintenance",
   "semantic",

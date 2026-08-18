@@ -1,120 +1,161 @@
 ---
-title: 来源文件证据与图关系
+title: 来源文件证据与文档关系
 ---
 
-# 来源文件证据与图关系
+# 来源文件证据与文档关系
 
-Focowiki 会为生成后的 Markdown 页面构建轻量关系图，并在知识库具有生效语义契约时建立向量与 GraphRAG 语义投影。图关系状态保存在 PostgreSQL，处理过程通过 Redis 协调，并以文件形式发布到 OKF bundle 中。Agent 可以继续通过文件树和内容读取接口探索关系。
+Focowiki 始终把上传的 Markdown 作为权威证据，并在可读取文档之间建立轻量关系图。搜索、嵌入、GraphRAG 和关系记录用于发现相关文件；Agent 回答前仍应读取来源 Markdown。
 
-本文所说的“来源文件证据”表示来源 Markdown 始终是权威内容，搜索、向量和图关系只负责发现候选，Agent 回答前仍需读取来源文件。这不是搜索通道的优先级：Developer OpenAPI 省略 `mode` 时默认执行 `hybrid`，并行运行所有可用的文件、关键词、向量和图检索通道，再融合为来源文件结果。系统同时增加稳定的关系文件，让删除、重试和重新发布流程能够复用同一份图关系状态。
+这张图连接的是文档，不是独立的实体管理图，也不会替代文件树。
 
-## 为什么需要
+## 关系来源
 
-大规模知识库需要稳定的跨文件关系。模型 prompt 可以检查当前文件和有限候选文件，但无法把一个文件和几千、几万篇文档逐一比较。
+文档关系可以来自：
 
-Focowiki 把关系生成拆成两层：
+- 来源正文中的 Markdown 链接。
+- 支持的元数据中可安全解析的本地引用。
+- 文档索引过程中经过确认的内容候选。
 
-| 层级 | 作用 |
-| --- | --- |
-| 内容画像 | 从每个 Markdown 正文生成通用画像，包括摘要、主题、关键词、实体、显式引用、标题结构和安全 frontmatter context。 |
-| 确定性候选 | 使用有界数据库读取和内容证据，例如 Markdown links、标题提及、共享实体、共享主题、显式引用和已有互相关系。 |
-| 可选模型确认 | 只把当前文件画像、有界正文视图和候选文件卡片发送给配置好的模型。模型只能确认、拒绝、分类、打权重和解释已有候选。 |
+只有关系两端都能解析到可读取文档时，关系才会发布。宽泛标签、常见状态、通用类型或相似标题本身不足以建立关系。
 
-模型不能发明目标文件。模型确认拒绝某个候选时，这个候选不会作为 accepted relationship 发布。模型确认失败时，具有强正文证据的确定性关系仍然可以发布。
+生成页面可以包含使用普通相对 Markdown 链接的 `Related` 部分。新增、替换、重命名、移动或删除文档时，受影响的链接和关系文件会一起更新；处理期间不相关的文档仍然可用。
 
-共享状态、宽泛类型、低信息量标签或生成的系统标题不会单独生成页面 `Related` link。metadata 可以作为辅助证据，但关系需要先有正文画像中的内容证据。
+## 可移植文件
 
-## 生成文件
-
-图关系文件位于生成 bundle 的 `_graph/` 目录。
+关系文件和发现文件通过路径指向 `pages/` 下可读取的 Markdown。
 
 ```text
+index.md
+log.md
+pages/
+  index.md
+  index-directory-leaf-<stable-id>.md
+  guides/
+    index.md
+    index-directory-leaf-<stable-id>.md
+    install.md
+_index/
+  index.md
+  index-extension-leaf-<stable-id>.md
+  catalog.json
+  pages/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    all-documents.json
+    guides/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      guides-documents.json
+  terms/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    han/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      han-terms-part-0001.json
 _graph/
   index.md
-  graph_node/v1/
-    {shard}.json
-  graph_edge/v1/
-    {shard}.json
+  index-extension-leaf-<stable-id>.md
+  catalog.json
+  by-directory/
+    index.md
+    index-extension-leaf-<stable-id>.md
+    index.json
+    guides/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      index.json
+      guides-relationships.json
   by-file/
-    {fileId}.json
+    index.md
+    index-extension-leaf-<stable-id>.md
+    guides/
+      index.md
+      index-extension-leaf-<stable-id>.md
+      install.json
 ```
 
-| 文件 | 作用 |
+这是一份结构示例。`pages/` 与上传目录一致；`_index/pages/` 和 `_graph/` 的两个分支只镜像适用的 `pages/` 目录。每个非空生成目录都有 `index.md` 和一个或多个稳定导航页。可读文档目录使用 `index-directory-leaf-<stable-id>.md`，`_index/` 和 `_graph/` 目录使用 `index-extension-leaf-<stable-id>.md`。
+
+每个机器可读目录使用 `index.json` 作为路由。文档记录使用 `all-documents.json` 或 `<目录名>-documents.json` 等语义化名称；关系记录使用 `<目录名>-relationships.json`。需要分片时追加 `-part-NNNN`。逐文件关系记录镜像可读页面路径，但去掉 `pages/` 前缀和 `.md` 后缀，例如 `pages/guides/install.md` 对应 `_graph/by-file/guides/install.json`。
+
+系统只生成当前确实存在的目录和数据。只有包含对应文字的词项时才生成该文字类别目录。没有已接受关系时，不生成 `_graph/by-directory/`、`_graph/by-file/` 及其导航页；没有关系的单个文档也不会生成逐文件关系 JSON。
+
+| 资源 | 用途 |
 | --- | --- |
-| `_graph/index.md` | 给人和 Agent 使用的图关系入口。 |
-| `_index/catalog.json` | 当前图节点和图边投影分片的有界目录。 |
-| `_graph/graph_node/v1/*.json` | 分片图节点记录。 |
-| `_graph/graph_edge/v1/*.json` | 分片关系记录，适合导出和审计。 |
-| `_graph/by-file/{fileId}.json` | 单个生成页面的有界本地关系，这是 Agent 探索关系的主要文件。 |
+| `pages/**/*.md` | 完整可读文档，也是最终引用证据。 |
+| `_index/pages/**` | 有界的目录和文档发现记录。 |
+| `_index/terms/**` | 有界的多语言导航词项，不是完整全文索引。 |
+| `_graph/by-directory/**` | 按可读文档目录分组的关系。 |
+| `_graph/by-file/**` | 单个可读文档的有界相邻关系。 |
+| `index-*-leaf-<stable-id>.md` | 由同目录 `index.md` 进入的有界 Markdown 导航页。 |
 
-存在图输出时，根目录 `index.md` 会链接 `_graph/index.md`。Agent 的常规读取路径从生成后的 Markdown 页面开始，再读取 `_graph/by-file/{fileId}.json`。完整 edge shards 通常用于导出和检查。
-
-## 页面引用
-
-由上传文件生成的 Markdown 页面在存在图关系时会写入稳定 frontmatter。
-
-```yaml
-fileId: "source-file-123"
-graph: "../_graph/by-file/source-file-123.json"
-```
-
-页面正文可以包含由持久化图边生成的 `Related` section。同一组图边也会写入 `_index/links.json`，因此 Markdown 页面、JSON indexes 和 per-file graph files 使用同一份关系来源。
+生成的 JSON 使用相对于知识库根目录的文档路径，生成的 Markdown 使用相对链接。可移植文件不会暴露数据库 ID、模型名称、服务 URL、存储键或处理标识。
 
 ## 关系字段
 
-每条关系记录只包含安全公开字段。
+关系记录使用面向使用者的文档字段：
 
 | 字段 | 含义 |
 | --- | --- |
-| `fileId` | 相关已发布来源文件标识。 |
-| `path` | 相关生成 Markdown 路径，例如 `pages/example.md`。 |
-| `title` | 相关文件标题。 |
-| `relationType` | 关系类型，例如 `direct_reference`、`same_entity`、`same_specific_subject` 或 `metadata_supported_content`。 |
-| `direction` | 当前文件指向相关文件时为 `outgoing`，其他文件指向当前文件时为 `incoming`。 |
-| `weight` | `0` 到 `1` 的有界优先级分数。 |
-| `reason` | 面向用户、开发者和 Agent 的安全解释。 |
-| `source` | 关系来源，例如 `deterministic` 或 `model_confirmed`。 |
-| `contentAvailable` | 相关 Markdown 内容是否可通过文件读取接口访问。 |
+| `path`、`from`、`to`、`targetPath` | 当前可读取的 `pages/*.md` 路径。 |
+| `title`、`fromTitle`、`toTitle`、`targetTitle` | 被连接文档的标题。 |
+| `relationType` | 方向性来源证据使用 `references`，已接受的关联使用 `related`。 |
+| `direction` | 相对于当前文档的 `outgoing` 或 `incoming`。 |
+| `weight` | `0` 到 `1` 之间的关系优先级。 |
+| `reason` | 说明文档为何相关的安全解释。 |
 
-图关系文件只暴露逻辑标识和逻辑路径。它们不会暴露 S3 object keys、本地文件路径、Redis keys、SQL details、模型 provider payloads 或 secrets。
+## 在线 Agent 读取流程
 
-## Agent 探索流程
+Agent 通过 Developer OpenAPI 读取时：
 
-1. 读取 `index.md`，了解知识库整体结构。
-2. 需要发现关系时，沿 `index.md` 中的图入口继续读取。
-3. 读取 `schema.md`，理解 metadata 和生成文件约定。
-4. 在任务需要时检查 `_index/*`，获取生成后的 search、links、manifest 或 tree 线索。
-5. 分页列出生成文件树。
-6. 打开相关的 `pages/*.md` 文件，并读取完整 Markdown 正文。
-7. 读取页面 frontmatter，找到 `fileId`、`path` 和 `graph`。
-8. 打开 `_graph/by-file/{fileId}.json`，调用 related-file endpoint，或用已知 file ID 调用 Developer OpenAPI graph expansion。
-9. 读取图扩展或图关系文件返回的相关页面路径。
-10. 根据任务需要继续沿 Markdown links、文件树、`_index/*`、搜索候选和图关系读取证据。
+1. 使用完整用户问题调用文件搜索。省略 `mode` 即使用 `hybrid`。
+2. 把返回条目视为候选。
+3. 跟随返回的读取链接，读取完整 Markdown 文件。
+4. 证据仍不完整时，使用返回的 `fileId` 调用相关文件接口或图扩展。
+5. 读取返回的相关 Markdown 文件后，才能把其内容作为证据。
+6. 文件已经覆盖问题，或没有新的有效候选时停止。
 
-Developer OpenAPI 也提供一个有界 related-file endpoint，方便偏好 JSON list 的后端集成。文件读取仍然是 Agent-facing 的主要契约。
+图扩展要求一个当前可读取的 `fileId`，不能使用自由文本查询、节点 ID 或边 ID 作为起点。
 
-管理后台预览页复制的是当前选中生成文件的 Developer OpenAPI content URL。`pages/示例.md` 这样的安全 Unicode 页面路径会在复制 URL 中被编码，并由 Developer OpenAPI 解析到 active generated file。
+搜索模式的公开含义如下：
 
-## 图搜索
+| 模式 | 用途 |
+| --- | --- |
+| `hybrid` | 推荐的默认模式，组合可用的文件发现和关系发现。 |
+| `file` | 侧重正文、标题、路径、元数据和正文嵌入。 |
+| `graph` | 侧重文档关系和图关系信号。 |
 
-Developer OpenAPI 文件搜索默认使用 `mode=hybrid`。系统在各自的有界预算内并行执行精确路径、精确标题、词法、Jieba、文件图、正文向量、实体向量、关系向量和社区向量等可用通道，再通过确定性融合与稳定排序规则生成一个去重后的来源文件结果列表。精确路径和有正文证据的精确标题仍保持明确的优先级。`mode=file` 用于显式缩小到文件发现范围并保持既有调用契约；`mode=graph` 用于显式缩小到持久化图节点和图关系范围。
+搜索结果、摘要、分数、关系说明和重排输出只用于导航。提供事实性回答前，应读取返回的 Markdown。
 
-正文向量覆盖每个活动来源文件；存在生效语义投影时，融合检索还可以使用有界的实体、关系和社区证据增强来源文件发现。只有生成模型负责的语义骨架采用稀疏选择，未被选中的文件仍参与精确、词法、Jieba、正文向量和文件图检索。搜索返回已发布来源文件结果和可选的 `semanticStatus`，不会返回生成答案、原始向量、prompt 或内部语义记录。可选语义通道较慢或不可用时，已经完成的安全通道仍可在整体查询时限内返回结果。
+## 静态知识库读取流程
 
-图搜索读取的是生成 `_graph/` 文件和 `Related` section 的同一份活动关系投影。请求过程中不会临时解析图文件。这样可以让大规模知识库查询保持有界，并让导入、删除和发布流程通过同一个活动 generation 更新图读取。
+只有复制后的知识库目录或静态 HTTP 服务时：
 
-每个图搜索结果可以包含 `matchType`、`graphContext.graphRef`、`graphContext.relationships`、`graphContext.graphPaths` 和结果级 `readActions`。图字段用于导航，随后通过 `readActions` 按 ID 或路径读取生成后的 Markdown 文件。生成后的 Markdown 文件内容仍然是回答前应该读取的证据来源。
+1. 从 `index.md` 开始。
+2. 通过目录索引浏览 `pages/`。
+3. 需要补充发现时，只读取 `_index/catalog.json` 声明的页面或词项路径。
+4. 沿普通 Markdown 链接或对应的 `_graph/by-file/**` 记录继续。
+5. 读取目标 `pages/*.md` 文件，并引用这些文件。
 
-图扩展可以使用 file、node、edge 或 query 作为 seed，并返回有界关系路径和文件读取动作。Agent 拿到有价值的文件或图候选后，可以使用图扩展继续发现相邻文件，再回到同一个 loop 读取 Markdown 文件。搜索和图扩展用于发现线索。完整 Markdown 文件仍然是最终回答的证据来源。
+词项索引有明确容量限制。在线全文搜索和混合检索应使用 Developer OpenAPI。
 
-## 运行说明
+## 文档可用状态
 
-PostgreSQL 保存关系事实、投影影响项、活动图节点和活动图边。Redis 协调范围锁、cursor 和短期图缓存。S3 兼容存储将生成后的 `_graph/` Markdown 与机器分片保存为活动 generation 引用的不可变对象。
+每个上传文档独立索引。同一次上传中的其他文件仍在处理时，已经完成的文档可以先变为可用。
 
-处理粒度是单个文件。知识库已有当前语义契约时，上传和正文替换会自动执行完整来源索引、有界 GraphRAG 增强、语义协调、向量生成、受影响图与生成内容投影，以及所选搜索服务的最终入库。每个来源文件都会进入精确路径、精确标题、词法、Jieba、正文向量、文件图和所选搜索服务索引；模型生成的图增强只处理由确定性内容结构和文件关系选出的重要来源，避免大批量导入时为每个分块分别请求生成模型。搜索入库是最后的就绪门禁。创建、替换、重命名、移动或删除文件时，只更新受影响的文件、关系、语义、向量、反向引用、生成内容和搜索范围；目录操作使用有界子项批次。普通变更不会触发完整知识库图重建，也不依赖手动维护索引；失败文件可以通过同一个 source-file retry flow 手动重试。
+使用公开的 `state` 判断生命周期：
 
-可选语义增强使用 Admin 管理的生成模型和向量模型。它可以在现有页面和 `_graph` 资源中增加有界实体上下文与证据更充分的关系解释，但不会增加另一套公开文件树、图数据库、实体管理控制台或图可视化 UI。现有 Markdown 路径、导航文件、稳定叶文件、来源正文和 Developer OpenAPI 读取流程保持不变。显式维护只用于建立首个契约、接入契约或搜索服务变更、修复、恢复和完整重建；构建并校验替换语义投影期间，当前可读内容继续生效。
+- `waiting`：已经接受，等待开始。
+- `processing`：正在索引。
+- `available`：当前文档可读取、可搜索。
+- `error`：处理以安全错误结束，并可能返回允许的重试操作。
+- `deleting`：正在删除。
 
-当前版本从干净的破坏式存储基线启动，不复用或转换旧版本的知识库、来源内容、模型设置、生成内容、语义产物或搜索索引；需要把来源 Markdown 重新导入空目标部署。**维护索引**继续用于后续当前基线内的契约或搜索服务接入。完整覆盖与稀疏增强含义不同：每个活动来源文件都会获得上面列出的完整确定性与向量检索覆盖，只有有界语义骨架会使用生成模型。来源 Markdown 始终是权威内容，并继续通过相同的 Developer OpenAPI 读取动作返回。
+替换失败时，`generatedOutputStatus=previous_available` 可以让之前的可读内容继续生效。首次上传失败的文件不会出现在文件树、内容、关系或搜索结果中。
 
-大批量导入时，应保留部署环境中的 source-worker CPU 与内存上限，并在同时观察生成模型 endpoint、向量模型 endpoint、PostgreSQL、对象存储和所选搜索服务后再提高 Admin 并发。即使本地 CPU 和内存保持在限制内，外部模型延迟仍可能是主要索引耗时。文件处理状态和维护状态会展示进度与安全错误，不需要对全部语料重新重试。
+大批量导入应从文档给出的默认配置开始。只有在观察管理后台处理状态、外部模型延迟、搜索延迟、CPU 和内存后，再提高并发。

@@ -21,22 +21,22 @@ const OPERATION_DESCRIPTIONS: Record<string, string> = {
   getDeveloperOpenApiVersion: "Read the product version and Developer OpenAPI version for client compatibility checks.",
   getDeveloperOpenApiContract: "Read the machine-readable OpenAPI contract that describes the Developer OpenAPI.",
   listKnowledgeBases: "Read a paginated list of knowledge bases available to the current OpenAPI key.",
-  createKnowledgeBase: "Create a new knowledge base and receive the `knowledgeBaseId` required by its upload, processing-status, published-file, and deletion APIs.",
+  createKnowledgeBase: "Create a new knowledge base and receive the `knowledgeBaseId` required by its upload, processing-status, readable-file, and deletion APIs.",
   getKnowledgeBase: "Read one knowledge base by `knowledgeBaseId`.",
-  updateKnowledgeBase: "Update the name or description of one knowledge base. Send its current `resourceRevision` in `If-Match` so a concurrent change is not overwritten.",
-  deleteKnowledgeBase: "Start deleting one knowledge base. A successful response confirms that deletion has started and the knowledge base will become unavailable.",
-  createUploadSession: "Start a resumable upload and receive the session identifier, the maximum number of files per list request, and the recommended upload concurrency.",
+  updateKnowledgeBase: "Update the name or description of one knowledge base. Send its current `resourceRevision` in `If-Match`; the updated record is returned after the change is saved.",
+  deleteKnowledgeBase: "Start deleting one knowledge base. Poll the returned operation URL until it reaches a terminal state. After deletion completes, the operation URL remains readable for a limited retention period while the knowledge-base URL returns 404.",
+  createUploadSession: "Start a resumable upload and receive the session and operation identifiers, the maximum number of files per list request, and the recommended upload concurrency.",
   addUploadManifestEntries: "Add a batch of Markdown files to an upload session by registering each relative path, size, and optional checksum.",
   sealUploadManifest: "Confirm that the upload file list is complete, then read the session to find the files whose Markdown content must be uploaded.",
   uploadSessionEntryContent: "Upload the complete Markdown content for one file marked `upload_required`.",
   getUploadSession: "Read upload progress and the next page of entries needed to resume a session.",
   cancelUploadSession: "Cancel an upload session that has not completed.",
   reconcileUploadSession: "Refresh entries that were temporarily blocked by another change to the same path.",
-  finalizeUploadSession: "Submit the uploaded files for background processing. The response confirms submission while individual files can still be processing.",
+  finalizeUploadSession: "Submit uploaded files for independent background indexing. An active generation model and an active validated Embedding configuration are required before finalization. The returned `finalizing` session confirms transfer acceptance; poll its operation link until every document becomes available or fails.",
   listKnowledgeBaseSourceFiles: "Read a paginated list of uploaded Markdown files and their processing status.",
   getKnowledgeBaseSourceFile: "Read the processing status and available actions for one uploaded Markdown file by `sourceFileId`.",
   moveSourceFile: "Rename an uploaded Markdown file or move it to an existing uploaded directory.",
-  deleteSourceFile: "Delete one uploaded Markdown file and remove its published page from the readable knowledge base.",
+  deleteSourceFile: "Delete one uploaded Markdown file and remove its readable page from the readable knowledge base.",
   getSourceFileContent: "Read the complete Markdown content currently stored for one uploaded file.",
   replaceSourceFileContent: "Replace the complete Markdown content of one uploaded file and optionally move it.",
   listSourceDirectories: "Read the direct child directories under an uploaded directory.",
@@ -44,18 +44,17 @@ const OPERATION_DESCRIPTIONS: Record<string, string> = {
   moveSourceDirectory: "Rename or move one uploaded directory with all files and subdirectories below it.",
   deleteSourceDirectory: "Delete one uploaded directory and all files and subdirectories below it.",
   listResourceOperations:
-    "List file and directory changes for a knowledge base, including moves, renames, content replacements, and deletions. Results can be filtered by processing status.",
+    "List upload indexing and file or directory changes for a knowledge base. Results can be filtered by processing status.",
   getResourceOperation:
-    "Use the `operationId` returned by a change request to read its processing state, final result, and error details.",
-  listKnowledgeBaseSourceFileEvents: "Read the processing history for one uploaded Markdown file, including each step, message level, and time.",
+    "Use the `operationId` returned by an upload or resource change to read its processing state, progressive document counts, final result, and error details.",
   retryKnowledgeBaseSourceFile: "Manually retry one uploaded Markdown file that failed processing.",
-  listKnowledgeBaseTree: "Browse the currently published knowledge-base files and directories.",
-  getFileContentByPath: "Read a published knowledge-base file by its `path`, such as `index.md` or `pages/example.md`.",
-  getFileById: "Read the metadata and available read links for one published file by `fileId`.",
-  getFileContentById: "Read a published knowledge-base file by `fileId`.",
+  listKnowledgeBaseTree: "Browse the currently readable knowledge-base files and directories.",
+  getFileContentByPath: "Read a readable knowledge-base file by its `path`, such as `index.md` or `pages/example.md`.",
+  getFileById: "Read the metadata and available read links for one readable file by `fileId`.",
+  getFileContentById: "Read a readable knowledge-base file by `fileId`.",
   listRelatedFiles: "Read a paginated list of files related to the selected file, with paths for opening their content.",
-  searchGeneratedFiles: "Find published files by path, title, heading, Markdown content, metadata, and optional file relationships. Read a returned file before using its content.",
-  expandGraph: "Provide exactly one starting point: a file, relationship node, relationship edge, or short query. The response returns related files up to the requested depth and result limits.",
+  searchGeneratedFiles: "Find readable files by path, title, heading, Markdown content, metadata, and optional file relationships. Read a returned file before using its content.",
+  expandGraph: "Use a readable `fileId` returned by tree, search, file, or related-file operations. The response returns related files up to the requested depth and result limits.",
   getGraphOverview: "Read a compact overview of available file relationships.",
   createWebhook: "Create a webhook subscription and receive the signing secret once.",
   listWebhooks: "Read a paginated list of webhook subscriptions.",
@@ -71,8 +70,8 @@ const OPERATION_SUCCESS_DESCRIPTIONS: Record<string, string> = {
   listKnowledgeBases: "Requested page of knowledge bases and the token for reading the next page.",
   createKnowledgeBase: "Newly created knowledge base.",
   getKnowledgeBase: "Requested knowledge base.",
-  updateKnowledgeBase: "Knowledge base after the metadata update.",
-  deleteKnowledgeBase: "Knowledge-base deletion request and the number of affected files and directories.",
+  updateKnowledgeBase: "Updated knowledge-base record.",
+  deleteKnowledgeBase: "Accepted knowledge-base deletion, the operation used to check completion, and the number of affected files and directories.",
   createUploadSession: "New upload session and its file-list and content-upload settings.",
   addUploadManifestEntries: "Upload session after accepting this batch of file records.",
   sealUploadManifest: "Upload session after confirming the complete file list.",
@@ -80,7 +79,7 @@ const OPERATION_SUCCESS_DESCRIPTIONS: Record<string, string> = {
   getUploadSession: "Current upload session and the requested page of file records.",
   cancelUploadSession: "Upload session after cancellation.",
   reconcileUploadSession: "Upload session after rechecking blocked entries.",
-  finalizeUploadSession: "Upload session after submitting uploaded files for background processing.",
+  finalizeUploadSession: "Accepted transfer session in `finalizing` state with the operation link used to monitor independent document indexing.",
   listKnowledgeBaseSourceFiles: "Requested page of uploaded Markdown files and the token for reading the next page.",
   getKnowledgeBaseSourceFile: "Requested uploaded Markdown file and its current processing status.",
   moveSourceFile: "File move or rename request accepted for background processing.",
@@ -91,18 +90,17 @@ const OPERATION_SUCCESS_DESCRIPTIONS: Record<string, string> = {
   getSourceDirectory: "Requested directory from the uploaded folder structure.",
   moveSourceDirectory: "Directory move or rename request accepted for background processing.",
   deleteSourceDirectory: "Directory deletion accepted for background processing, with the number of affected files and directories.",
-  listResourceOperations: "Requested page of file and directory changes.",
-  getResourceOperation: "Requested file or directory change.",
-  listKnowledgeBaseSourceFileEvents: "Requested page of processing history for the uploaded Markdown file.",
+  listResourceOperations: "Requested page of upload indexing and resource changes.",
+  getResourceOperation: "Requested upload indexing or resource change.",
   retryKnowledgeBaseSourceFile: "Uploaded file and accepted retry details.",
-  listKnowledgeBaseTree: "Requested page of published files and directories, including parent directories for search results.",
-  getFileContentByPath: "Complete content of the published file at the requested path.",
-  searchGeneratedFiles: "Published files ranked by relevance to the supplied query.",
+  listKnowledgeBaseTree: "Requested page of direct readable files and directories under the selected parent path.",
+  getFileContentByPath: "Complete content of the readable file at the requested path. A file under `pages/` that comes from uploaded Markdown preserves the current uploaded text; generated resources return their generated content.",
+  searchGeneratedFiles: "Readable files ranked by relevance to the supplied query.",
   expandGraph: "Related files and relationship details for the selected starting point.",
-  getGraphOverview: "Relationship counts and links for exploring the currently published knowledge-base version.",
-  getFileById: "Requested published file metadata and links for reading or exploring it.",
-  getFileContentById: "Complete content of the published file with the requested identifier.",
-  listRelatedFiles: "Requested page of files related to the selected published file.",
+  getGraphOverview: "Relationship counts and links for exploring the currently readable knowledge-base version.",
+  getFileById: "Requested readable file metadata and links for reading or exploring it.",
+  getFileContentById: "Complete content of the readable file with the requested identifier. A file under `pages/` that comes from uploaded Markdown preserves the current uploaded text; generated resources return their generated content.",
+  listRelatedFiles: "Requested page of files related to the selected readable file.",
   createWebhook: "New webhook subscription and its signing secret.",
   listWebhooks: "Requested page of webhook subscriptions.",
   deleteWebhook: "Confirmation that the webhook subscription was deleted.",
@@ -291,32 +289,21 @@ export function sourceFileListFilterParameters(): ParameterObject[] {
     }),
     queryParameter("state", "Filter by the uploaded file's current processing status.", {
       type: "string",
-      enum: ["queued", "running", "pending_publication", "visible", "failed"],
-      example: "visible"
+      enum: ["waiting", "processing", "available", "error", "deleting"],
+      example: "available"
     }),
-    queryParameter("currentStage", "Filter by the current file-processing step.", {
+    queryParameter("blockingWorkKind", "Filter by the processing step currently preventing the document from becoming available.", {
       type: "string",
       enum: [
-        "upload_storage",
-        "metadata_resolution",
-        "llm_suggestion",
-        "graph_generation",
-        "graphrag_processing",
-        "semantic_reconciliation",
-        "embedding_generation",
-        "affected_projection",
-        "search_publication",
-        "semantic_maintenance_required",
-        "projection_generation",
-        "generation_validation",
-        "generation_activation"
+        "prepare", "first_layer", "content_projection", "graphrag",
+        "relation_reconcile", "knowledge_projection", "activate", "cleanup"
       ],
-      example: "generation_activation"
+      example: "activate"
     }),
-    queryParameter("generatedOutputStatus", "Filter by whether the published file is ready to read.", {
+    queryParameter("generatedOutputStatus", "Filter by generated-content availability.", {
       type: "string",
-      enum: ["pending", "visible", "unavailable"],
-      example: "visible"
+      enum: ["unavailable", "previous_available", "current_available"],
+      example: "current_available"
     })
   ];
 }
@@ -330,7 +317,7 @@ export function sourceFileIdParameter(): ParameterObject {
 }
 
 export function fileIdParameter(): ParameterObject {
-  return pathParameter("fileId", "Published file identifier returned by tree, search, related-file, or file APIs.");
+  return pathParameter("fileId", "Readable file identifier returned by tree, search, related-file, or file APIs.");
 }
 
 export function webhookIdParameter(): ParameterObject {
@@ -346,7 +333,7 @@ export function filePathQueryParameter(required: boolean): ParameterObject {
     name: "path",
     in: "query",
     required,
-    description: "Published knowledge-base file path returned by tree, search, or file APIs. Parent traversal, backslashes, and storage paths are rejected.",
+    description: "Readable knowledge-base file path returned by tree, search, or file APIs. Parent traversal, backslashes, and storage paths are rejected.",
     schema: {
       type: "string",
       pattern: "\\.(?:md|json)$",
@@ -370,12 +357,12 @@ export function fileSearchParameters(): ParameterObject[] {
       enum: ["all", "path", "metadata"],
       default: "all"
     }),
-    queryParameter("fileKind", "Published-file type filter. Search returns active Markdown pages created from uploaded files. `all` removes the explicit type predicate but currently returns the same page set.", {
+    queryParameter("fileKind", "Readable-file type filter. Search returns active Markdown pages created from uploaded files. `all` removes the explicit type predicate but currently returns the same page set.", {
       type: "string",
       enum: ["all", "page"],
       default: "page"
     }),
-    queryParameter("mode", "Evidence plan. With `scope=all`, `file` runs exact path, grounded title, lexical, Jieba, and content vector retrieval; `graph` runs exact path, grounded title, file relationships, and entity, relationship, and community vector retrieval; `hybrid` runs both plans. `scope=path` or `scope=metadata` narrows these families as documented. Every result remains a readable source file.", {
+    queryParameter("mode", "Search strategy. `file` searches file data and semantic similarity, `graph` follows file relationships and graph-derived semantic signals, and `hybrid` combines both. `scope` narrows the searched fields. Every result remains a readable source file.", {
       type: "string",
       enum: ["file", "graph", "hybrid"],
       default: "hybrid"
@@ -421,7 +408,7 @@ export function fileSearchParameters(): ParameterObject[] {
       maximum: SEARCH_RESULT_MAX_LIMIT,
       default: SEARCH_RESULT_DEFAULT_LIMIT
     }),
-    queryParameter("cursor", "Pagination token returned by the same search query, filters, active generation, and effective ranking settings.", {
+    queryParameter("cursor", "Pagination token returned by the same search query, filters, readable knowledge-base version, and effective ranking settings.", {
       type: "string"
     })
   ];

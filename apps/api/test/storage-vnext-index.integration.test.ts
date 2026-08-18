@@ -87,18 +87,6 @@ describeOwnedDatabase("storage vNext PostgreSQL index plans", () => {
       `
     },
     {
-      name: "active root object owners",
-      expectedIndex: "object_owners_release_root_idx",
-      query: `
-        SELECT object_id
-        FROM focowiki.object_owners
-        WHERE knowledge_base_id = 'kb-plan'
-          AND release_root_public_id = 'root-plan'
-        ORDER BY object_id
-        LIMIT 20
-      `
-    },
-    {
       name: "stale object reservation recovery",
       expectedIndex: "object_registrations_stale_reservation_idx",
       query: `
@@ -108,18 +96,6 @@ describeOwnedDatabase("storage vNext PostgreSQL index plans", () => {
           AND created_at <= '2026-08-01T00:00:00.000Z'
         ORDER BY created_at, object_id
         LIMIT 20
-      `
-    },
-    {
-      name: "expired release event cleanup",
-      expectedIndex: "release_event_summaries_expiry_idx",
-      query: `
-        SELECT public_id
-        FROM focowiki.release_event_summaries
-        WHERE expires_at <= '2026-08-01T00:00:00.000Z'
-        ORDER BY expires_at, public_id
-        LIMIT 20
-        FOR UPDATE SKIP LOCKED
       `
     },
     {
@@ -155,7 +131,7 @@ describeOwnedDatabase("storage vNext PostgreSQL index plans", () => {
         FROM focowiki.cleanup_actions
         WHERE state IN ('queued', 'retry')
           AND not_before <= '2026-08-01T00:00:00.000Z'
-        ORDER BY not_before, sequence_number, updated_at, public_id
+        ORDER BY priority, not_before, sequence_number, updated_at, public_id
         LIMIT 20
         FOR UPDATE SKIP LOCKED
       `

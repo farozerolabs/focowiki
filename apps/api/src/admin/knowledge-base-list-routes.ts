@@ -83,11 +83,10 @@ function toReleasedKnowledgeBase(knowledgeBase: StorageVnextAdminKnowledgeBase) 
     id: knowledgeBase.id,
     name: knowledgeBase.name,
     description: knowledgeBase.description,
-    activeGenerationId: knowledgeBase.activeVersionId,
+    activeContentRevision: knowledgeBase.catalogVersion,
     ...(knowledgeBase.resourceRevision === undefined
       ? {}
       : { resourceRevision: knowledgeBase.resourceRevision }),
-    catalogGeneration: knowledgeBase.catalogVersion,
     createdAt: knowledgeBase.createdAt,
     updatedAt: knowledgeBase.updatedAt
   };

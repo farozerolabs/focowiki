@@ -4,8 +4,6 @@ import { createDeveloperOpenApiDocument } from
   "../src/developer-openapi/openapi-document.js";
 import { readDeveloperFileSearchFilters } from
   "../src/developer-openapi/file-search-filters.js";
-import { readDeveloperGraphExpansionFilters } from
-  "../src/developer-openapi/graph-expansion-filters.js";
 
 describe("natural-language Developer OpenAPI search contract", () => {
   it("normalizes NFKC and whitespace once and defaults omitted mode to hybrid", () => {
@@ -39,18 +37,6 @@ describe("natural-language Developer OpenAPI search contract", () => {
       fileKind: undefined
     });
     expect(result.ok).toBe(valid);
-  });
-
-  it("applies the same normalized query contract to graph expansion", () => {
-    expect(readDeveloperGraphExpansionFilters({
-      query: "  Ｇｒａｐｈ\trelationship  ",
-    })).toMatchObject({ ok: true, query: "Graph relationship" });
-    expect(readDeveloperGraphExpansionFilters({ query: "x".repeat(512) }).ok)
-      .toBe(true);
-    expect(readDeveloperGraphExpansionFilters({ query: "x".repeat(513) }).ok)
-      .toBe(false);
-    expect(readDeveloperGraphExpansionFilters({ query: "好".repeat(512) }).ok)
-      .toBe(true);
   });
 
   it.each([

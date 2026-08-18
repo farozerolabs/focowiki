@@ -53,8 +53,6 @@ type SemanticItem = {
   explanations: readonly string[];
 };
 
-type LegacyCursor = { version: 1; scopeHash: string; offset: number };
-
 export type StorageVnextSemanticPaginationState = {
   version: 1;
   seenSourceFilePublicIds: string[];
@@ -71,10 +69,6 @@ export type StorageVnextSemanticPaginationPort = {
     state: StorageVnextSemanticPaginationState
   ): Promise<string>;
 };
-
-type DecodedCursor =
-  | { kind: "legacy"; value: LegacyCursor }
-  | { kind: "snapshot"; value: StorageVnextSemanticPaginationState };
 
 export function createStorageVnextSemanticSearch(input: {
   semanticGenerations: {
@@ -127,7 +121,7 @@ export function createStorageVnextSemanticSearch(input: {
   };
   fallback: StorageVnextSearchQueryPort;
   hydration: StorageVnextSearchHydrationPort;
-  pagination?: StorageVnextSemanticPaginationPort;
+  pagination: StorageVnextSemanticPaginationPort;
   providerKind: SearchProviderKind;
   vectorIndexPrefix: string;
   maxPageSize: number;
@@ -221,12 +215,10 @@ export function createStorageVnextSemanticSearch(input: {
       const settings = await input.resolveRuntimeSettings();
       const semanticLimit = Math.min(
         1_000,
-        cursor.kind === "legacy"
-          ? cursor.value.offset + request.limit
-          : Math.max(
-              cursor.value.scanLimit,
-              cursor.value.seenSourceFilePublicIds.length + request.limit
-            )
+        Math.max(
+          cursor.scanLimit,
+          cursor.seenSourceFilePublicIds.length + request.limit
+        )
       );
       try {
         const result = await input.semantic.search({
@@ -438,81 +430,40 @@ function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function encodeCursor(value: LegacyCursor): string {
-  return Buffer.from(JSON.stringify(value)).toString("base64url");
-}
-
 async function decodeCursor(input: {
   value: string | null;
   scopeHash: string;
   pageSize: number;
-  pagination: StorageVnextSemanticPaginationPort | undefined;
-}): Promise<DecodedCursor> {
+  pagination: StorageVnextSemanticPaginationPort;
+}): Promise<StorageVnextSemanticPaginationState> {
   if (!input.value) {
-    return input.pagination
-      ? {
-          kind: "snapshot",
-          value: {
-            version: 1,
-            seenSourceFilePublicIds: [],
-            scanLimit: input.pageSize
-          }
-        }
-      : {
-          kind: "legacy",
-          value: { version: 1, scopeHash: input.scopeHash, offset: 0 }
-        };
+    return {
+      version: 1,
+      seenSourceFilePublicIds: [],
+      scanLimit: input.pageSize
+    };
   }
-  if (input.pagination) {
-    const state = await input.pagination.read(input.scopeHash, input.value);
-    if (isPaginationState(state)) return { kind: "snapshot", value: state };
-  }
-  try {
-    const decoded = JSON.parse(
-      Buffer.from(input.value, "base64url").toString("utf8")
-    ) as LegacyCursor;
-    if (
-      decoded.version !== 1
-      || decoded.scopeHash !== input.scopeHash
-      || !Number.isSafeInteger(decoded.offset)
-      || decoded.offset < 1
-      || decoded.offset > 1_000
-    ) throw new Error("invalid");
-    return { kind: "legacy", value: decoded };
-  } catch {
+  const state = await input.pagination.read(input.scopeHash, input.value);
+  if (!isPaginationState(state)) {
     throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_CURSOR");
   }
+  return state;
 }
 
 async function paginateSemanticResults(input: {
-  cursor: DecodedCursor;
+  cursor: StorageVnextSemanticPaginationState;
   valid: readonly { item: SemanticItem; source: StorageVnextSearchHydrationRecord }[];
   requestLimit: number;
   semanticLimit: number;
   providerHasMore: boolean;
   scopeHash: string;
-  pagination: StorageVnextSemanticPaginationPort | undefined;
+  pagination: StorageVnextSemanticPaginationPort;
 }) {
-  if (input.cursor.kind === "legacy") {
-    const offset = input.cursor.value.offset;
-    const selected = input.valid.slice(offset, offset + input.requestLimit);
-    const nextOffset = offset + selected.length;
-    return {
-      selected,
-      nextCursor: (input.valid.length > nextOffset || input.providerHasMore)
-        && nextOffset < 1_000
-        ? encodeCursor({ version: 1, scopeHash: input.scopeHash, offset: nextOffset })
-        : null
-    };
-  }
-  if (!input.pagination) {
-    throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_CURSOR");
-  }
-  const seen = new Set(input.cursor.value.seenSourceFilePublicIds);
+  const seen = new Set(input.cursor.seenSourceFilePublicIds);
   const unseen = input.valid.filter(({ item }) => !seen.has(item.sourceFilePublicId));
   const selected = unseen.slice(0, input.requestLimit);
   const nextSeen = [
-    ...input.cursor.value.seenSourceFilePublicIds,
+    ...input.cursor.seenSourceFilePublicIds,
     ...selected.map(({ item }) => item.sourceFilePublicId)
   ];
   const hasMore = nextSeen.length < 1_000 && (

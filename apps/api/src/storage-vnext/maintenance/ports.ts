@@ -3,13 +3,12 @@ import type { SearchProviderKind } from
   "../../application/ports/search-provider-runtime.js";
 import type { SemanticMaintenanceTarget } from
   "../../semantic/domain/contracts.js";
-import type { SemanticStageSettingsSnapshot } from
-  "../../semantic/application/stage-orchestration.js";
 
 export type StorageVnextSemanticAdoptionSnapshot = {
   mode: "full" | "embedding_only" | "provider_only" | "query_policy_only";
   target: SemanticMaintenanceTarget;
-  stageSettings: SemanticStageSettingsSnapshot;
+  runtimeSettingsRevisionPublicId: string;
+  maximumSourceBytes: number;
   expectedPredecessorPublicId: string | null;
   expectedPredecessorRevision: number;
   sourcePageSize: number;
@@ -94,7 +93,7 @@ export type StorageVnextMaintenanceClaim = {
 export type StorageVnextMaintenanceStatus = {
   requestId: string | null;
   state: "idle" | "queued" | "planning" | "running" | "validating"
-    | "completed" | "failed" | "superseded";
+    | "completed" | "failed" | "superseded" | "canceled";
   trigger: StorageVnextMaintenanceTrigger | null;
   stage: StorageVnextMaintenancePhase | null;
   active: boolean;
@@ -158,7 +157,7 @@ export interface StorageVnextMaintenanceRepository {
     operationPublicId: string;
     leaseOwner: string;
     checkpoint: StorageVnextMaintenanceCheckpoint;
-  }): Promise<void>;
+  }): Promise<"saved" | "terminal">;
   releaseForRetry(input: {
     operationPublicId: string;
     leaseOwner: string;

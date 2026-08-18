@@ -1,7 +1,6 @@
 export const STORAGE_VNEXT_RELEASED_NAVIGATION_PATHS = Object.freeze([
   "index.md",
   "pages/index.md",
-  "schema.md",
   "log.md",
   "_index/index.md",
   "_graph/index.md",

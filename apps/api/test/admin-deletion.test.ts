@@ -14,8 +14,8 @@ import {
 describe("admin source deletion", () => {
   it("keeps the released success response while delegating deletion to vNext", async () => {
     const deleteSourceFile = vi.fn(async () => success({
-      deleted: true,
-      publicationQueued: true
+      accepted: true,
+      operationId: "deletion-source-file"
     }));
     const app = createApp(deleteSourceFile);
     const cookie = await loginAndReadSessionCookie(app);
@@ -28,10 +28,10 @@ describe("admin source deletion", () => {
       }
     );
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     await expect(response.json()).resolves.toEqual({
-      deleted: true,
-      publicationQueued: true
+      accepted: true,
+      operationId: "deletion-source-file"
     });
     expect(deleteSourceFile).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-001",

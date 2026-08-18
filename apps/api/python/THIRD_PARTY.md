@@ -1,6 +1,6 @@
 # Python runtime dependencies
 
-The source-worker Python runtime is locked for Python 3.12 by
+The unified backend worker Python runtime is locked for Python 3.12 by
 `requirements.lock`.
 
 ## Microsoft GraphRAG

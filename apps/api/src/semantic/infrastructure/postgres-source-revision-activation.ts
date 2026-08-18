@@ -1,12 +1,13 @@
 import type { TransactionSql } from "postgres";
+import type { DatabaseClient } from "../../db/client.js";
 
 export async function activateSemanticSourceRevision(
-  sql: TransactionSql,
+  sql: TransactionSql | DatabaseClient,
   input: {
     knowledgeBaseId: string;
     semanticGenerationPublicId: string;
     sourceFilePublicId: string;
-    priorSourceRevisionPublicId: string;
+    priorSourceRevisionPublicId: string | null;
     currentSourceRevisionPublicId: string;
     activatedAt: string;
   }
@@ -180,7 +181,7 @@ export async function activateSemanticSourceRevision(
 }
 
 async function rebuildEntityPresentation(
-  sql: TransactionSql,
+  sql: TransactionSql | DatabaseClient,
   input: {
     knowledgeBaseId: string;
     semanticGenerationPublicId: string;
@@ -202,10 +203,10 @@ async function rebuildEntityPresentation(
              CASE WHEN bool_or(observation.provenance_kind = 'model')
                THEN 'model' ELSE 'deterministic' END AS provenance_kind
       FROM focowiki.semantic_entity_observations observation
-      JOIN focowiki.source_file_current_revisions current_revision
+      JOIN focowiki.source_file_active_revisions current_revision
         ON current_revision.knowledge_base_id = observation.knowledge_base_id
        AND current_revision.source_file_public_id = observation.source_file_public_id
-       AND current_revision.source_revision_public_id
+       AND current_revision.active_source_revision_public_id
          = observation.source_revision_public_id
       WHERE observation.knowledge_base_id = ${input.knowledgeBaseId}
         AND observation.semantic_generation_public_id
@@ -240,10 +241,10 @@ async function rebuildEntityPresentation(
                ORDER BY alias."normalizedAlias" COLLATE "C"
              ) AS alias_rank
       FROM focowiki.semantic_entity_observations observation
-      JOIN focowiki.source_file_current_revisions current_revision
+      JOIN focowiki.source_file_active_revisions current_revision
         ON current_revision.knowledge_base_id = observation.knowledge_base_id
        AND current_revision.source_file_public_id = observation.source_file_public_id
-       AND current_revision.source_revision_public_id
+       AND current_revision.active_source_revision_public_id
          = observation.source_revision_public_id
       CROSS JOIN LATERAL jsonb_to_recordset(observation.aliases) AS alias(
         "normalizedAlias" text, "displayAlias" text
@@ -267,7 +268,7 @@ async function rebuildEntityPresentation(
 }
 
 async function rebuildRelationshipPresentation(
-  sql: TransactionSql,
+  sql: TransactionSql | DatabaseClient,
   input: {
     knowledgeBaseId: string;
     semanticGenerationPublicId: string;
@@ -286,10 +287,10 @@ async function rebuildRelationshipPresentation(
              CASE WHEN bool_or(observation.provenance_kind = 'model')
                THEN 'model' ELSE 'deterministic' END AS provenance_kind
       FROM focowiki.semantic_relationship_observations observation
-      JOIN focowiki.source_file_current_revisions current_revision
+      JOIN focowiki.source_file_active_revisions current_revision
         ON current_revision.knowledge_base_id = observation.knowledge_base_id
        AND current_revision.source_file_public_id = observation.source_file_public_id
-       AND current_revision.source_revision_public_id
+       AND current_revision.active_source_revision_public_id
          = observation.source_revision_public_id
       WHERE observation.knowledge_base_id = ${input.knowledgeBaseId}
         AND observation.semantic_generation_public_id

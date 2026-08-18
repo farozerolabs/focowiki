@@ -94,11 +94,23 @@ describeOwnedDatabase("storage vNext PostgreSQL owned reset/bootstrap", () => {
     await plane.bootstrap(proof);
     expect(await catalogSignature(sql)).toEqual(firstSignature);
 
+    await sql.unsafe(`
+      CREATE SCHEMA customer_owned;
+      CREATE TABLE customer_owned.keep_me (public_id text PRIMARY KEY);
+      INSERT INTO customer_owned.keep_me (public_id) VALUES ('preserved');
+    `);
+
     await plane.reset(proof);
     expect(await plane.verifyReset(proof)).toBe(true);
     expect(await sql<Array<{ marker_exists: boolean }>>`
       SELECT to_regclass('focowiki_validation.run_owner') IS NOT NULL AS marker_exists
     `).toEqual([{ marker_exists: true }]);
+    expect(await sql<Array<{ preserved: string | null }>>`
+      SELECT to_regclass('customer_owned.keep_me')::text AS preserved
+    `).toEqual([{ preserved: "customer_owned.keep_me" }]);
+    expect(await sql<Array<{ public_id: string }>>`
+      SELECT public_id FROM customer_owned.keep_me
+    `).toEqual([{ public_id: "preserved" }]);
 
     const interrupted = createStorageVnextPostgresPlane({
       sql,

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const migrationPath = resolve(
   import.meta.dirname,
-  "../migrations/003_general_purpose_semantic_search.sql"
+  "../migrations/001_storage_vnext.sql"
 );
 
 describe("general-purpose semantic storage schema", () => {
@@ -13,6 +13,7 @@ describe("general-purpose semantic storage schema", () => {
     for (const relation of [
       "embedding_configurations",
       "embedding_configuration_revisions",
+      "model_config_revisions",
       "semantic_generations",
       "semantic_entities",
       "semantic_entity_aliases",
@@ -25,15 +26,14 @@ describe("general-purpose semantic storage schema", () => {
       "semantic_communities",
       "semantic_community_memberships",
       "semantic_community_reports",
-      "semantic_community_summary_artifacts",
       "semantic_entity_partitions",
       "semantic_dirty_partitions",
       "embedding_artifacts",
       "embedding_artifact_owners",
       "semantic_projection_contracts",
       "semantic_vector_documents",
-      "semantic_maintenance_checkpoints",
-      "semantic_stage_work_items"
+      "document_processing_jobs",
+      "document_model_layer_executions"
     ]) {
       expect(migration).toContain(`create table focowiki.${relation}`);
     }
@@ -45,13 +45,16 @@ describe("general-purpose semantic storage schema", () => {
       "knowledge_base_id text not null",
       "semantic_generation_public_id text not null",
       "source_revision_public_id text not null",
-      "embedding_configuration_revision_public_id text not null",
+      "embedding_configuration_revision_public_id text",
       "evidence_public_id text not null",
       "artifact_public_id text not null",
       "lease_expires_at timestamp with time zone",
       "next_attempt_at timestamp with time zone",
-      "checkpoint jsonb not null",
-      "where deleted_at is null",
+      "checkpoint jsonb",
+      "runtime_settings_revision_public_id text",
+      "generation_model_configuration_public_id text",
+      "embedding_configuration_revision_public_id text",
+      "model_config_revisions_immutable_update",
       "on delete cascade"
     ]) expect(migration).toContain(fragment);
   });
@@ -76,7 +79,27 @@ describe("general-purpose semantic storage schema", () => {
       "dual_write",
       "backfill",
       "automatic_adoption",
-      "provider_task_uid"
+      "provider_task_uid",
+      "semantic_stage_work_items",
+      "wave_ordinal",
+      "settings_snapshot"
     ]) expect(migration).not.toContain(forbidden);
+  });
+
+  it("uses one fixed receipt-driven work graph and contains no configurable stage graph", () => {
+    const migration = readFileSync(migrationPath, "utf8").toLowerCase();
+    for (const fragment of [
+      "document_artifact_work_claim_idx",
+      "document_artifact_work_lease_idx",
+      "document_artifact_work_kind_check",
+      "document_artifact_receipts_identity_key"
+    ]) expect(migration).toContain(fragment);
+    for (const removed of [
+      "processing_stage_dependencies",
+      "processing_stage_work_items",
+      "processing_stage_fairness"
+    ]) expect(migration).not.toContain(`create table focowiki.${removed}`);
+    expect(migration).not.toContain("document_processing_jobs_phase_check");
+    expect(migration).not.toContain("document_processing_jobs_checkpoint_check");
   });
 });

@@ -8,7 +8,7 @@ const source = fs.readFileSync(
 );
 
 test("isolates the comprehensive stack from the developer environment and bind mounts", () => {
-  for (const service of ["api", "source-worker", "publication-worker", "maintenance-worker", "migrate"]) {
+  for (const service of ["api", "worker", "migrate"]) {
     const section = source.match(new RegExp(`\\n  ${service}:([\\s\\S]*?)(?=\\n  [a-z]|\\nvolumes:)`, "u"))?.[1] ?? "";
     assert.match(section, /env_file:\s*!override/u, service);
     assert.match(section, /\.env\.dev\.example/u, service);

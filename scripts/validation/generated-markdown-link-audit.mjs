@@ -20,6 +20,7 @@ await login();
 const failures = [];
 let internalLinkCount = 0;
 let externalLinkCount = 0;
+let sourceAuthoredInternalLinkCount = 0;
 const files = [];
 const markdownFiles = [];
 const visited = new Set();
@@ -41,6 +42,23 @@ while (queue.length > 0) {
   files.push(detail.file);
   if (!logicalPath.endsWith(".md")) continue;
   markdownFiles.push(detail.file);
+  let sourceAuthoredTargets = new Set();
+  if (detail.file.sourceFileId) {
+    try {
+      const sourceContent = await requestText(
+        `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+          + `/source-files/${encodeURIComponent(detail.file.sourceFileId)}/content`
+      );
+      sourceAuthoredTargets = internalTargets(sourceContent, logicalPath);
+    } catch (error) {
+      failures.push({
+        source: logicalPath,
+        href: null,
+        target: logicalPath,
+        error: String(error)
+      });
+    }
+  }
   for (const href of extractMarkdownLinks(detail.content)) {
     if (hasUriScheme(href) || href.startsWith("//")) {
       externalLinkCount += 1;
@@ -52,6 +70,10 @@ while (queue.length > 0) {
       failures.push({ source: logicalPath, href, target });
       continue;
     }
+    if (sourceAuthoredTargets.has(target)) {
+      sourceAuthoredInternalLinkCount += 1;
+      continue;
+    }
     if (!visited.has(target)) queue.push(target);
   }
 }
@@ -61,6 +83,7 @@ console.log(JSON.stringify({
   generatedFileCount: files.length,
   markdownFileCount: markdownFiles.length,
   internalLinkCount,
+  sourceAuthoredInternalLinkCount,
   externalLinkCount,
   brokenLinkCount: failures.length,
   brokenLinks: failures.slice(0, 20)
@@ -79,6 +102,17 @@ async function login() {
 }
 
 async function requestJson(pathname, options = {}) {
+  const response = await request(pathname, options);
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
+}
+
+async function requestText(pathname, options = {}) {
+  const response = await request(pathname, options);
+  return response.text();
+}
+
+async function request(pathname, options = {}) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     ...options,
     headers: {
@@ -88,12 +122,17 @@ async function requestJson(pathname, options = {}) {
   });
   const setCookie = response.headers.get("set-cookie");
   if (setCookie) cookie = setCookie.split(";", 1)[0] ?? "";
-  const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status} for ${pathname}: ${body?.error?.code ?? "UNKNOWN_ERROR"}`);
+    const text = await response.text();
+    let code = "UNKNOWN_ERROR";
+    try {
+      code = JSON.parse(text)?.error?.code ?? code;
+    } catch {
+      // Non-JSON failures remain safely classified without exposing the body.
+    }
+    throw new Error(`HTTP ${response.status} for ${pathname}: ${code}`);
   }
-  return body;
+  return response;
 }
 
 function extractMarkdownLinks(content) {
@@ -106,6 +145,16 @@ function extractMarkdownLinks(content) {
     }
   }
   return links;
+}
+
+function internalTargets(content, logicalPath) {
+  const targets = new Set();
+  for (const href of extractMarkdownLinks(content)) {
+    if (hasUriScheme(href) || href.startsWith("//")) continue;
+    const target = resolveBundleLink(href, logicalPath);
+    if (target) targets.add(target);
+  }
+  return targets;
 }
 
 function resolveBundleLink(href, currentLogicalPath) {

@@ -13,23 +13,7 @@ services:
       - comprehensive-logs:/app/logs
       - comprehensive-runtime-secrets:/app/runtime-secrets
 
-  source-worker:
-    image: focowiki-source-worker:clr-b648eb2f
-    env_file: !override
-      - .env.dev.example
-    volumes: !override
-      - comprehensive-logs:/app/logs
-      - comprehensive-runtime-secrets:/app/runtime-secrets
-
-  publication-worker:
-    image: focowiki-api:clr-b648eb2f
-    env_file: !override
-      - .env.dev.example
-    volumes: !override
-      - comprehensive-logs:/app/logs
-      - comprehensive-runtime-secrets:/app/runtime-secrets
-
-  maintenance-worker:
+  worker:
     image: focowiki-api:clr-b648eb2f
     env_file: !override
       - .env.dev.example

@@ -1,5 +1,6 @@
 import {
   createStorageVnextContentDocument,
+  createStorageVnextFileRelationshipDocument,
   createStorageVnextGraphSeedDocument,
   type OkfSearchSignals,
   type StorageVnextSearchDocument
@@ -33,7 +34,24 @@ export function parseStorageVnextSearchDocument(
           fileKind: stringValue(value.fileKind),
           rankingTerms: stringArray(value.rankingTerms)
         })
-      : invalidDocument();
+      : documentKind === "file_relationship"
+        ? createStorageVnextFileRelationshipDocument({
+            ...common,
+            fileKind: stringValue(value.fileKind),
+            relationPublicId: stringValue(value.relationPublicId),
+            evidencePublicId: stringValue(value.evidencePublicId),
+            targetSourceFilePublicId: stringValue(value.targetSourceFilePublicId),
+            targetSourceRevisionPublicId:
+              stringValue(value.targetSourceRevisionPublicId),
+            targetLogicalPath: stringValue(value.targetLogicalPath),
+            targetTitle: nullableString(value.targetTitle),
+            relationKind: enumValue(value.relationKind, ["references", "related"]),
+            direction: enumValue(value.direction, [
+              "incoming", "outgoing", "bidirectional"
+            ]),
+            rankingTerms: stringArray(value.rankingTerms)
+          })
+        : invalidDocument();
   if (document.id !== id || document.schemaVersion !== value.schemaVersion) {
     throw new Error("Search document identity or schema is invalid");
   }

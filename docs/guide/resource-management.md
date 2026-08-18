@@ -4,7 +4,7 @@ The Admin UI supports editing knowledge-base details and maintaining uploaded Ma
 
 ## Knowledge base details
 
-Open the card menu and select **Edit** to update the knowledge-base name and description. The card and sidebar use the saved values immediately. Published navigation files receive the updated values when publication completes.
+Open the card menu and select **Edit** to update the knowledge-base name and description. The card and sidebar use the saved values immediately. Affected generated navigation files update through the document lifecycle.
 
 ## Files
 
@@ -16,7 +16,7 @@ The file keeps its stable source file ID after rename, move, and replacement. Ex
 
 Open a directory menu to rename, move, or delete the directory. The destination picker loads uploaded source directories as they are opened. It prevents selecting the current directory or one of its descendants as the destination.
 
-Directory changes apply to every descendant path when publication completes. Directory deletion includes all descendant source files.
+Directory changes page through every descendant path. Directory deletion includes all descendant source files, hides them immediately, and completes physical cleanup in the background.
 
 ## Concurrent changes
 

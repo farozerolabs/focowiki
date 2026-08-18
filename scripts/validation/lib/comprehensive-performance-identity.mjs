@@ -31,7 +31,7 @@ export function buildComprehensivePerformanceIdentity(input) {
   if (!Array.isArray(input.models) || input.models.length < 2) {
     throw new Error("Performance identity requires current model revisions.");
   }
-  if (!Array.isArray(input.docker?.roles) || input.docker.roles.length < 4) {
+  if (!Array.isArray(input.docker?.roles) || input.docker.roles.length < 2) {
     throw new Error("Performance identity requires every runtime role limit.");
   }
   if (!Number.isSafeInteger(input.host?.logicalCpuCount)

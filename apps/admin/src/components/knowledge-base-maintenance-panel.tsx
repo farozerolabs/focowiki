@@ -21,7 +21,7 @@ import { showAdminToast } from "@/hooks/use-admin-toast";
 import {
   cancelKnowledgeBaseIndexMaintenance,
   requestKnowledgeBaseIndexMaintenance,
-  type ProcessingSummary
+  type IndexMaintenanceStatus
 } from "@/lib/admin-api";
 import {
   indexMaintenanceFailureLabel,
@@ -30,18 +30,19 @@ import {
 
 export function KnowledgeBaseMaintenancePanel({
   knowledgeBaseId,
-  summary,
+  maintenance,
+  errorMessageKey,
   onRefresh
 }: {
   knowledgeBaseId: string;
-  summary: ProcessingSummary | null;
+  maintenance: IndexMaintenanceStatus | null;
+  errorMessageKey?: string;
   onRefresh: () => Promise<void>;
 }) {
   const { t, i18n } = useTranslation();
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [confirmationAction, setConfirmationAction] = useState<"start" | "cancel">("start");
   const [submitting, setSubmitting] = useState(false);
-  const maintenance = summary?.indexMaintenance ?? null;
   const active = maintenance?.active ?? false;
   const completed = maintenance?.completedCount ?? 0;
   const expected = maintenance?.expectedCount ?? 0;
@@ -116,7 +117,7 @@ export function KnowledgeBaseMaintenancePanel({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  disabled={submitting || !summary}
+                  disabled={submitting || !maintenance}
                   onClick={() => {
                     setConfirmationAction(active ? "cancel" : "start");
                     setConfirmationOpen(true);
@@ -140,7 +141,9 @@ export function KnowledgeBaseMaintenancePanel({
               <Separator />
               <StatusRow
                 label={t("indexMaintenance.status")}
-                value={t(`indexMaintenance.states.${maintenance?.state ?? "idle"}`)}
+                value={errorMessageKey
+                  ? t(errorMessageKey)
+                  : t(`indexMaintenance.states.${maintenance?.state ?? "idle"}`)}
               />
               {active ? (
                 <>
@@ -170,7 +173,8 @@ export function KnowledgeBaseMaintenancePanel({
                     }).format(new Date(maintenance.lastCompletedAt))
                   : t("indexMaintenance.neverCompleted")}
               />
-              {maintenance?.state === "failed" && maintenance.safeErrorMessage ? (
+              {maintenance?.state === "failed"
+                && (maintenance.safeErrorCode || maintenance.safeErrorMessage) ? (
                 <>
                   <Separator />
                   <StatusRow

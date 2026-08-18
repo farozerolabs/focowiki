@@ -54,13 +54,13 @@ describe("Meilisearch architecture contract", () => {
       "apps/api/src/application/ports/search-provider-runtime.ts",
       "apps/api/src/infrastructure/meilisearch/meilisearch-client-port.ts",
       "apps/api/src/storage-vnext/search/documents.ts",
-      "apps/api/src/storage-vnext/search/markdown-segmentation.ts",
-      "apps/api/src/storage-vnext/search/candidate-lifecycle.ts",
-      "apps/api/src/storage-vnext/search/candidate-validation.ts",
+      "apps/api/src/document-indexing/application/document-search-preparation.ts",
+      "apps/api/src/document-indexing/application/document-search-indexer.ts",
+      "apps/api/src/document-indexing/application/document-search-index-ensure.ts",
       "apps/api/src/storage-vnext/search/active-search.ts",
       "apps/api/src/storage-vnext/search/postgres-hydration.ts",
-      "apps/api/src/storage-vnext/search/graph-candidate-search.ts",
-      "apps/api/src/storage-vnext/search/search-cleanup.ts"
+      "apps/api/src/document-indexing/infrastructure/postgres-document-search-owner-repository.ts",
+      "apps/api/src/document-indexing/application/document-obsolete-artifact-cleanup.ts"
     ]) {
       expect(existsSync(resolve(workspaceRoot, path)), path).toBe(true);
     }
@@ -79,14 +79,11 @@ describe("Meilisearch architecture contract", () => {
   it("keeps Meilisearch-only validation explicit while using common search configuration", () => {
     for (const path of [
       "apps/api/src/storage-vnext/bootstrap/main.ts",
-      "apps/api/scripts/capture-storage-vnext-before-state.ts",
-      "scripts/validation/storage-vnext-restore-rebuild.ts",
-      "scripts/validation/storage-vnext-full-restore-rebuild.ts",
-      "scripts/validation/lib/storage-vnext-scale-scope.mjs"
+      "apps/api/src/runtime/search-config.ts"
     ]) {
       const source = read(path);
-      expect(source, path).toContain("SEARCH_PROVIDER");
-      expect(source, path).toContain("SEARCH_INDEX_PREFIX");
+      expect(source, path).toMatch(/SEARCH_PROVIDER|parseSearchStartupConfig/u);
+      expect(source, path).toMatch(/SEARCH_INDEX_PREFIX|searchConfig\.indexPrefix/u);
       expect(source, path).not.toContain("MEILI_INDEX_PREFIX");
     }
   });

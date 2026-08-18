@@ -13,18 +13,6 @@ import type {
 
 export type StorageVnextCatalogVisibility = "current" | "deleted";
 export type StorageVnextCatalogReadVisibility = StorageVnextCatalogVisibility | "all";
-export type StorageVnextSourceFileStatus = "pending" | "processing" | "ready" | "failed";
-
-export type StorageVnextModelInvocationFact = {
-  sourceRevisionPublicId: StorageVnextPublicId;
-  status: "running" | "completed" | "failed" | "skipped";
-  modelName: string | null;
-  startedAt: StorageVnextTimestamp | null;
-  endedAt: StorageVnextTimestamp | null;
-  warningCount: number;
-  errorCode: string | null;
-};
-
 export type StorageVnextKnowledgeBaseFact = {
   publicId: StorageVnextKnowledgeBaseId;
   name: string;
@@ -55,10 +43,6 @@ export type StorageVnextSourceFileFact = {
   title: string;
   metadata: StorageVnextStructuredMetadata;
   currentRevisionPublicId: StorageVnextPublicId | null;
-  status: StorageVnextSourceFileStatus;
-  safeErrorCode: string | null;
-  safeErrorMessage: string | null;
-  modelInvocation?: StorageVnextModelInvocationFact | null;
   revision: StorageVnextRevision;
   visibility: StorageVnextCatalogVisibility;
 };
@@ -156,73 +140,6 @@ export type StorageVnextCatalogWritePort = {
     description?: string | null;
     revisionCheck: StorageVnextRevisionCheck;
   }): Promise<StorageVnextKnowledgeBaseFact>;
-  createDirectory(input: {
-    publicId: StorageVnextPublicId;
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    parentPublicId: StorageVnextPublicId | null;
-    logicalPath: string;
-    title: string;
-  }): Promise<StorageVnextDirectoryFact>;
-  createSourceFile(input: {
-    publicId: StorageVnextPublicId;
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    directoryPublicId: StorageVnextPublicId | null;
-    logicalPath: string;
-    title: string;
-    metadata: StorageVnextStructuredMetadata;
-    status: StorageVnextSourceFileStatus;
-    safeErrorCode?: string | null;
-    safeErrorMessage?: string | null;
-  }): Promise<StorageVnextSourceFileFact>;
-  createImmutableRevision(
-    revision: StorageVnextSourceRevisionFact
-  ): Promise<StorageVnextSourceRevisionFact>;
-  compareAndSetCurrentRevision(input: {
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    sourceFilePublicId: StorageVnextPublicId;
-    revisionPublicId: StorageVnextPublicId;
-    revisionCheck: StorageVnextRevisionCheck;
-  }): Promise<StorageVnextSourceFileFact>;
-  updateSourceFileState(input: {
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    publicId: StorageVnextPublicId;
-    metadata: StorageVnextStructuredMetadata;
-    status: StorageVnextSourceFileStatus;
-    safeErrorCode: string | null;
-    safeErrorMessage: string | null;
-    modelInvocation?: StorageVnextModelInvocationFact | null;
-    revisionCheck: StorageVnextRevisionCheck;
-  }): Promise<StorageVnextSourceFileFact>;
-  updateLogicalPath(input: {
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    publicId: StorageVnextPublicId;
-    logicalPath: string;
-    revisionCheck: StorageVnextRevisionCheck;
-  }): Promise<StorageVnextSourceFileFact>;
-  moveSourceFile(input: {
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    publicId: StorageVnextPublicId;
-    directoryPublicId: StorageVnextPublicId | null;
-    logicalPath: string;
-    revisionCheck: StorageVnextRevisionCheck;
-  }): Promise<StorageVnextSourceFileFact>;
-  markSourceFileDeleted(input: {
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    publicId: StorageVnextPublicId;
-    revisionCheck: StorageVnextRevisionCheck;
-    deletedAt: StorageVnextTimestamp;
-  }): Promise<void>;
-  markDirectoryDeleted(input: {
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    publicId: StorageVnextPublicId;
-    revisionCheck: StorageVnextRevisionCheck;
-    deletedAt: StorageVnextTimestamp;
-  }): Promise<void>;
-  markKnowledgeBaseDeleted(input: {
-    knowledgeBaseId: StorageVnextKnowledgeBaseId;
-    revisionCheck: StorageVnextRevisionCheck;
-    deletedAt: StorageVnextTimestamp;
-  }): Promise<void>;
 };
 
 export type StorageVnextCatalogRepository =

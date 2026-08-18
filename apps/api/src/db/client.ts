@@ -5,9 +5,7 @@ export type DatabaseClient = Sql;
 
 type DatabaseRole =
   | "api"
-  | "source-worker"
-  | "publication-worker"
-  | "maintenance-worker"
+  | "worker"
   | "migration";
 
 const WORKER_IDLE_TIMEOUT_SECONDS = 5;
@@ -28,22 +26,14 @@ export function createDatabaseClientOptions(
   database: Pick<
     RuntimeConfig["database"],
     | "poolMax"
-    | "sourceWorkerPoolMax"
-    | "publicationWorkerPoolMax"
-    | "maintenanceWorkerPoolMax"
+    | "workerPoolMax"
   >,
   role: DatabaseRole
 ) {
-  const max = role === "source-worker"
-    ? database.sourceWorkerPoolMax ?? 6
-    : role === "publication-worker"
-      ? database.publicationWorkerPoolMax ?? 4
-      : role === "maintenance-worker"
-        ? database.maintenanceWorkerPoolMax ?? 2
-        : database.poolMax ?? 10;
-  const worker = role === "source-worker"
-    || role === "publication-worker"
-    || role === "maintenance-worker";
+  const max = role === "worker"
+    ? database.workerPoolMax ?? 8
+    : database.poolMax ?? 10;
+  const worker = role === "worker";
 
   return {
     max,

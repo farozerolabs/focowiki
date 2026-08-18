@@ -10,8 +10,12 @@ function sourceFile(input: Partial<SourceFileRecord>): SourceFileRecord {
     id: "source-file-001",
     name: "example.md",
     relativePath: "example.md",
-    state: "queued",
-    currentStage: "upload_storage",
+    state: "waiting",
+    blockingWorkKind: "prepare",
+    requiredWorkCount: 8,
+    completedWorkCount: 0,
+    activeWorkKinds: [],
+    retryingWorkKind: null,
     processingStartedAt: null,
     processingEndedAt: null,
     failure: null,
@@ -22,34 +26,34 @@ function sourceFile(input: Partial<SourceFileRecord>): SourceFileRecord {
 }
 
 describe("source file task deletion selection", () => {
-  it("allows queued, failed, and completed visible rows", () => {
-    expect(isSourceFileTaskDeletionSelectable(sourceFile({ state: "queued" }))).toBe(
+  it("allows waiting, error, and available rows", () => {
+    expect(isSourceFileTaskDeletionSelectable(sourceFile({ state: "waiting" }))).toBe(
       true
     );
-    expect(isSourceFileTaskDeletionSelectable(sourceFile({ state: "failed" }))).toBe(
+    expect(isSourceFileTaskDeletionSelectable(sourceFile({ state: "error" }))).toBe(
       true
     );
     expect(
       isSourceFileTaskDeletionSelectable(
         sourceFile({
-          state: "visible",
+          state: "available",
           generatedFileAvailable: true,
-          generatedOutputStatus: "visible"
+          generatedOutputStatus: "current_available"
         })
       )
     ).toBe(true);
   });
 
-  it("disables running and completed pending rows", () => {
-    expect(isSourceFileTaskDeletionSelectable(sourceFile({ state: "running" }))).toBe(
+  it("disables processing and deleting rows", () => {
+    expect(isSourceFileTaskDeletionSelectable(sourceFile({ state: "processing" }))).toBe(
       false
     );
     expect(
       isSourceFileTaskDeletionSelectable(
         sourceFile({
-          state: "pending_publication",
+          state: "deleting",
           generatedFileAvailable: false,
-          generatedOutputStatus: "pending"
+          generatedOutputStatus: "unavailable"
         })
       )
     ).toBe(false);
@@ -58,14 +62,14 @@ describe("source file task deletion selection", () => {
   it("returns only selectable IDs from the current page", () => {
     expect(
       getSelectableSourceFileIds([
-        sourceFile({ id: "source-file-queued", state: "queued" }),
-        sourceFile({ id: "source-file-running", state: "running" }),
+        sourceFile({ id: "source-file-waiting", state: "waiting" }),
+        sourceFile({ id: "source-file-processing", state: "processing" }),
         sourceFile({
-          id: "source-file-visible",
-          state: "visible",
-          generatedOutputStatus: "visible"
+          id: "source-file-available",
+          state: "available",
+          generatedOutputStatus: "current_available"
         })
       ])
-    ).toEqual(["source-file-queued", "source-file-visible"]);
+    ).toEqual(["source-file-waiting", "source-file-available"]);
   });
 });

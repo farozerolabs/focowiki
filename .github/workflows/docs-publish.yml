@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
   pages: write
   id-token: write
 
@@ -54,6 +55,20 @@ jobs:
           fi
           if ! git merge-base --is-ancestor "${docs_commit}" origin/main; then
             echo "::error::Documentation source refs must be contained in main."
+            exit 1
+          fi
+
+      - name: Verify successful CI for release commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion="$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name == "Validate" and .app.slug == "github-actions")] | sort_by(.completed_at) | .[-1].conclusion // ""')"
+          if [[ "${conclusion}" != "success" ]]; then
+            echo "::error::The release commit must have a successful CI Validate check before documentation publication."
             exit 1
           fi
 

@@ -23,13 +23,14 @@ const EVIDENCE_FAMILIES = new Set([
   "exact", "text", "phrase", "typo", "jieba", "graph"
 ]);
 const SEARCH_FIELDS = new Set([
-  "title", "logicalPath", "headingAncestors", "searchText", "rankingTerms"
+  "title", "logicalPath", "targetTitle", "targetLogicalPath",
+  "headingAncestors", "searchText", "rankingTerms"
 ]);
 const RETURN_FIELDS = new Set([
   "id", "schemaVersion", "documentKind", "contentKind", "knowledgeBaseId",
   "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
   "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms",
-  "okfSignals"
+  "okfSignals", "targetSourceFilePublicId", "targetSourceRevisionPublicId"
 ]);
 const REQUIRED_RETURN_FIELDS = [
   "id", "documentKind", "sourceFilePublicId", "sourceRevisionPublicId",

@@ -142,7 +142,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestSchema: ref("UpdateKnowledgeBaseRequest"),
         requestExample: requestExamples.updateKnowledgeBase,
         successStatus: 200,
-        successSchema: ref("KnowledgeBaseResponse"),
+        successSchema: ref("KnowledgeBaseMutationResponse"),
         successExample: responseExamples.updateKnowledgeBase,
         additionalErrorStatuses: [404, 409, 422]
       }),
@@ -237,7 +237,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             name: "transferState",
             in: "query",
             required: false,
-            schema: { type: "string", enum: ["missing", "failed", "uploaded"] }
+            schema: { type: "string", enum: ["missing", "uploaded"] }
           }
         ],
         requestExample: requestExamples.getUploadSession,
@@ -498,7 +498,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             name: "state",
             in: "query",
             required: false,
-            schema: { type: "string", enum: ["accepted", "validating", "processing", "publishing", "completed", "failed", "cancelled", "superseded"] }
+            schema: { type: "string", enum: ["processing", "completed", "failed", "cancelled", "superseded"] }
           },
           ...paginationParameters()
         ],
@@ -522,19 +522,6 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         additionalErrorStatuses: [404]
       })
     },
-    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/events": {
-      get: operation({
-        tag: "Uploaded Files",
-        operationId: "listKnowledgeBaseSourceFileEvents",
-        summary: "List file processing history",
-        parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter(), ...paginationParameters()],
-        requestExample: requestExamples.listKnowledgeBaseSourceFileEvents,
-        successStatus: 200,
-        successSchema: ref("SourceFileEventListResponse"),
-        successExample: responseExamples.listKnowledgeBaseSourceFileEvents,
-        additionalErrorStatuses: [404, 422]
-      })
-    },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry": {
       post: operation({
         tag: "Uploaded Files",
@@ -552,22 +539,15 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       get: operation({
         tag: "Files",
         operationId: "listKnowledgeBaseTree",
-        summary: "List published file tree entries",
+        summary: "List readable file tree entries",
         parameters: [
           knowledgeBaseIdParameter(),
           {
             name: "parentPath",
             in: "query",
             required: false,
-            description: "Knowledge-base directory path to browse. Parent traversal and storage paths are rejected.",
-            schema: { type: "string", default: "pages" }
-          },
-          {
-            name: "query",
-            in: "query",
-            required: false,
-            description: "Optional fuzzy tree search query. Matches stay within the selected parent path subtree and include ancestor chains.",
-            schema: { type: "string", example: "guide" }
+            description: "Directory path to browse, or \`root\` for the bundle root. Parent traversal, file paths, and storage paths are rejected.",
+            schema: { type: "string", default: "root" }
           },
           {
             name: "entryType",
@@ -589,7 +569,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       get: operation({
         tag: "Files",
         operationId: "getFileContentByPath",
-        summary: "Read a published file by path",
+        summary: "Read a readable file by path",
         parameters: [knowledgeBaseIdParameter(), filePathQueryParameter(true)],
         requestExample: requestExamples.getFileContentByPath,
         successStatus: 200,
@@ -644,36 +624,15 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
           operationId: "expandGraph",
           summary: "Explore related files",
           description:
-            "Start from exactly one of fileId, nodeId, edgeId, or query. The response returns related files up to the requested depth and result limits, with paths for reading the complete files.",
+            "Start from a readable file ID returned by tree, search, file, or related-file operations. The response returns related files up to the requested depth and result limits, with paths for reading the complete files.",
           parameters: [
           knowledgeBaseIdParameter(),
           {
             name: "fileId",
             in: "query",
-            required: false,
-            description: "Published file ID or uploaded-file ID used as the starting point. Provide only one starting-point parameter.",
-            schema: { type: "string" }
-          },
-          {
-            name: "nodeId",
-            in: "query",
-            required: false,
-            description: "Relationship node ID returned by a relationship response. Provide only one starting-point parameter.",
-            schema: { type: "string" }
-          },
-          {
-            name: "edgeId",
-            in: "query",
-            required: false,
-            description: "Relationship edge ID returned by a relationship response. Provide only one starting-point parameter.",
-            schema: { type: "string" }
-          },
-          {
-            name: "query",
-            in: "query",
-            required: false,
-            description: "Standalone natural-language question or search text used to find a starting file. The same 2-through-512-grapheme, 2048-UTF-8-byte, and control-character contract as file search applies. Provide only one starting-point parameter.",
-            schema: { type: "string", minLength: 2, maxLength: 512 }
+            required: true,
+            description: "Readable file ID returned by tree, search, file, or related-file operations.",
+            schema: { type: "string", minLength: 1 }
           },
           {
             name: "depth",
@@ -697,7 +656,6 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
           successExample: responseExamples.expandGraph,
           additionalErrorStatuses: [404, 422]
         }),
-        "x-exactly-one-query-parameter": ["fileId", "nodeId", "edgeId", "query"],
         "x-validation-detail-codes": [...DEVELOPER_GRAPH_EXPANSION_ERROR_CODES]
       }
     },
@@ -718,7 +676,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       get: operation({
         tag: "Files",
         operationId: "getFileById",
-        summary: "Get published file metadata",
+        summary: "Get readable file metadata",
         parameters: [knowledgeBaseIdParameter(), fileIdParameter()],
         requestExample: requestExamples.getFileById,
         successStatus: 200,
@@ -731,7 +689,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       get: operation({
         tag: "Files",
         operationId: "getFileContentById",
-        summary: "Read a published file by ID",
+        summary: "Read a readable file by ID",
         parameters: [knowledgeBaseIdParameter(), fileIdParameter()],
         requestExample: requestExamples.getFileContentById,
         successStatus: 200,
@@ -761,6 +719,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         tag: "Webhooks",
         operationId: "createWebhook",
         summary: "Create a webhook subscription",
+        parameters: [idempotencyKeyHeader()],
         requestSchema: ref("WebhookCreateRequest"),
         requestExample: requestExamples.createWebhook,
         successStatus: 201,
@@ -798,7 +757,16 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         tag: "Webhooks",
         operationId: "listWebhookDeliveries",
         summary: "List webhook deliveries",
-        parameters: paginationParameters(),
+        parameters: [
+          {
+            name: "webhookId",
+            in: "query",
+            required: false,
+            description: "Webhook identifier returned by create or list operations.",
+            schema: { type: "string" }
+          },
+          ...paginationParameters()
+        ],
         requestExample: requestExamples.listWebhookDeliveries,
         successStatus: 200,
         successSchema: ref("WebhookDeliveryListResponse"),
@@ -824,7 +792,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
 
 function generatedContentTooLargeResponse() {
   return errorResponse(
-    "The published file exceeds the configured content read limit.",
+    "The readable file exceeds the configured content read limit.",
     "PAYLOAD_TOO_LARGE",
     413
   );
@@ -886,6 +854,6 @@ function resourceOperationIdParameter() {
     in: "path",
     required: true,
     description: "Change identifier returned by file and directory move, replace, or delete requests.",
-    schema: { type: "string", example: "resource-operation-123" }
+    schema: { type: "string", example: "source-move-123" }
   };
 }

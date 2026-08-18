@@ -52,9 +52,11 @@ export function readMigrationSql(fileName: MigrationFile): string {
 export async function applyMigrations(sql: DatabaseClient): Promise<void> {
   const plan = await preflightMigrations(sql);
 
-  for (const fileName of plan.pendingFiles) {
+  if (plan.pendingFiles.length > 0) {
     await sql.begin(async (transaction) => {
-      await transaction.unsafe(readMigrationSql(fileName));
+      for (const fileName of plan.pendingFiles) {
+        await transaction.unsafe(readMigrationSql(fileName));
+      }
     });
   }
 
@@ -68,7 +70,7 @@ export async function preflightMigrations(
   if (state !== "absent" && typeof state !== "string") {
     throw new RuntimeSchemaGenerationError(state);
   }
-  if (state !== "absent") await assertProviderAwareSchemaSignature(sql);
+  if (state !== "absent") await assertDocumentIndexingSchemaSignature(sql);
   let plan;
   try {
     plan = createBootstrapPlan(state);
@@ -91,105 +93,256 @@ export async function assertRuntimeSchemaGeneration(sql: DatabaseClient): Promis
   if (state !== RUNTIME_SCHEMA_GENERATION) {
     throw new RuntimeSchemaGenerationError(state === "absent" ? null : state);
   }
-  await assertProviderAwareSchemaSignature(sql);
+  await assertDocumentIndexingSchemaSignature(sql);
 }
 
-async function assertProviderAwareSchemaSignature(
+async function assertDocumentIndexingSchemaSignature(
   sql: DatabaseClient
 ): Promise<void> {
-  const rows = await sql<Array<{ provider_schema_compatible: boolean }>>`
+  const rows = await sql<Array<{ runtime_schema_compatible: boolean }>>`
     SELECT (
-      EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'search_projections'
-          AND column_name = 'provider_kind'
-          AND data_type = 'text'
-          AND is_nullable = 'NO'
-      )
-      AND EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'search_projections'
-          AND column_name = 'provider_operation_ref'
-          AND data_type = 'text'
+      to_regclass('focowiki.candidate_identity_cards') IS NULL
+      AND
+      NOT EXISTS (
+        SELECT required.name
+        FROM unnest(ARRAY[
+          'document_processing_jobs',
+          'source_revision_presentations',
+          'document_artifact_work',
+          'document_artifact_receipts',
+          'document_graphrag_chunks',
+          'relation_candidate_pairs',
+          'relation_directed_evidence',
+          'canonical_file_relations',
+          'search_family_receipts',
+          'generated_page_bases',
+          'projection_dirty_scopes',
+          'projection_scope_outputs',
+          'projection_scope_storage_metrics',
+          'document_projection_waiting_completions',
+          'scoped_activation_owners',
+          'knowledge_base_sequences',
+          'generated_page_heads',
+          'source_file_identity_keys',
+          'unresolved_file_references',
+          'relationship_evaluations',
+          'document_model_analysis_results',
+          'document_model_layer_executions',
+          'search_document_owners',
+          'operation_tombstones'
+        ]) AS required(name)
+        WHERE to_regclass('focowiki.' || required.name) IS NULL
       )
       AND NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'search_projections'
-          AND column_name = 'provider_task_uid'
+        SELECT required.table_name, required.column_name
+        FROM (VALUES
+          ('document_processing_jobs', 'source_revision_public_id'),
+          ('document_processing_jobs', 'state'),
+          ('document_processing_jobs', 'required_work_count'),
+          ('document_processing_jobs', 'completed_work_count'),
+          ('document_processing_jobs', 'active_work_kinds'),
+          ('document_processing_jobs', 'blocking_work_kind'),
+          ('document_processing_jobs', 'total_attempt_count'),
+          ('document_processing_jobs', 'manual_retry_count'),
+          ('document_processing_jobs', 'runtime_settings_revision_public_id'),
+          ('document_processing_jobs', 'generation_model_configuration_public_id'),
+          ('document_processing_jobs', 'embedding_configuration_revision_public_id'),
+          ('document_processing_jobs', 'safe_error_code'),
+          ('source_revision_presentations', 'source_revision_public_id'),
+          ('source_revision_presentations', 'normalized_path'),
+          ('source_revision_presentations', 'metadata'),
+          ('document_artifact_work', 'work_kind'),
+          ('document_artifact_work', 'resource_lane'),
+          ('document_artifact_work', 'input_fingerprint_sha256'),
+          ('document_artifact_work', 'lease_expires_at'),
+          ('document_artifact_receipts', 'receipt_kind'),
+          ('document_artifact_receipts', 'receipt_key'),
+          ('document_artifact_receipts', 'output_fingerprint_sha256'),
+          ('relation_candidate_pairs', 'evidence_fingerprint_sha256'),
+          ('search_family_receipts', 'family'),
+          ('projection_dirty_scopes', 'scope_key'),
+          ('projection_scope_outputs', 'output_fingerprint_sha256'),
+          ('projection_scope_outputs', 'pages'),
+          ('projection_scope_storage_metrics', 'attempted_bytes'),
+          ('scoped_activation_owners', 'owner_version'),
+          ('knowledge_base_sequences', 'current_sequence'),
+          ('generated_page_candidates', 'owner_operation_public_id'),
+          ('generated_page_heads', 'logical_path'),
+          ('generated_page_heads', 'object_id'),
+          ('generated_page_heads', 'activation_revision'),
+          ('source_file_identity_keys', 'source_revision_public_id'),
+          ('source_file_identity_keys', 'normalized_identity_key'),
+          ('unresolved_file_references', 'source_revision_public_id'),
+          ('unresolved_file_references', 'normalized_target_key'),
+          ('relationship_evaluations', 'evidence_fingerprint_sha256'),
+          ('document_model_analysis_results', 'model_input_sha256'),
+          ('document_model_layer_executions', 'execution_identity_sha256'),
+          ('document_model_layer_executions', 'provider_request_count')
+          ,('document_model_layer_executions', 'provider_observations')
+          ,('operation_tombstones', 'expires_at')
+          ,('operation_tombstones', 'result_summary')
+          ,('webhook_subscriptions', 'idempotency_key')
+          ,('webhook_subscriptions', 'request_hash')
+        ) AS required(table_name, column_name)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM information_schema.columns actual
+          WHERE actual.table_schema = 'focowiki'
+            AND actual.table_name = required.table_name
+            AND actual.column_name = required.column_name
+        )
       )
-      AND EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'operation_work_items'
-          AND column_name = 'search_provider_kind'
-          AND data_type = 'text'
+      AND NOT EXISTS (
+        SELECT required.name
+        FROM unnest(ARRAY[
+          'document_processing_jobs_current_idx',
+          'document_processing_jobs_retry_idx',
+          'document_processing_jobs_source_list_idx',
+          'document_processing_jobs_knowledge_base_list_idx',
+          'document_processing_jobs_operation_list_idx',
+          'document_processing_jobs_retention_idx',
+          'document_artifact_work_claim_idx',
+          'document_artifact_work_lease_idx',
+          'document_artifact_work_job_idx',
+          'document_artifact_receipts_source_revision_idx',
+          'relation_candidate_pairs_claim_idx',
+          'search_family_receipts_flush_idx',
+          'projection_dirty_scopes_claim_idx',
+          'projection_scope_outputs_created_idx',
+          'document_projection_waiting_ready_idx',
+          'scoped_activation_owners_scope_idx',
+          'source_file_active_revisions_current_idx',
+          'source_file_active_revisions_active_idx',
+          'source_revision_presentations_current_path_idx',
+          'generated_page_heads_path_idx',
+          'source_file_identity_keys_active_lookup_idx',
+          'source_file_identity_keys_source_revision_idx',
+          'unresolved_file_references_reverse_idx',
+          'unresolved_file_references_source_idx',
+          'unresolved_file_references_resolved_target_idx',
+          'relationship_evaluations_source_idx',
+          'document_model_analysis_results_source_idx',
+          'document_model_layer_executions_job_idx',
+          'semantic_vector_documents_source_revision_idx',
+          'search_document_owners_source_revision_idx',
+          'search_document_owners_active_idx',
+          'search_projections_one_active_idx',
+          'cleanup_actions_claim_idx',
+          'cleanup_actions_obsolete_artifact_idx',
+          'operation_tombstones_expiry_idx',
+          'operation_tombstones_scope_time_idx',
+          'webhook_subscriptions_public_idempotency_key'
+        ]) AS required(name)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM pg_indexes actual
+          WHERE actual.schemaname = 'focowiki'
+            AND actual.indexname = required.name
+        )
       )
-      AND EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'cleanup_actions'
-          AND column_name = 'search_provider_kind'
-          AND data_type = 'text'
+      AND NOT EXISTS (
+        SELECT required.name
+        FROM unnest(ARRAY[
+          'document_processing_jobs_source_revision_key',
+          'document_processing_jobs_state_check',
+          'document_artifact_work_identity_key',
+          'document_artifact_work_kind_check',
+          'document_artifact_receipts_identity_key',
+          'relation_candidate_pairs_identity_key',
+          'search_family_receipts_identity_key',
+          'projection_dirty_scopes_identity_key',
+          'scoped_activation_owners_identity_key',
+          'generated_page_candidates_owner_check',
+          'generated_page_candidates_operation_path_key',
+          'generated_page_heads_path_key',
+          'source_file_identity_keys_identity_key',
+          'unresolved_file_references_identity_key',
+          'relationship_evaluations_identity_key',
+          'document_model_analysis_results_identity_key',
+          'document_model_layer_executions_identity_key',
+          'search_projections_value_check',
+          'search_document_owners_value_check'
+        ]) AS required(name)
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint actual
+          JOIN pg_class relation ON relation.oid = actual.conrelid
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = 'focowiki'
+            AND actual.conname = required.name
+        )
       )
-      AND EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'source_files'
-          AND column_name = 'model_invocation_status'
-          AND data_type = 'text'
+      AND NOT EXISTS (
+        SELECT removed.name
+        FROM unnest(ARRAY[
+          'processing_stage_work_items',
+          'processing_stage_dependencies',
+          'processing_stage_fairness',
+          'processing_source_summaries',
+          'processing_operation_summaries',
+          'release_candidates',
+          'release_candidate_changed_facts',
+          'release_candidate_dependencies',
+          'release_candidate_graph_edges',
+          'release_candidate_graph_evidence',
+          'release_candidate_graph_nodes',
+          'release_candidate_validations',
+          'release_roots',
+          'release_root_shards',
+          'release_shards',
+          'release_catalog_entries',
+          'release_catalog_tombstones',
+          'release_event_summaries'
+          ,'knowledge_base_activation_revisions'
+          ,'knowledge_base_activation_changes'
+          ,'source_artifact_bundles'
+          ,'document_revision_artifacts'
+          ,'file_relations'
+          ,'file_relation_evidence'
+        ]) AS removed(name)
+        WHERE to_regclass('focowiki.' || removed.name) IS NOT NULL
       )
-      AND EXISTS (
+      AND NOT EXISTS (
         SELECT 1
-        FROM pg_constraint
-        WHERE conrelid = 'focowiki.search_projections'::regclass
-          AND conname = 'search_projections_provider_key'
-          AND regexp_replace(
-            lower(pg_get_constraintdef(oid)), '\\s+', '', 'g'
-          ) = 'unique(provider_kind,provider_index_uid)'
+        FROM information_schema.columns removed_column
+        WHERE removed_column.table_schema = 'focowiki'
+          AND (
+            (removed_column.table_name = 'document_processing_jobs'
+              AND removed_column.column_name IN ('phase', 'checkpoint', 'lease_owner', 'lease_expires_at'))
+            OR removed_column.column_name = 'source_artifact_bundle_public_id'
+          )
       )
-      AND EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'semantic_projection_contracts'
-          AND column_name = 'resolved_dimension'
-          AND data_type = 'integer'
-          AND is_nullable = 'NO'
-      )
-      AND EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'focowiki'
-          AND table_name = 'semantic_stage_work_items'
-          AND column_name = 'embedding_configuration_revision_public_id'
-          AND data_type = 'text'
-          AND is_nullable = 'NO'
-      )
-      AND EXISTS (
+      AND NOT EXISTS (
         SELECT 1
-        FROM pg_constraint
-        WHERE conrelid = 'focowiki.source_event_summaries'::regclass
-          AND conname = 'source_event_summaries_stage_check'
-          AND pg_get_constraintdef(oid) LIKE '%graphrag_processing%'
-          AND pg_get_constraintdef(oid) LIKE '%semantic_reconciliation%'
-          AND pg_get_constraintdef(oid) LIKE '%embedding_generation%'
-          AND pg_get_constraintdef(oid) LIKE '%affected_projection%'
-          AND pg_get_constraintdef(oid) LIKE '%search_publication%'
-          AND pg_get_constraintdef(oid) LIKE '%semantic_maintenance_required%'
+        FROM focowiki.runtime_setting_current current_setting
+        JOIN focowiki.runtime_setting_revisions setting_revision
+          ON setting_revision.public_id = current_setting.revision_public_id
+        WHERE setting_revision.settings_values->'sections' ? 'publication'
       )
-      AND EXISTS (
+      AND NOT EXISTS (
         SELECT 1
-        FROM pg_constraint
-        WHERE conrelid = 'focowiki.semantic_source_reconciliations'::regclass
-          AND conname = 'semantic_source_reconciliations_pkey'
-          AND regexp_replace(
-            lower(pg_get_constraintdef(oid)), '\\s+', '', 'g'
-          ) = 'primarykey(semantic_generation_public_id,source_file_public_id,source_revision_public_id)'
+        FROM focowiki.operation_work_items work_item
+        WHERE work_item.work_kind IN ('source', 'graph', 'publication')
+          OR work_item.checkpoint ?| ARRAY[
+            'stageKind',
+            'stagePublicId',
+            'publicationCandidatePublicId',
+            'releaseRootPublicId',
+            'successorOperationPublicId'
+          ]
       )
-    ) AS provider_schema_compatible
+      AND NOT EXISTS (
+        SELECT 1
+        FROM focowiki.cleanup_actions cleanup
+        WHERE cleanup.checkpoint ?| ARRAY[
+          'stageKind',
+          'stagePublicId',
+          'publicationCandidatePublicId',
+          'releaseRootPublicId',
+          'successorOperationPublicId'
+        ]
+      )
+    ) AS runtime_schema_compatible
   `;
-  if (rows[0]?.provider_schema_compatible !== true) {
+  if (rows[0]?.runtime_schema_compatible !== true) {
     throw new RuntimeSchemaSignatureError();
   }
 }

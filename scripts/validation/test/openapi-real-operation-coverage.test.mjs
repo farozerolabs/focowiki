@@ -12,7 +12,7 @@ const openApiDocument = JSON.parse(
 test("tracks concrete requests against every released OpenAPI operation", () => {
   const coverage = createOpenApiOperationCoverage(openApiDocument);
 
-  assert.equal(coverage.operationCount, 43);
+  assert.equal(coverage.operationCount, 42);
   coverage.record({
     method: "GET",
     pathname: "/openapi/v2/knowledge-bases/kb-example?limit=1",
@@ -59,8 +59,8 @@ test("reports authentication and business-path gaps per operation", () => {
   assert.equal(retry.authenticationVerified, true);
   assert.equal(retry.businessPathVerified, true);
   assert.equal(summary.complete, false);
-  assert.equal(summary.missingAuthentication.length, 42);
-  assert.equal(summary.missingBusinessPath.length, 42);
+  assert.equal(summary.missingAuthentication.length, 41);
+  assert.equal(summary.missingBusinessPath.length, 41);
 });
 
 test("rejects requests that do not match the released contract", () => {

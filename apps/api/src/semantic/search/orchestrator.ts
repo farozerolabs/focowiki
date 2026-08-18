@@ -21,7 +21,8 @@ import type {
 } from "../reranker/gateway.js";
 
 export type SemanticRankedLane =
-  | "exact_path" | "exact_title" | "lexical" | "jieba" | "file_graph";
+  | "exact_path" | "exact_title" | "lexical" | "jieba"
+  | "file_graph" | "file_relationship";
 export type SemanticVectorLane =
   | "content_vector" | "entity_vector"
   | "relationship_vector" | "community_vector";
@@ -67,6 +68,7 @@ const WEIGHTS: Record<SemanticSearchLane, number> = {
   lexical: 5,
   jieba: 4,
   file_graph: 3,
+  file_relationship: 4,
   content_vector: 5,
   entity_vector: 4,
   relationship_vector: 4,
@@ -342,7 +344,7 @@ export function createSemanticSearchOrchestrator(input: {
               .map((candidate) => candidate.sourceFilePublicId)
           );
         }
-        const fusedCandidates = fuse(eligibleCandidates, active);
+        const fusedCandidates = fuse(eligibleCandidates, active, request.scope);
         observeSemanticRanks(
           input.observer,
           "fused",
@@ -512,7 +514,8 @@ function validateLaneCandidates(
 
 function fuse(
   candidates: readonly (SemanticLaneCandidate & { lane: SemanticSearchLane })[],
-  sources: ReadonlyMap<string, SourceRecord>
+  sources: ReadonlyMap<string, SourceRecord>,
+  scope: "all" | "path" | "metadata"
 ) {
   const fused = new Map<string, {
     source: SourceRecord;
@@ -573,8 +576,12 @@ function fuse(
     priority: value.priority === 0 ? "exact_path"
       : value.priority === 1 ? "exact_title" : "fused",
     evidenceFamilies,
-    matchedFields: uniqueSorted(evidenceFamilies.flatMap(matchedFields)),
-    evidenceTypes: uniqueSorted(evidenceFamilies.map(evidenceType)),
+    matchedFields: scope === "metadata"
+      ? ["metadata"]
+      : uniqueSorted(evidenceFamilies.flatMap(matchedFields)),
+    evidenceTypes: scope === "metadata"
+      ? ["metadata"]
+      : uniqueSorted(evidenceFamilies.map(evidenceType)),
     sourceExcerpt: value.sourceExcerpts[0] ?? null,
     explanations: value.snippets
     };
@@ -703,14 +710,16 @@ async function applyReranker(input: {
 function matchedFields(lane: SemanticSearchLane): string[] {
   if (lane === "exact_path") return ["path"];
   if (lane === "exact_title") return ["title"];
-  if (lane === "file_graph") return ["file_relationship"];
+  if (lane === "file_graph") return ["graph_node"];
+  if (lane === "file_relationship") return ["file_relationship"];
   return ["content"];
 }
 
 function evidenceType(lane: SemanticSearchLane): string {
   if (lane === "exact_path") return "path";
   if (lane === "exact_title") return "title";
-  if (lane === "file_graph") return "file_relationship";
+  if (lane === "file_graph") return "graph_node";
+  if (lane === "file_relationship") return "file_relationship";
   if (lane === "entity_vector") return "entity";
   if (lane === "relationship_vector") return "relationship";
   if (lane === "community_vector") return "community";

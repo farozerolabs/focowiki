@@ -1,23 +1,32 @@
 import type {
-  SourceFileFailureStage,
-  SourceFileLifecycleState
+  SourceFileLifecycleState,
+  SourceFileWorkKind
 } from "../domain/source-file-lifecycle.js";
 
-export type GeneratedOutputStatus = "pending" | "visible" | "unavailable";
-export type SourceFileActionState = "openable" | "retryable" | "none";
+export type GeneratedOutputStatus =
+  "unavailable" | "previous_available" | "current_available";
+export type SourceFileActionState =
+  | "openable"
+  | "retryable"
+  | "correctable"
+  | "details_only"
+  | "none";
 export type SourceFileErrorState = "with_error" | "without_error";
-export type SourceFileProcessingStage = SourceFileFailureStage;
+export type SourceFileWorkKindFilter = SourceFileWorkKind;
+export type SourceFileCurrentStageFilter =
+  | SourceFileWorkKindFilter
+  | SourceFileLifecycleState;
 export type SourceFileModelInvocationFilter =
   | "running"
   | "completed"
   | "failed"
-  | "skipped"
+  | "not_required"
   | "not_recorded";
 export type SourceFileListFilters = {
   fileNameQuery?: string | null;
   fileIdQuery?: string | null;
   state?: SourceFileLifecycleState | null;
-  currentStage?: SourceFileProcessingStage | null;
+  currentStage?: SourceFileCurrentStageFilter | null;
   modelInvocationStatus?: SourceFileModelInvocationFilter | null;
   generatedOutputStatus?: GeneratedOutputStatus | null;
   startedFrom?: string | null;
@@ -70,33 +79,21 @@ export function readSourceFileListFilters(input: {
   });
   const state = readOptionalSourceFileFilter<SourceFileLifecycleState>(
     input.state,
-    ["queued", "running", "pending_publication", "visible", "failed"]
+    ["waiting", "processing", "available", "error", "deleting"]
   );
-  const currentStage = readOptionalSourceFileFilter<SourceFileProcessingStage>(
+  const currentStage = readOptionalSourceFileFilter<SourceFileCurrentStageFilter>(
     input.currentStage,
-    [
-      "upload_storage",
-      "metadata_resolution",
-      "llm_suggestion",
-      "graph_generation",
-      "graphrag_processing",
-      "semantic_reconciliation",
-      "embedding_generation",
-      "affected_projection",
-      "search_publication",
-      "semantic_maintenance_required",
-      "projection_generation",
-      "generation_validation",
-      "generation_activation"
-    ]
+    ["prepare", "first_layer", "content_projection", "graphrag",
+      "relation_reconcile", "knowledge_projection", "activate", "cleanup",
+      "waiting", "processing", "available", "error", "deleting"]
   );
   const modelInvocationStatus = readOptionalSourceFileFilter<SourceFileModelInvocationFilter>(
     input.modelInvocationStatus,
-    ["running", "completed", "failed", "skipped", "not_recorded"]
+    ["not_required", "running", "completed", "failed", "not_recorded"]
   );
   const generatedOutputStatus = readOptionalSourceFileFilter<GeneratedOutputStatus>(
     input.generatedOutputStatus,
-    ["pending", "visible", "unavailable"]
+    ["unavailable", "previous_available", "current_available"]
   );
   const errorState = readOptionalSourceFileFilter<SourceFileErrorState>(input.errorState, [
     "with_error",
@@ -105,6 +102,8 @@ export function readSourceFileListFilters(input: {
   const actionState = readOptionalSourceFileFilter<SourceFileActionState>(input.actionState, [
     "openable",
     "retryable",
+    "correctable",
+    "details_only",
     "none"
   ]);
   const startedFrom = readTimestampFilter(input.startedFrom);

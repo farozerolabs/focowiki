@@ -8,6 +8,7 @@ import {
   deleteKnowledgeBaseSourceFileTasks,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
+  fetchKnowledgeBaseIndexMaintenance,
   fetchKnowledgeBaseProcessingSummary,
   fetchKnowledgeBasePublicUrls,
   fetchSourceFile,
@@ -57,7 +58,22 @@ vi.mock("../src/lib/admin-api", () => ({
   deleteKnowledgeBase: vi.fn(),
   deleteKnowledgeBaseSourceDirectory: vi.fn(async () => ({
     accepted: true,
-    operationId: "operation-delete-handbook",
+    operation: {
+      operationId: "operation-delete-handbook",
+      knowledgeBaseId: "kb-docs",
+      kind: "source_directory_delete",
+      state: "accepted",
+      expectedResourceRevision: 3,
+      targetKind: "source_directory",
+      targetId: "source-directory-handbook",
+      candidateRelativePath: null,
+      result: null,
+      errorCode: null,
+      retryGuidance: null,
+      createdAt: "2026-06-14T00:00:00.000Z",
+      updatedAt: "2026-06-14T00:00:00.000Z",
+      completedAt: null
+    },
     directoryId: "source-directory-handbook",
     affectedDirectoryCount: 1,
     affectedFileCount: 2
@@ -142,69 +158,13 @@ vi.mock("../src/lib/admin-api", () => ({
     nextCursor: null
   })),
   fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
-    activeGenerationId: null,
-    pendingDispatch: {
-      pendingCount: 0,
-      oldestPendingAt: null,
-      paused: false,
-      pausedReason: null
-    },
-    sourceFileJobs: {
-      queuedCount: 0,
-      runningCount: 0,
-      completedCount: 0,
-      failedCount: 0,
-      deadLetterCount: 0,
-      oldestQueuedAt: null,
-      oldestQueuedAgeSeconds: null
-    },
-    publicationJobs: {
-      queuedCount: 0,
-      runningCount: 0,
-      completedCount: 0,
-      failedCount: 0,
-      deadLetterCount: 0,
-      oldestQueuedAt: null,
-      oldestQueuedAgeSeconds: null
-    },
-    publicationProgress: {
-      generationId: null, stage: null, processedImpactCount: 0, totalImpactCount: 0,
-      touchedShardCount: 0, throughputPerMinute: null, oldestDirtyAt: null, queuedAt: null, startedAt: null,
-      heartbeatAt: null, completedAt: null, lastSuccessAt: null,
-      safeErrorCode: null, safeErrorMessage: null
-    },
-    maintenanceProgress: {
-      migration: null,
-      lexicalRebuild: null,
-      projectionRepair: {
-        repairVersion: 3,
-        state: "running",
-        phase: "directory",
-        attemptCount: 1,
-        requiredProjectionKinds: ["tree", "directory", "graph"],
-        completedProjectionKinds: ["tree"],
-        completedSubtaskCount: 8,
-        totalSubtaskCount: 24,
-        completedRecordCount: 12_500,
-        totalRecordCount: 30_000,
-        completedDirectoryCount: 40,
-        totalDirectoryCount: 120,
-        objectWriteCount: 320,
-        objectReuseCount: 1_280,
-        retryCount: 2,
-        recordsPerSecond: 625,
-        rollingBatchLatencyMs: 85,
-        lastProgressAt: "2026-07-20T00:00:04.000Z",
-        lastHeartbeatAt: "2026-07-20T00:00:04.500Z",
-        estimatedCompletionAt: "2026-07-20T00:00:32.000Z",
-        updatedAt: "2026-07-20T00:00:04.000Z",
-        completedAt: null,
-        safeErrorCode: null,
-        safeErrorMessage: null
-      },
-      compaction: { active: null, latestCompleted: null }
-    },
-    indexMaintenance: {
+    waitingCount: 1,
+    processingCount: 1,
+    availableCount: 8,
+    errorCount: 0,
+    oldestWaitingAt: "2026-07-20T00:00:00.000Z"
+  })),
+  fetchKnowledgeBaseIndexMaintenance: vi.fn(async () => ({
       requestId: null,
       state: "idle",
       trigger: null,
@@ -218,11 +178,6 @@ vi.mock("../src/lib/admin-api", () => ({
       maintenanceRequired: true,
       safeErrorCode: null,
       safeErrorMessage: null
-    },
-    dirtySourceFiles: {
-      count: 0,
-      oldestDirtyAt: null
-    }
   })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => ({
     index: "https://kb.example.com/openapi/v2/knowledge-bases/kb-docs/files/content?path=index.md",
@@ -240,7 +195,7 @@ vi.mock("../src/lib/admin-api", () => ({
         id: "kb-docs",
         name: "Developer docs",
         description: "Markdown product knowledge",
-        activeGenerationId: "generation-001"
+        activeContentRevision: 1
       }
     ],
     nextCursor: null
@@ -251,8 +206,12 @@ vi.mock("../src/lib/admin-api", () => ({
         id: "source-001",
         name: "intro.md",
         relativePath: "intro.md",
-        state: "running",
-        currentStage: "metadata_resolution",
+        state: "processing",
+        blockingWorkKind: "prepare",
+        requiredWorkCount: 8,
+        completedWorkCount: 1,
+        activeWorkKinds: ["prepare"],
+        retryingWorkKind: null,
         processingStartedAt: "2026-06-14T00:00:00.000Z",
         processingEndedAt: null,
         failure: null,
@@ -263,8 +222,12 @@ vi.mock("../src/lib/admin-api", () => ({
         id: "source-002",
         name: "setup.md",
         relativePath: "setup.md",
-        state: "queued",
-        currentStage: "upload_storage",
+        state: "waiting",
+        blockingWorkKind: "prepare",
+        requiredWorkCount: 8,
+        completedWorkCount: 0,
+        activeWorkKinds: [],
+        retryingWorkKind: null,
         processingStartedAt: "2026-06-14T00:00:01.000Z",
         processingEndedAt: null,
         failure: null,
@@ -274,7 +237,7 @@ vi.mock("../src/lib/admin-api", () => ({
     ],
     nextCursor: null
   })),
-  loginAdmin: vi.fn(async () => true),
+  loginAdmin: vi.fn(async () => ({ authenticated: true, error: null, retryAfterSeconds: null })),
   logoutAdmin: vi.fn(async () => undefined),
   requestKnowledgeBaseIndexMaintenance: vi.fn(async () => ({
     result: "accepted",
@@ -364,6 +327,22 @@ describe("Admin knowledge base detail", () => {
     ).toContain("min-h-0");
   });
 
+  it("keeps the generated file title after following an internal evidence link", async () => {
+    await openDetail();
+
+    fireEvent.click(await screen.findByRole("button", { name: "intro.md" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generated page" }));
+
+    await waitFor(() => {
+      expect(fetchKnowledgeBaseFileDetail).toHaveBeenLastCalledWith({
+        knowledgeBaseId: "kb-docs",
+        path: "pages/intro.md"
+      });
+    });
+    expect(screen.getByText("Intro", { selector: '[data-slot="card-title"]' })).toBeTruthy();
+    expect(screen.queryByText("Generated page", { selector: '[data-slot="card-title"]' })).toBeNull();
+  });
+
   it("exposes source-file editing actions from the file tree menu", async () => {
     await openDetail();
 
@@ -375,6 +354,22 @@ describe("Admin knowledge base detail", () => {
     expect(await screen.findByRole("menuitem", { name: "Rename" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Move" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Replace content" })).toBeTruthy();
+  });
+
+  it("shows a source detail service failure instead of a not-found editor state", async () => {
+    vi.mocked(fetchSourceFile).mockRejectedValueOnce(
+      new Error("errors.serviceUnavailable")
+    );
+    await openDetail();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "File actions: intro.md" }), {
+      button: 0,
+      ctrlKey: false
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+
+    expect(await screen.findByText("The service is temporarily unavailable")).toBeTruthy();
+    expect(screen.queryByText("The requested resource was not found")).toBeNull();
   });
 
   it("searches the file tree and renders ancestor folders", async () => {
@@ -579,159 +574,30 @@ describe("Admin knowledge base detail", () => {
     expect(within(table).getByText("setup.md")).toBeTruthy();
     expect(within(table).getByText("source-001")).toBeTruthy();
     expect(within(table).getByText("source-002")).toBeTruthy();
-    expect(within(table).getByText("Running")).toBeTruthy();
-    expect(within(table).getByText("Queued")).toBeTruthy();
-    expect(within(table).getByText("Upload storage")).toBeTruthy();
-    expect(within(table).getByText("Metadata resolution")).toBeTruthy();
+    expect(within(table).getByText("Processing")).toBeTruthy();
+    expect(within(table).getByText("Waiting")).toBeTruthy();
+    expect(within(table).getAllByText("Prepare")).toHaveLength(2);
     expect(within(table).getAllByText("Pending").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
   });
 
-  it("shows active projection repair in the maintenance summary", async () => {
-    await openDetail();
-
-    expect(await screen.findByText("Repairing projections")).toBeTruthy();
-    expect(
-      screen.getByText((content) =>
-        content.includes("Building directory navigation") &&
-        content.includes("12,500/30,000 records") &&
-        content.includes("8/24 tasks")
-      )
-    ).toBeTruthy();
-    expect(screen.queryByText("No active maintenance")).toBeNull();
-  });
-
-  it("shows active index maintenance in the processing summary", async () => {
-    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
-      knowledgeBaseId: "kb-docs"
-    });
-    expect(currentSummary).not.toBeNull();
-    if (!currentSummary) throw new Error("Expected the processing summary fixture.");
+  it("renders only the four document lifecycle summary cards", async () => {
     vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
-      ...currentSummary,
-      maintenanceProgress: {
-        migration: null,
-        lexicalRebuild: null,
-        projectionRepair: null,
-        compaction: { active: null, latestCompleted: null }
-      },
-      indexMaintenance: {
-        ...currentSummary.indexMaintenance,
-        requestId: "index-maintenance-active",
-        state: "running",
-        stage: "projection:tree",
-        active: true,
-        completedCount: 20,
-        expectedCount: 100,
-        lastProgressAt: "2026-07-20T00:00:04.000Z"
-      }
+      waitingCount: 5,
+      processingCount: 3,
+      availableCount: 8,
+      errorCount: 1,
+      oldestWaitingAt: "2026-07-20T00:00:00.000Z"
     });
 
     await openDetail();
 
-    expect(await screen.findByText("Updating file navigation and relationships · 20 / 100"))
-      .toBeTruthy();
-    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue(currentSummary);
-  });
-
-  it("shows the most recent completed index maintenance in the processing summary", async () => {
-    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
-      knowledgeBaseId: "kb-docs"
-    });
-    expect(currentSummary).not.toBeNull();
-    if (!currentSummary) throw new Error("Expected the processing summary fixture.");
-    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
-      ...currentSummary,
-      maintenanceProgress: {
-        migration: null,
-        lexicalRebuild: null,
-        projectionRepair: null,
-        compaction: { active: null, latestCompleted: null }
-      },
-      indexMaintenance: {
-        ...currentSummary.indexMaintenance,
-        state: "completed",
-        active: false,
-        lastCompletedAt: "2026-07-20T00:00:04.000Z"
-      }
-    });
-
-    await openDetail();
-
-    expect(await screen.findByText(/^updated /)).toBeTruthy();
-    expect(screen.queryByText("No maintenance history")).toBeNull();
-    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue(currentSummary);
-  });
-
-  it("renders every processing summary card from the backend response", async () => {
-    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
-      knowledgeBaseId: "kb-docs"
-    });
-    expect(currentSummary).not.toBeNull();
-    if (!currentSummary) {
-      throw new Error("Expected the processing summary fixture.");
-    }
-    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
-      ...currentSummary,
-      activeGenerationId: "generation-active",
-      pendingDispatch: {
-        pendingCount: 5,
-        oldestPendingAt: "2026-07-20T00:00:00.000Z",
-        paused: true,
-        pausedReason: "resource_pressure"
-      },
-      sourceFileJobs: {
-        queuedCount: 2,
-        runningCount: 1,
-        completedCount: 8,
-        failedCount: 1,
-        deadLetterCount: 1,
-        oldestQueuedAt: "2026-07-20T00:00:00.000Z",
-        oldestQueuedAgeSeconds: 42
-      },
-      publicationJobs: {
-        queuedCount: 1,
-        runningCount: 1,
-        completedCount: 3,
-        failedCount: 0,
-        deadLetterCount: 0,
-        oldestQueuedAt: "2026-07-20T00:00:00.000Z",
-        oldestQueuedAgeSeconds: 20
-      },
-      publicationProgress: {
-        ...currentSummary.publicationProgress,
-        generationId: "generation-candidate",
-        stage: "building",
-        processedImpactCount: 3,
-        totalImpactCount: 5,
-        safeErrorCode: "RELEASE_VALIDATION_FAILED",
-        safeErrorMessage: "Release validation failed."
-      },
-      maintenanceProgress: {
-        ...currentSummary.maintenanceProgress,
-        projectionRepair: currentSummary.maintenanceProgress.projectionRepair
-          ? {
-              ...currentSummary.maintenanceProgress.projectionRepair,
-              safeErrorCode: "PROJECTION_REPAIR_FAILED",
-              safeErrorMessage: "Projection repair failed."
-            }
-          : null
-      }
-    });
-
-    await openDetail();
-
-    expect(await screen.findByText("5 pending")).toBeTruthy();
-    expect(screen.getByText("Dispatch is paused by processing pressure")).toBeTruthy();
-    expect(screen.getByText("3 active")).toBeTruthy();
-    expect(screen.getByText("2 queued / 1 running / 1 failed / 1 dead-letter / oldest 42s"))
-      .toBeTruthy();
-    expect(screen.getByText("2 active")).toBeTruthy();
-    expect(screen.getByText("building · 3/5 impacts")).toBeTruthy();
-    expect(screen.getByText("Active generation")).toBeTruthy();
-    expect(screen.getByText("Publication failed: RELEASE_VALIDATION_FAILED")).toBeTruthy();
-    expect(document.body.textContent).toContain("Maintenance failed");
-    expect(screen.getByText("PROJECTION_REPAIR_FAILED")).toBeTruthy();
+    expect((await screen.findAllByText("Waiting")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Processing").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Available").length).toBeGreaterThan(0);
+    expect(screen.getByText("Failed")).toBeTruthy();
+    expect(screen.queryByText("Publication queue")).toBeNull();
+    expect(screen.queryByText("Active generation")).toBeNull();
   });
 
   it("requests index maintenance from the knowledge-base settings view", async () => {
@@ -767,17 +633,11 @@ describe("Admin knowledge base detail", () => {
   });
 
   it("cancels maintenance while the server reports active work", async () => {
-    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
+    const currentMaintenance = await vi.mocked(fetchKnowledgeBaseIndexMaintenance)({
       knowledgeBaseId: "kb-docs"
     });
-    expect(currentSummary).not.toBeNull();
-    if (!currentSummary) {
-      throw new Error("Expected the processing summary fixture.");
-    }
-    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
-      ...currentSummary,
-      indexMaintenance: {
-        ...currentSummary.indexMaintenance,
+    vi.mocked(fetchKnowledgeBaseIndexMaintenance).mockResolvedValue({
+        ...currentMaintenance,
         requestId: "index-maintenance-active",
         state: "running",
         trigger: "automatic",
@@ -785,7 +645,6 @@ describe("Admin knowledge base detail", () => {
         active: true,
         completedCount: 20,
         expectedCount: 100
-      }
     });
     await openDetail();
 
@@ -808,19 +667,12 @@ describe("Admin knowledge base detail", () => {
   });
 
   it("shows when index maintenance is not required", async () => {
-    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
+    const currentMaintenance = await vi.mocked(fetchKnowledgeBaseIndexMaintenance)({
       knowledgeBaseId: "kb-docs"
     });
-    expect(currentSummary).not.toBeNull();
-    if (!currentSummary) {
-      throw new Error("Expected the processing summary fixture.");
-    }
-    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
-      ...currentSummary,
-      indexMaintenance: {
-        ...currentSummary.indexMaintenance,
-        maintenanceRequired: false
-      }
+    vi.mocked(fetchKnowledgeBaseIndexMaintenance).mockResolvedValue({
+      ...currentMaintenance,
+      maintenanceRequired: false
     });
     await openDetail();
 
@@ -883,8 +735,12 @@ describe("Admin knowledge base detail", () => {
           id: "source-001",
           name: "intro.md",
           relativePath: "intro.md",
-          state: "visible",
-          currentStage: "generation_activation",
+          state: "available",
+          blockingWorkKind: null,
+          requiredWorkCount: 8,
+          completedWorkCount: 8,
+          activeWorkKinds: [],
+          retryingWorkKind: null,
           failure: null,
           actions: [
             {
@@ -914,9 +770,7 @@ describe("Admin knowledge base detail", () => {
     await openDetail();
 
     const row = await screen.findByTestId("source-file-row-source-001");
-    expect(await screen.findByText("Available")).toBeTruthy();
-    expect(within(row).getByText("Visible")).toBeTruthy();
-    expect(within(row).getByText("Generation activation")).toBeTruthy();
+    expect(within(row).getAllByText("Available")).toHaveLength(3);
     expect(within(row).getByText("audit-model / Completed / 5.0s / 1 warning")).toBeTruthy();
     expect(within(row).getByText("No error")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Open file" }));
@@ -929,29 +783,76 @@ describe("Admin knowledge base detail", () => {
     });
   });
 
-  it("renders every semantic upload stage with the existing task-table layout", async () => {
-    const stages = [
-      ["graphrag_processing", "GraphRAG processing"],
-      ["semantic_reconciliation", "Semantic reconciliation"],
-      ["embedding_generation", "Embedding generation"],
-      ["affected_projection", "Affected projection"],
-      ["search_publication", "Search publication"],
-      ["semantic_maintenance_required", "Semantic maintenance required"]
+  it("labels previous generated output and every generated-output filter truthfully", async () => {
+    vi.mocked(listSourceFiles).mockResolvedValue({
+      items: [{
+        id: "source-previous",
+        name: "guide.md",
+        relativePath: "guide.md",
+        state: "error",
+        blockingWorkKind: null,
+        requiredWorkCount: 8,
+        completedWorkCount: 0,
+        activeWorkKinds: [],
+        retryingWorkKind: null,
+        failure: {
+          workKind: "activate",
+          code: "DOCUMENT_FINALIZATION_FAILED",
+          message: "Document finalization failed.",
+          occurredAt: "2026-06-14T00:00:10.000Z",
+          retryKind: "document_processing",
+          correlationId: "document-job-previous"
+        },
+        actions: [],
+        generatedFileAvailable: true,
+        generatedOutputStatus: "previous_available",
+        generatedFileId: "source-previous",
+        generatedFilePath: "pages/guide.md",
+        processingStartedAt: "2026-06-14T00:00:00.000Z",
+        processingEndedAt: "2026-06-14T00:00:10.000Z",
+        createdAt: "2026-06-14T00:00:00.000Z"
+      }],
+      nextCursor: null
+    });
+
+    await openDetail();
+
+    expect(await screen.findByText("Previous version available")).toBeTruthy();
+    fireEvent.pointerDown(screen.getByRole("button", {
+      name: "Filter Generated file"
+    }));
+    expect(await screen.findByRole("menuitemradio", {
+      name: "Previous version available"
+    })).toBeTruthy();
+    expect(screen.getByRole("menuitemradio", { name: "Available" })).toBeTruthy();
+    expect(screen.getByRole("menuitemradio", { name: "Unavailable" })).toBeTruthy();
+  });
+
+  it("renders every fixed document work kind with the existing task-table layout", async () => {
+    const workKinds = [
+      ["prepare", "Prepare"],
+      ["first_layer", "First-layer generation"],
+      ["content_projection", "Content projection"],
+      ["graphrag", "GraphRAG"],
+      ["relation_reconcile", "Relationship reconciliation"],
+      ["knowledge_projection", "Knowledge projection"],
+      ["activate", "Activation"],
+      ["cleanup", "Cleanup"]
     ] as const;
     vi.mocked(listSourceFiles).mockResolvedValue({
-      items: stages.map(([currentStage], index) => ({
+      items: workKinds.map(([blockingWorkKind], index) => ({
         id: `source-semantic-stage-${index}`,
         name: `stage-${index}.md`,
         relativePath: `stage-${index}.md`,
-        state: currentStage === "semantic_maintenance_required"
-          ? "visible" as const
-          : "running" as const,
-        currentStage,
+        state: "processing" as const,
+        blockingWorkKind,
+        requiredWorkCount: 8,
+        completedWorkCount: index,
+        activeWorkKinds: [blockingWorkKind],
+        retryingWorkKind: null,
         failure: null,
         actions: [],
-        generatedOutputStatus: currentStage === "semantic_maintenance_required"
-          ? "visible" as const
-          : "pending" as const,
+        generatedOutputStatus: "unavailable" as const,
         createdAt: "2026-06-14T00:00:00.000Z"
       })),
       nextCursor: null
@@ -959,24 +860,20 @@ describe("Admin knowledge base detail", () => {
 
     await openDetail();
 
-    for (const [, label] of stages) {
+    for (const [, label] of workKinds) {
       expect(await screen.findByText(label)).toBeTruthy();
     }
-    expect(screen.getAllByTestId(/^source-file-row-/u)).toHaveLength(stages.length);
+    expect(screen.getAllByTestId(/^source-file-row-/u)).toHaveLength(workKinds.length);
 
     const i18n = await initI18n("zh-CN");
     await i18n.changeLanguage("zh-CN");
-    expect(i18n.t("tasks.phase.graphragProcessing")).toBe("GraphRAG 处理");
-    expect(i18n.t("tasks.phase.semanticReconciliation")).toBe("语义关系协调");
-    expect(i18n.t("tasks.phase.embeddingGeneration")).toBe("向量生成");
-    expect(i18n.t("tasks.phase.affectedProjection")).toBe("受影响投影生成");
-    expect(i18n.t("tasks.phase.searchPublication")).toBe("搜索入库");
-    expect(i18n.t("tasks.phase.semanticMaintenanceRequired")).toBe(
-      "需要维护语义索引"
-    );
+    expect(i18n.t("tasks.workKind.prepare")).toBe("准备");
+    expect(i18n.t("tasks.workKind.firstLayer")).toBe("前置模型处理");
+    expect(i18n.t("tasks.workKind.contentProjection")).toBe("内容投影");
+    expect(i18n.t("tasks.workKind.activate")).toBe("生效");
   });
 
-  it("shows publication failures with details and the backend-authorized retry action", async () => {
+  it("shows document failures with details and the backend-authorized retry action", async () => {
     vi.mocked(fetchKnowledgeBaseFileTree).mockResolvedValueOnce({
       items: [],
       nextCursor: null
@@ -987,15 +884,19 @@ describe("Admin knowledge base detail", () => {
           id: "source-failed",
           name: "broken.md",
           relativePath: "broken.md",
-          state: "failed",
-          currentStage: "generation_validation",
+          state: "error",
+          blockingWorkKind: null,
+          requiredWorkCount: 8,
+          completedWorkCount: 0,
+          activeWorkKinds: [],
+          retryingWorkKind: null,
           failure: {
-            stage: "generation_validation",
-            code: "RELEASE_VALIDATION_FAILED",
-            message: "Generated navigation did not pass release validation.",
+            workKind: "activate",
+            code: "DOCUMENT_FINALIZATION_FAILED",
+            message: "Document finalization failed.",
             occurredAt: "2026-06-14T00:00:10.000Z",
-            retryKind: "publication",
-            correlationId: "publication-001"
+            retryKind: "document_processing",
+            correlationId: "document-job-001"
           },
           actions: [
             {
@@ -1005,10 +906,10 @@ describe("Admin knowledge base detail", () => {
               scope: "source_file"
             },
             {
-              kind: "retry_publication",
+              kind: "retry_document_processing",
               method: "POST",
               href: "/admin/api/knowledge-bases/kb-docs/source-files/source-failed/retry",
-              scope: "knowledge_base_publication"
+              scope: "source_file"
             }
           ],
           processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -1027,12 +928,12 @@ describe("Admin knowledge base detail", () => {
 
     expect(screen.queryByRole("button", { name: "broken.md" })).toBeNull();
     expect(await screen.findByText("Unavailable")).toBeTruthy();
-    expect(screen.getByText("RELEASE_VALIDATION_FAILED")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry publication" })).toBeTruthy();
+    expect(screen.getByText("DOCUMENT_FINALIZATION_FAILED")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry processing" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View failure details" }));
     expect(await screen.findByRole("dialog", { name: "Failure details" })).toBeTruthy();
-    expect(screen.getByText("Generated navigation did not pass release validation.")).toBeTruthy();
-    expect(screen.getByText("publication-001")).toBeTruthy();
+    expect(screen.getByText("Document finalization failed.")).toBeTruthy();
+    expect(screen.getByText("document-job-001")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open file" })).toBeNull();
   });
 
@@ -1044,8 +945,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:10.000Z",
             failure: null,
@@ -1061,8 +966,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-002",
             name: "setup.md",
             relativePath: "setup.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:11.000Z",
             processingEndedAt: "2026-06-14T00:00:20.000Z",
             failure: null,
@@ -1113,8 +1022,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:10.000Z",
             failure: null,
@@ -1134,8 +1047,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:10.000Z",
             failure: null,
@@ -1229,6 +1146,20 @@ describe("Admin knowledge base detail", () => {
     });
   });
 
+  it("clears the previous body when the next file detail cannot be loaded", async () => {
+    await openDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "intro.md" }));
+    expect(await screen.findByRole("heading", { name: "Intro", level: 1 })).toBeTruthy();
+
+    vi.mocked(fetchKnowledgeBaseFileDetail).mockRejectedValueOnce(
+      new Error("errors.serviceUnavailable")
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Generated page" }));
+
+    expect(await screen.findByText("The service is temporarily unavailable")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Intro", level: 1 })).toBeNull();
+  });
+
   it("copies the selected generated file URL without exposing storage paths", async () => {
     await openDetail();
 
@@ -1303,8 +1234,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "running",
-            currentStage: "metadata_resolution",
+            state: "processing",
+            blockingWorkKind: "prepare",
+            requiredWorkCount: 8,
+            completedWorkCount: 1,
+            activeWorkKinds: ["prepare"],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: null,
             failure: null,
@@ -1320,8 +1255,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-002",
             name: "setup.md",
             relativePath: "setup.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-13T00:00:00.000Z",
             processingEndedAt: "2026-06-13T00:00:10.000Z",
             failure: null,
@@ -1337,8 +1276,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "running",
-            currentStage: "metadata_resolution",
+            state: "processing",
+            blockingWorkKind: "prepare",
+            requiredWorkCount: 8,
+            completedWorkCount: 1,
+            activeWorkKinds: ["prepare"],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: null,
             failure: null,
@@ -1380,8 +1323,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            state: "pending_publication",
-            currentStage: "generation_activation",
+            state: "available",
+            blockingWorkKind: null,
+            requiredWorkCount: 8,
+            completedWorkCount: 8,
+            activeWorkKinds: [],
+            retryingWorkKind: null,
             processingStartedAt: "2026-06-14T00:00:03.000Z",
             processingEndedAt: "2026-06-14T00:00:04.000Z",
             failure: null,
@@ -1465,8 +1412,12 @@ describe("Admin knowledge base detail", () => {
       name: "intro.md",
       relativePath: "intro.md",
       resourceRevision: 5,
-      state: "visible",
-      currentStage: "generation_activation",
+      state: "available",
+      blockingWorkKind: null,
+      requiredWorkCount: 8,
+      completedWorkCount: 8,
+      activeWorkKinds: [],
+      retryingWorkKind: null,
       failure: null,
       actions: [],
       createdAt: "2026-06-14T00:00:00.000Z"

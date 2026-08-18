@@ -27,9 +27,7 @@ await build({
     migrate: "src/db/migrate.ts",
     "migration-preflight": "src/db/migration-preflight-main.ts",
     "search-init": "src/search-init-main.ts",
-    "source-worker": "src/source-worker-main.ts",
-    "publication-worker": "src/publication-worker-main.ts",
-    "maintenance-worker": "src/maintenance-worker-main.ts"
+    worker: "src/worker-main.ts"
   },
   format: "esm",
   legalComments: "none",
@@ -68,9 +66,7 @@ for (const relativePath of nodeJiebaRuntimeFiles) {
 
 for (const runtime of [
   "main.mjs",
-  "source-worker.mjs",
-  "publication-worker.mjs",
-  "maintenance-worker.mjs"
+  "worker.mjs"
 ]) {
   const source = await readFile(resolve(runtimeDir, runtime), "utf8");
   if (!source.includes("nodejieba")) {

@@ -40,23 +40,19 @@ export function registerAdminOpenApiKeyRoutes(
     }
     const page = result.value;
 
-    if (page.oneTimeKey) {
-      await audit.record({
-        context,
-        eventType: "public_openapi_key_bootstrap",
-        result: "success"
-      });
-    }
-
     return context.json({
       items: page.items,
-      nextCursor: page.nextCursor,
-      oneTimeKey: page.oneTimeKey
+      nextCursor: page.nextCursor
     });
   });
 
   app.post("/admin/api/openapi-keys", requireAuth, requireWriteProtection, async (context) => {
     const input = readOpenApiKeyCreateInput(await readJsonBody(context.req.raw));
+    if (!input) {
+      return context.json({
+        error: { code: "VALIDATION_ERROR", messageKey: "errors.openapiKeyFailed" }
+      }, 422);
+    }
     const result = await application.createKey(input);
     if (!result.ok) return missingRepositoryBackend(context);
     const created = result.value;
@@ -64,7 +60,9 @@ export function registerAdminOpenApiKeyRoutes(
     await audit.record({
       context,
       eventType: "public_openapi_key_create",
-      result: "success"
+      result: "success",
+      targetKind: "public_openapi_key",
+      targetPublicId: created.key.id
     });
 
     return context.json(
@@ -92,7 +90,9 @@ export function registerAdminOpenApiKeyRoutes(
       await audit.record({
         context,
         eventType: "public_openapi_key_delete",
-        result: "success"
+        result: "success",
+        targetKind: "public_openapi_key",
+        targetPublicId: context.req.param("keyId")
       });
 
       return context.json({ deleted: true });
@@ -109,8 +109,9 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   }
 }
 
-function readOpenApiKeyCreateInput(body: Record<string, unknown>): { name?: string } {
+function readOpenApiKeyCreateInput(body: Record<string, unknown>): { name?: string } | null {
   const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (name.length > 80) return null;
   return name ? { name } : {};
 }
 

@@ -11,6 +11,9 @@ import type {
 } from "./failed-write-compensation.js";
 
 const PUBLIC_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,254}$/u;
+const DEFAULT_CONCURRENT_WRITE_WAIT_MILLISECONDS = 30_000;
+const DEFAULT_CONCURRENT_WRITE_POLL_MILLISECONDS = 50;
+const DEFAULT_RESERVATION_LEASE_MILLISECONDS = 30_000;
 
 export type StorageVnextImmutableObjectWriter = {
   putVerified(input: {
@@ -18,6 +21,7 @@ export type StorageVnextImmutableObjectWriter = {
     objectFormat: StorageVnextImmutableObjectFormat;
     writeAttemptPublicId: string;
     createdAt: StorageVnextTimestamp;
+    retainVerifiedReservation?: boolean;
     signal?: AbortSignal;
   }): Promise<StorageVnextImmutableBodyWriteResult>;
 };
@@ -36,7 +40,25 @@ export function createStorageVnextImmutableObjectWriter(input: {
   bodyStore: StorageVnextImmutableBodyStore;
   compensation: StorageVnextFailedWriteCompensation;
   clock: () => StorageVnextTimestamp;
+  concurrentWriteWaitMilliseconds?: number;
+  concurrentWritePollMilliseconds?: number;
+  reservationLeaseMilliseconds?: number;
 }): StorageVnextImmutableObjectWriter {
+  const concurrentWriteWaitMilliseconds = boundedMilliseconds(
+    input.concurrentWriteWaitMilliseconds,
+    DEFAULT_CONCURRENT_WRITE_WAIT_MILLISECONDS
+  );
+  const concurrentWritePollMilliseconds = boundedMilliseconds(
+    input.concurrentWritePollMilliseconds,
+    DEFAULT_CONCURRENT_WRITE_POLL_MILLISECONDS
+  );
+  const reservationLeaseMilliseconds = boundedMilliseconds(
+    input.reservationLeaseMilliseconds,
+    DEFAULT_RESERVATION_LEASE_MILLISECONDS
+  );
+  if (reservationLeaseMilliseconds < 1_000) {
+    throw new StorageVnextImmutableObjectWriterError();
+  }
   return {
     async putVerified(request) {
       assertRequest(request);
@@ -44,7 +66,7 @@ export function createStorageVnextImmutableObjectWriter(input: {
         bytes: request.bytes,
         objectFormat: request.objectFormat
       });
-      const reservation = await input.registrations.reserve({
+      const reservationInput = {
         objectId: descriptor.objectId,
         storageKey: descriptor.storageKey,
         checksum: descriptor.checksum,
@@ -52,24 +74,40 @@ export function createStorageVnextImmutableObjectWriter(input: {
         contentType: descriptor.contentType,
         format: descriptor.objectFormat,
         writeAttemptPublicId: request.writeAttemptPublicId,
-        createdAt: request.createdAt
+        createdAt: request.createdAt,
+        reservationExpiresAt: new Date(Math.max(
+          Date.parse(request.createdAt),
+          Date.parse(input.clock())
+        ) + reservationLeaseMilliseconds).toISOString(),
+        ...(request.retainVerifiedReservation
+          ? { holdVerifiedUntil: new Date(Math.max(
+              Date.parse(request.createdAt),
+              Date.parse(input.clock())
+            ) + reservationLeaseMilliseconds).toISOString() }
+          : {})
+      };
+      const reservation = await reserveOrJoinConcurrentWrite({
+        registrations: input.registrations,
+        reservation: reservationInput,
+        descriptor,
+        waitMilliseconds: concurrentWriteWaitMilliseconds,
+        pollMilliseconds: concurrentWritePollMilliseconds,
+        ...(request.signal ? { signal: request.signal } : {})
       });
       assertRegistrationMatches(reservation.registration, descriptor);
       if (reservation.registration.state === "verified") {
-        try {
-          await input.bodyStore.verify({
-            descriptor,
-            ...(request.signal ? { signal: request.signal } : {})
-          });
-          return { ...descriptor, outcome: "reused" };
-        } catch (error) {
-          if (!isMissingBodyError(error)) throw error;
-          return input.bodyStore.putVerified({
-            descriptor,
-            bytes: request.bytes,
-            ...(request.signal ? { signal: request.signal } : {})
-          });
-        }
+        return {
+          ...descriptor,
+          outcome: "reused",
+          requests: {
+            put: 0,
+            head: 0,
+            verification: 0,
+            attemptedBytes: 0,
+            retries: 0,
+            latencyMilliseconds: 0
+          }
+        };
       }
       if (
         reservation.registration.state !== "reserved"
@@ -100,7 +138,10 @@ export function createStorageVnextImmutableObjectWriter(input: {
           byteCount: descriptor.byteCount,
           contentType: descriptor.contentType,
           format: descriptor.objectFormat,
-          verifiedAt: input.clock()
+          verifiedAt: input.clock(),
+          ...(request.retainVerifiedReservation
+            ? { holdVerifiedUntil: reservationInput.holdVerifiedUntil }
+            : {})
         });
       } catch (error) {
         return compensateOrThrow(input.compensation, {
@@ -113,6 +154,82 @@ export function createStorageVnextImmutableObjectWriter(input: {
       return stored;
     }
   };
+}
+
+async function reserveOrJoinConcurrentWrite(input: {
+  registrations: StorageVnextOwnershipRepository;
+  reservation: Parameters<StorageVnextOwnershipRepository["reserve"]>[0];
+  descriptor: ReturnType<StorageVnextImmutableBodyStore["describe"]>;
+  waitMilliseconds: number;
+  pollMilliseconds: number;
+  signal?: AbortSignal;
+}) {
+  let conflict: unknown;
+  try {
+    return await input.registrations.reserve(input.reservation);
+  } catch (error) {
+    if (!isConcurrentReservationConflict(error)) throw error;
+    conflict = error;
+  }
+
+  const deadline = Date.now() + input.waitMilliseconds;
+  while (true) {
+    input.signal?.throwIfAborted();
+    const registration = await input.registrations.getRegistration(
+      input.reservation.objectId
+    );
+    if (registration) {
+      assertRegistrationMatches(registration, input.descriptor);
+      if (registration.state === "verified") {
+        return { outcome: "reused" as const, registration };
+      }
+      if (registration.state === "reserved" || registration.state === "deleting") {
+        // The current writer or cleanup owner still controls the object identity.
+      } else if (registration.state === "deleted") {
+        try {
+          return await input.registrations.reserve(input.reservation);
+        } catch (error) {
+          if (!isConcurrentReservationConflict(error)) throw error;
+          conflict = error;
+        }
+      }
+    } else {
+      try {
+        return await input.registrations.reserve(input.reservation);
+      } catch (error) {
+        if (!isConcurrentReservationConflict(error)) throw error;
+        conflict = error;
+      }
+    }
+    if (Date.now() >= deadline) throw conflict;
+    await waitForPoll(input.pollMilliseconds, input.signal);
+  }
+}
+
+function isConcurrentReservationConflict(error: unknown): boolean {
+  return hasErrorCode(error, "write_in_progress")
+    || hasErrorCode(error, "state_conflict");
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === code;
+}
+
+async function waitForPoll(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+  signal?.throwIfAborted();
+}
+
+function boundedMilliseconds(value: number | undefined, fallback: number): number {
+  const milliseconds = value ?? fallback;
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0 || milliseconds > 60_000) {
+    throw new StorageVnextImmutableObjectWriterError();
+  }
+  return milliseconds;
 }
 
 async function compensateOrThrow(
@@ -157,13 +274,6 @@ function providerFailureReason(error: unknown): StorageVnextFailedWriteReason {
     return "metadata_mismatch";
   }
   return "upload_failed";
-}
-
-function isMissingBodyError(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && error.code === "object_missing";
 }
 
 function assertRequest(input: {

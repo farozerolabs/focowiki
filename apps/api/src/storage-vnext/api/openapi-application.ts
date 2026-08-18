@@ -23,12 +23,6 @@ export type DeveloperOpenApiApplication = {
     resourceRevision: number;
     contentRevision: number;
   }>;
-  listSourceFileEvents(input: {
-    knowledgeBaseId: string;
-    sourceFileId: string;
-    limit: number;
-    cursor: string | null;
-  }): Promise<Record<string, unknown>>;
   retrySourceFile(input: {
     knowledgeBaseId: string;
     sourceFileId: string;
@@ -65,10 +59,7 @@ export type DeveloperOpenApiApplication = {
   }): Promise<Record<string, unknown>>;
   expandGraph(input: {
     knowledgeBaseId: string;
-    fileId: string | null;
-    nodeId: string | null;
-    edgeId: string | null;
-    query: string | null;
+    fileId: string;
     depth: GraphSearchDepth;
     fanout: number;
     limit: number;
@@ -84,13 +75,18 @@ export type DeveloperOpenApiApplication = {
     path: string;
   }): Promise<Record<string, unknown>>;
   createWebhook(input: {
+    idempotencyKey: string;
     name: string | null;
     url: string;
     events: string[];
   }): Promise<Record<string, unknown>>;
   listWebhooks(input: { limit: number; cursor: string | null }): Promise<Record<string, unknown>>;
   deleteWebhook(webhookId: string): Promise<Record<string, unknown>>;
-  listWebhookDeliveries(input: { limit: number; cursor: string | null }): Promise<Record<string, unknown>>;
+  listWebhookDeliveries(input: {
+    webhookId: string | null;
+    limit: number;
+    cursor: string | null;
+  }): Promise<Record<string, unknown>>;
   redeliverWebhook(deliveryId: string): Promise<Record<string, unknown>>;
 };
 
@@ -107,7 +103,6 @@ export function createDeveloperOpenApiService(input: {
     getKnowledgeBase: unavailable,
     getSourceFile: unavailable,
     readSourceContent: unavailable,
-    listSourceFileEvents: unavailable,
     retrySourceFile: unavailable,
     listTree: unavailable,
     searchFiles: unavailable,

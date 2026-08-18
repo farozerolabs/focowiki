@@ -1,7 +1,6 @@
 import type {
-  OrderedDirectoryEntry,
-  OrderedDirectoryLeafLimits
-} from "../../publication/ordered-directory-leaves.js";
+  OrderedDirectoryEntry
+} from "../../document-indexing/domain/document-directory-leaves.js";
 
 export type PersistentDirectoryLeaf = {
   id: string;
@@ -25,31 +24,3 @@ export type DirectoryNavigationMutationResult = {
   removedLeafIds: string[];
   summary: DirectoryNavigationSummary;
 };
-
-export interface DirectoryNavigationRepository {
-  applyEntry(input: {
-    knowledgeBaseId: string;
-    generationId: string;
-    directoryPath: string;
-    entryId: string;
-    desiredEntry: OrderedDirectoryEntry | null;
-    limits: OrderedDirectoryLeafLimits;
-  }): Promise<DirectoryNavigationMutationResult>;
-
-  applyEntries(input: {
-    knowledgeBaseId: string;
-    generationId: string;
-    directoryPath: string;
-    entries: Array<{
-      entryId: string;
-      desiredEntry: OrderedDirectoryEntry | null;
-    }>;
-    limits: OrderedDirectoryLeafLimits;
-  }): Promise<DirectoryNavigationMutationResult>;
-
-  getSummary(input: {
-    knowledgeBaseId: string;
-    generationId: string;
-    directoryPath: string;
-  }): Promise<DirectoryNavigationSummary | null>;
-}

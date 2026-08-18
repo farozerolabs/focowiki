@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   assertOpenApiPublicFilePath,
   openApiNoCandidateSearchHints,
+  presentOpenApiGraphOverview,
+  presentOpenApiRelationship,
   presentOpenApiGeneratedFile,
   presentOpenApiSearchResult
 } from "../src/storage-vnext/api/openapi-presenters.js";
@@ -10,13 +12,13 @@ describe("storage vNext OpenAPI search presentation", () => {
   it("rejects non-public generated paths before storage lookup", () => {
     expect(() => assertOpenApiPublicFilePath("pages/guide.md")).not.toThrow();
     expect(() => assertOpenApiPublicFilePath(
-      "_index/search/v1/index-extension-leaf-a.md"
+      "_index/pages/index-extension-leaf-a.md"
     )).not.toThrow();
     expect(() => assertOpenApiPublicFilePath(
       "_graph/by-file/index-extension-leaf-b.md"
     )).not.toThrow();
     expect(() => assertOpenApiPublicFilePath(
-      "_index/search/v1/index-map-000001.md"
+      "_index/pages/index-map-000001.md"
     )).toThrow();
     expect(() => assertOpenApiPublicFilePath("sources/private.md")).toThrow(
       "This knowledge-base file path is not supported."
@@ -40,10 +42,9 @@ describe("storage vNext OpenAPI search presentation", () => {
   it("preserves the released graph context and graph-file path contract", () => {
     const result = presentOpenApiSearchResult({
       knowledgeBaseId: "kb-a",
-      generationId: "root-a",
+      activeContentRevision: 1,
       mode: "graph",
       depth: 1,
-      nodePublicId: "node-a",
       item: {
         publicId: "file-a",
         sourceFilePublicId: "file-a",
@@ -71,8 +72,6 @@ describe("storage vNext OpenAPI search presentation", () => {
     });
 
     expect(result).toMatchObject({
-      nodeId: "node-a",
-      edgeId: null,
       matchType: "graph_node",
       matchedFields: ["description"],
       tags: ["graph"],
@@ -86,26 +85,91 @@ describe("storage vNext OpenAPI search presentation", () => {
         trustTier: "unverified"
       },
       graphContext: {
-        graphRef: "_graph/by-file/file-a.json",
+        graphRef: "_graph/by-file/a.json",
         depth: 1,
         seedSourceFileId: "file-a",
-        matchedNodeFields: ["content"],
-        matchedRelationshipFields: [],
         relationships: [{
-          edgeId: "edge-a-b",
           fileId: "file-b",
           path: "pages/b.md"
         }],
         graphPaths: [
-          "_graph/by-file/file-a.json",
-          "_graph/by-file/file-b.json"
+          "_graph/by-file/a.json",
+          "_graph/by-file/b.json"
         ]
       }
     });
   });
 
+  it("does not present a search excerpt as document metadata", () => {
+    const withoutDescription = presentOpenApiSearchResult({
+      knowledgeBaseId: "kb-a",
+      activeContentRevision: 1,
+      mode: "file",
+      depth: 0,
+      item: {
+        publicId: "file-a",
+        sourceFilePublicId: "file-a",
+        logicalPath: "pages/a.md",
+        title: "Alpha",
+        snippet: "A matching excerpt from the Markdown body.",
+        score: 1,
+        kind: "file",
+        metadata: {}
+      },
+      relationships: []
+    });
+    const withDescription = presentOpenApiSearchResult({
+      knowledgeBaseId: "kb-a",
+      activeContentRevision: 1,
+      mode: "file",
+      depth: 0,
+      item: {
+        publicId: "file-b",
+        sourceFilePublicId: "file-b",
+        logicalPath: "pages/b.md",
+        title: "Beta",
+        snippet: "A different matching excerpt.",
+        score: 1,
+        kind: "file",
+        metadata: { description: "Authored document description." }
+      },
+      relationships: []
+    });
+
+    expect(withoutDescription.description).toBeNull();
+    expect(withoutDescription.sourceExcerpt).toBe(
+      "A matching excerpt from the Markdown body."
+    );
+    expect(withDescription.description).toBe("Authored document description.");
+  });
+
+  it("keeps absent relationship reasons null instead of inventing evidence", () => {
+    const result = presentOpenApiRelationship("kb-a", 1, {
+      public_id: "edge-a-b",
+      source_file_public_id: "file-b",
+      logical_path: "pages/b.md",
+      title: "Beta",
+      relation: "related",
+      weight: 1,
+      reason: null,
+      direction: "outgoing"
+    });
+
+    expect(result.reason).toBeNull();
+  });
+
+  it("reports an empty relationship graph when files exist without relationships", () => {
+    expect(presentOpenApiGraphOverview({
+      knowledgeBaseId: "kb-a",
+      activeContentRevision: 1,
+      nodeCount: 3,
+      edgeCount: 0,
+      graphIndexAvailable: true
+    }).availability).toBe("empty");
+  });
+
   it("presents generated-file read actions with the released OpenAPI field names", () => {
-    const result = presentOpenApiGeneratedFile("kb-a", "root-a", {
+    const result = presentOpenApiGeneratedFile("kb-a", 1, {
       id: "generated-a",
       logicalPath: "pages/a.md"
     });
@@ -115,16 +179,30 @@ describe("storage vNext OpenAPI search presentation", () => {
       fileContentById: "/openapi/v2/knowledge-bases/kb-a/files/generated-a/content",
       fileContentByPath:
         "/openapi/v2/knowledge-bases/kb-a/files/content?path=pages%2Fa.md",
-      relatedFilesById: "/openapi/v2/knowledge-bases/kb-a/files/generated-a/related",
-      graphExpansionByFileId:
-        "/openapi/v2/knowledge-bases/kb-a/graph/expand?fileId=generated-a",
-      sourceFileStatusById: null,
-      sourceFileEventsById: null
+      relatedFilesById: null,
+      graphExpansionByFileId: null,
+      sourceFileStatusById: null
     });
   });
 
+  it("uses the source-declared title before the storage filename title", () => {
+    const result = presentOpenApiGeneratedFile("kb-a", 1, {
+      id: "generated-overview",
+      logicalPath: "pages/overview.md",
+      title: "overview",
+      frontmatter: { title: "Habitat Overview" }
+    });
+
+    expect(result.title).toBe("Habitat Overview");
+    expect(presentOpenApiGeneratedFile("kb-a", 1, {
+      id: "generated-heading",
+      logicalPath: "pages/heading.md",
+      title: "heading"
+    }, "# Field Operations\n\nBody").title).toBe("Field Operations");
+  });
+
   it("keeps excluded source runtime assets as metadata without readable-file actions", () => {
-    const result = presentOpenApiGeneratedFile("kb-a", "root-a", {
+    const result = presentOpenApiGeneratedFile("kb-a", 1, {
       id: "generated-computation",
       logicalPath: "pages/computation.md",
       frontmatter: {
@@ -164,10 +242,9 @@ describe("storage vNext OpenAPI search presentation", () => {
     } as Parameters<typeof presentOpenApiSearchResult>[0]["item"];
     const result = presentOpenApiSearchResult({
       knowledgeBaseId: "kb-a",
-      generationId: "root-a",
+      activeContentRevision: 1,
       mode: "hybrid",
       depth: 1,
-      nodePublicId: "node-a",
       item: internalItem,
       relationships: []
     });
@@ -188,17 +265,17 @@ describe("storage vNext OpenAPI search presentation", () => {
     expect(result).toMatchObject({
       sourceFileId: "file-a",
       path: "pages/a.md",
-      description: "readable source evidence"
+      description: null,
+      sourceExcerpt: "readable source evidence"
     });
   });
 
   it("presents semantic-only evidence truthfully as a readable source file", () => {
     const result = presentOpenApiSearchResult({
       knowledgeBaseId: "kb-a",
-      generationId: "root-a",
+      activeContentRevision: 1,
       mode: "hybrid",
       depth: 1,
-      nodePublicId: null,
       item: {
         publicId: "file-semantic",
         sourceFilePublicId: "file-semantic",
@@ -244,10 +321,9 @@ describe("storage vNext OpenAPI search presentation", () => {
     const present = (evidenceFamilies: readonly string[]) =>
       presentOpenApiSearchResult({
         knowledgeBaseId: "kb-a",
-        generationId: "root-a",
+        activeContentRevision: 1,
         mode: "hybrid",
         depth: 1,
-        nodePublicId: null,
         item: { ...base, evidenceFamilies },
         relationships: []
       }).matchType;
@@ -257,5 +333,58 @@ describe("storage vNext OpenAPI search presentation", () => {
     expect(present(["relationship_vector"])).toBe("graph_edge");
     expect(present(["entity_vector"])).toBe("graph_node");
     expect(present(["lexical", "entity_vector"])).toBe("hybrid");
+  });
+
+  it("reports graph-node and metadata evidence without inventing a relationship", () => {
+    const graphResult = presentOpenApiSearchResult({
+      knowledgeBaseId: "kb-a",
+      activeContentRevision: 1,
+      mode: "hybrid",
+      depth: 1,
+      item: {
+        publicId: "file-a",
+        sourceFilePublicId: "file-a",
+        logicalPath: "pages/a.md",
+        title: "Alpha",
+        snippet: "Alpha",
+        score: 1,
+        kind: "file",
+        metadata: {},
+        evidenceFamilies: ["file_graph"],
+        matchedFields: ["graph_node"],
+        evidenceTypes: ["graph_node"]
+      } as Parameters<typeof presentOpenApiSearchResult>[0]["item"],
+      relationships: []
+    });
+    const metadataResult = presentOpenApiSearchResult({
+      knowledgeBaseId: "kb-a",
+      activeContentRevision: 1,
+      mode: "file",
+      depth: 0,
+      item: {
+        publicId: "file-metadata",
+        sourceFilePublicId: "file-metadata",
+        logicalPath: "pages/metadata.md",
+        title: "Metadata",
+        snippet: "research",
+        score: 1,
+        kind: "file",
+        metadata: { tags: ["research"] },
+        evidenceFamilies: ["lexical"],
+        matchedFields: ["metadata"],
+        evidenceTypes: ["metadata"]
+      } as Parameters<typeof presentOpenApiSearchResult>[0]["item"],
+      relationships: []
+    });
+
+    expect(graphResult).toMatchObject({
+      matchedFields: ["graph_node"],
+      evidenceTypes: ["graph_node"],
+      graphContext: { relationships: [] }
+    });
+    expect(metadataResult).toMatchObject({
+      matchedFields: ["metadata"],
+      evidenceTypes: ["metadata"]
+    });
   });
 });

@@ -30,6 +30,12 @@ export type SemanticSkeletonSelection = {
   sourceChunkCount: number;
 };
 
+type SemanticSkeletonChunkReference = {
+  id: string;
+  startOffset: number;
+  endOffset: number;
+};
+
 export type SemanticSkeletonPolicy = {
   stableSamplingBasisPoints: number;
   structuralSelectionThreshold: number;
@@ -113,6 +119,51 @@ export function selectSemanticSkeleton(input: {
   };
 }
 
+export function remapSemanticSkeletonSelection(input: {
+  selection: SemanticSkeletonSelection;
+  originalChunks: readonly SemanticSkeletonChunkReference[];
+  retryChunks: readonly SemanticSkeletonChunkReference[];
+}): SemanticSkeletonSelection {
+  assertChunkReferences(input.originalChunks);
+  assertChunkReferences(input.retryChunks);
+  const originalById = new Map(input.originalChunks.map((chunk) => [chunk.id, chunk]));
+  const selectedOriginalChunks = input.selection.selectedChunkIds.map((id) => {
+    const chunk = originalById.get(id);
+    if (!chunk) throw new Error("Semantic skeleton selection source is invalid");
+    return chunk;
+  });
+  if (input.selection.sourceChunkCount !== input.originalChunks.length
+    || input.selection.selected !== (selectedOriginalChunks.length > 0)) {
+    throw new Error("Semantic skeleton selection source is invalid");
+  }
+  const unchanged = input.originalChunks.length === input.retryChunks.length
+    && input.originalChunks.every((chunk, index) =>
+      chunk.id === input.retryChunks[index]?.id);
+  if (unchanged) return input.selection;
+
+  const selectedChunkIds = input.selection.selected
+    ? input.retryChunks
+      .filter((chunk) => selectedOriginalChunks.some((selected) =>
+        chunk.startOffset < selected.endOffset
+        && chunk.endOffset > selected.startOffset))
+      .slice(0, 8)
+      .map((chunk) => chunk.id)
+    : [];
+  if (input.selection.selected && selectedChunkIds.length === 0) {
+    throw new Error("Semantic skeleton retry chunks do not cover the selection");
+  }
+  return {
+    ...input.selection,
+    selectedChunkIds,
+    sourceChunkCount: input.retryChunks.length,
+    decisionSha256: sha256(JSON.stringify({
+      parentDecisionSha256: input.selection.decisionSha256,
+      sourceChunkCount: input.retryChunks.length,
+      selectedChunkIds
+    }))
+  };
+}
+
 function emptyGraphSignals(): SemanticSkeletonGraphSignals {
   return {
     acceptedEdgeCount: 0,
@@ -145,6 +196,17 @@ function assertGraphSignals(signals: SemanticSkeletonGraphSignals): void {
     || signals.inboundEdgeCount + signals.outboundEdgeCount
       < signals.acceptedEdgeCount) {
     throw new Error("Semantic skeleton graph signals are invalid");
+  }
+}
+
+function assertChunkReferences(chunks: readonly SemanticSkeletonChunkReference[]): void {
+  if (chunks.length === 0 || new Set(chunks.map((chunk) => chunk.id)).size !== chunks.length
+    || chunks.some((chunk) => !chunk.id
+      || !Number.isSafeInteger(chunk.startOffset)
+      || !Number.isSafeInteger(chunk.endOffset)
+      || chunk.startOffset < 0
+      || chunk.endOffset <= chunk.startOffset)) {
+    throw new Error("Semantic skeleton chunks are invalid");
   }
 }
 

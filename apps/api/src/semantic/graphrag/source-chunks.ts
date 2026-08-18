@@ -14,7 +14,12 @@ export function createSemanticSourceChunks(input: {
   maximumChunks: number;
 }): SemanticSourceChunk[] {
   assertLimits(input);
-  if (!input.markdown.trim()) throw new Error("Semantic source body is empty");
+  if (!input.markdown.trim()) {
+    throw Object.assign(new Error("Semantic source body is empty"), {
+      code: "semantic_source_body_empty",
+      retryable: false
+    });
+  }
   const chunks: SemanticSourceChunk[] = [];
   let offset = 0;
   while (offset < input.markdown.length) {

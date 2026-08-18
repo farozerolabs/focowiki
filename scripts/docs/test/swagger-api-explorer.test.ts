@@ -165,13 +165,13 @@ test("the Chinese explorer localizes display copy without changing the source co
   const searchOperation =
     localized.paths["/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/search"].get;
 
-  assert.equal(localized.tags.find((tag) => tag.name === "文件")?.description, "读取已发布文件树、正文、搜索结果和文件关系。");
+  assert.equal(localized.tags.find((tag) => tag.name === "文件")?.description, "读取当前可读取的文件树、正文、搜索结果和文件关系。");
   assert.equal(
     localized.tags.find((tag) => tag.name === "文件和目录变更")?.description,
-    "查看文件和目录移动、替换及删除的处理进度与结果。"
+    "查看文档索引、文件和目录移动、替换及删除的处理进度与结果。"
   );
   assert.equal(searchOperation.summary, "搜索文件");
-  assert.match(searchOperation.description, /完整自然语言问题/);
+  assert.match(searchOperation.description, /当前可读取文件/);
   assert.deepEqual(searchOperation.tags, ["文件"]);
   assert.match(
     searchOperation.parameters.find((parameter) => parameter.name === "query")
@@ -256,6 +256,40 @@ test("every OpenAPI operation retains one Markdown page per locale", async () =>
   }
 });
 
+test("generated operation pages connect returned identifiers to useful next calls", async () => {
+  const expectedLinks = [
+    ["create-knowledge-base.md", "./create-upload-session.md"],
+    ["delete-knowledge-base.md", "./get-resource-operation.md"],
+    ["list-knowledge-base-source-files.md", "./get-knowledge-base-source-file.md"],
+    ["get-knowledge-base-source-file.md", "./get-source-file-content.md"],
+    ["search-generated-files.md", "./get-file-content-by-id.md"],
+    ["search-generated-files.md", "./expand-graph.md"]
+  ] as const;
+
+  for (const operationsDir of [
+    path.join(docsRoot, "openapi", "operations"),
+    path.join(docsRoot, "zh-CN", "openapi", "operations")
+  ]) {
+    for (const [page, expectedLink] of expectedLinks) {
+      const content = await fs.readFile(path.join(operationsDir, page), "utf8");
+      assert.match(content, new RegExp(`\\(${expectedLink.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\)`));
+    }
+  }
+});
+
+test("knowledge-base metadata update documentation matches its synchronous response", async () => {
+  const pages = [
+    path.join(docsRoot, "openapi", "operations", "update-knowledge-base.md"),
+    path.join(docsRoot, "zh-CN", "openapi", "operations", "update-knowledge-base.md")
+  ];
+  for (const page of pages) {
+    const content = await fs.readFile(page, "utf8");
+    assert.doesNotMatch(content, /background update|后台修改|poll the returned operation|轮询响应中的操作/u);
+    assert.doesNotMatch(content, /Accepted metadata-update operation|已接受的元信息修改操作/u);
+    assert.doesNotMatch(content, /durable knowledge-base record|持久化的知识库记录/u);
+  }
+});
+
 test("source change operation pages explain when and how developers use them", async () => {
   const expectedDescriptions = [
     {
@@ -266,7 +300,7 @@ test("source change operation pages explain when and how developers use them", a
         "list-resource-operations.md"
       ),
       description:
-        "List file and directory changes for a knowledge base, including moves, renames, content replacements, and deletions. Results can be filtered by processing status."
+        "List upload indexing and file or directory changes for a knowledge base. Results can be filtered by processing status."
     },
     {
       path: path.join(
@@ -276,7 +310,7 @@ test("source change operation pages explain when and how developers use them", a
         "get-resource-operation.md"
       ),
       description:
-        "Use the `operationId` returned by a change request to read its processing state, final result, and error details."
+        "Use the `operationId` returned by an upload or resource change to read its processing state, progressive document counts, final result, and error details."
     },
     {
       path: path.join(
@@ -287,7 +321,7 @@ test("source change operation pages explain when and how developers use them", a
         "list-resource-operations.md"
       ),
       description:
-        "分页查看知识库中的文件和目录变更，包括移动、重命名、替换正文和删除，并可按处理状态筛选。"
+        "分页查看知识库的上传索引、文件或目录变更，并可按处理状态筛选。"
     },
     {
       path: path.join(
@@ -298,7 +332,7 @@ test("source change operation pages explain when and how developers use them", a
         "get-resource-operation.md"
       ),
       description:
-        "使用变更接口返回的 `operationId`，查询一次文件或目录变更的处理进度、最终结果和错误信息。"
+        "使用上传或资源变更返回的 `operationId`，查询处理状态、逐步完成的文档数量、最终结果和错误信息。"
     }
   ];
 
@@ -515,7 +549,7 @@ test("generated Chinese operation pages avoid untranslated fallback descriptions
   assert.doesNotMatch(content, /Search exceeded the configured response deadline/);
 });
 
-test("generated operation pages explain graph seed exclusivity", async () => {
+test("generated operation pages require one public file ID for graph expansion", async () => {
   const englishGraph = await fs.readFile(
     path.join(docsRoot, "openapi", "operations", "expand-graph.md"),
     "utf8"
@@ -525,8 +559,10 @@ test("generated operation pages explain graph seed exclusivity", async () => {
     "utf8"
   );
 
-  assert.match(englishGraph, /exactly one of fileId, nodeId, edgeId, or query/i);
-  assert.match(chineseGraph, /必须提供文件、关系节点、关系边或简短查询中的一个起点/);
+  assert.match(englishGraph, /readable file ID returned by tree, search, file, or related-file operations/i);
+  assert.match(chineseGraph, /文件树、搜索、文件或相关文件接口返回的可读取 `fileId`/);
+  assert.doesNotMatch(englishGraph, /nodeId|edgeId|exactly one of/);
+  assert.doesNotMatch(chineseGraph, /nodeId|edgeId|关系节点、关系边/);
 });
 
 test("public OpenAPI prose avoids implementation jargon and defines public file concepts", async () => {
@@ -573,7 +609,10 @@ test("public OpenAPI prose avoids implementation jargon and defines public file 
     "continuation cursor",
     "revision protection",
     "safe result",
-    "safe guidance"
+    "safe guidance",
+    "durable",
+    "fixed-work",
+    "committed receipts"
   ]) {
     assert.doesNotMatch(
       englishContent,
@@ -591,7 +630,9 @@ test("public OpenAPI prose avoids implementation jargon and defines public file 
     "发布范围",
     "终止状态",
     "终止失败",
-    "异步来源变更"
+    "异步来源变更",
+    "固定工作",
+    "持久化等待点"
   ]) {
     assert.doesNotMatch(
       chineseContent,
@@ -606,7 +647,7 @@ test("public OpenAPI prose avoids implementation jargon and defines public file 
   );
   assert.match(
     englishContent,
-    /A generated file is a readable, published knowledge-base file produced from uploaded content or navigation data\./
+    /A generated file is the current readable knowledge-base file produced from uploaded content or navigation data\./
   );
   assert.match(
     chineseContent,
@@ -614,7 +655,7 @@ test("public OpenAPI prose avoids implementation jargon and defines public file 
   );
   assert.match(
     chineseContent,
-    /生成文件是系统根据已上传内容或导航信息生成并发布的可读取知识库文件。/
+    /生成文件是系统根据已上传内容或导航信息生成的当前可读取知识库文件。/
   );
   assert.doesNotMatch(englishContent, /^# (?:List|Get|Move|Delete|Retry|Replace) source (?:file|directory)/im);
   assert.doesNotMatch(chineseContent, /^# (?:列出|获取|移动|删除|重试|替换)来源(?:文件|目录)/m);

@@ -55,8 +55,8 @@ import {
   pauseRuntimeModel,
   resumeRuntimeModel,
   updateGraphSettings,
+  updateGeneratedSettings,
   updateMaintenanceSettings,
-  updatePublicationSettings,
   updateRateLimitSettings,
   updateRuntimeModel,
   updateSearchSettings,
@@ -64,8 +64,8 @@ import {
   updateWorkerSettings,
   type ApiFailure,
   type GraphSettings,
+  type GeneratedSettings,
   type MaintenanceSettings,
-  type PublicationSettings,
   type RateLimitSettings,
   type RuntimeModelConfig,
   type RuntimeSettingsResponse,
@@ -73,10 +73,7 @@ import {
   type SearchSettings,
   type WorkerSettings
 } from "@/lib/admin-api";
-import {
-  deriveMaintenanceHealth,
-  deriveObjectProtectionProgress
-} from "@/lib/maintenance-health";
+import { runtimeSettingFailureMessageKey } from "@/lib/runtime-setting-error";
 
 const rateLimitGroups = [
   "adminLogin",
@@ -86,31 +83,18 @@ const rateLimitGroups = [
 
 const workerNumberFields = [
   "sourceFileConcurrency",
-  "sourceObjectReadConcurrency",
-  "claimBatchSize",
-  "pollIntervalMs",
-  "lockTtlSeconds",
-  "heartbeatIntervalMs",
   "jobMaxAttempts",
   "jobRetryDelayMs",
-  "completedJobRetentionDays",
-  "hardDeleteConcurrency",
-  "hardDeleteDatabaseBatchSize",
-  "hardDeleteObjectBatchSize",
-  "hardDeleteMaxAttempts",
-  "hardDeleteRetryDelayMs"
+  "completedJobRetentionDays"
 ] as const satisfies readonly (keyof WorkerSettings)[];
 
-const publicationFields = [
-  "intervalSeconds",
-  "roleConcurrency",
-  "claimBatchSize",
-  "generatedObjectWriteConcurrency",
+const generatedFields = [
   "directoryIndexMaxEntries",
-  "directoryIndexMaxBytes"
-] as const satisfies readonly (keyof Omit<PublicationSettings, "mode">)[];
-
-const publicationModes = ["batch", "manual", "per_file"] as const satisfies readonly PublicationSettings["mode"][];
+  "directoryIndexMaxBytes",
+  "rootSummaryLimit",
+  "okfLogMaxEntries",
+  "okfLogMaxBytes"
+] as const satisfies readonly (keyof GeneratedSettings)[];
 
 const graphNumberFields = [
   "candidateLimit",
@@ -119,29 +103,22 @@ const graphNumberFields = [
   "searchMaxDepth",
   "searchDefaultFanout",
   "searchMaxFanout",
+  "shardSize",
   "genericPhraseThreshold"
-] as const satisfies readonly (keyof Omit<GraphSettings, "modelReviewEnabled">)[];
-
-const graphBooleanFields = [
-  "modelReviewEnabled"
-] as const satisfies readonly (keyof Pick<GraphSettings, "modelReviewEnabled">)[];
+] as const satisfies readonly (keyof GraphSettings)[];
 
 const maintenanceNumberFields = [
-  "knowledgeBaseMaintenanceScanIntervalSeconds",
-  "knowledgeBaseMaintenanceConcurrency",
   "scanBatchSize",
-  "deletionBatchSize",
-  "quarantineGracePeriodSeconds",
   "maxAttempts",
   "retryDelayMs",
-  "projectionRepairConcurrency",
-  "projectionRepairDatabaseBatchSize",
-  "projectionRepairObjectWriteConcurrency",
-  "lexicalRebuildConcurrency",
-  "lexicalRebuildSourceReadConcurrency",
-  "lexicalRebuildMaxInFlightSourceBytes"
+  "hardDeleteConcurrency",
+  "hardDeleteDatabaseBatchSize",
+  "hardDeleteObjectBatchSize",
+  "hardDeleteMaxAttempts",
+  "hardDeleteRetryDelayMs",
+  "hardDeleteFailedRetentionDays"
 ] as const satisfies readonly (
-  keyof Omit<MaintenanceSettings, "reconciliationEnabled" | "knowledgeBaseMaintenanceMode">
+  keyof Omit<MaintenanceSettings, "reconciliationEnabled">
 )[];
 
 const searchNumberFields = [
@@ -156,7 +133,6 @@ const searchNumberFields = [
   "maxAttempts",
   "retryDelayMs",
   "cleanupBatchSize",
-  "stagingRetentionHours",
   "cropLength"
 ] as const satisfies readonly (keyof SearchSettings)[];
 
@@ -164,12 +140,7 @@ const semanticNumberFields = [
   "maximumChunkCharacters",
   "maximumChunks",
   "maximumEvidenceTargets",
-  "maximumCommunityPartitions",
-  "maximumCommunityEntities",
-  "maximumCommunityRelationships",
-  "maximumCommunityBoundaryRelationships",
-  "maximumCommunitySummaryCharacters",
-  "communityAdapterTimeoutMs",
+  "graphRagAdapterTimeoutMs",
   "searchLaneCutoffMs",
   "queryEmbeddingConcurrency",
   "queryEmbeddingCacheEntries"
@@ -202,24 +173,17 @@ const workerTipItems = workerNumberFields.map((field) => ({
   descriptionKey: `settings.tips.worker.${field}`
 }));
 
-const publicationTipItems = [
-  {
-    labelKey: "settings.fields.mode",
-    descriptionKey: "settings.tips.publication.mode"
-  },
-  ...publicationFields.map((field) => ({
+const generatedTipItems = generatedFields.map((field) => ({
     labelKey: `settings.fields.${field}`,
-    descriptionKey: `settings.tips.publication.${field}`
-  }))
-];
+    descriptionKey: `settings.tips.generated.${field}`
+  }));
 
-const graphTipItems = [...graphNumberFields, ...graphBooleanFields].map((field) => ({
+const graphTipItems = graphNumberFields.map((field) => ({
   labelKey: `settings.fields.${field}`,
   descriptionKey: `settings.tips.graph.${field}`
 }));
 
 const maintenanceTipItems = [
-  "knowledgeBaseMaintenanceMode",
   "reconciliationEnabled",
   ...maintenanceNumberFields
 ].map((field) => ({
@@ -252,7 +216,7 @@ const modelTipItems = [
 type EditableNumber = number | "";
 type RateLimitGroup = (typeof rateLimitGroups)[number];
 type WorkerNumberField = (typeof workerNumberFields)[number];
-type PublicationField = (typeof publicationFields)[number];
+type GeneratedField = (typeof generatedFields)[number];
 type GraphNumberField = (typeof graphNumberFields)[number];
 type MaintenanceNumberField = (typeof maintenanceNumberFields)[number];
 type SearchNumberField = (typeof searchNumberFields)[number];
@@ -268,16 +232,10 @@ type EditableRateLimitSettings = Record<
   }
 >;
 type EditableWorkerSettings = Record<WorkerNumberField, EditableNumber>;
-type EditablePublicationSettings = {
-  mode: PublicationSettings["mode"];
-} & Record<PublicationField, EditableNumber>;
-type EditableGraphSettings = Record<GraphNumberField, EditableNumber> &
-  Pick<GraphSettings, "modelReviewEnabled">;
+type EditableGeneratedSettings = Record<GeneratedField, EditableNumber>;
+type EditableGraphSettings = Record<GraphNumberField, EditableNumber>;
 type EditableMaintenanceSettings = Record<MaintenanceNumberField, EditableNumber> &
-  Pick<
-    MaintenanceSettings,
-    "reconciliationEnabled" | "knowledgeBaseMaintenanceMode"
-  >;
+  Pick<MaintenanceSettings, "reconciliationEnabled">;
 type EditableSearchSettings = Record<SearchNumberField, EditableNumber>;
 type EditableSemanticSettings = Record<SemanticNumberField, EditableNumber>;
 type EditableModelForm = {
@@ -289,12 +247,16 @@ type EditableModelForm = {
   isActive: boolean;
 } & Record<ModelNumberField, EditableNumber>;
 
-export function SettingsPanel() {
+type SettingsPanelProps = {
+  section?: "runtime" | "models";
+};
+
+export function SettingsPanel({ section = "runtime" }: SettingsPanelProps) {
   const { t } = useTranslation();
   const [data, setData] = useState<RuntimeSettingsResponse | null>(null);
   const [rateLimits, setRateLimits] = useState<EditableRateLimitSettings | null>(null);
   const [worker, setWorker] = useState<EditableWorkerSettings | null>(null);
-  const [publication, setPublication] = useState<EditablePublicationSettings | null>(null);
+  const [generated, setGenerated] = useState<EditableGeneratedSettings | null>(null);
   const [graph, setGraph] = useState<EditableGraphSettings | null>(null);
   const [maintenance, setMaintenance] = useState<EditableMaintenanceSettings | null>(null);
   const [search, setSearch] = useState<EditableSearchSettings | null>(null);
@@ -306,14 +268,6 @@ export function SettingsPanel() {
   const [hasModelFormError, setHasModelFormError] = useState(false);
   const [deleteModelTarget, setDeleteModelTarget] = useState<RuntimeModelConfig | null>(null);
   const [modelForm, setModelForm] = useState(createEmptyModelForm);
-  const maintenanceHealth = deriveMaintenanceHealth({
-    reconciliation: data?.maintenanceStatus ?? null,
-    protection: data?.objectProtectionStatus ?? null
-  });
-  const objectProtectionProgress = deriveObjectProtectionProgress(
-    data?.objectProtectionStatus ?? null
-  );
-
   useEffect(() => {
     void loadSettings();
   }, []);
@@ -361,17 +315,17 @@ export function SettingsPanel() {
     await saveSettings("worker", () => updateWorkerSettings(payload));
   }
 
-  async function handlePublicationSave(event: FormEvent<HTMLFormElement>) {
+  async function handleGeneratedSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!publication) {
+    if (!generated) {
       return;
     }
-    const payload = buildPublicationSettings(publication);
+    const payload = buildGeneratedSettings(generated);
     if (!payload) {
       showNumberValidationError();
       return;
     }
-    await saveSettings("publication", () => updatePublicationSettings(payload));
+    await saveSettings("generated", () => updateGeneratedSettings(payload));
   }
 
   async function handleGraphSave(event: FormEvent<HTMLFormElement>) {
@@ -432,14 +386,14 @@ export function SettingsPanel() {
     setIsSaving("");
 
     if ("messageKey" in result) {
-      setError(result.messageKey);
+      setError(runtimeSettingFailureMessageKey(result));
       return;
     }
 
     setData((current) => (current ? { ...current, settings: result.settings } : current));
     setRateLimits(toEditableRateLimits(result.settings.rateLimits));
     setWorker(toEditableWorkerSettings(result.settings.worker));
-    setPublication(toEditablePublicationSettings(result.settings.publication));
+    setGenerated(toEditableGeneratedSettings(result.settings.generated));
     setGraph(toEditableGraphSettings(result.settings.graph));
     setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
     setSearch(toEditableSearchSettings(result.settings.search));
@@ -490,7 +444,7 @@ export function SettingsPanel() {
     setData(result);
     setRateLimits(toEditableRateLimits(result.settings.rateLimits));
     setWorker(toEditableWorkerSettings(result.settings.worker));
-    setPublication(toEditablePublicationSettings(result.settings.publication));
+    setGenerated(toEditableGeneratedSettings(result.settings.generated));
     setGraph(toEditableGraphSettings(result.settings.graph));
     setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
     setSearch(toEditableSearchSettings(result.settings.search));
@@ -565,21 +519,34 @@ export function SettingsPanel() {
             <AlertTitle>{t("settings.loading")}</AlertTitle>
           </Alert>
         ) : (
-          <Tabs defaultValue="rate-limits" className="min-w-0">
+          <Tabs
+            key={section}
+            defaultValue={section === "models" ? "embeddings" : "rate-limits"}
+            className="min-w-0"
+          >
             <div className="max-w-full overflow-x-auto">
               <TabsList>
-                <TabsTrigger value="rate-limits">{t("settings.tabs.rateLimits")}</TabsTrigger>
-                <TabsTrigger value="worker">{t("settings.tabs.worker")}</TabsTrigger>
-                <TabsTrigger value="publication">{t("settings.tabs.publication")}</TabsTrigger>
-                <TabsTrigger value="graph">{t("settings.tabs.graph")}</TabsTrigger>
-                <TabsTrigger value="maintenance">{t("settings.tabs.maintenance")}</TabsTrigger>
-                <TabsTrigger value="search">{t("settings.tabs.search")}</TabsTrigger>
-                <TabsTrigger value="semantic">{t("settings.tabs.semantic")}</TabsTrigger>
-                <TabsTrigger value="embeddings">{t("settings.tabs.embeddings")}</TabsTrigger>
-                <TabsTrigger value="rerankers">{t("settings.tabs.rerankers")}</TabsTrigger>
-                <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
+                {section === "runtime" ? (
+                  <>
+                    <TabsTrigger value="rate-limits">{t("settings.tabs.rateLimits")}</TabsTrigger>
+                    <TabsTrigger value="worker">{t("settings.tabs.worker")}</TabsTrigger>
+                    <TabsTrigger value="generated">{t("settings.tabs.generated")}</TabsTrigger>
+                    <TabsTrigger value="graph">{t("settings.tabs.graph")}</TabsTrigger>
+                    <TabsTrigger value="maintenance">{t("settings.tabs.maintenance")}</TabsTrigger>
+                    <TabsTrigger value="search">{t("settings.tabs.search")}</TabsTrigger>
+                    <TabsTrigger value="semantic">{t("settings.tabs.semantic")}</TabsTrigger>
+                  </>
+                ) : (
+                  <>
+                    <TabsTrigger value="embeddings">{t("settings.tabs.embeddings")}</TabsTrigger>
+                    <TabsTrigger value="rerankers">{t("settings.tabs.rerankers")}</TabsTrigger>
+                    <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
+                  </>
+                )}
               </TabsList>
             </div>
+            {section === "runtime" ? (
+              <>
             <TabsContent value="rate-limits">
               {rateLimits ? (
                 <div className="space-y-3">
@@ -663,57 +630,32 @@ export function SettingsPanel() {
                 </div>
               ) : null}
             </TabsContent>
-            <TabsContent value="publication">
-              {publication ? (
+            <TabsContent value="generated">
+              {generated ? (
                 <div className="space-y-3">
                   <SettingsCard
-                    title={t("settings.publication.title")}
-                    description={t("settings.publication.description")}
+                    title={t("settings.generated.title")}
+                    description={t("settings.generated.description")}
                   >
-                    <form noValidate onSubmit={handlePublicationSave}>
+                    <form noValidate onSubmit={handleGeneratedSave}>
                       <FieldGroup>
-                        <Field>
-                          <FieldLabel htmlFor="publication-mode">
-                            <RequiredLabel label={t("settings.fields.mode")} required />
-                          </FieldLabel>
-                          <Select
-                            value={publication.mode}
-                            onValueChange={(value) =>
-                              setPublication({
-                                ...publication,
-                                mode: value as PublicationSettings["mode"]
-                              })
-                            }
-                          >
-                            <SelectTrigger id="publication-mode">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {publicationModes.map((mode) => (
-                                <SelectItem key={mode} value={mode}>
-                                  {t(`settings.publicationModes.${mode}`)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </Field>
                         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                          {publicationFields.map((field) => (
+                          {generatedFields.map((field) => (
                             <NumberField
                               key={field}
-                              id={`publication-${field}`}
+                              id={`generated-${field}`}
                               label={t(`settings.fields.${field}`)}
-                              value={publication[field]}
+                              value={generated[field]}
                               required
-                              onChange={(value) => setPublication({ ...publication, [field]: value })}
+                              onChange={(value) => setGenerated({ ...generated, [field]: value })}
                             />
                           ))}
                         </div>
-                        <SaveButton isSaving={isSaving === "publication"} />
+                        <SaveButton isSaving={isSaving === "generated"} />
                       </FieldGroup>
                     </form>
                   </SettingsCard>
-                  <PlainTips items={publicationTipItems} />
+                  <PlainTips items={generatedTipItems} />
                 </div>
               ) : null}
             </TabsContent>
@@ -741,23 +683,6 @@ export function SettingsPanel() {
                               required
                               onChange={(value) => setGraph({ ...graph, [field]: value })}
                             />
-                          ))}
-                          {graphBooleanFields.map((field) => (
-                            <Field key={field}>
-                              <FieldLabel htmlFor={`graph-${field}`}>
-                                <RequiredLabel label={t(`settings.fields.${field}`)} required />
-                              </FieldLabel>
-                              <label className="flex min-h-9 items-center gap-2 rounded-md border border-input px-3 text-sm">
-                                <Checkbox
-                                  id={`graph-${field}`}
-                                  checked={graph[field]}
-                                  onCheckedChange={(checked) =>
-                                    setGraph({ ...graph, [field]: checked === true })
-                                  }
-                                />
-                                <span>{t(`settings.fields.${field}`)}</span>
-                              </label>
-                            </Field>
                           ))}
                         </div>
                         <SaveButton isSaving={isSaving === "graph"} />
@@ -839,36 +764,6 @@ export function SettingsPanel() {
                   >
                     <form noValidate onSubmit={handleMaintenanceSave}>
                       <FieldGroup>
-                        <Field>
-                          <FieldLabel htmlFor="maintenance-knowledgeBaseMaintenanceMode">
-                            <RequiredLabel
-                              label={t("settings.fields.knowledgeBaseMaintenanceMode")}
-                              required
-                            />
-                          </FieldLabel>
-                          <Select
-                            value={maintenance.knowledgeBaseMaintenanceMode}
-                            onValueChange={(value) =>
-                              setMaintenance({
-                                ...maintenance,
-                                knowledgeBaseMaintenanceMode:
-                                  value as MaintenanceSettings["knowledgeBaseMaintenanceMode"]
-                              })
-                            }
-                          >
-                            <SelectTrigger id="maintenance-knowledgeBaseMaintenanceMode">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="manual">
-                                {t("settings.maintenanceModes.manual")}
-                              </SelectItem>
-                              <SelectItem value="automatic">
-                                {t("settings.maintenanceModes.automatic")}
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </Field>
                         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                           <Field>
                             <FieldLabel htmlFor="maintenance-reconciliationEnabled">
@@ -896,29 +791,9 @@ export function SettingsPanel() {
                               key={field}
                               id={`maintenance-${field}`}
                               label={t(`settings.fields.${field}`)}
-                              disabled={
-                                field === "knowledgeBaseMaintenanceScanIntervalSeconds"
-                                && maintenance.knowledgeBaseMaintenanceMode === "manual"
-                              }
                               min={1}
-                              {...(field === "scanBatchSize" || field === "deletionBatchSize"
+                              {...(field === "scanBatchSize"
                                 ? { max: 1_000 }
-                                : field === "knowledgeBaseMaintenanceScanIntervalSeconds"
-                                  ? { min: 60, max: 2_592_000 }
-                                  : field === "knowledgeBaseMaintenanceConcurrency"
-                                    ? { max: 16 }
-                                : field === "projectionRepairConcurrency"
-                                  ? { max: 16 }
-                                  : field === "projectionRepairDatabaseBatchSize"
-                                    ? { min: 100, max: 10_000 }
-                                    : field === "projectionRepairObjectWriteConcurrency"
-                                      ? { max: 32 }
-                                      : field === "lexicalRebuildConcurrency"
-                                        ? { max: 16 }
-                                        : field === "lexicalRebuildSourceReadConcurrency"
-                                          ? { max: 32 }
-                                                : field === "lexicalRebuildMaxInFlightSourceBytes"
-                                                  ? { min: 1_048_576, max: 536_870_912 }
                                 : {})}
                               value={maintenance[field]}
                               required
@@ -932,175 +807,13 @@ export function SettingsPanel() {
                       </FieldGroup>
                     </form>
                   </SettingsCard>
-                  <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.health")}
-                      value={t(`settings.maintenance.status.healthStates.${maintenanceHealth}`)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.state")}
-                      value={data?.maintenanceStatus
-                        ? t(`settings.maintenance.status.states.${data.maintenanceStatus.state}`)
-                        : t("settings.maintenance.status.notRun")}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.completedAt")}
-                      value={formatMaintenanceTime(
-                        data?.maintenanceStatus?.lastScanCompletedAt ?? null,
-                        t("settings.maintenance.status.notRun")
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.scanned")}
-                      value={String(data?.maintenanceStatus?.listedCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.quarantined")}
-                      value={String(data?.maintenanceStatus?.quarantinedCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.resolved")}
-                      value={String(data?.maintenanceStatus?.resolvedCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.pending")}
-                      value={String(data?.maintenanceStatus?.pendingCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.deleted")}
-                      value={String(data?.maintenanceStatus?.deletedCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.missing")}
-                      value={String(data?.maintenanceStatus?.missingCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.retries")}
-                      value={String(data?.maintenanceStatus?.retryCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.databaseChunkSize")}
-                      value={data?.maintenanceStatus?.databaseChunkSize === null
-                        || data?.maintenanceStatus?.databaseChunkSize === undefined
-                        ? t("settings.maintenance.status.none")
-                        : String(data.maintenanceStatus.databaseChunkSize)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.reconciliationThroughput")}
-                      value={formatOptionalNumber(
-                        data?.maintenanceStatus?.recentObjectsPerSecond,
-                        1
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.reconciliationBatchLatency")}
-                      value={formatOptionalNumber(
-                        data?.maintenanceStatus?.rollingBatchLatencyMs
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.heartbeat")}
-                      value={formatMaintenanceTime(
-                        data?.maintenanceStatus?.heartbeatAt ?? null,
-                        t("settings.maintenance.status.notRun")
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.lastProgress")}
-                      value={formatMaintenanceTime(
-                        data?.maintenanceStatus?.lastProgressAt ?? null,
-                        t("settings.maintenance.status.notRun")
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.lastError")}
-                      value={data?.maintenanceStatus?.lastErrorCode
-                        ?? t("settings.maintenance.status.none")}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionState")}
-                      value={data?.objectProtectionStatus
-                        ? t(
-                            `settings.maintenance.status.protectionStates.${
-                              data.objectProtectionStatus.readiness
-                            }`
-                          )
-                        : t("settings.maintenance.status.notRun")}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionPhase")}
-                      value={data?.objectProtectionStatus
-                        ? t(
-                            `settings.maintenance.status.protectionPhases.${
-                              data.objectProtectionStatus.phase
-                            }`
-                          )
-                        : t("settings.maintenance.status.notRun")}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionProgress")}
-                      value={`${objectProtectionProgress.completed} / ${
-                        objectProtectionProgress.expected
-                      }`}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionDirty")}
-                      value={String(data?.objectProtectionStatus?.dirtyCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionVerified")}
-                      value={String(data?.objectProtectionStatus?.verifiedCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionRetries")}
-                      value={String(data?.objectProtectionStatus?.retryCount ?? 0)}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.throughput")}
-                      value={formatOptionalNumber(
-                        data?.objectProtectionStatus?.recentObjectsPerSecond,
-                        1
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.batchLatency")}
-                      value={formatOptionalNumber(
-                        data?.objectProtectionStatus?.rollingBatchLatencyMs
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionHeartbeat")}
-                      value={formatMaintenanceTime(
-                        data?.objectProtectionStatus?.heartbeatAt ?? null,
-                        t("settings.maintenance.status.notRun")
-                      )}
-                    />
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionLastProgress")}
-                      value={formatMaintenanceTime(
-                        data?.objectProtectionStatus?.lastProgressAt ?? null,
-                        t("settings.maintenance.status.notRun")
-                      )}
-                    />
-                    {data?.objectProtectionStatus?.estimatedCompletionAt ? (
-                      <MaintenanceStatusItem
-                        label={t("settings.maintenance.status.estimatedCompletion")}
-                        value={formatMaintenanceTime(
-                          data.objectProtectionStatus.estimatedCompletionAt,
-                          t("settings.maintenance.status.notRun")
-                        )}
-                      />
-                    ) : null}
-                    <MaintenanceStatusItem
-                      label={t("settings.maintenance.status.protectionError")}
-                      value={data?.objectProtectionStatus?.lastErrorCode
-                        ?? t("settings.maintenance.status.none")}
-                    />
-                  </div>
                   <PlainTips items={maintenanceTipItems} />
                 </div>
               ) : null}
             </TabsContent>
+              </>
+            ) : (
+              <>
             <TabsContent value="models">
               <div className="space-y-3">
                 <SettingsCard
@@ -1232,6 +945,8 @@ export function SettingsPanel() {
             <TabsContent value="rerankers">
               <RerankerSettingsPanel />
             </TabsContent>
+              </>
+            )}
           </Tabs>
         )}
       </section>
@@ -1385,26 +1100,6 @@ export function SettingsPanel() {
       </AlertDialog>
     </div>
   );
-}
-
-function MaintenanceStatusItem({ label, value }: { label: string; value: string }) {
-  return (
-    <p>
-      <span className="font-medium text-foreground">{label}: </span>
-      <span>{value}</span>
-    </p>
-  );
-}
-
-function formatMaintenanceTime(value: string | null, fallback: string): string {
-  if (!value) return fallback;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString();
-}
-
-function formatOptionalNumber(value: number | null | undefined, digits?: number): string {
-  if (value === null || value === undefined) return "-";
-  return digits === undefined ? String(value) : value.toFixed(digits);
 }
 
 function SettingsCard({
@@ -1564,7 +1259,7 @@ function toEditableWorkerSettings(settings: WorkerSettings): EditableWorkerSetti
   return { ...settings };
 }
 
-function toEditablePublicationSettings(settings: PublicationSettings): EditablePublicationSettings {
+function toEditableGeneratedSettings(settings: GeneratedSettings): EditableGeneratedSettings {
   return { ...settings };
 }
 
@@ -1615,30 +1310,12 @@ function buildRateLimitGroup(
 
 function buildWorkerSettings(input: EditableWorkerSettings): WorkerSettings | null {
   const settings = buildNumberRecord(input, workerNumberFields);
-
-  if (
-    !settings
-    || settings.sourceObjectReadConcurrency > settings.sourceFileConcurrency
-    || settings.sourceObjectReadConcurrency > 32
-  ) {
-    return null;
-  }
-
-  return settings as WorkerSettings;
+  return settings as WorkerSettings | null;
 }
 
-function buildPublicationSettings(input: EditablePublicationSettings): PublicationSettings | null {
-  const settings = buildNumberRecord(input, publicationFields);
-
-  if (
-    !settings
-    || settings.generatedObjectWriteConcurrency > 32
-    || settings.roleConcurrency > settings.claimBatchSize
-  ) {
-    return null;
-  }
-
-  return { mode: input.mode, ...(settings as Record<PublicationField, number>) };
+function buildGeneratedSettings(input: EditableGeneratedSettings): GeneratedSettings | null {
+  const settings = buildNumberRecord(input, generatedFields);
+  return settings as GeneratedSettings | null;
 }
 
 function buildGraphSettings(input: EditableGraphSettings): GraphSettings | null {
@@ -1660,8 +1337,7 @@ function buildGraphSettings(input: EditableGraphSettings): GraphSettings | null 
   return {
     ...(settings as Record<GraphNumberField, number>),
     searchDefaultDepth: settings.searchDefaultDepth,
-    searchMaxDepth: settings.searchMaxDepth,
-    modelReviewEnabled: input.modelReviewEnabled
+    searchMaxDepth: settings.searchMaxDepth
   };
 }
 
@@ -1674,24 +1350,12 @@ function buildMaintenanceSettings(
   }
   if (
     settings.scanBatchSize > 1_000 ||
-    settings.deletionBatchSize > 1_000 ||
-    settings.knowledgeBaseMaintenanceScanIntervalSeconds < 60 ||
-    settings.knowledgeBaseMaintenanceScanIntervalSeconds > 2_592_000 ||
-    settings.knowledgeBaseMaintenanceConcurrency > 16 ||
-    settings.projectionRepairConcurrency > 16 ||
-    settings.projectionRepairDatabaseBatchSize < 100 ||
-    settings.projectionRepairDatabaseBatchSize > 10_000 ||
-    settings.projectionRepairObjectWriteConcurrency > 32 ||
-    settings.lexicalRebuildConcurrency > 16 ||
-    settings.lexicalRebuildSourceReadConcurrency > 32 ||
-    settings.lexicalRebuildMaxInFlightSourceBytes < 1_048_576 ||
-    settings.lexicalRebuildMaxInFlightSourceBytes > 536_870_912
+    settings.hardDeleteConcurrency > 16
   ) {
     return null;
   }
 
   return {
-    knowledgeBaseMaintenanceMode: input.knowledgeBaseMaintenanceMode,
     reconciliationEnabled: input.reconciliationEnabled,
     ...settings
   };
@@ -1718,7 +1382,6 @@ function buildSearchSettings(input: EditableSearchSettings): SearchSettings | nu
     || settings.retryDelayMs < 100
     || settings.retryDelayMs > 300_000
     || settings.cleanupBatchSize > 5_000
-    || settings.stagingRetentionHours > 720
     || settings.cropLength < 50
     || settings.cropLength > 5_000
   ) {
@@ -1747,10 +1410,7 @@ function buildSemanticSettings(
 }
 
 function semanticMinimum(field: SemanticNumberField): number {
-  if (field === "maximumCommunityRelationships"
-    || field === "maximumCommunityBoundaryRelationships") return 0;
-  if (field === "maximumCommunitySummaryCharacters") return 256;
-  if (field === "communityAdapterTimeoutMs") return 100;
+  if (field === "graphRagAdapterTimeoutMs") return 100;
   if (field === "searchLaneCutoffMs") return 50;
   return 1;
 }
@@ -1760,12 +1420,7 @@ function semanticMaximum(field: SemanticNumberField): number {
     maximumChunkCharacters: 64_000,
     maximumChunks: 32,
     maximumEvidenceTargets: 256,
-    maximumCommunityPartitions: 256,
-    maximumCommunityEntities: 10_000,
-    maximumCommunityRelationships: 20_000,
-    maximumCommunityBoundaryRelationships: 10_000,
-    maximumCommunitySummaryCharacters: 65_536,
-    communityAdapterTimeoutMs: 300_000,
+    graphRagAdapterTimeoutMs: 300_000,
     searchLaneCutoffMs: 3_000,
     queryEmbeddingConcurrency: 32,
     queryEmbeddingCacheEntries: 10_000
@@ -1882,6 +1537,6 @@ function createEmptyModelForm(): EditableModelForm {
     suggestionConcurrency: 2,
     transientRetryDelayMs: 60_000,
     requestMinIntervalMs: 2_000,
-    isActive: true
+    isActive: false
   };
 }

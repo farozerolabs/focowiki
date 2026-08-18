@@ -10,7 +10,6 @@ import {
   SEMANTIC_VECTOR_SCHEMA_VERSION,
   type SemanticMaintenanceTarget
 } from "../domain/contracts.js";
-import type { SemanticStageSettingsSnapshot } from "./stage-orchestration.js";
 
 export function resolveSemanticAdoptionTarget(input: {
   knowledgeBaseId: string;
@@ -65,61 +64,6 @@ export function resolveSemanticAdoptionTarget(input: {
       mappingFingerprintSha256
     }
   };
-}
-
-export function createSemanticAdoptionStageSettings(input: {
-  runtimeSettingsRevisionPublicId: string;
-  runtimeSettings: RuntimeSettingsSnapshot;
-  target: SemanticMaintenanceTarget;
-  embedding: EmbeddingConfigurationPrivate;
-  maximumSourceBytes: number;
-}): SemanticStageSettingsSnapshot {
-  const semantic = input.runtimeSettings.semantic;
-  const model = input.runtimeSettings.activeModel;
-  if (
-    !model
-    || model.id !== input.target.generationModelConfigurationPublicId
-    || model.configurationRevision
-      !== input.target.generationModelConfigurationRevision
-  ) throw targetError("semantic_generation_model_revision_mismatch");
-  return Object.freeze({
-    runtimeSettingsRevisionPublicId: input.runtimeSettingsRevisionPublicId,
-    generationModelConfigurationPublicId:
-      input.target.generationModelConfigurationPublicId,
-    generationModelConfigurationRevision:
-      input.target.generationModelConfigurationRevision,
-    embeddingConfigurationRevisionPublicId:
-      input.target.embeddingConfigurationRevisionPublicId,
-    projectionContractPublicId: null,
-    semanticGenerationRole: "candidate",
-    searchProviderKind: input.target.searchProviderKind,
-    resolvedDimension: input.target.resolvedDimension,
-    normalization: input.target.normalization,
-    graphSchemaVersion: input.target.graphSchemaVersion,
-    promptContractVersion: input.target.promptContractVersion,
-    mappingFingerprintSha256: input.target.mappingFingerprintSha256,
-    maximumChunkCharacters: semantic.maximumChunkCharacters,
-    maximumChunks: semantic.maximumChunks,
-    maximumEmbeddingCharacters: Math.min(
-      64_000,
-      input.embedding.maximumInputTokens * 4
-    ),
-    maximumEvidenceTargets: semantic.maximumEvidenceTargets,
-    maximumCommunityPartitions: semantic.maximumCommunityPartitions,
-    maximumCommunityEntities: semantic.maximumCommunityEntities,
-    maximumCommunityRelationships: semantic.maximumCommunityRelationships,
-    maximumCommunityBoundaryRelationships:
-      semantic.maximumCommunityBoundaryRelationships,
-    maximumCommunitySummaryCharacters:
-      semantic.maximumCommunitySummaryCharacters,
-    communityAdapterTimeoutMs: Math.min(
-      semantic.communityAdapterTimeoutMs,
-      model.requestMaxTimeoutMs
-    ),
-    maximumSourceBytes: input.maximumSourceBytes,
-    vectorBatchDocumentCount:
-      input.runtimeSettings.search.indexBatchDocumentCount
-  });
 }
 
 function targetError(code: string): Error & { code: string; retryable: boolean } {

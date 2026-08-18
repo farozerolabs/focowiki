@@ -1,54 +1,26 @@
-import { createHash } from "node:crypto";
-import type { SemanticGenerationRepositoryPort } from
-  "../../semantic/application/ports.js";
-import type { StorageVnextReleaseWritePort } from "../release/ports.js";
-import { createStorageVnextMaintenanceCandidatePublicId } from "./identity.js";
-
 export function createStorageVnextMaintenanceCancellationCleanup(input: {
-  semanticTerminal: Pick<
-    SemanticGenerationRepositoryPort,
-    "discardCandidateByOperation"
-  >;
-  releases: Pick<StorageVnextReleaseWritePort, "terminateCandidate">;
-  resultRetentionMilliseconds: number;
+  documents: {
+    terminate(request: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+      outcome: "superseded";
+    }): Promise<void>;
+  };
 }) {
-  assertRetention(input.resultRetentionMilliseconds);
   return {
     async terminate(request: {
       knowledgeBaseId: string;
       operationPublicId: string;
       cancelledAt: string;
-    }) {
+    }): Promise<void> {
       assertRequest(request);
-      const semanticCandidate = await input.semanticTerminal
-        .discardCandidateByOperation({
-          knowledgeBaseId: request.knowledgeBaseId,
-          operationPublicId: request.operationPublicId
-        });
-      const releaseCandidateTerminated = await input.releases.terminateCandidate({
+      await input.documents.terminate({
         knowledgeBaseId: request.knowledgeBaseId,
-        candidatePublicId: createStorageVnextMaintenanceCandidatePublicId(request),
-        outcome: "superseded",
-        reasonCode: "MAINTENANCE_CANCELLED",
-        safeMessage: null,
-        eventPublicId: eventPublicId(request.operationPublicId),
-        eventExpiresAt: new Date(
-          Date.parse(request.cancelledAt) + input.resultRetentionMilliseconds
-        ).toISOString(),
-        terminatedAt: request.cancelledAt
+        operationPublicId: request.operationPublicId,
+        outcome: "superseded"
       });
-      return { semanticCandidate, releaseCandidateTerminated };
     }
   };
-}
-
-function eventPublicId(operationPublicId: string): string {
-  const digest = createHash("sha256")
-    .update("storage-vnext-maintenance-cancellation-v1")
-    .update("\0")
-    .update(operationPublicId)
-    .digest("hex");
-  return `maintenance-cancellation-${digest}`;
 }
 
 function assertRequest(input: {
@@ -58,19 +30,8 @@ function assertRequest(input: {
 }): void {
   if (!input.knowledgeBaseId || !input.operationPublicId
     || !Number.isFinite(Date.parse(input.cancelledAt))) {
-    throw cancellationError("invalid_input");
+    throw Object.assign(new Error("Maintenance cancellation input is invalid"), {
+      code: "invalid_input"
+    });
   }
-}
-
-function assertRetention(milliseconds: number): void {
-  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1) {
-    throw cancellationError("invalid_configuration");
-  }
-}
-
-function cancellationError(code: string): Error & { code: string } {
-  return Object.assign(
-    new Error(`Maintenance cancellation cleanup failed: ${code}`),
-    { code }
-  );
 }

@@ -62,6 +62,9 @@ export type RuntimeSettingsRepository = {
   listSettings: () => Promise<Array<RuntimeSettingRecord>>;
   getSetting: (key: RuntimeSettingKey) => Promise<RuntimeSettingRecord | null>;
   getCurrentRevision: () => Promise<RuntimeSettingsRevisionIdentity | null>;
+  getRevision: (
+    publicId: string
+  ) => Promise<StorageVnextRuntimeSettingsRevision | null>;
   upsertSetting: (input: {
     key: RuntimeSettingKey;
     value: unknown;
@@ -76,6 +79,10 @@ export type RuntimeSettingsRepository = {
   }) => Promise<void>;
   listModels: () => Promise<RuntimeModelConfigPrivate[]>;
   getModel: (id: string) => Promise<RuntimeModelConfigPrivate | null>;
+  getModelRevision: (
+    id: string,
+    revision: number
+  ) => Promise<RuntimeModelConfigPrivate | null>;
   getActiveModel: () => Promise<RuntimeModelConfigPrivate | null>;
   createModel: (input: {
     displayName: string;
@@ -115,10 +122,6 @@ export type RuntimeSettingsRepository = {
   setActiveModel: (id: string) => Promise<RuntimeModelConfigPrivate | null>;
   softDeleteModel: (id: string) => Promise<RuntimeModelConfigPrivate | null>;
   countRunningModelInvocations: (modelConfigId: string) => Promise<number>;
-  countRunningSourceFileJobs: () => Promise<number>;
-  countActiveSemanticGenerationReferences: (
-    modelConfigId: string
-  ) => Promise<number>;
 };
 
 export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSettingsRepository {
@@ -138,6 +141,10 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
         checksum: current.revision.checksum,
         version: current.revision.document.version
       } : null;
+    },
+    async getRevision(publicId) {
+      const row = await readRevisionByPublicId(sql, publicId);
+      return row ? readRevisionRow(row).revision : null;
     },
     async upsertSetting(input) {
       return sql.begin(async (transaction) => {
@@ -236,6 +243,20 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
         LIMIT 1
       `;
 
+      return rows[0] ? toPrivateModel(rows[0]) : null;
+    },
+    async getModelRevision(id, revision) {
+      if (!Number.isSafeInteger(revision) || revision < 1) return null;
+      const rows = await sql<ModelConfigRow[]>`
+        SELECT configuration_public_id AS public_id,
+               provider, model, secret_reference, config,
+               false AS enabled, revision_number AS revision,
+               created_at, created_at AS updated_at
+        FROM focowiki.model_config_revisions
+        WHERE configuration_public_id = ${id}
+          AND revision_number = ${revision}
+        LIMIT 1
+      `;
       return rows[0] ? toPrivateModel(rows[0]) : null;
     },
     async getActiveModel() {
@@ -386,35 +407,14 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
 
       return rows[0] ? toPrivateModel(rows[0]) : null;
     },
-    async countRunningModelInvocations(_modelConfigId) {
+    async countRunningModelInvocations(modelConfigId) {
       const rows = await sql<Array<{ count: number | string }>>`
         SELECT count(*) AS count
-        FROM focowiki.source_files
-        WHERE status = 'processing'
-          AND deleted_at IS NULL
+        FROM focowiki.document_processing_jobs
+        WHERE state = 'processing'
+          AND generation_model_configuration_public_id = ${modelConfigId}
       `;
 
-      return Number(rows[0]?.count ?? 0);
-    },
-    async countRunningSourceFileJobs() {
-      const rows = await sql<Array<{ count: number | string }>>`
-        SELECT count(*) AS count
-        FROM focowiki.source_files
-        WHERE status = 'processing'
-          AND deleted_at IS NULL
-      `;
-
-      return Number(rows[0]?.count ?? 0);
-    },
-    async countActiveSemanticGenerationReferences(modelConfigId) {
-      const rows = await sql<Array<{ count: number | string }>>`
-        SELECT count(*) AS count
-        FROM focowiki.semantic_generations
-        WHERE generation_model_configuration_public_id = ${modelConfigId}
-          AND generation_role = 'active'
-          AND state = 'active'
-          AND deleted_at IS NULL
-      `;
       return Number(rows[0]?.count ?? 0);
     }
   };
@@ -428,7 +428,7 @@ type VerifiedRuntimeSettingsRevision = {
 const SETTING_KEYS: readonly RuntimeSettingKey[] = [
   "rate_limits",
   "worker",
-  "publication",
+  "generated",
   "graph",
   "maintenance",
   "semantic",

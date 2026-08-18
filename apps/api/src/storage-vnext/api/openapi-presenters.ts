@@ -1,4 +1,4 @@
-import { graphRefForFile } from "@focowiki/okf";
+import { portableByFileGraphPath } from "@focowiki/okf";
 import {
   repositoryUnavailable,
   validationError
@@ -9,9 +9,7 @@ import {
   graphFileContentAction,
   graphTreeAction
 } from "../../okf/generated-graph-resources.js";
-import type { StorageVnextReleaseReadPort } from "../release/ports.js";
 import type { StorageVnextSearchResult } from "../search/ports.js";
-import type { StorageVnextSourceEventSummary } from "../source-events/ports.js";
 import type { StorageVnextAdminTreeEntry } from "./admin-ports.js";
 import type { DeveloperOpenApiApplication } from "./openapi-application.js";
 import { presentOkfSignals } from "./okf-signal-presentation.js";
@@ -24,7 +22,7 @@ export type StorageVnextOpenApiRelationship = {
   relation: string;
   weight: number | string;
   reason: string | null;
-  direction: "incoming" | "outgoing";
+  direction: "incoming" | "outgoing" | "bidirectional";
   from_source_file_public_id?: string;
   relationship_depth?: number | string;
 };
@@ -38,15 +36,14 @@ export function presentOpenApiKnowledgeBase(
     createdAt: string;
     updatedAt: string;
   },
-  root: Awaited<ReturnType<StorageVnextReleaseReadPort["getActiveRoot"]>>
+  activationRevision: number
 ) {
   return {
     knowledgeBaseId: record.publicId,
     name: record.name,
     description: record.description,
-    activeGenerationId: root?.publicId ?? null,
+    activeContentRevision: activationRevision,
     resourceRevision: record.revision,
-    catalogGeneration: root?.revision ?? 0,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
@@ -54,14 +51,14 @@ export function presentOpenApiKnowledgeBase(
 
 export function presentOpenApiTreeEntry(
   knowledgeBaseId: string,
-  generationId: string | null,
+  activeContentRevision: number | null,
   entry: StorageVnextAdminTreeEntry
 ) {
   const fileId = entry.entryType === "file"
     ? entry.sourceFileId ?? entry.generatedFileId
     : null;
   return {
-    generationId,
+    activeContentRevision,
     id: entry.id,
     fileId,
     sourceFileId: entry.sourceFileId,
@@ -81,22 +78,22 @@ export function presentOpenApiTreeEntry(
     contentAvailable: Boolean(fileId),
     readActions: fileId
       ? openApiReadActions(knowledgeBaseId, fileId, entry.logicalPath, entry.sourceFileId)
-      : null,
-    ancestors: []
+      : null
   };
 }
 
 export function presentOpenApiGeneratedFile(
   knowledgeBaseId: string,
-  generationId: string,
-  file: Record<string, unknown>
+  activeContentRevision: number,
+  file: Record<string, unknown>,
+  content?: string
 ) {
   const fileId = readString(file.id) ?? readString(file.sourceFileId);
   const path = readString(file.logicalPath);
   if (!fileId || !path) throw repositoryUnavailable();
   const frontmatter = readRecord(file.frontmatter) ?? {};
   return {
-    generationId,
+    activeContentRevision,
     fileId,
     knowledgeBaseId,
     sourceFileId: readString(file.sourceFileId),
@@ -105,7 +102,11 @@ export function presentOpenApiGeneratedFile(
     contentType: readString(file.contentType) ?? "text/markdown; charset=utf-8",
     sizeBytes: readNumber(file.sizeBytes) ?? 0,
     okfType: readString(file.okfType),
-    title: readString(file.title) ?? path.split("/").at(-1) ?? path,
+    title: readString(frontmatter.title)
+      ?? firstMarkdownHeading(content)
+      ?? readString(file.title)
+      ?? path.split("/").at(-1)
+      ?? path,
     description: readString(file.description),
     tags: readStringArray(frontmatter.tags) ?? readStringArray(file.tags) ?? [],
     frontmatter,
@@ -121,14 +122,22 @@ export function presentOpenApiGeneratedFile(
   };
 }
 
+function firstMarkdownHeading(content: string | undefined): string | null {
+  if (!content) return null;
+  for (const line of content.split(/\r?\n/u)) {
+    const match = /^#\s+(.+?)\s*$/u.exec(line);
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return null;
+}
+
 export function presentOpenApiRelationship(
   knowledgeBaseId: string,
-  generationId: string,
+  activeContentRevision: number,
   row: StorageVnextOpenApiRelationship
 ) {
   return {
-    generationId,
-    edgeId: row.public_id,
+    activeContentRevision,
     fileId: row.source_file_public_id,
     sourceFileId: row.source_file_public_id,
     path: row.logical_path,
@@ -137,10 +146,7 @@ export function presentOpenApiRelationship(
     direction: row.direction,
     fromFileId: row.from_source_file_public_id ?? row.source_file_public_id,
     relationshipDepth: Number(row.relationship_depth ?? 1),
-    weight: Number(row.weight),
-    reason: row.reason ?? "Related Markdown file",
-    source: "graph",
-    evidence: {},
+    reason: row.reason,
     contentAvailable: true,
     readActions: openApiReadActions(
       knowledgeBaseId,
@@ -153,10 +159,9 @@ export function presentOpenApiRelationship(
 
 export function presentOpenApiSearchResult(input: {
   knowledgeBaseId: string;
-  generationId: string;
+  activeContentRevision: number;
   mode: "file" | "graph" | "hybrid";
   depth: 0 | 1 | 2;
-  nodePublicId: string | null;
   item: StorageVnextSearchResult;
   relationships: StorageVnextOpenApiRelationship[];
 }) {
@@ -168,40 +173,29 @@ export function presentOpenApiSearchResult(input: {
   );
   const relationships = input.relationships.map((row) => presentOpenApiRelationship(
     input.knowledgeBaseId,
-    input.generationId,
+    input.activeContentRevision,
     row
   ));
   const graphContext = input.mode === "file" ? null : {
-    graphRef: graphRefForFile(input.item.sourceFilePublicId),
+    graphRef: portableByFileGraphPath(input.item.logicalPath),
     depth: input.depth,
     seedSourceFileId: input.item.sourceFilePublicId,
-    matchedNodeFields: input.item.kind === "graph"
-      ? [input.item.snippet ? "content" : "title"]
-      : [],
-    matchedRelationshipFields: [],
     relationships,
     graphPaths: [...new Set([
-      input.item.sourceFilePublicId,
-      ...input.relationships.flatMap((row) => [
-        row.from_source_file_public_id ?? input.item.sourceFilePublicId,
-        row.source_file_public_id
-      ])
-    ])].map(graphRefForFile)
+      input.item.logicalPath,
+      ...input.relationships.map((row) => row.logical_path)
+    ])].map(portableByFileGraphPath)
   };
   const frontmatter = input.item.metadata;
   return {
-    generationId: input.generationId,
-    nodeId: input.item.kind === "graph" ? input.nodePublicId : null,
-    edgeId: null,
+    activeContentRevision: input.activeContentRevision,
     fileId: input.item.sourceFilePublicId,
-    generatedFileId: input.item.sourceFilePublicId,
     knowledgeBaseId: input.knowledgeBaseId,
     sourceFileId: input.item.sourceFilePublicId,
     path: input.item.logicalPath,
-    generatedFilePath: input.item.logicalPath,
     fileKind: "page",
     title: input.item.title,
-    description: input.item.snippet,
+    description: readString(frontmatter.description),
     tags: readStringArray(frontmatter.tags) ?? [],
     frontmatter,
     okfSignals: presentOkfSignals(frontmatter),
@@ -236,10 +230,12 @@ function searchMatchType(item: StorageVnextSearchResult) {
     "exact_path", "exact_title", "lexical", "jieba", "content_vector"
   ].some((family) => families.has(family));
   const hasGraphEvidence = [
-    "file_graph", "entity_vector", "relationship_vector", "community_vector"
+    "file_graph", "file_relationship", "entity_vector",
+    "relationship_vector", "community_vector"
   ].some((family) => families.has(family));
   if (hasFileEvidence && hasGraphEvidence) return "hybrid";
   if (families.has("relationship_vector")) return "graph_edge";
+  if (families.has("file_relationship")) return "graph_edge";
   if (families.has("file_graph")) return "graph_neighbor";
   if (hasGraphEvidence || item.kind === "graph") return "graph_node";
   return "file_direct";
@@ -248,14 +244,16 @@ function searchMatchType(item: StorageVnextSearchResult) {
 function searchMatchedFields(family: string): string[] {
   if (family === "exact_path") return ["path"];
   if (family === "exact_title") return ["title"];
-  if (family === "file_graph") return ["file_relationship"];
+  if (family === "file_graph") return ["graph_node"];
+  if (family === "file_relationship") return ["file_relationship"];
   return ["content"];
 }
 
 function searchEvidenceType(family: string): string {
   if (family === "exact_path") return "path";
   if (family === "exact_title") return "title";
-  if (family === "file_graph") return "file_relationship";
+  if (family === "file_graph") return "graph_node";
+  if (family === "file_relationship") return "file_relationship";
   if (family === "entity_vector") return "entity";
   if (family === "relationship_vector") return "relationship";
   if (family === "community_vector") return "community";
@@ -267,52 +265,34 @@ function uniqueStrings(values: readonly string[]): string[] {
     left.localeCompare(right, "en"));
 }
 
-export function presentOpenApiSourceEvent(
-  event: StorageVnextSourceEventSummary
-) {
-  return {
-    eventId: event.publicId,
-    knowledgeBaseId: event.knowledgeBaseId,
-    sourceFileId: event.sourceFilePublicId,
-    stageKey: event.stageKey,
-    messageKey: event.messageKey,
-    startedAt: event.startedAt,
-    endedAt: event.endedAt,
-    severity: event.severity,
-    createdAt: event.createdAt
-  };
-}
-
 export function presentOpenApiGraphOverview(input: {
   knowledgeBaseId: string;
-  generationId: string;
+  activeContentRevision: number;
   nodeCount: number;
   edgeCount: number;
   graphIndexAvailable: boolean;
 }) {
   const availability = !input.graphIndexAvailable ? "unavailable"
-    : input.nodeCount > 0 || input.edgeCount > 0 ? "available" : "empty";
-  const base = `/openapi/v2/knowledge-bases/${input.knowledgeBaseId}`;
+    : input.edgeCount > 0 ? "available" : "empty";
   return {
-    generationId: input.generationId,
+    activeContentRevision: input.activeContentRevision,
     availability,
-    summary: { nodeCount: input.nodeCount, edgeCount: input.edgeCount },
+    summary: {
+      readableFileCount: input.nodeCount,
+      relationshipCount: input.edgeCount
+    },
     resources: {
       graphIndexPath: input.graphIndexAvailable
         ? GENERATED_GRAPH_RESOURCES.index.path
         : null,
-      nodeDirectoryPath: input.nodeCount > 0
-        ? GENERATED_GRAPH_RESOURCES.nodeDirectoryPath
-        : null,
-      edgeDirectoryPath: input.edgeCount > 0
+      byDirectoryPath: input.edgeCount > 0
         ? GENERATED_GRAPH_RESOURCES.edgeDirectoryPath
         : null,
-      byFileDirectoryPath: input.nodeCount > 0
+      byFilePath: input.nodeCount > 0
         ? GENERATED_GRAPH_RESOURCES.byFileDirectoryPath
         : null
     },
     readActions: {
-      readIndexContent: `${base}/files/content?path=index.md`,
       graphIndexContent: input.graphIndexAvailable
         ? graphFileContentAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.index.path)
         : null,
@@ -320,34 +300,13 @@ export function presentOpenApiGraphOverview(input: {
         input.knowledgeBaseId,
         GENERATED_GRAPH_RESOURCES.rootDirectoryPath
       ),
-      listGraphNodes: input.nodeCount > 0
-        ? graphTreeAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.nodeDirectoryPath)
-        : null,
-      listGraphEdges: input.edgeCount > 0
+      listRelationshipsByDirectory: input.edgeCount > 0
         ? graphTreeAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.edgeDirectoryPath)
         : null,
-      listByFileGraph: input.nodeCount > 0
+      listRelationshipsByFile: input.nodeCount > 0
         ? graphTreeAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.byFileDirectoryPath)
-        : null,
-      searchGraph: `${base}/files/search?query={query}&mode=graph`,
-      expandGraphByFileId: `${base}/graph/expand?fileId={fileId}`,
-      fileDetailById: `${base}/files/{fileId}`,
-      fileContentById: `${base}/files/{fileId}/content`,
-      fileContentByPath: `${base}/files/content?path={path}`,
-      relatedFilesById: `${base}/files/{fileId}/related`
-    },
-    message: availability === "available"
-      ? "File relationships are available. Read the related Markdown files before using their content."
-      : availability === "empty"
-        ? "No file relationships are currently available. Relevant Markdown files may still exist."
-        : "File relationships are not available yet. Continue with index.md, the file tree, and file search.",
-    nextActions: [
-      input.graphIndexAvailable
-        ? "Read `_graph/index.md` or browse the `_graph/` directory to inspect file relationships."
-        : "Read index.md and browse the file tree to discover relevant Markdown files.",
-      "Search relationships, list related files, or explore from a file to find matching files.",
-      "Read the returned Markdown files before using their content."
-    ]
+        : null
+    }
   };
 }
 
@@ -376,10 +335,10 @@ export function openApiSearchQuery(
 
 export function emptyOpenApiSearchResponse(
   input: Parameters<DeveloperOpenApiApplication["searchFiles"]>[0],
-  generationId: string | null
+  activeContentRevision: number | null
 ) {
   return {
-    generationId,
+    activeContentRevision,
     query: openApiSearchQuery(input, input.query.trim()),
     items: [],
     nextCursor: null,
@@ -411,25 +370,8 @@ export function emptyOpenApiSearchResponse(
       resultCount: 0,
       hasMore: false,
       sort: ["relevance_desc", "logical_path_asc", "source_file_id_asc"],
-      meaning: "No current published files matched the search."
-    },
-    nextRequestTemplates: openApiNextRequestTemplates(input.knowledgeBaseId)
-  };
-}
-
-export function openApiNextRequestTemplates(knowledgeBaseId: string) {
-  const base = `/openapi/v2/knowledge-bases/${knowledgeBaseId}`;
-  return {
-    searchAgain: `${base}/files/search?query={query}`,
-    listTree: `${base}/tree?parentPath={parentPath}`,
-    readIndex: `${base}/files/content?path=index.md`,
-    fileDetailById: `${base}/files/{generatedFileId}`,
-    fileContentById: `${base}/files/{generatedFileId}/content`,
-    fileContentByPath: `${base}/files/content?path={generatedFilePath}`,
-    relatedFilesById: `${base}/files/{generatedFileId}/related`,
-    graphExpansionByFileId: `${base}/graph/expand?fileId={generatedFileId}`,
-    sourceFileStatusById: `${base}/source-files/{sourceFileId}`,
-    sourceFileEventsById: `${base}/source-files/{sourceFileId}/events`
+      meaning: "No current readable files matched the search."
+    }
   };
 }
 
@@ -464,10 +406,11 @@ function openApiReadActions(
     fileDetailById: `${base}/files/${fileId}`,
     fileContentById: `${base}/files/${fileId}/content`,
     fileContentByPath: `${base}/files/content?path=${encodeURIComponent(path)}`,
-    relatedFilesById: `${base}/files/${fileId}/related`,
-    graphExpansionByFileId: `${base}/graph/expand?fileId=${fileId}`,
-    sourceFileStatusById: sourceFileId ? `${base}/source-files/${sourceFileId}` : null,
-    sourceFileEventsById: sourceFileId ? `${base}/source-files/${sourceFileId}/events` : null
+    relatedFilesById: sourceFileId ? `${base}/files/${fileId}/related` : null,
+    graphExpansionByFileId: sourceFileId
+      ? `${base}/graph/expand?fileId=${fileId}`
+      : null,
+    sourceFileStatusById: sourceFileId ? `${base}/source-files/${sourceFileId}` : null
   };
 }
 

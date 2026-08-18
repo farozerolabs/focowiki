@@ -1,8 +1,10 @@
-import type { SourceFileRecord } from "@/lib/admin-api";
+import type { ProcessingSummary, SourceFileRecord } from "@/lib/admin-api";
 
 export type SourceFileRefreshSnapshot = {
   state: SourceFileRecord["state"];
-  currentStage: SourceFileRecord["currentStage"];
+  completedWorkCount: number;
+  activeWorkKinds: SourceFileRecord["activeWorkKinds"];
+  blockingWorkKind: SourceFileRecord["blockingWorkKind"];
   generatedOutputStatus: SourceFileRecord["generatedOutputStatus"] | null;
   generatedFileAvailable: boolean;
   generatedFileId: string | null;
@@ -13,12 +15,15 @@ export type SourceFileRefreshScheduleInput = {
   activeView: "file" | "processing" | "settings";
   isVisible: boolean;
   sourceFiles: SourceFileRecord[];
+  hasBackgroundActivity?: boolean;
 };
 
 export function createSourceFileRefreshSnapshot(file: SourceFileRecord): SourceFileRefreshSnapshot {
   return {
     state: file.state,
-    currentStage: file.currentStage,
+    completedWorkCount: file.completedWorkCount,
+    activeWorkKinds: file.activeWorkKinds,
+    blockingWorkKind: file.blockingWorkKind,
     generatedOutputStatus: file.generatedOutputStatus ?? null,
     generatedFileAvailable: Boolean(file.generatedFileAvailable),
     generatedFileId: file.generatedFileId ?? null,
@@ -29,9 +34,11 @@ export function createSourceFileRefreshSnapshot(file: SourceFileRecord): SourceF
 export function shouldScheduleSourceFileRefresh({
   activeView,
   isVisible,
-  sourceFiles
+  sourceFiles,
+  hasBackgroundActivity = false
 }: SourceFileRefreshScheduleInput): boolean {
-  return activeView === "processing" && isVisible && sourceFiles.some(isActiveSourceFile);
+  return activeView === "processing" && isVisible
+    && (hasBackgroundActivity || sourceFiles.some(isActiveSourceFile));
 }
 
 export function shouldScheduleMaintenanceRefresh(input: {
@@ -39,6 +46,13 @@ export function shouldScheduleMaintenanceRefresh(input: {
   isVisible: boolean;
 }): boolean {
   return input.activeView === "settings" && input.isVisible;
+}
+
+export function hasProcessingBackgroundActivity(
+  summary: ProcessingSummary | null
+): boolean {
+  if (!summary) return false;
+  return summary.waitingCount > 0 || summary.processingCount > 0;
 }
 
 export function normalizeSourceFileRefreshAfterMs(
@@ -93,8 +107,8 @@ export function rememberSourceFileRefreshSnapshots(
 
 function isActiveSourceFile(file: SourceFileRecord): boolean {
   return (
-    file.state === "queued" ||
-    file.state === "running" ||
-    file.state === "pending_publication"
+    file.state === "waiting" ||
+    file.state === "processing" ||
+    file.state === "deleting"
   );
 }

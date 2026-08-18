@@ -74,29 +74,39 @@ export function buildPostgresInventory(repositoryRoot) {
 }
 
 const CRITICAL_POSTGRES_TABLES = new Set([
-  "active_snapshots",
   "admin_sessions",
   "cleanup_actions",
+  "document_artifact_receipts",
+  "document_artifact_work",
+  "document_processing_jobs",
   "embedding_artifacts",
+  "file_relation_evidence",
+  "file_relations",
   "generated_artifacts",
+  "generated_directory_leaves",
+  "generated_directory_leaf_entries",
+  "generated_page_candidates",
+  "generated_page_heads",
   "knowledge_bases",
+  "knowledge_base_sequences",
   "object_owners",
   "object_registrations",
   "openapi_keys",
   "operation_work_items",
   "operations",
-  "release_candidates",
-  "release_roots",
   "runtime_settings_revisions",
+  "search_document_owners",
   "search_projections",
   "security_audit_events",
   "semantic_dirty_partitions",
   "semantic_generations",
-  "semantic_stage_work_items",
   "semantic_vector_documents",
-  "source_file_current_revisions",
+  "source_file_active_revisions",
+  "source_file_identity_keys",
   "source_files",
+  "source_revision_presentations",
   "source_revisions",
+  "unresolved_file_references",
   "upload_entries",
   "upload_sessions",
   "webhook_deliveries",
@@ -236,19 +246,20 @@ function classifyCriticalPostgresStatement(source, tables) {
   if (source.includes("ON CONFLICT")) return "idempotent-write";
   if (source.includes("ORDER BY") && source.includes("LIMIT")) return "pagination";
   if (tables.some((table) => [
-    "active_snapshots",
-    "release_candidates",
-    "release_roots",
+    "generated_page_heads",
+    "knowledge_base_activation_revisions",
+    "search_document_owners",
     "search_projections",
-    "semantic_generations"
+    "semantic_generations",
+    "source_file_active_revisions"
   ].includes(table))) return "activation";
   if (tables.some((table) => ["object_owners", "object_registrations"].includes(table))) {
     return "ownership";
   }
   if (tables.some((table) => [
+    "document_processing_jobs",
     "operation_work_items",
-    "operations",
-    "semantic_stage_work_items"
+    "operations"
   ].includes(table))) return "workflow";
   if (tables.some((table) => [
     "admin_sessions",
@@ -275,53 +286,16 @@ export function buildSubsystemInventories(repositoryRoot) {
       "apps/api/src/semantic/infrastructure"
     ], "vector", true),
     workers: exportedInventory(repositoryRoot, [
-      "apps/api/src/source-worker-main.ts",
-      "apps/api/src/publication-worker-main.ts",
-      "apps/api/src/maintenance-worker-main.ts",
-      "apps/api/src/redis/worker-runtime.ts",
-      "apps/api/src/semantic/application/community-stage-handler.ts",
-      "apps/api/src/semantic/application/community-worker.ts",
-      "apps/api/src/semantic/application/embedding-stage-handler.ts",
-      "apps/api/src/semantic/application/extraction-stage-handler.ts",
-      "apps/api/src/semantic/application/publication-stage-handler.ts",
-      "apps/api/src/semantic/application/reconciliation-stage-handler.ts",
-      "apps/api/src/semantic/application/stage-concurrency.ts",
-      "apps/api/src/semantic/application/stage-metrics.ts",
-      "apps/api/src/semantic/application/stage-orchestration.ts",
-      "apps/api/src/semantic/application/stage-ports.ts",
-      "apps/api/src/semantic/application/stage-role-runtime.ts",
-      "apps/api/src/semantic/application/stage-worker.ts",
-      "apps/api/src/semantic/application/vector-stage-handler.ts",
-      "apps/api/src/semantic/graphrag/source-worker-runtime.ts",
-      "apps/api/src/semantic/infrastructure/postgres-publication-coalescing-readiness.ts",
-      "apps/api/src/semantic/infrastructure/postgres-publication-readiness.ts",
-      "apps/api/src/semantic/infrastructure/postgres-stage-repository.ts",
-      "apps/api/src/semantic/infrastructure/postgres-stage-source-ownership.ts",
-      "apps/api/src/semantic/infrastructure/source-stage-production-runtime.ts",
-      "apps/api/src/storage-vnext/source-processing/production-runtime.ts",
-      "apps/api/src/storage-vnext/source-processing/worker.ts",
-      "apps/api/src/storage-vnext/publication/processor.ts",
-      "apps/api/src/storage-vnext/publication/production-runtime.ts",
-      "apps/api/src/storage-vnext/publication/role-runtime.ts",
-      "apps/api/src/storage-vnext/publication/worker.ts",
-      "apps/api/src/storage-vnext/maintenance/automatic-scheduler.ts",
-      "apps/api/src/storage-vnext/maintenance/candidate-object-cleanup-worker.ts",
+      "apps/api/src/worker-main.ts",
+      "apps/api/src/document-indexing",
       "apps/api/src/storage-vnext/maintenance/maintenance-coordinator.ts",
-      "apps/api/src/storage-vnext/maintenance/phase-runner.ts",
-      "apps/api/src/storage-vnext/maintenance/postgres-due.ts",
       "apps/api/src/storage-vnext/maintenance/postgres-repository.ts",
-      "apps/api/src/storage-vnext/maintenance/production-runtime.ts",
-      "apps/api/src/storage-vnext/maintenance/status.ts",
-      "apps/api/src/storage-vnext/deletion/deletion-worker.ts",
-      "apps/api/src/storage-vnext/search/provider-index-cleanup-worker.ts",
-      "apps/api/src/storage-vnext/webhook/worker.ts",
-      "apps/api/src/storage-vnext/workflow/postgres-contract.ts",
-      "apps/api/src/storage-vnext/workflow/postgres-repository.ts",
-      "apps/api/src/dispatch"
+      "apps/api/src/storage-vnext/maintenance/upload-terminal-object-cleanup-worker.ts",
+      "apps/api/src/storage-vnext/maintenance/zero-owner-object-cleanup-worker.ts"
     ], "worker", true),
     generated: exportedInventory(repositoryRoot, [
+      "apps/api/src/document-indexing/application",
       "apps/api/src/okf",
-      "apps/api/src/publication",
       "apps/api/src/public-generated-path.ts",
       "apps/api/src/tree-entry-filters.ts"
     ], "generated", true)
@@ -331,9 +305,7 @@ export function buildSubsystemInventories(repositoryRoot) {
 function buildS3Inventory(repositoryRoot) {
   const contractRoots = [
     "apps/api/src/storage",
-    "apps/api/src/application/ports/immutable-object-repository.ts",
-    "apps/api/src/application/ports/immutable-object-lock.ts",
-    "apps/api/src/application/ports/generation-object-reference-repository.ts"
+    "apps/api/src/document-indexing/application/ports.ts"
   ];
   const directS3Sources = walkFiles(
     path.join(repositoryRoot, "apps/api/src"),
@@ -409,7 +381,7 @@ function exportedInventory(repositoryRoot, relativeRoots, category, includeField
           }
         }
         const values = category === "worker"
-          ? "source|upload|mutation|publication|deletion|search|maintenance|reconciliation|cleanup|extraction|embedding|community|vector|validation|projection_repair|lexical_rebuild|webhook"
+          ? "document|interactive|maintenance|cleanup|webhook|waiting|processing|available|error|deleting|cancelled|superseded|prepare|first_layer|content_projection|graphrag|relation_reconcile|knowledge_projection|activate"
           : "content|entity|relationship|community|file|graph|hybrid";
         for (const match of source.matchAll(new RegExp(`["'](${values})["']`, "gmu"))) {
           items.push(locatedRecord(repositoryRoot, filePath, source, match.index, `${category}-value`, match[1]));

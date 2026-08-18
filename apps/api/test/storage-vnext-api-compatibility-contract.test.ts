@@ -29,7 +29,6 @@ const expectedOpenApiPaths = [
   "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories/{directoryId}",
   "/openapi/v2/knowledge-bases/{knowledgeBaseId}/operations",
   "/openapi/v2/knowledge-bases/{knowledgeBaseId}/operations/{operationId}",
-  "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/events",
   "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry",
   "/openapi/v2/knowledge-bases/{knowledgeBaseId}/tree",
   "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/content",
@@ -46,6 +45,18 @@ const expectedOpenApiPaths = [
 ] as const;
 
 describe("storage vNext API compatibility contract", () => {
+  it("does not publish an incomplete source event history as a public operation", () => {
+    const paths = readWorkspaceFile(
+      "apps/api/src/developer-openapi/openapi-paths.ts"
+    );
+    const routes = readWorkspaceFile(
+      "apps/api/src/developer-openapi/routes.ts"
+    );
+
+    expect(paths).not.toContain("listKnowledgeBaseSourceFileEvents");
+    expect(routes).not.toContain("listSourceFileEvents");
+  });
+
   it("defines the connected storage-neutral application contracts for existing route handlers", () => {
     const adminSource = readWorkspaceFile(
       "apps/api/src/storage-vnext/api/admin-ports.ts"
@@ -74,15 +85,18 @@ describe("storage vNext API compatibility contract", () => {
     }
   });
 
-  it("keeps released Admin polling behavior in the unchanged UI consumer", () => {
+  it("keeps Admin polling behavior in the document-indexing UI consumer", () => {
     const detailPage = readWorkspaceFile(
       "apps/admin/src/pages/KnowledgeBaseDetailPage.tsx"
     );
     const operationHook = readWorkspaceFile(
       "apps/admin/src/hooks/use-resource-operations.ts"
     );
+    const detailView = readWorkspaceFile(
+      "apps/admin/src/lib/knowledge-base-detail-view.ts"
+    );
 
-    expect(detailPage).toContain("const SOURCE_FILE_REFRESH_INTERVAL_MS = 2_000;");
+    expect(detailView).toContain("SOURCE_FILE_REFRESH_INTERVAL_MS = 2_000;");
     expect(detailPage).toContain("page.refreshAfterMs");
     expect(operationHook).toContain(
       "const POLL_DELAYS_MS = [1_000, 2_000, 5_000] as const;"
@@ -118,7 +132,7 @@ describe("storage vNext API compatibility contract", () => {
     expect(adminRoutes).toContain("RESOURCE_REVISION_CONFLICT");
     expect(adminRoutes).toContain("DATABASE_REPOSITORY_UNAVAILABLE");
     expect(openApiRoutes).toContain("throw conflict(error.code)");
-    expect(openApiRoutes).toContain("sanitizeStorageVnextPublicValue(operation.result)");
+    expect(openApiRoutes).toContain("presentDeveloperResourceOperation");
   });
 
   it("reads active source revisions through the vNext current-revision relation", () => {
@@ -126,12 +140,8 @@ describe("storage vNext API compatibility contract", () => {
       "apps/api/src/storage-vnext/api/postgres-admin-resources.ts"
     );
 
-    expect(source).toContain(
-      "LEFT JOIN focowiki.source_file_current_revisions current_revision"
-    );
-    expect(source).toContain(
-      "revision.public_id = current_revision.source_revision_public_id"
-    );
+    expect(source).toContain("JOIN focowiki.source_file_active_revisions active");
+    expect(source).toContain("revision.public_id = active.current_source_revision_public_id");
     expect(source).not.toContain("source.current_revision_public_id");
   });
 
@@ -139,11 +149,11 @@ describe("storage vNext API compatibility contract", () => {
     expect(REQUIRED_GENERATED_NAVIGATION_PATHS).toEqual([
       "index.md",
       "pages/index.md",
-      "schema.md",
       "log.md",
       "_index/index.md",
       "_graph/index.md",
-      "_index/catalog.json"
+      "_index/catalog.json",
+      "_graph/catalog.json"
     ]);
   });
 });

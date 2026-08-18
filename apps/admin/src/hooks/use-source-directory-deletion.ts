@@ -4,6 +4,7 @@ import type { AdminSidebarTreeNode } from "@/components/app-sidebar";
 import { showAdminToast } from "@/hooks/use-admin-toast";
 import { deleteKnowledgeBaseSourceDirectory } from "@/lib/admin-api";
 import type { TreePageState } from "@/lib/sidebar-tree";
+import type { ResourceOperation } from "@/lib/resource-editing-api";
 
 export function useSourceDirectoryDeletion(input: {
   knowledgeBaseId: string;
@@ -12,6 +13,7 @@ export function useSourceDirectoryDeletion(input: {
   setExpandedDirectories: Dispatch<SetStateAction<Set<string>>>;
   clearSelectedFile: () => void;
   refreshProcessingSummary: () => Promise<void>;
+  trackOperation: (operation: ResourceOperation) => void;
 }) {
   const { t } = useTranslation();
   const [target, setTarget] = useState<AdminSidebarTreeNode | null>(null);
@@ -31,9 +33,14 @@ export function useSourceDirectoryDeletion(input: {
     });
     setIsDeleting(false);
     if ("messageKey" in result) {
-      showAdminToast({ variant: "destructive", title: t("errors.deleteDirectoryFailed") });
+      showAdminToast({
+        variant: "destructive",
+        title: t("errors.deleteDirectoryFailed"),
+        description: t(result.messageKey)
+      });
       return;
     }
+    input.trackOperation(result.operation);
     input.setTreePages((pages) => hideDeletedTreeBranch(pages, current.logicalPath));
     input.setExpandedDirectories((paths) =>
       new Set([...paths].filter((path) => path !== current.logicalPath && !path.startsWith(`${current.logicalPath}/`)))

@@ -47,8 +47,8 @@ const rootDir = resolve(import.meta.dirname, "../../..");
 
 test("backup refuses to run while any write-capable runtime role is active", () => {
   assert.throws(
-    () => assertNoActiveWriters(["postgres", "api", "source-worker"]),
-    /api, source-worker/u
+    () => assertNoActiveWriters(["postgres", "api", "worker"]),
+    /api, worker/u
   );
   assert.doesNotThrow(() => assertNoActiveWriters([
     "admin",
@@ -559,35 +559,6 @@ test("deployment exposes the verified storage-vNext restore command", async () =
   assert.match(source, /clean/u);
 });
 
-test("restore validation rebuilds the unified index from PostgreSQL and S3", async () => {
-  const packageJson = JSON.parse(await readFile(join(rootDir, "package.json"), "utf8"));
-  const source = await readFile(
-    join(rootDir, "scripts/validation/storage-vnext-restore-rebuild.ts"),
-    "utf8"
-  );
-
-  assert.equal(
-    packageJson.scripts["validate:storage-vnext:restore-rebuild"],
-    "tsx scripts/validation/storage-vnext-restore-rebuild.ts"
-  );
-  assert.match(source, /createStorageVnextMaintenanceSearchRebuild/u);
-  assert.match(source, /createPostgresStorageVnextCatalogRepository/u);
-  assert.match(source, /createPostgresStorageVnextGraphRepository/u);
-  assert.match(source, /createS3StorageVnextSourceBodyStore/u);
-  assert.match(source, /createMeilisearchTransport/u);
-  assert.match(source, /one unified index/u);
-});
-
-test("full restore rebuild counts only current non-deleted source authority", async () => {
-  const source = await readFile(
-    join(rootDir, "scripts/validation/storage-vnext-full-restore-rebuild.ts"),
-    "utf8"
-  );
-
-  assert.match(source, /source_file_current_revisions/u);
-  assert.match(source, /source\.deleted_at IS NULL/u);
-  assert.doesNotMatch(source, /source_files[\s\S]{0,200}visibility/u);
-});
 
 test("restore rejects authority objects outside the exact backup prefix before writing", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "focowiki-restore-prefix-"));

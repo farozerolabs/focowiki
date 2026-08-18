@@ -34,6 +34,8 @@ Focowiki 把清洗后的 Markdown 文件生成 OKF-style 知识库，让人、�
 
 Focowiki 使用可阅读的 Markdown 作为核心知识表示。系统保留元数据，生成索引和图关系文件，记录关联链接，并让 Agent 围绕资料库组织 Loop：读取索引、打开文件、抽取线索、继续检索、比对证据，并基于来源回答。
 
+生成 bundle 中，`pages/` 是权威可读内容，`_index/` 保存按页面路径关联的索引，`_graph/` 保存按页面路径关联的关系。Markdown 使用相对链接，逐文件关系资源镜像页面路径，因此完整目录被复制后，无需服务或 API 仍可继续导航。
+
 <img src="./docs/public/images/focowiki-architecture.png" alt="Focowiki 架构图" width="880" />
 
 ## 快速启动
@@ -68,12 +70,11 @@ https://github.com/farozerolabs/focowiki
 Docker Compose 模板默认使用 `latest`。若需固定版本，在 `.env` 中指定镜像 tag：
 
 ```env
-FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.1.0
-FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
-FOCOWIKI_SOURCE_WORKER_IMAGE=ghcr.io/farozerolabs/focowiki-source-worker:0.1.0
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:<release-tag>
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:<release-tag>
 ```
 
-三个镜像必须固定为同一个发布版本。
+两个镜像必须固定为同一个发布版本。
 
 配置细节和运行命令见 [Docker Compose 部署文档](https://docs.focowiki.com/zh-CN/deployment/docker-compose)。
 
@@ -157,6 +158,9 @@ Focowiki 使用 pnpm、TypeScript、Vite、React、Hono、PostgreSQL、Redis 和
 
 ```bash
 pnpm install
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r apps/api/python/requirements.lock
 cp .env.dev.example .env
 cp docker-compose.local.yml.example docker-compose.local.yml
 docker compose -f docker-compose.local.yml up -d postgres redis minio minio-init opensearch
@@ -164,13 +168,15 @@ pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
 
+`pnpm dev` 会启动 Admin UI、两个 API 监听端口和统一 Worker。开发运行期间需要保持 Python 虚拟环境处于激活状态。
+
 本地服务地址：
 
 - Admin UI：`http://127.0.0.1:43100`
 - Admin API：`http://127.0.0.1:43000`
 - Developer OpenAPI：`http://127.0.0.1:43200`
 
-本地环境模板默认选择 OpenSearch。需要改用 Meilisearch 时，将 `SEARCH_PROVIDER` 和 `COMPOSE_PROFILES` 都设置为 `meilisearch`。
+本地环境模板默认选择 OpenSearch。需要使用模板内置的 Meilisearch 时，先解除 Compose 模板中完整 `meilisearch` 服务块的注释，将 `SEARCH_PROVIDER` 和 `COMPOSE_PROFILES` 都设置为 `meilisearch`，再在启动依赖的命令中用 `meilisearch search-init` 替换 `opensearch`。模板仅在回环地址暴露 Meilisearch，供宿主机开发运行时通过 `MEILI_PORT`（默认 `57700`）访问。
 
 ## License
 

@@ -22,11 +22,7 @@ export function registerAdminProcessingSummaryRoutes(
           ? notFound(context)
           : missingRepositoryBackend(context);
       }
-      const { activeVersionId, ...summary } = result.value;
-      return context.json({
-        activeGenerationId: activeVersionId,
-        ...summary
-      });
+      return context.json(result.value);
     }
   );
 }

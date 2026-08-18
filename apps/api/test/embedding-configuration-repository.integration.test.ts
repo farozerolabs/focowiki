@@ -87,6 +87,14 @@ describeOwnedDatabase('embedding configuration PostgreSQL repository', () => {
     await sql`INSERT INTO focowiki.knowledge_bases (public_id, name, revision) VALUES ('kb-embedding-ref', 'Embedding ref', 1)`;
     await sql`INSERT INTO focowiki.operations (public_id, knowledge_base_id, operation_kind, state) VALUES ('operation-embedding-ref', 'kb-embedding-ref', 'mutation', 'processing')`;
     await sql`
+      INSERT INTO focowiki.model_configs (
+        public_id, provider, model, secret_reference, config, enabled, revision
+      ) VALUES (
+        'model-config-test', 'openai-compatible', 'generation-model',
+        'runtime-settings:model-config-test', '{}'::jsonb, true, 1
+      )
+    `;
+    await sql`
       INSERT INTO focowiki.semantic_generations (
         public_id, knowledge_base_id, operation_public_id, generation_role,
         state, generation_model_configuration_public_id,

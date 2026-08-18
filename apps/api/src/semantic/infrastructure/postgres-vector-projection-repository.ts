@@ -197,11 +197,11 @@ export function createPostgresSemanticVectorProjectionRepository(
             AND (
               EXISTS (
                 SELECT 1
-                FROM focowiki.source_file_current_revisions current_revision
+                FROM focowiki.source_file_active_revisions current_revision
                 WHERE current_revision.knowledge_base_id = vector.knowledge_base_id
                   AND current_revision.source_file_public_id
                     = vector.source_file_public_id
-                  AND current_revision.source_revision_public_id
+                  AND current_revision.current_source_revision_public_id
                     = vector.source_revision_public_id
               )
               OR (SELECT mutation_candidate FROM current_generation)
@@ -242,22 +242,17 @@ function mutationCandidateSql(
     AND ${sources.length}::integer > 0
     AND EXISTS (
       SELECT 1
-      FROM focowiki.operation_work_items work
-      WHERE work.knowledge_base_id = ${plan.knowledgeBaseId}
-        AND work.operation_public_id = ${plan.operationPublicId}
-        AND work.work_kind = 'mutation'
-        AND work.state IN ('queued', 'running', 'retry')
+      FROM focowiki.document_processing_jobs job
+      WHERE job.knowledge_base_id = ${plan.knowledgeBaseId}
+        AND job.operation_public_id = ${plan.operationPublicId}
+        AND job.state = 'processing'
         AND NOT EXISTS (
           SELECT 1
           FROM jsonb_to_recordset(${sql.json(sources as never)}) AS desired(
             "sourceFilePublicId" text, "sourceRevisionPublicId" text
           )
-          LEFT JOIN focowiki.source_revisions revision
-            ON revision.knowledge_base_id = work.knowledge_base_id
-           AND revision.source_file_public_id = desired."sourceFilePublicId"
-           AND revision.public_id = desired."sourceRevisionPublicId"
-           AND revision.revision_role = 'candidate'
-          WHERE revision.public_id IS NULL
+          WHERE job.source_file_public_id <> desired."sourceFilePublicId"
+             OR job.source_revision_public_id <> desired."sourceRevisionPublicId"
         )
     )
   `;

@@ -50,7 +50,7 @@ async function prepare() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       name: `Source drain capacity ${new Date().toISOString()}`,
-      description: "Bounded model-disabled source worker capacity evidence"
+      description: "Bounded model-disabled worker capacity evidence"
     }),
     expectedStatus: 201
   });
@@ -291,7 +291,7 @@ function renderMarkdown(report) {
     "",
     `生成时间：${report.generatedAt}`,
     "",
-    "150 个真实 Markdown 文件先完成上传和接收，再启动 Source Worker。计时只覆盖来源队列排空，外部上传时间与后续发布时间均不计入。",
+    "150 个真实 Markdown 文件先完成上传和接收，再启动 Worker。计时只覆盖来源队列排空，外部上传时间与后续发布时间均不计入。",
     "",
     `- 暖态吞吐：${report.metrics.warmedFilesPerSecond} 文件/秒`,
     `- 全程吞吐：${report.metrics.filesPerSecond} 文件/秒`,

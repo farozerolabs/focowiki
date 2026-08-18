@@ -19,6 +19,7 @@ export type StorageVnextRegistrationRow = {
   object_format: string;
   state: StorageVnextObjectRegistration["state"];
   write_attempt_public_id: string;
+  reservation_expires_at: Date | string | null;
   verified_at: Date | string | null;
   zero_owner_since: Date | string | null;
   created_at: Date | string;
@@ -74,10 +75,12 @@ export class StorageVnextOwnershipRepositoryError extends Error {
 export function storageVnextOwnerTarget(owner: StorageVnextObjectOwner) {
   return {
     sourceRevisionPublicId: owner.kind === "source_revision" ? owner.ownerPublicId : null,
-    releaseRootPublicId: ["active_root", "candidate_root", "rollback_root"].includes(owner.kind)
+    sourceReceiptPublicId: owner.kind === "source_receipt"
       ? owner.ownerPublicId
       : null,
-    releaseShardPublicId: owner.kind === "shared_segment" ? owner.ownerPublicId : null,
+    generatedPageCandidatePublicId: owner.kind === "generated_page_candidate"
+      ? owner.ownerPublicId
+      : null,
     operationPublicId: owner.kind === "live_reservation" ? owner.ownerPublicId : null,
     embeddingArtifactPublicId: owner.kind === "embedding_artifact"
       ? owner.ownerPublicId
@@ -158,6 +161,18 @@ export function assertStorageVnextReservation(input: StorageVnextObjectReservati
     throw new StorageVnextOwnershipRepositoryError("invalid_input");
   }
   assertStorageVnextOwnershipTimestamp(input.createdAt);
+  if (input.reservationExpiresAt !== undefined) {
+    assertStorageVnextOwnershipTimestamp(input.reservationExpiresAt);
+    if (Date.parse(input.reservationExpiresAt) <= Date.parse(input.createdAt)) {
+      throw new StorageVnextOwnershipRepositoryError("invalid_input");
+    }
+  }
+  if (input.holdVerifiedUntil !== undefined) {
+    assertStorageVnextOwnershipTimestamp(input.holdVerifiedUntil);
+    if (Date.parse(input.holdVerifiedUntil) <= Date.parse(input.createdAt)) {
+      throw new StorageVnextOwnershipRepositoryError("invalid_input");
+    }
+  }
 }
 
 export function assertStorageVnextVerification(input: {
@@ -168,6 +183,7 @@ export function assertStorageVnextVerification(input: {
   contentType: string;
   format: string;
   verifiedAt: string;
+  holdVerifiedUntil?: string;
 }): void {
   assertStorageVnextPublicId(input.objectId);
   assertStorageVnextPublicId(input.writeAttemptPublicId);
@@ -181,6 +197,12 @@ export function assertStorageVnextVerification(input: {
     throw new StorageVnextOwnershipRepositoryError("invalid_input");
   }
   assertStorageVnextOwnershipTimestamp(input.verifiedAt);
+  if (input.holdVerifiedUntil !== undefined) {
+    assertStorageVnextOwnershipTimestamp(input.holdVerifiedUntil);
+    if (Date.parse(input.holdVerifiedUntil) <= Date.parse(input.verifiedAt)) {
+      throw new StorageVnextOwnershipRepositoryError("invalid_input");
+    }
+  }
 }
 
 export function assertStorageVnextOwner(owner: StorageVnextObjectOwner): void {
@@ -197,10 +219,8 @@ export function assertStorageVnextOwnerKind(
 ): asserts kind is StorageVnextOwnerKind {
   if (![
     "source_revision",
-    "active_root",
-    "candidate_root",
-    "rollback_root",
-    "shared_segment",
+    "source_receipt",
+    "generated_page_candidate",
     "live_reservation",
     "embedding_artifact"
   ].includes(kind)) {

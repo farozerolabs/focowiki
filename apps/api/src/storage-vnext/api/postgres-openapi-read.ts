@@ -13,25 +13,30 @@ export type StorageVnextOpenApiSearchGraphContext = {
   relationships: StorageVnextOpenApiRelationship[];
 };
 
+const MAX_RELATION_KINDS_PER_TARGET = 2;
+
 export async function findStorageVnextGeneratedIdentity(
   sql: DatabaseClient,
   input: { knowledgeBaseId: string; fileId: string }
 ) {
   const rows = await sql<StorageVnextGeneratedIdentity[]>`
-    SELECT entry.logical_path, entry.source_file_public_id, entry.object_id
-    FROM focowiki.release_roots root
-    CROSS JOIN LATERAL focowiki.resolve_release_catalog(root.public_id) entry
-    WHERE root.knowledge_base_id = ${input.knowledgeBaseId}
-      AND root.root_role = 'active'
+    SELECT page.logical_path, page.source_file_public_id, page.object_id
+    FROM focowiki.generated_page_heads page
+    LEFT JOIN focowiki.source_file_active_revisions active
+      ON active.knowledge_base_id = page.knowledge_base_id
+     AND active.source_file_public_id = page.source_file_public_id
+    WHERE page.knowledge_base_id = ${input.knowledgeBaseId}
+      AND (page.source_file_public_id IS NULL
+        OR active.active_source_revision_public_id = page.source_revision_public_id)
       AND (
-        entry.source_file_public_id = ${input.fileId}
-        OR entry.object_id = ${input.fileId}
+        page.source_file_public_id = ${input.fileId}
+        OR page.object_id = ${input.fileId}
         OR focowiki.public_generated_file_id(
           ${input.knowledgeBaseId},
-          entry.logical_path
+          page.logical_path
         ) = ${input.fileId}
       )
-    ORDER BY entry.ordinal
+    ORDER BY page.logical_path COLLATE "C"
     LIMIT 1
   `;
   return rows[0] ?? null;
@@ -46,43 +51,146 @@ export async function listStorageVnextRelationships(
     cursor: string | null;
   }
 ) {
-  const cursor = decodeRelationshipCursor(input.cursor);
+  const cursor = decodeRelationshipCursor(input.cursor, input);
+  const rawLimit = input.limit * MAX_RELATION_KINDS_PER_TARGET + 1;
   const rows = await sql<StorageVnextOpenApiRelationship[]>`
-    WITH seeds AS (
-      SELECT public_id FROM focowiki.graph_nodes
-      WHERE knowledge_base_id = ${input.knowledgeBaseId}
-        AND source_file_public_id = ${input.sourceFileId}
+    WITH eligible AS MATERIALIZED (
+      SELECT relation.public_id,
+             CASE WHEN relation.first_source_file_public_id = ${input.sourceFileId}
+               THEN relation.second_source_file_public_id
+               ELSE relation.first_source_file_public_id END AS source_file_public_id,
+             relation.relation_kind AS relation,
+             page.logical_path, presentation.title,
+             CASE
+               WHEN relation.direction = 'bidirectional' THEN true
+               WHEN relation.direction = 'first_to_second'
+                 THEN relation.first_source_file_public_id = ${input.sourceFileId}
+               ELSE relation.second_source_file_public_id = ${input.sourceFileId}
+             END AS has_outgoing,
+             CASE
+               WHEN relation.direction = 'bidirectional' THEN true
+               WHEN relation.direction = 'first_to_second'
+                 THEN relation.second_source_file_public_id = ${input.sourceFileId}
+               ELSE relation.first_source_file_public_id = ${input.sourceFileId}
+             END AS has_incoming,
+             max(evidence.evidence->>'reason') AS reason
+      FROM focowiki.canonical_file_relations relation
+      JOIN focowiki.relation_directed_evidence evidence
+        ON evidence.knowledge_base_id = relation.knowledge_base_id
+       AND evidence.pair_public_id = relation.pair_public_id
+       AND evidence.active AND evidence.retired_at IS NULL
+      JOIN focowiki.source_file_active_revisions first_active
+        ON first_active.knowledge_base_id = relation.knowledge_base_id
+       AND first_active.source_file_public_id
+         = relation.first_source_file_public_id
+       AND first_active.active_source_revision_public_id
+         = relation.first_source_revision_public_id
+      JOIN focowiki.source_file_active_revisions second_active
+        ON second_active.knowledge_base_id = relation.knowledge_base_id
+       AND second_active.source_file_public_id
+         = relation.second_source_file_public_id
+       AND second_active.active_source_revision_public_id
+         = relation.second_source_revision_public_id
+      JOIN focowiki.source_file_active_revisions active
+        ON active.knowledge_base_id = relation.knowledge_base_id
+       AND active.source_file_public_id = CASE
+         WHEN relation.first_source_file_public_id = ${input.sourceFileId}
+           THEN relation.second_source_file_public_id
+         ELSE relation.first_source_file_public_id END
+       AND active.active_source_revision_public_id IS NOT NULL
+      JOIN focowiki.source_revision_presentations presentation
+        ON presentation.knowledge_base_id = active.knowledge_base_id
+       AND presentation.source_file_public_id = active.source_file_public_id
+       AND presentation.source_revision_public_id
+         = active.active_source_revision_public_id
+      JOIN focowiki.generated_page_heads page
+        ON page.knowledge_base_id = active.knowledge_base_id
+       AND page.source_file_public_id = active.source_file_public_id
+       AND page.source_revision_public_id = active.active_source_revision_public_id
+       AND page.entry_kind = 'source'
+      WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
+        AND relation.active AND relation.retired_at IS NULL
+        AND (${input.sourceFileId} IN (
+          relation.first_source_file_public_id,
+          relation.second_source_file_public_id
+        ))
+        AND (${cursor}::text IS NULL OR (CASE
+          WHEN relation.first_source_file_public_id = ${input.sourceFileId}
+            THEN relation.second_source_file_public_id
+          ELSE relation.first_source_file_public_id
+        END) COLLATE "C" > ${cursor} COLLATE "C")
+      GROUP BY relation.public_id, relation.first_source_file_public_id,
+               relation.second_source_file_public_id, relation.relation_kind,
+               relation.direction,
+               page.logical_path, presentation.title
+      ORDER BY (CASE
+        WHEN relation.first_source_file_public_id = ${input.sourceFileId}
+          THEN relation.second_source_file_public_id
+        ELSE relation.first_source_file_public_id
+      END) COLLATE "C",
+               relation.public_id COLLATE "C"
+      LIMIT ${rawLimit}
     )
-    SELECT edge.public_id, related.source_file_public_id, generated.logical_path,
-           related.label AS title, edge.relation, edge.weight, edge.reason,
+    SELECT eligible.public_id, eligible.source_file_public_id,
+           eligible.logical_path, eligible.title,
+           eligible.relation, 1::double precision AS weight,
+           eligible.reason,
            ${input.sourceFileId}::text AS from_source_file_public_id,
            1::integer AS relationship_depth,
-           CASE WHEN edge.from_node_public_id IN (SELECT public_id FROM seeds)
-             THEN 'outgoing' ELSE 'incoming' END AS direction
-    FROM focowiki.graph_edges edge
-    JOIN focowiki.graph_nodes related
-      ON related.knowledge_base_id = edge.knowledge_base_id
-     AND related.public_id = CASE
-       WHEN edge.from_node_public_id IN (SELECT public_id FROM seeds)
-         THEN edge.to_node_public_id ELSE edge.from_node_public_id END
-    JOIN focowiki.release_roots root
-      ON root.knowledge_base_id = related.knowledge_base_id AND root.root_role = 'active'
-    JOIN LATERAL focowiki.resolve_release_catalog(root.public_id) generated
-      ON generated.source_file_public_id = related.source_file_public_id
-    WHERE edge.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (edge.from_node_public_id IN (SELECT public_id FROM seeds)
-        OR edge.to_node_public_id IN (SELECT public_id FROM seeds))
-      AND (${cursor}::text IS NULL OR edge.public_id COLLATE "C" > ${cursor} COLLATE "C")
-    ORDER BY edge.public_id COLLATE "C"
-    LIMIT ${input.limit + 1}
+           CASE WHEN eligible.has_outgoing AND eligible.has_incoming
+             THEN 'bidirectional'
+             WHEN eligible.has_outgoing THEN 'outgoing'
+             ELSE 'incoming' END AS direction
+    FROM eligible
+    ORDER BY eligible.source_file_public_id COLLATE "C",
+             eligible.public_id COLLATE "C"
   `;
-  const pageRows = rows.slice(0, input.limit);
+  const collapsed = collapseStorageVnextRelationships(rows);
+  const pageRows = collapsed.slice(0, input.limit);
   return {
     items: pageRows,
-    nextCursor: rows.length > input.limit
-      ? encodeRelationshipCursor(pageRows.at(-1)!.public_id)
+    nextCursor: collapsed.length > input.limit
+      ? encodeRelationshipCursor({
+          knowledgeBaseId: input.knowledgeBaseId,
+          sourceFileId: input.sourceFileId,
+          targetSourceFileId: pageRows.at(-1)!.source_file_public_id
+        })
       : null
   };
+}
+
+export function collapseStorageVnextRelationships(
+  rows: readonly StorageVnextOpenApiRelationship[]
+): StorageVnextOpenApiRelationship[] {
+  const grouped = new Map<string, {
+    selected: StorageVnextOpenApiRelationship;
+    directions: Set<"incoming" | "outgoing">;
+  }>();
+  for (const row of rows) {
+    const current = grouped.get(row.source_file_public_id);
+    const directions = current?.directions ?? new Set<"incoming" | "outgoing">();
+    if (row.direction === "bidirectional") {
+      directions.add("incoming");
+      directions.add("outgoing");
+    } else {
+      directions.add(row.direction);
+    }
+    const selected = !current || relationshipPresentationPriority(row)
+      > relationshipPresentationPriority(current.selected)
+      ? row
+      : current.selected;
+    grouped.set(row.source_file_public_id, { selected, directions });
+  }
+  return [...grouped.values()].map(({ selected, directions }) => ({
+    ...selected,
+    direction: directions.size === 2
+      ? "bidirectional"
+      : directions.has("outgoing") ? "outgoing" : "incoming"
+  }));
+}
+
+function relationshipPresentationPriority(row: StorageVnextOpenApiRelationship) {
+  return row.relation === "related" ? 2 : 1;
 }
 
 export async function listStorageVnextSearchGraphContexts(
@@ -110,70 +218,140 @@ export async function listStorageVnextSearchGraphContexts(
     relation: string | null;
     weight: number | string | null;
     reason: string | null;
-    direction: "incoming" | "outgoing" | null;
+    direction: "incoming" | "outgoing" | "bidirectional" | null;
   };
   const rows = await sql<SearchRelationshipRow[]>`
     WITH RECURSIVE seeds AS (
-      SELECT node.public_id AS seed_node_public_id,
-             node.source_file_public_id AS seed_source_file_public_id
-      FROM focowiki.graph_nodes node
-      WHERE node.knowledge_base_id = ${input.knowledgeBaseId}
-        AND node.source_file_public_id = ANY(${sourceFileIds}::text[])
+      SELECT active.source_file_public_id AS seed_node_public_id,
+             active.source_file_public_id AS seed_source_file_public_id
+      FROM focowiki.source_file_active_revisions active
+      JOIN focowiki.generated_page_heads page
+        ON page.knowledge_base_id = active.knowledge_base_id
+       AND page.source_file_public_id = active.source_file_public_id
+       AND page.source_revision_public_id = active.active_source_revision_public_id
+       AND page.entry_kind = 'source'
+      WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
+        AND active.active_source_revision_public_id IS NOT NULL
+        AND active.source_file_public_id = ANY(${sourceFileIds}::text[])
     ), walk AS (
       SELECT seed.seed_source_file_public_id, seed.seed_node_public_id,
-             seed.seed_node_public_id AS current_node_public_id,
-             seed.seed_node_public_id AS from_node_public_id,
+             seed.seed_source_file_public_id AS current_source_file_public_id,
+             seed.seed_source_file_public_id AS from_source_file_public_id,
              0::integer AS relationship_depth,
-             ARRAY[seed.seed_node_public_id]::text[] AS visited_node_public_ids,
+             ARRAY[seed.seed_source_file_public_id]::text[]
+               AS visited_source_file_public_ids,
              NULL::text AS public_id, NULL::text AS relation,
              NULL::double precision AS weight, NULL::text AS reason,
              NULL::text AS direction
       FROM seeds seed
       UNION ALL
       SELECT walk.seed_source_file_public_id, walk.seed_node_public_id,
-             step.next_node_public_id, walk.current_node_public_id,
+             step.next_source_file_public_id,
+             walk.current_source_file_public_id,
              walk.relationship_depth + 1,
-             walk.visited_node_public_ids || step.next_node_public_id,
+             walk.visited_source_file_public_ids || step.next_source_file_public_id,
              step.public_id, step.relation, step.weight, step.reason,
              step.direction
       FROM walk
       CROSS JOIN LATERAL (
-        SELECT edge.public_id, edge.relation, edge.weight, edge.reason,
-               CASE WHEN edge.from_node_public_id = walk.current_node_public_id
-                 THEN edge.to_node_public_id ELSE edge.from_node_public_id
-               END AS next_node_public_id,
-               CASE WHEN edge.from_node_public_id = walk.current_node_public_id
-                 THEN 'outgoing' ELSE 'incoming' END AS direction
-        FROM focowiki.graph_edges edge
-        WHERE edge.knowledge_base_id = ${input.knowledgeBaseId}
-          AND (edge.from_node_public_id = walk.current_node_public_id
-            OR edge.to_node_public_id = walk.current_node_public_id)
+        SELECT relation.public_id, relation.relation_kind AS relation,
+               1::double precision AS weight,
+               max(evidence.evidence->>'reason') AS reason,
+               CASE
+                 WHEN relation.first_source_file_public_id
+                   = walk.current_source_file_public_id
+                   THEN relation.second_source_file_public_id
+                 ELSE relation.first_source_file_public_id
+               END AS next_source_file_public_id,
+               CASE
+                 WHEN relation.direction = 'bidirectional' THEN 'bidirectional'
+                 WHEN relation.direction = 'first_to_second'
+                   AND relation.first_source_file_public_id
+                     = walk.current_source_file_public_id
+                   THEN 'outgoing'
+                 WHEN relation.direction = 'second_to_first'
+                   AND relation.second_source_file_public_id
+                     = walk.current_source_file_public_id
+                   THEN 'outgoing'
+                 ELSE 'incoming'
+               END AS direction
+        FROM focowiki.canonical_file_relations relation
+        JOIN focowiki.relation_directed_evidence evidence
+          ON evidence.knowledge_base_id = relation.knowledge_base_id
+         AND evidence.pair_public_id = relation.pair_public_id
+         AND evidence.active AND evidence.retired_at IS NULL
+        JOIN focowiki.source_file_active_revisions first_active
+          ON first_active.knowledge_base_id = relation.knowledge_base_id
+         AND first_active.source_file_public_id
+           = relation.first_source_file_public_id
+         AND first_active.active_source_revision_public_id
+           = relation.first_source_revision_public_id
+        JOIN focowiki.source_file_active_revisions second_active
+          ON second_active.knowledge_base_id = relation.knowledge_base_id
+         AND second_active.source_file_public_id
+           = relation.second_source_file_public_id
+         AND second_active.active_source_revision_public_id
+           = relation.second_source_revision_public_id
+        JOIN focowiki.source_file_active_revisions target
+          ON target.knowledge_base_id = relation.knowledge_base_id
+         AND target.source_file_public_id = CASE
+           WHEN relation.first_source_file_public_id
+             = walk.current_source_file_public_id
+             THEN relation.second_source_file_public_id
+           ELSE relation.first_source_file_public_id END
+         AND target.active_source_revision_public_id IS NOT NULL
+        JOIN focowiki.generated_page_heads target_page
+          ON target_page.knowledge_base_id = target.knowledge_base_id
+         AND target_page.source_file_public_id = target.source_file_public_id
+         AND target_page.source_revision_public_id
+           = target.active_source_revision_public_id
+         AND target_page.entry_kind = 'source'
+        WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
+          AND relation.active AND relation.retired_at IS NULL
+          AND (relation.first_source_file_public_id
+            = walk.current_source_file_public_id
+            OR relation.second_source_file_public_id
+              = walk.current_source_file_public_id)
           AND NOT (CASE
-            WHEN edge.from_node_public_id = walk.current_node_public_id
-              THEN edge.to_node_public_id ELSE edge.from_node_public_id
-          END = ANY(walk.visited_node_public_ids))
-        ORDER BY edge.public_id COLLATE "C"
+            WHEN relation.first_source_file_public_id
+              = walk.current_source_file_public_id
+              THEN relation.second_source_file_public_id
+            ELSE relation.first_source_file_public_id
+          END = ANY(walk.visited_source_file_public_ids))
+        GROUP BY relation.public_id, relation.relation_kind,
+                 relation.first_source_file_public_id,
+                 relation.second_source_file_public_id,
+                 relation.direction
+        ORDER BY relation.public_id COLLATE "C"
         LIMIT ${input.fanoutPerNode ?? input.limitPerSource}
       ) step
       WHERE walk.relationship_depth < ${input.depth}
     ), ranked AS (
       SELECT walk.seed_source_file_public_id, walk.seed_node_public_id,
-             origin.source_file_public_id AS from_source_file_public_id,
+             walk.from_source_file_public_id,
              walk.relationship_depth, walk.public_id,
-             related.source_file_public_id,
-             related.logical_path, related.label AS title,
+             active.source_file_public_id,
+             page.logical_path, presentation.title,
              walk.relation, walk.weight, walk.reason, walk.direction,
              row_number() OVER (
                PARTITION BY walk.seed_source_file_public_id
                ORDER BY walk.relationship_depth, walk.public_id COLLATE "C"
              ) AS relation_ordinal
       FROM walk
-      JOIN focowiki.graph_nodes origin
-        ON origin.knowledge_base_id = ${input.knowledgeBaseId}
-       AND origin.public_id = walk.from_node_public_id
-      JOIN focowiki.graph_nodes related
-        ON related.knowledge_base_id = ${input.knowledgeBaseId}
-       AND related.public_id = walk.current_node_public_id
+      JOIN focowiki.source_file_active_revisions active
+        ON active.knowledge_base_id = ${input.knowledgeBaseId}
+       AND active.source_file_public_id = walk.current_source_file_public_id
+       AND active.active_source_revision_public_id IS NOT NULL
+      JOIN focowiki.source_revision_presentations presentation
+        ON presentation.knowledge_base_id = active.knowledge_base_id
+       AND presentation.source_file_public_id = active.source_file_public_id
+       AND presentation.source_revision_public_id
+         = active.active_source_revision_public_id
+      JOIN focowiki.generated_page_heads page
+        ON page.knowledge_base_id = active.knowledge_base_id
+       AND page.source_file_public_id = active.source_file_public_id
+       AND page.source_revision_public_id = active.active_source_revision_public_id
+       AND page.entry_kind = 'source'
       WHERE walk.public_id IS NOT NULL
     )
     SELECT seed.seed_source_file_public_id, seed.seed_node_public_id,
@@ -261,11 +439,35 @@ export async function readStorageVnextGraphSearchSummary(
     indexed_document_count: number | string;
     indexed_relationship_count: number | string;
   }>>`
+    WITH active_sources AS MATERIALIZED (
+      SELECT active.source_file_public_id
+      FROM focowiki.source_file_active_revisions active
+      JOIN focowiki.generated_page_heads page
+        ON page.knowledge_base_id = active.knowledge_base_id
+       AND page.source_file_public_id = active.source_file_public_id
+       AND page.source_revision_public_id = active.active_source_revision_public_id
+       AND page.entry_kind = 'source'
+      WHERE active.knowledge_base_id = ${knowledgeBaseId}
+        AND active.active_source_revision_public_id IS NOT NULL
+    )
     SELECT
-      (SELECT count(*) FROM focowiki.graph_nodes
-       WHERE knowledge_base_id = ${knowledgeBaseId}) AS indexed_document_count,
-      (SELECT count(*) FROM focowiki.graph_edges
-       WHERE knowledge_base_id = ${knowledgeBaseId}) AS indexed_relationship_count
+      (SELECT count(*) FROM active_sources) AS indexed_document_count,
+      (SELECT count(*) FROM focowiki.canonical_file_relations relation
+       WHERE relation.knowledge_base_id = ${knowledgeBaseId}
+         AND relation.active AND relation.retired_at IS NULL
+         AND relation.first_source_file_public_id IN (
+           SELECT source_file_public_id FROM active_sources
+         )
+         AND relation.second_source_file_public_id IN (
+           SELECT source_file_public_id FROM active_sources
+         )
+         AND EXISTS (
+           SELECT 1 FROM focowiki.relation_directed_evidence evidence
+           WHERE evidence.knowledge_base_id = relation.knowledge_base_id
+             AND evidence.pair_public_id = relation.pair_public_id
+             AND evidence.active AND evidence.retired_at IS NULL
+         )
+      ) AS indexed_relationship_count
   `;
   return {
     indexedDocumentCount: safeCount(rows[0]?.indexed_document_count ?? 0),
@@ -336,47 +538,48 @@ export async function resolveStorageVnextGraphSeed(
   sql: DatabaseClient,
   input: {
     knowledgeBaseId: string;
-    fileId: string | null;
-    nodeId: string | null;
-    edgeId: string | null;
-    query: string | null;
+    fileId: string;
   }
 ) {
-  if (input.fileId) return { sourceFileId: input.fileId };
-  const normalizedQuery = input.query?.trim() || null;
-  const rows = await sql<Array<{ source_file_public_id: string }>>`
-    SELECT node.source_file_public_id
-    FROM focowiki.graph_nodes node
-    LEFT JOIN focowiki.graph_edges edge
-      ON edge.knowledge_base_id = node.knowledge_base_id
-     AND (edge.from_node_public_id = node.public_id OR edge.to_node_public_id = node.public_id)
-    WHERE node.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (${input.nodeId}::text IS NULL OR node.public_id = ${input.nodeId})
-      AND (${input.edgeId}::text IS NULL OR edge.public_id = ${input.edgeId})
-      AND (${normalizedQuery}::text IS NULL OR strpos(
-        lower(node.label || ' ' || node.logical_path), lower(${normalizedQuery})
-      ) > 0)
-    ORDER BY node.public_id
-    LIMIT 1
-  `;
-  return rows[0] ? { sourceFileId: rows[0].source_file_public_id } : null;
+  const identity = await findStorageVnextGeneratedIdentity(sql, input);
+  return identity?.source_file_public_id
+    ? { sourceFileId: identity.source_file_public_id }
+    : null;
 }
 
-function encodeRelationshipCursor(publicId: string) {
-  return Buffer.from(JSON.stringify({ version: 1, publicId })).toString("base64url");
+export function encodeRelationshipCursor(input: {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  targetSourceFileId: string;
+}) {
+  return Buffer.from(JSON.stringify({
+    version: 3,
+    knowledgeBaseId: input.knowledgeBaseId,
+    sourceFileId: input.sourceFileId,
+    targetSourceFileId: input.targetSourceFileId
+  })).toString("base64url");
 }
 
-function decodeRelationshipCursor(cursor: string | null) {
+export function decodeRelationshipCursor(
+  cursor: string | null,
+  input: { knowledgeBaseId: string; sourceFileId: string }
+) {
   if (!cursor) return null;
   try {
     const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
       version?: number;
-      publicId?: string;
+      knowledgeBaseId?: string;
+      sourceFileId?: string;
+      targetSourceFileId?: string;
     };
-    if (value.version !== 1 || typeof value.publicId !== "string" || !value.publicId) {
+    if (value.version !== 3
+      || value.knowledgeBaseId !== input.knowledgeBaseId
+      || value.sourceFileId !== input.sourceFileId
+      || typeof value.targetSourceFileId !== "string"
+      || !value.targetSourceFileId) {
       throw new Error("invalid");
     }
-    return value.publicId;
+    return value.targetSourceFileId;
   } catch {
     throw validationError("Pagination cursor is invalid.", { field: "cursor" });
   }

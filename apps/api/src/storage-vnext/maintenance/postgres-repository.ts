@@ -38,7 +38,7 @@ type ActiveOperationRow = {
 };
 
 type ForegroundWorkRow = {
-  work_kind: "upload" | "mutation" | "publication" | "deletion";
+  work_kind: "upload" | "mutation" | "deletion";
 };
 
 type ClaimRow = {
@@ -46,6 +46,7 @@ type ClaimRow = {
   operation_public_id: string;
   search_provider_kind: SearchProviderKind | null;
   state: "queued" | "running" | "retry";
+  operation_state: "accepted" | "validating" | "processing" | "superseded";
   attempt_count: number | string;
   lease_owner: string | null;
   safe_error_code: string | null;
@@ -125,7 +126,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
             ON operation.knowledge_base_id = work.knowledge_base_id
            AND operation.public_id = work.operation_public_id
           WHERE work.knowledge_base_id = ${input.knowledgeBaseId}
-            AND work.work_kind IN ('upload', 'mutation', 'publication', 'deletion')
+            AND work.work_kind IN ('upload', 'mutation', 'deletion')
             AND work.state IN ('queued', 'running', 'retry')
           ORDER BY CASE WHEN work.work_kind = 'deletion' THEN 0 ELSE 1 END,
                    work.operation_public_id
@@ -205,9 +206,17 @@ export function createPostgresStorageVnextMaintenanceRepository(
             WHERE work.work_kind = 'maintenance'
               AND work.search_provider_kind = ${input.searchProviderKind}
               AND work.state IN ('queued', 'retry')
-              AND (work.next_attempt_at IS NULL OR work.next_attempt_at <= now())
               AND operation.operation_kind = 'maintenance'
-              AND operation.state IN ('accepted', 'validating', 'processing', 'publishing')
+              AND (
+                (
+                  operation.state IN ('accepted', 'validating', 'processing')
+                  AND (
+                    work.next_attempt_at IS NULL
+                    OR work.next_attempt_at <= now()
+                  )
+                )
+                OR operation.state = 'superseded'
+              )
             ORDER BY work.next_attempt_at NULLS FIRST,
                      work.updated_at,
                      work.operation_public_id
@@ -226,7 +235,11 @@ export function createPostgresStorageVnextMaintenanceRepository(
                       work.state, work.attempt_count, work.lease_owner,
                       work.safe_error_code, work.checkpoint
           )
-          SELECT * FROM claimed
+          SELECT claimed.*, operation.state AS operation_state
+          FROM claimed
+          JOIN focowiki.operations operation
+            ON operation.knowledge_base_id = claimed.knowledge_base_id
+           AND operation.public_id = claimed.operation_public_id
         `;
         const row = rows[0];
         if (!row) return null;
@@ -235,6 +248,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
           SET state = 'processing', updated_at = now()
           WHERE public_id = ${row.operation_public_id}
             AND knowledge_base_id = ${row.knowledge_base_id}
+            AND state IN ('accepted', 'validating', 'processing')
         `;
         return mapClaim(row);
       });
@@ -244,7 +258,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
       assertId(input.operationPublicId);
       assertId(input.leaseOwner);
       validateCheckpoint(input.checkpoint);
-      await sql.begin(async (transaction) => {
+      return sql.begin(async (transaction) => {
         const terminal = await transaction<Array<{ public_id: string }>>`
           SELECT public_id FROM focowiki.operation_results
           WHERE public_id = ${input.operationPublicId}
@@ -255,7 +269,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
             WHERE operation_public_id = ${input.operationPublicId}
               AND work_kind = 'maintenance'
           `;
-          return;
+          return "terminal" as const;
         }
         const rows = await transaction<Array<{ operation_public_id: string }>>`
           UPDATE focowiki.operation_work_items
@@ -275,6 +289,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
           WHERE public_id = ${input.operationPublicId}
             AND operation_kind = 'maintenance'
         `;
+        return "saved" as const;
       });
     },
 
@@ -421,7 +436,9 @@ export function createPostgresStorageVnextMaintenanceRepository(
              AND operation.public_id = work.operation_public_id
             WHERE work.work_kind = 'maintenance' AND work.state = 'running'
               AND work.lease_expires_at <= ${input.expiredBefore}
-              AND operation.state IN ('accepted', 'validating', 'processing', 'publishing')
+              AND operation.state IN (
+                'accepted', 'validating', 'processing', 'superseded'
+              )
             ORDER BY work.lease_expires_at, work.operation_public_id
             FOR UPDATE OF work SKIP LOCKED
             LIMIT ${input.limit}
@@ -443,6 +460,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
             UPDATE focowiki.operations
             SET state = 'accepted', updated_at = now()
             WHERE public_id = ANY(${operationPublicIds})
+              AND state IN ('accepted', 'validating', 'processing')
           `;
         }
         return rows.length;
@@ -471,7 +489,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
             AND operation.public_id = ${input.operationPublicId}
             AND operation.operation_kind = 'maintenance'
             AND operation.state IN (
-              'accepted', 'validating', 'processing', 'publishing'
+              'accepted', 'validating', 'processing'
             )
           FOR UPDATE OF operation, work
         `;
@@ -526,7 +544,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
           AND work.work_kind = 'maintenance'
           AND work.state IN ('queued', 'running', 'retry')
           AND operation.operation_kind = 'maintenance'
-          AND operation.state IN ('accepted', 'validating', 'processing', 'publishing')
+          AND operation.state IN ('accepted', 'validating', 'processing')
         ORDER BY operation.created_at DESC, operation.public_id DESC
         LIMIT 1
       `;
@@ -546,11 +564,13 @@ export function createPostgresStorageVnextMaintenanceRepository(
         });
       }
       const profileRows = await sql<Array<{
-        navigation_profile_version: number | string;
-        provider_kind: SearchProviderKind;
+        provider_kind: SearchProviderKind | null;
+        projection_ready: boolean;
         semantic_maintenance_required: boolean;
+        document_projection_missing: boolean;
       }>>`
-        SELECT root.navigation_profile_version, search.provider_kind,
+        SELECT search.provider_kind,
+               coalesce(search.state = 'active', false) AS projection_ready,
                (
                  generation.public_id IS NULL
                  OR semantic_contract.public_id IS NULL
@@ -583,16 +603,42 @@ export function createPostgresStorageVnextMaintenanceRepository(
                     IS DISTINCT FROM ${SEMANTIC_VECTOR_SCHEMA_VERSION}
                  OR semantic_contract.search_provider_kind
                     IS DISTINCT FROM ${options.selectedSearchProviderKind}
-               ) AS semantic_maintenance_required
-        FROM focowiki.active_snapshots snapshot
-        JOIN focowiki.release_roots root
-          ON root.knowledge_base_id = snapshot.knowledge_base_id
-         AND root.public_id = snapshot.release_root_public_id
-        JOIN focowiki.search_projections search
-          ON search.knowledge_base_id = snapshot.knowledge_base_id
-         AND search.public_id = snapshot.search_projection_public_id
+               ) AS semantic_maintenance_required,
+               EXISTS (
+                 SELECT 1
+                 FROM focowiki.source_files source
+                 JOIN focowiki.source_file_active_revisions active
+                   ON active.knowledge_base_id = source.knowledge_base_id
+                  AND active.source_file_public_id = source.public_id
+                 WHERE source.knowledge_base_id = knowledge_base.public_id
+                   AND source.deleted_at IS NULL
+                   AND active.active_source_revision_public_id IS NOT NULL
+                   AND (
+                     NOT EXISTS (
+                       SELECT 1 FROM focowiki.generated_page_heads page
+                       WHERE page.knowledge_base_id = source.knowledge_base_id
+                         AND page.source_file_public_id = source.public_id
+                         AND page.source_revision_public_id
+                           = active.active_source_revision_public_id
+                         AND page.entry_kind = 'source'
+                     )
+                     OR NOT EXISTS (
+                       SELECT 1 FROM focowiki.search_document_owners owner
+                       WHERE owner.knowledge_base_id = source.knowledge_base_id
+                         AND owner.source_file_public_id = source.public_id
+                         AND owner.source_revision_public_id
+                           = active.active_source_revision_public_id
+                         AND owner.provider_kind = ${options.selectedSearchProviderKind}
+                         AND owner.state = 'active'
+                     )
+                   )
+               ) AS document_projection_missing
+        FROM focowiki.knowledge_bases knowledge_base
+        LEFT JOIN focowiki.search_projections search
+          ON search.knowledge_base_id = knowledge_base.public_id
+         AND search.provider_kind = ${options.selectedSearchProviderKind}
         LEFT JOIN focowiki.semantic_generations generation
-          ON generation.knowledge_base_id = snapshot.knowledge_base_id
+          ON generation.knowledge_base_id = knowledge_base.public_id
          AND generation.generation_role = 'active'
          AND generation.state = 'active'
          AND generation.deleted_at IS NULL
@@ -625,17 +671,16 @@ export function createPostgresStorageVnextMaintenanceRepository(
             AND configuration.deleted_at IS NULL
             AND revision.validation_status = 'valid'
         ) active_embedding ON true
-        WHERE snapshot.knowledge_base_id = ${input.knowledgeBaseId}
+        WHERE knowledge_base.public_id = ${input.knowledgeBaseId}
+          AND knowledge_base.deleted_at IS NULL
         LIMIT 1
       `;
-      const profileMaintenanceRequired = Number(
-        profileRows[0]?.navigation_profile_version ?? 1
-      ) < 1 || (
-        profileRows[0] !== undefined
-        && (
-          profileRows[0].provider_kind !== options.selectedSearchProviderKind
-          || profileRows[0].semantic_maintenance_required
-        )
+      const profile = profileRows[0];
+      const profileMaintenanceRequired = profile !== undefined && (
+        !profile.projection_ready
+        || profile.provider_kind !== options.selectedSearchProviderKind
+        || profile.semantic_maintenance_required
+        || profile.document_projection_missing
       );
       const terminalRows = await sql<TerminalStatusRow[]>`
         SELECT result.public_id AS operation_public_id, result.terminal_state,
@@ -691,7 +736,7 @@ async function readActiveMaintenance(
     FROM focowiki.operations
     WHERE knowledge_base_id = ${knowledgeBaseId}
       AND operation_kind = 'maintenance'
-      AND state IN ('accepted', 'validating', 'processing', 'publishing')
+      AND state IN ('accepted', 'validating', 'processing')
     ORDER BY created_at, public_id
     LIMIT 1
   `;
@@ -716,7 +761,7 @@ function mapClaim(row: ClaimRow): StorageVnextMaintenanceClaim {
   return {
     knowledgeBaseId: row.knowledge_base_id,
     operationPublicId: row.operation_public_id,
-    state: row.state,
+    state: row.operation_state === "superseded" ? "superseded" : row.state,
     attempt: toSafeInteger(row.attempt_count),
     maxAttempts: checkpoint.maxAttempts,
     leaseOwner: row.lease_owner,
@@ -808,8 +853,12 @@ function validateSemanticAdoption(
     || !value.target
     || value.target.searchProviderKind !== searchProviderKind
     || value.target.knowledgeBaseId === ""
-    || typeof value.stageSettings !== "object"
-    || value.stageSettings === null
+    || typeof value.runtimeSettingsRevisionPublicId !== "string"
+    || value.runtimeSettingsRevisionPublicId === ""
+    || Buffer.byteLength(value.runtimeSettingsRevisionPublicId) > 255
+    || !Number.isSafeInteger(value.maximumSourceBytes)
+    || value.maximumSourceBytes < 1
+    || value.maximumSourceBytes > 268_435_456
     || !Number.isSafeInteger(value.expectedPredecessorRevision)
     || value.expectedPredecessorRevision < 0
     || !Number.isSafeInteger(value.sourcePageSize)

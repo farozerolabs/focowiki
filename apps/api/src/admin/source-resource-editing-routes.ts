@@ -27,6 +27,7 @@ export function registerAdminSourceResourceEditingRoutes(
       if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       try {
+        const idempotencyKeyHeader = context.req.header("idempotency-key");
         const name = body.name === undefined ? undefined : readName(body.name);
         const description = readDescription(body.description);
         if (name === undefined && description === undefined) {
@@ -35,14 +36,20 @@ export function registerAdminSourceResourceEditingRoutes(
         const result = await services.application.updateKnowledgeBase({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           expectedResourceRevision: readRevision(context.req.header("if-match")),
+          ...(idempotencyKeyHeader === undefined
+            ? {}
+            : { idempotencyKey: readIdempotencyKey(idempotencyKeyHeader) }),
           ...(name === undefined ? {} : { name }),
           ...(description === undefined ? {} : { description })
         });
         if (!result.knowledgeBase) return conflict(context, "RESOURCE_REVISION_CONFLICT");
-        await audit(context, services, "knowledge_base_metadata_updated");
+        await audit(context, services, "knowledge_base_metadata_updated", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "knowledge_base",
+          targetPublicId: context.req.param("knowledgeBaseId")
+        });
         return context.json({
-          knowledgeBase: result.knowledgeBase,
-          publicationQueued: result.publicationQueued
+          knowledgeBase: result.knowledgeBase
         });
       } catch (error) {
         return mutationError(context, error);
@@ -99,7 +106,11 @@ export function registerAdminSourceResourceEditingRoutes(
           targetId: context.req.param("directoryId"),
           relativePath: readRelativePath(body.relativePath)
         });
-        await audit(context, services, "source_directory_move_accepted");
+        await audit(context, services, "source_directory_move_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_directory",
+          targetPublicId: context.req.param("directoryId")
+        });
         return context.json({ operation: operationResponse(result.operation) }, 202);
       } catch (error) {
         return mutationError(context, error);
@@ -125,10 +136,14 @@ export function registerAdminSourceResourceEditingRoutes(
           idempotencyKey: context.req.header("idempotency-key")?.trim() || null,
           expectedResourceRevision
         });
-        await audit(context, services, "source_directory_delete_accepted");
+        await audit(context, services, "source_directory_delete_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_directory",
+          targetPublicId: context.req.param("directoryId")
+        });
         return context.json({
           accepted: true,
-          operationId: result.operation.id,
+          operation: operationResponse(result.operation),
           directoryId: result.effectiveDirectoryId,
           affectedDirectoryCount: result.affectedDirectoryCount,
           affectedFileCount: result.affectedFileCount
@@ -174,7 +189,11 @@ export function registerAdminSourceResourceEditingRoutes(
           targetId: context.req.param("sourceFileId"),
           relativePath: readRelativePath(body.relativePath)
         });
-        await audit(context, services, "source_file_move_accepted");
+        await audit(context, services, "source_file_move_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: context.req.param("sourceFileId")
+        });
         return context.json({ operation: operationResponse(result.operation) }, 202);
       } catch (error) {
         return mutationError(context, error);
@@ -188,6 +207,24 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireWriteProtection,
     async (context) => {
       if (!services.application.available()) return unavailable(context);
+      if (!isMarkdownContentType(context.req.header("content-type"))) {
+        return context.json({
+          error: {
+            code: "UNSUPPORTED_MEDIA_TYPE",
+            messageKey: "errors.sourceContentTypeUnsupported"
+          }
+        }, 415);
+      }
+      const declaredLength = Number(context.req.header("content-length") ?? 0);
+      if (Number.isFinite(declaredLength)
+        && declaredLength > services.config.pagination.generatedContentMaxBytes) {
+        return context.json({
+          error: {
+            code: "RESOURCE_CONTENT_TOO_LARGE",
+            messageKey: "errors.sourceContentTooLarge"
+          }
+        }, 413);
+      }
       const bytes = new Uint8Array(await context.req.raw.arrayBuffer());
       if (bytes.byteLength === 0) return invalid(context, "errors.sourceContentRequired");
       try {
@@ -200,7 +237,11 @@ export function registerAdminSourceResourceEditingRoutes(
           bytes,
           ...(relativePath ? { relativePath } : {})
         });
-        await audit(context, services, "source_file_replacement_accepted");
+        await audit(context, services, "source_file_replacement_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: context.req.param("sourceFileId")
+        });
         return context.json({ operation: operationResponse(result.operation) }, 202);
       } catch (error) {
         return mutationError(context, error);
@@ -222,7 +263,11 @@ export function registerAdminSourceResourceEditingRoutes(
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           expectedResourceRevision: readRevision(context.req.header("if-match"))
         });
-        await audit(context, services, "source_file_delete_accepted");
+        await audit(context, services, "source_file_delete_accepted", {
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          targetKind: "source_file",
+          targetPublicId: sourceFileId
+        });
         return context.json({
           operation: operationResponse(result.operation),
           deletion: { sourceFileId }
@@ -247,7 +292,7 @@ export function registerAdminSourceResourceEditingRoutes(
         return mutationError(context, error);
       }
       const activeStates: ResourceOperationRecord["state"][] = [
-        "accepted", "validating", "processing", "publishing"
+        "accepted", "validating", "processing"
       ];
       try {
         const page = await services.application.listOperations({
@@ -306,7 +351,7 @@ function operationResponse(operation: ResourceOperationRecord) {
     candidateRelativePath: operation.candidateRelativePath ?? null,
     result: operation.result,
     errorCode: operation.errorCode,
-    retryGuidance: ["accepted", "validating", "processing", "publishing"].includes(operation.state)
+    retryGuidance: ["accepted", "validating", "processing"].includes(operation.state)
       ? "retry_after_short_delay"
       : null,
     createdAt: operation.createdAt,
@@ -318,12 +363,18 @@ function operationResponse(operation: ResourceOperationRecord) {
 async function audit(
   context: Parameters<MiddlewareHandler>[0],
   services: Parameters<typeof registerAdminSourceResourceEditingRoutes>[1],
-  eventType: string
+  eventType: string,
+  target: {
+    knowledgeBaseId?: string;
+    targetKind?: string;
+    targetPublicId?: string;
+  } = {}
 ) {
   await services.audit.record({
     context,
     eventType,
-    result: "success"
+    result: "success",
+    ...target
   });
 }
 
@@ -374,7 +425,7 @@ function readNullableId(value: string | undefined): string | null {
 function readOperationState(value: string | undefined): ResourceOperationRecord["state"] | undefined {
   if (!value) return undefined;
   const states: ResourceOperationRecord["state"][] = [
-    "accepted", "validating", "processing", "publishing", "completed", "failed", "cancelled", "superseded"
+    "accepted", "validating", "processing", "completed", "failed", "cancelled", "superseded"
   ];
   if (!states.includes(value as ResourceOperationRecord["state"])) throw new SourceResourceError("INVALID_RESOURCE_MUTATION");
   return value as ResourceOperationRecord["state"];
@@ -389,6 +440,14 @@ function mutationError(context: Parameters<MiddlewareHandler>[0], error: unknown
   }
   if (error.code === "INVALID_PAGINATION") return invalidPagination(context);
   if (error.code === "RESOURCE_NOT_FOUND") return notFound(context);
+  if (error.code === "RESOURCE_CONTENT_TOO_LARGE") {
+    return context.json({
+      error: {
+        code: error.code,
+        messageKey: "errors.sourceContentTooLarge"
+      }
+    }, 413);
+  }
   if (error.code === "INVALID_RESOURCE_MUTATION") return invalid(context, "errors.invalidResourceMutation");
   return conflict(context, error.code);
 }
@@ -397,11 +456,16 @@ function conflict(context: Parameters<MiddlewareHandler>[0], code: string): Resp
   const keys: Record<string, string> = {
     RESOURCE_REVISION_CONFLICT: "errors.resourceRevisionConflict",
     RESOURCE_PATH_CONFLICT: "errors.resourcePathConflict",
+    RESOURCE_CONTENT_UNCHANGED: "errors.sourceContentUnchanged",
     RESOURCE_BUSY: "errors.resourceBusy",
     RESOURCE_DELETING: "errors.resourceDeleting",
     IDEMPOTENCY_CONFLICT: "errors.idempotencyConflict"
   };
   return context.json({ error: { code, messageKey: keys[code] ?? "errors.editFailed" } }, 409);
+}
+
+function isMarkdownContentType(value: string | undefined): boolean {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
 }
 
 function invalid(context: Parameters<MiddlewareHandler>[0], messageKey: string): Response {

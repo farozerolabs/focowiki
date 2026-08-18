@@ -3,8 +3,6 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRuntimeSettingsRepository } from
   "../src/runtime-settings/repository.js";
-import { createPostgresStorageVnextWorkflowRepository } from
-  "../src/storage-vnext/workflow/postgres-repository.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
 
@@ -26,7 +24,6 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
   const admin = postgres(databaseConnectionUrl(connectionUrl, "postgres"), { max: 1 });
   const sql = postgres(databaseConnectionUrl(connectionUrl, databaseName), { max: 6 });
   const repository = createRuntimeSettingsRepository(sql);
-  const workflow = createPostgresStorageVnextWorkflowRepository(sql);
   let databaseCreated = false;
 
   beforeAll(async () => {
@@ -205,22 +202,150 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
       isActive: true,
       configurationRevision: created.configurationRevision
     });
+    const modelConfigurationRevision = created.configurationRevision;
+    if (typeof modelConfigurationRevision !== "number"
+      || !Number.isSafeInteger(modelConfigurationRevision)) {
+      throw new Error("Model configuration revision is missing");
+    }
 
     await sql`
       INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
       VALUES ('kb-model-running-work', 'Model running work', 1)
     `;
     await sql`
-      INSERT INTO focowiki.source_files (
-        public_id, knowledge_base_id, logical_path, normalized_path,
-        title, status, revision
+      INSERT INTO focowiki.knowledge_base_sequences (
+        knowledge_base_id, current_sequence
+      ) VALUES ('kb-model-running-work', 0)
+    `;
+    await sql`
+      INSERT INTO focowiki.embedding_configurations (
+        public_id, display_name, lifecycle_status, revision
+      ) VALUES ('embedding-model-running-work', 'Embedding', 'active', 1)
+    `;
+    await sql`
+      INSERT INTO focowiki.embedding_configuration_revisions (
+        public_id, configuration_public_id, revision_number,
+        authentication_mode, base_url, model_name, requested_dimension,
+        resolved_dimension, normalization, maximum_input_tokens, batch_size,
+        timeout_ms, retry_count, minimum_interval_ms, concurrency,
+        maximum_response_bytes, minimum_vector_relevance,
+        vector_producing_revision_public_id, validation_status,
+        validation_fingerprint_sha256, validated_at
       ) VALUES (
-        'file-model-running-work', 'kb-model-running-work',
-        'running.md', 'running.md', 'Running', 'processing', 1
+        'embedding-revision-model-running-work', 'embedding-model-running-work', 1,
+        'none', 'http://embedding.local/v1', 'embedding-model', 3, 3, 'l2',
+        8192, 16, 5000, 1, 0, 2, 1048576, 0.7,
+        'embedding-revision-model-running-work', 'valid', ${"d".repeat(64)}, now()
       )
     `;
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state, completed_at
+      ) VALUES (
+        'operation-semantic-model-running-work', 'kb-model-running-work',
+        'semantic_contract_bootstrap', 'completed', now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.semantic_generations (
+        public_id, knowledge_base_id, operation_public_id,
+        expected_predecessor_public_id, generation_role, state,
+        generation_model_configuration_public_id,
+        generation_model_configuration_revision,
+        extraction_contract_version, graph_schema_version,
+        prompt_contract_version, contract_fingerprint_sha256,
+        revision, activated_at
+      ) VALUES (
+        'semantic-generation-model-running-work', 'kb-model-running-work',
+        'operation-semantic-model-running-work', NULL, 'active', 'active',
+        ${created.id}, ${modelConfigurationRevision},
+        'extract-v1', 'graph-v1', 'prompt-v1', ${"e".repeat(64)}, 1, now()
+      )
+    `;
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.runtime_setting_revisions (
+          public_id, checksum_sha256, settings_values
+        ) VALUES (
+          'settings-model-running-work', ${"b".repeat(64)}, '{}'::jsonb
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.object_registrations (
+          object_id, storage_key, checksum_sha256, byte_count,
+          content_type, object_format, state, write_attempt_public_id, verified_at
+        ) VALUES (
+          'object-model-running-work', 'tests/running.md', ${"c".repeat(64)}, 10,
+          'text/markdown; charset=utf-8', 'source-markdown-v1', 'verified',
+          'write-model-running-work', now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_files (
+          public_id, knowledge_base_id, logical_path, normalized_path,
+          title, revision
+        ) VALUES (
+          'file-model-running-work', 'kb-model-running-work',
+          'running.md', 'running.md', 'Running', 1
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_revisions (
+          public_id, knowledge_base_id, source_file_public_id, object_id,
+          checksum_sha256, byte_count, content_type
+        ) VALUES (
+          'revision-model-running-work', 'kb-model-running-work',
+          'file-model-running-work', 'object-model-running-work',
+          ${"c".repeat(64)}, 10, 'text/markdown; charset=utf-8'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_file_active_revisions (
+          knowledge_base_id, source_file_public_id,
+          current_source_revision_public_id, active_source_revision_public_id
+        ) VALUES (
+          'kb-model-running-work', 'file-model-running-work',
+          'revision-model-running-work', NULL
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.operations (
+          public_id, knowledge_base_id, operation_kind, state,
+          target_kind, target_public_id
+        ) VALUES (
+          'operation-model-running-work', 'kb-model-running-work',
+          'source_processing', 'processing', 'source_file',
+          'file-model-running-work'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.document_processing_jobs (
+          public_id, knowledge_base_id, operation_public_id,
+          source_file_public_id, source_revision_public_id,
+          runtime_settings_revision_public_id,
+          generation_model_configuration_public_id,
+          generation_model_configuration_revision,
+          embedding_configuration_revision_public_id,
+          semantic_generation_public_id,
+          semantic_contract_version, state, attempt_count,
+          failure_count, total_attempt_count, maximum_attempts,
+          required_work_count, completed_work_count,
+          active_work_kinds, blocking_work_kind, retryable,
+          accepted_at, started_at
+        ) VALUES (
+          'document-job-model-running-work', 'kb-model-running-work',
+          'operation-model-running-work', 'file-model-running-work',
+          'revision-model-running-work', 'settings-model-running-work',
+          ${created.id}, ${modelConfigurationRevision},
+          'embedding-revision-model-running-work',
+          'semantic-generation-model-running-work',
+          'semantic-contract-v1', 'processing', 1,
+          0, 1, 3, 8, 0, ARRAY['first_layer']::text[], 'first_layer',
+          false, now(), now()
+        )
+      `;
+    });
     expect(await repository.countRunningModelInvocations(created.id)).toBe(1);
-    expect(await repository.countRunningSourceFileJobs()).toBe(1);
 
     const deleted = await repository.softDeleteModel(created.id);
     expect(deleted).toMatchObject({
@@ -290,139 +415,8 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
     });
   });
 
-  it("keeps accepted work on its revision while later work uses the new revision", async () => {
-    const first = await repository.upsertSetting({
-      key: "worker",
-      value: { sourceFileConcurrency: 2 },
-      source: "bootstrap"
-    });
-    const firstRevision = await repository.getCurrentRevision();
-    expect(firstRevision).not.toBeNull();
-    expect(first.version).toBe(firstRevision?.version);
-
-    await sql`
-      INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
-      VALUES ('kb-settings-revision-isolation', 'Settings revision isolation', 1)
-    `;
-    await sql`
-      INSERT INTO focowiki.release_roots (
-        public_id, knowledge_base_id, root_role,
-        manifest_checksum_sha256, revision
-      ) VALUES (
-        'root-settings-revision-active', 'kb-settings-revision-isolation',
-        'active', ${"a".repeat(64)}, 1
-      )
-    `;
-    await sql`
-      INSERT INTO focowiki.search_projections (
-        public_id, knowledge_base_id, projection_role, provider_kind,
-        provider_index_uid,
-        schema_checksum_sha256, settings_checksum_sha256,
-        document_checksum_sha256, revision, document_count, state
-      ) VALUES (
-        'search-settings-revision-active', 'kb-settings-revision-isolation',
-        'active', 'meilisearch',
-        'focowiki_kb_settings_revision_isolation_active',
-        ${"b".repeat(64)}, ${"c".repeat(64)}, ${"d".repeat(64)}, 1, 2, 'ready'
-      )
-    `;
-    await workflow.enqueue(liveWork({
-      publicId: "operation-before-settings-update",
-      settingsRevisionPublicId: firstRevision!.publicId,
-      idempotencyKey: "before-settings-update"
-    }));
-
-    await repository.upsertSetting({
-      key: "search",
-      value: { maxInFlightTasks: 4 },
-      source: "admin"
-    });
-    const secondRevision = await repository.getCurrentRevision();
-    expect(secondRevision?.version).toBe((firstRevision?.version ?? 0) + 1);
-    await workflow.enqueue(liveWork({
-      publicId: "operation-after-settings-update",
-      settingsRevisionPublicId: secondRevision!.publicId,
-      idempotencyKey: "after-settings-update"
-    }));
-
-    const claimed = await workflow.claim({
-      kinds: ["source"],
-      owner: "settings-revision-worker",
-      limit: 2,
-      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
-    });
-    expect(claimed).toHaveLength(2);
-    expect(Object.fromEntries(claimed.map((work) => [
-      work.publicId,
-      work.settingsRevisionPublicId
-    ]))).toEqual({
-      "operation-before-settings-update": firstRevision!.publicId,
-      "operation-after-settings-update": secondRevision!.publicId
-    });
-
-    const authority = await sql<Array<{
-      active_roots: number | string;
-      active_indexes: number | string;
-      candidate_indexes: number | string;
-      provider_index_uid: string;
-      document_count: number | string;
-    }>>`
-      SELECT
-        (SELECT count(*) FROM focowiki.release_roots
-          WHERE knowledge_base_id = 'kb-settings-revision-isolation'
-            AND root_role = 'active') AS active_roots,
-        (SELECT count(*) FROM focowiki.search_projections
-          WHERE knowledge_base_id = 'kb-settings-revision-isolation'
-            AND projection_role = 'active') AS active_indexes,
-        (SELECT count(*) FROM focowiki.search_projections
-          WHERE knowledge_base_id = 'kb-settings-revision-isolation'
-            AND projection_role = 'candidate') AS candidate_indexes,
-        projection.provider_index_uid,
-        projection.document_count
-      FROM focowiki.search_projections projection
-      WHERE projection.knowledge_base_id = 'kb-settings-revision-isolation'
-        AND projection.projection_role = 'active'
-    `;
-    expect(authority[0]).toMatchObject({
-      active_roots: "1",
-      active_indexes: "1",
-      candidate_indexes: "0",
-      provider_index_uid: "focowiki_kb_settings_revision_isolation_active",
-      document_count: "2"
-    });
-  });
 });
 
-function liveWork(input: {
-  publicId: string;
-  settingsRevisionPublicId: string;
-  idempotencyKey: string;
-}) {
-  return {
-    publicId: input.publicId,
-    knowledgeBaseId: "kb-settings-revision-isolation",
-    kind: "source" as const,
-    searchProviderKind: null,
-    state: "queued" as const,
-    operationRevision: 1,
-    settingsRevisionPublicId: input.settingsRevisionPublicId,
-    attempt: 0,
-    leaseOwner: null,
-    leaseExpiresAt: null,
-    nextAttemptAt: null,
-    safeErrorCode: null,
-    checkpoint: {},
-    idempotency: {
-      key: input.idempotencyKey,
-      requestHash: createHash(input.publicId),
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString()
-    }
-  };
-}
-
-function createHash(value: string): string {
-  return Buffer.from(value).toString("hex").padEnd(64, "0").slice(0, 64);
-}
 
 function databaseConnectionUrl(baseUrl: string, databaseName: string): string {
   const url = new URL(baseUrl);

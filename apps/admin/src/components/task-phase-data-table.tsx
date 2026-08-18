@@ -24,6 +24,7 @@ import {
   TableRow
 } from "@/components/ui/table";
 import type { SourceFileRecord } from "@/lib/admin-api";
+import { displaySourceFileActions } from "@/lib/source-file-actions";
 import type { SourceFileListFilters } from "@/lib/source-file-list-filters";
 import { isSourceFileTaskDeletionSelectable } from "@/lib/source-file-task-deletion";
 import { formatSourceFileTime } from "./task-table-formatters";
@@ -39,6 +40,7 @@ type SourceFileDataTableProps = {
   onToggleCurrentPageSelection: (checked: boolean) => void;
   onToggleSourceFileSelection: (sourceFileId: string, checked: boolean) => void;
   onRetrySourceFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
+  onReplaceSourceFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
   onOpenGeneratedFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
 };
 
@@ -67,6 +69,7 @@ export function SourceFileDataTable({
   onToggleCurrentPageSelection,
   onToggleSourceFileSelection,
   onRetrySourceFile,
+  onReplaceSourceFile,
   onOpenGeneratedFile
 }: SourceFileDataTableProps) {
   const { i18n, t } = useTranslation();
@@ -193,7 +196,11 @@ export function SourceFileDataTable({
                   >
                     {file.failure.code}
                   </button>
-                ) : t("tasks.noError")}
+                ) : file.retryingWorkKind && file.modelInvocationErrorCode ? (
+                  <span className="font-mono text-xs text-amber-700 dark:text-amber-400">
+                    {formatFileError(file, t)}
+                  </span>
+                ) : formatFileError(file, t)}
               </TableCell>
               <TableCell>
                 <SourceFileActions
@@ -201,6 +208,7 @@ export function SourceFileDataTable({
                   retrying={retryingSourceFileId === file.id}
                   onOpenGeneratedFile={onOpenGeneratedFile}
                   onRetrySourceFile={onRetrySourceFile}
+                  onReplaceSourceFile={onReplaceSourceFile}
                   onViewFailure={() => setFailureDetailFile(file)}
                 />
               </TableCell>
@@ -222,27 +230,29 @@ function SourceFileActions({
   retrying,
   onOpenGeneratedFile,
   onRetrySourceFile,
+  onReplaceSourceFile,
   onViewFailure
 }: {
   file: SourceFileRecord;
   retrying: boolean;
   onOpenGeneratedFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
   onRetrySourceFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
+  onReplaceSourceFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
   onViewFailure: () => void;
 }) {
   const { t } = useTranslation();
-  const actions = file.actions.flatMap((action) => {
+  const actions = displaySourceFileActions(file, retrying).flatMap((action) => {
     if (action.kind === "open_generated_file" && onOpenGeneratedFile) {
       return [{ ...action, label: t("tasks.openGeneratedFile"), handler: () => onOpenGeneratedFile(file) }];
     }
     if (action.kind === "view_failure_details") {
       return [{ ...action, label: t("tasks.failureDetails.open"), handler: onViewFailure }];
     }
-    if (action.kind === "retry_source_processing" && onRetrySourceFile) {
-      return [{ ...action, label: t("tasks.retryProcessing"), handler: () => onRetrySourceFile(file) }];
+    if (action.kind === "replace_source_content" && onReplaceSourceFile) {
+      return [{ ...action, label: t("tasks.correctSourceContent"), handler: () => onReplaceSourceFile(file) }];
     }
-    if (action.kind === "retry_publication" && onRetrySourceFile) {
-      return [{ ...action, label: t("tasks.retryPublication"), handler: () => onRetrySourceFile(file) }];
+    if (action.kind === "retry_document_processing" && onRetrySourceFile) {
+      return [{ ...action, label: t("tasks.retryProcessing"), handler: () => onRetrySourceFile(file) }];
     }
     return [];
   });
@@ -259,25 +269,28 @@ function SourceFileActions({
           type="button"
           variant="outline"
           size="sm"
-          disabled={retrying && action.kind.startsWith("retry_")}
           onClick={action.handler}
         >
-          {retrying && action.kind.startsWith("retry_") ? t("tasks.retryingFile") : action.label}
+          {action.label}
         </Button>
       ))}
     </div>
   );
 }
 
-function formatGeneratedFileStatus(
+export function formatGeneratedFileStatus(
   file: SourceFileRecord,
   t: ReturnType<typeof useTranslation>["t"]
 ) {
-  if (file.generatedFileAvailable || file.generatedOutputStatus === "visible") {
+  if (file.generatedOutputStatus === "previous_available") {
+    return <span className="text-foreground">{t("tasks.generatedFile.previousAvailable")}</span>;
+  }
+
+  if (file.generatedFileAvailable || file.generatedOutputStatus === "current_available") {
     return <span className="text-foreground">{t("tasks.generatedFile.available")}</span>;
   }
 
-  if (file.generatedOutputStatus === "unavailable") {
+  if (file.state === "error" && file.generatedOutputStatus === "unavailable") {
     return <span className="text-destructive">{t("tasks.generatedFile.unavailable")}</span>;
   }
 
@@ -288,11 +301,32 @@ function formatFileStatus(file: SourceFileRecord, t: ReturnType<typeof useTransl
   return t(`tasks.fileStatus.${file.state}`);
 }
 
-function formatFileStage(file: SourceFileRecord, t: ReturnType<typeof useTranslation>["t"]) {
-  return t(`tasks.phase.${file.currentStage.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase())}`);
+export function formatFileStage(file: SourceFileRecord, t: ReturnType<typeof useTranslation>["t"]) {
+  if (file.retryingWorkKind) {
+    return t("tasks.retryingStage", {
+      stage: t(`tasks.workKind.${toCamelCase(file.retryingWorkKind)}`)
+    });
+  }
+  return file.blockingWorkKind
+    ? t(`tasks.workKind.${toCamelCase(file.blockingWorkKind)}`)
+    : t(`tasks.fileStatus.${file.state}`);
 }
 
-function formatModelInvocation(
+export function formatFileError(
+  file: SourceFileRecord,
+  t: ReturnType<typeof useTranslation>["t"]
+) {
+  return file.failure?.code
+    ?? (file.retryingWorkKind ? file.modelInvocationErrorCode : null)
+    ?? t("tasks.noError");
+}
+
+function toCamelCase(value: string): string {
+  return value.replace(/_([a-z])/gu, (_, character: string) =>
+    character.toUpperCase());
+}
+
+export function formatModelInvocation(
   file: SourceFileRecord,
   t: ReturnType<typeof useTranslation>["t"]
 ) {
@@ -302,10 +336,12 @@ function formatModelInvocation(
     return t("tasks.notRecorded");
   }
 
-  const parts = [
-    file.modelInvocationModelName ?? t("tasks.notRecorded"),
-    t(`tasks.modelStatus.${status}`)
-  ];
+  const parts = status === "not_required" && !file.modelInvocationModelName
+    ? [t(`tasks.modelStatus.${status}`)]
+    : [
+        file.modelInvocationModelName ?? t("tasks.notRecorded"),
+        t(`tasks.modelStatus.${status}`)
+      ];
   const duration = formatModelDuration(file.modelInvocationStartedAt, file.modelInvocationEndedAt);
 
   if (duration) {

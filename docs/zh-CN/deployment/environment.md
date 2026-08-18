@@ -24,7 +24,7 @@ cp .env.example .env
 | `LOG_FILE_MAX_TOTAL_BYTES` | 可选 | 运行日志文件总大小上限。模板使用 `67108864` 字节。 |
 | `LOG_FILE_RETENTION_DAYS` | 可选 | 日志最长保留天数。模板使用 `7`。 |
 
-Focowiki 会把运行日志写入 `./logs`，同时继续向容器 stdout 和 stderr 输出日志。每个 Compose 服务的 Docker 日志单文件上限为 `10m`，最多保留 `3` 个文件。
+Focowiki 会把运行日志写入 `./logs`，同时继续向容器的标准输出和标准错误流写入日志。每个 Compose 服务的 Docker 日志单文件上限为 `10m`，最多保留 `3` 个文件。
 
 生产 Compose 模板把 PostgreSQL 数据保存在 `./data/postgres`，Redis 数据保存在 `./data/redis`，模板附带的 OpenSearch 数据保存在 `./data/opensearch`，OpenSearch TLS 状态保存在 `./opensearch-security`，模板附带的 Meilisearch 数据保存在 `./data/meilisearch`，Meilisearch 备份保存在 `./data/meilisearch-snapshots` 和 `./data/meilisearch-dumps`，运行凭据保存在 `./runtime-secrets`。迁移或备份部署时需要保留所选搜索服务使用的目录。
 
@@ -34,7 +34,8 @@ Focowiki 会把运行日志写入 `./logs`，同时继续向容器 stdout 和 st
 | --- | --- | --- |
 | `FOCOWIKI_API_IMAGE` | 可选 | API 镜像，默认 `ghcr.io/farozerolabs/focowiki-api:latest`。生产环境建议固定版本标签。 |
 | `FOCOWIKI_ADMIN_IMAGE` | 可选 | Admin UI 镜像，默认 `ghcr.io/farozerolabs/focowiki-admin:latest`。与 API 镜像使用相同版本。 |
-| `FOCOWIKI_SOURCE_WORKER_IMAGE` | 可选 | 来源处理镜像，默认 `ghcr.io/farozerolabs/focowiki-source-worker:latest`。与 API 和 Admin 镜像使用相同版本。 |
+
+`worker`、`migrate` 和 API 服务统一使用 `FOCOWIKI_API_IMAGE`，无需单独的工作进程镜像。
 
 ## 管理员登录
 
@@ -53,10 +54,10 @@ Focowiki 会把运行日志写入 `./logs`，同时继续向容器 stdout 和 st
 | `ADMIN_API_PORT` | Compose 必填 | Admin API 的宿主机和容器端口。模板使用 `43000`。 |
 | `ADMIN_UI_PORT` | Compose 必填 | Admin UI 的宿主机端口。模板使用 `43100`。 |
 | `ADMIN_API_PROXY_TARGET` | Compose 必填 | Admin UI 代理访问 Admin API 的地址。生产模板使用 `http://api:43000`。 |
-| `ADMIN_PUBLIC_ORIGIN` | 生产环境必填 | Admin UI 公网 HTTPS origin，例如 `https://admin.example.com`。 |
-| `ADMIN_API_PUBLIC_ORIGIN` | 生产环境必填 | Admin API 公网 HTTPS origin，例如 `https://admin-api.example.com`。 |
-| `ADMIN_TRUSTED_ORIGINS` | 可选 | 允许调用 Admin API 的浏览器 origins，多个值用英文逗号分隔。留空时使用 Admin UI origin 和本地开发 origins。 |
-| `ALLOWED_HOSTS` | 生产环境必填 | API 接受的 hostnames，多个值用英文逗号分隔。包含反向代理转发的全部域名和本地健康检查 hostname。 |
+| `ADMIN_PUBLIC_ORIGIN` | 生产环境必填 | Admin UI 公网 HTTPS 来源地址，例如 `https://admin.example.com`。 |
+| `ADMIN_API_PUBLIC_ORIGIN` | 生产环境必填 | Admin API 公网 HTTPS 来源地址，例如 `https://admin-api.example.com`。 |
+| `ADMIN_TRUSTED_ORIGINS` | 可选 | 允许调用 Admin API 的浏览器来源地址，多个值用英文逗号分隔。留空时使用 Admin UI 来源地址和本地开发来源地址。 |
+| `ALLOWED_HOSTS` | 生产环境必填 | API 接受的主机名，多个值用英文逗号分隔。包含反向代理转发的全部域名和本地健康检查主机名。 |
 | `TRUSTED_PROXY_MODE` | 可选 | 请求经过可信反向代理时设为 `true`。默认 `false`。 |
 
 生产模板仅把 Admin UI、Admin API 和 Developer OpenAPI 绑定到 `127.0.0.1`，公开访问应通过 HTTPS 反向代理。
@@ -79,7 +80,7 @@ Focowiki 会把运行日志写入 `./logs`，同时继续向容器 stdout 和 st
 | --- | --- | --- |
 | `REDIS_URL` | 是 | Redis 连接地址。生产 Compose 网络使用 `redis://redis:6379/0`。 |
 
-API 和所有 Worker 都需要访问 Redis。Redis 应保持在部署私有网络内。
+API 和所有工作进程都需要访问 Redis。Redis 应保持在部署私有网络内。
 
 ## 搜索服务
 
@@ -96,17 +97,19 @@ API 和所有 Worker 都需要访问 Redis。Redis 应保持在部署私有网�
 
 | 字段组 | 用途 |
 | --- | --- |
-| `OPENSEARCH_URL`、`OPENSEARCH_AUTH_MODE`、`OPENSEARCH_USERNAME`、`OPENSEARCH_PASSWORD`、`OPENSEARCH_PASSWORD_FILE`、`OPENSEARCH_CA_FILE` | OpenSearch endpoint、认证和 CA。Basic 密码直接值与密码文件二选一。 |
+| `OPENSEARCH_URL`、`OPENSEARCH_AUTH_MODE`、`OPENSEARCH_USERNAME`、`OPENSEARCH_PASSWORD`、`OPENSEARCH_PASSWORD_FILE`、`OPENSEARCH_CA_FILE` | OpenSearch 端点、认证和 CA。Basic 密码直接值与密码文件二选一。 |
 | `OPENSEARCH_AWS_REGION`、`OPENSEARCH_AWS_SERVICE` | 仅用于外部 OpenSearch 的 AWS SigV4 认证。 |
 | `OPENSEARCH_ADMIN_PASSWORD`、`OPENSEARCH_JAVA_OPTS` | 仅用于 Docker 模板内置 OpenSearch。 |
-| `MEILI_HOST`、`MEILI_MASTER_KEY`、`MEILI_API_KEY`、`MEILI_METRICS_API_KEY`、`MEILI_API_KEY_FILE`、`MEILI_METRICS_API_KEY_FILE` | Meilisearch endpoint 和认证。模板内置服务使用 master key，并自动生成两个运行 key 文件；外部服务直接提供 key 或 key 文件。 |
+| `MEILI_HOST`、`MEILI_MASTER_KEY`、`MEILI_API_KEY`、`MEILI_METRICS_API_KEY`、`MEILI_API_KEY_FILE`、`MEILI_METRICS_API_KEY_FILE` | Meilisearch 端点和认证。模板内置服务使用主密钥，并自动生成两个运行密钥文件；外部服务直接提供密钥或密钥文件。 |
 | `MEILI_MAX_INDEXING_MEMORY`、`MEILI_MAX_INDEXING_THREADS`、`MEILI_SNAPSHOT_DIR`、`MEILI_SCHEDULE_SNAPSHOT`、`MEILI_DUMP_DIR` | 仅用于 Docker 模板内置 Meilisearch。 |
+
+宿主机使用 `docker-compose.dev.yml` 或 `docker-compose.local.yml` 本地开发时，`MEILI_PORT` 决定模板内置 Meilisearch 暴露到回环地址的端口，默认是 `57700`，并且必须与本地 `MEILI_HOST` URL 中的端口一致。生产 Compose 通过 `http://meilisearch:7700` 在容器网络内通信，不对宿主机暴露该端口。
 
 ### 使用 Docker 模板内置 OpenSearch
 
 这是 `.env.example` 的默认方案。保留下面的地址、用户名、密码文件和 CA 文件路径，只替换管理员密码；`SEARCH_INDEX_PREFIX` 可以保留，也可以改为当前部署独占的名称。
 
-```env
+```dotenv
 SEARCH_PROVIDER=opensearch
 SEARCH_INDEX_PREFIX=focowiki
 COMPOSE_PROFILES=opensearch
@@ -123,19 +126,19 @@ OPENSEARCH_ADMIN_PASSWORD=<替换为强管理员密码>
 OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
 ```
 
-第一次启动时，Docker 模板会自动生成 TLS 文件和 `focowiki-runtime` 的随机运行密码，并写入 `opensearch-security` 和 `runtime-secrets`。不要手工创建证书，不要把 `OPENSEARCH_PASSWORD` 填成管理员密码，也不要修改上面的密码文件和 CA 文件路径。`OPENSEARCH_JAVA_OPTS` 是 OpenSearch heap，模板默认占用 512 MiB；根据实际负载和服务器内存测量后再调整。
+第一次启动时，Docker 模板会自动生成 TLS 文件和 `focowiki-runtime` 的随机运行密码，并写入 `opensearch-security` 和 `runtime-secrets`。不要手工创建证书，不要把 `OPENSEARCH_PASSWORD` 填成管理员密码，也不要修改上面的密码文件和 CA 文件路径。`OPENSEARCH_JAVA_OPTS` 用于设置 OpenSearch Java 堆内存，模板默认占用 512 MiB；根据实际负载和服务器内存测量后再调整。
 
 ### 使用 Docker 模板内置 Meilisearch
 
-将提供商和 Compose profile 一起切换，并生成一个至少包含 16 字节随机内容的 master key。运行 key 和诊断 key 由模板自动生成，所以直接值保持为空，文件路径保持模板值。
+先解除所用 Compose 模板中完整 `meilisearch` 服务块的注释，再将提供商和 Compose 配置组一起切换，并生成一个至少包含 16 字节随机内容的主密钥。运行密钥和诊断密钥由模板自动生成，所以直接值保持为空，文件路径保持模板值。
 
-```env
+```dotenv
 SEARCH_PROVIDER=meilisearch
 SEARCH_INDEX_PREFIX=focowiki
 COMPOSE_PROFILES=meilisearch
 
 MEILI_HOST=http://meilisearch:7700
-MEILI_MASTER_KEY=<替换为随机 master key>
+MEILI_MASTER_KEY=<替换为随机主密钥>
 MEILI_API_KEY=
 MEILI_METRICS_API_KEY=
 MEILI_API_KEY_FILE=/app/runtime-secrets/meilisearch-api-key
@@ -147,7 +150,7 @@ MEILI_SCHEDULE_SNAPSHOT=86400
 MEILI_DUMP_DIR=/meili_dumps
 ```
 
-未选中的 `OPENSEARCH_*` 字段可以留空。内存、线程、snapshot 和 dump 字段控制模板内置的 Meilisearch 容器；使用外部 Meilisearch 时不使用这些字段。
+未选中的 `OPENSEARCH_*` 字段可以留空。内存、线程、快照和转储字段控制模板内置的 Meilisearch 容器；使用外部 Meilisearch 时不使用这些字段。
 
 ### 使用外部 OpenSearch
 
@@ -155,7 +158,7 @@ MEILI_DUMP_DIR=/meili_dumps
 
 使用 Basic 认证时填写：
 
-```env
+```dotenv
 SEARCH_PROVIDER=opensearch
 SEARCH_INDEX_PREFIX=focowiki_prod
 COMPOSE_PROFILES=
@@ -176,38 +179,38 @@ OPENSEARCH_JAVA_OPTS=
 
 Amazon OpenSearch Service 或 OpenSearch Serverless 使用 SigV4 时填写：
 
-```env
+```dotenv
 SEARCH_PROVIDER=opensearch
 SEARCH_INDEX_PREFIX=focowiki_prod
 COMPOSE_PROFILES=
 
-OPENSEARCH_URL=https://<外部 OpenSearch endpoint>
+OPENSEARCH_URL=https://<外部 OpenSearch 地址>
 OPENSEARCH_AUTH_MODE=aws_sigv4
 OPENSEARCH_USERNAME=
 OPENSEARCH_PASSWORD=
 OPENSEARCH_PASSWORD_FILE=
 OPENSEARCH_CA_FILE=
-OPENSEARCH_AWS_REGION=<AWS region>
+OPENSEARCH_AWS_REGION=<AWS 区域>
 OPENSEARCH_AWS_SERVICE=es
 OPENSEARCH_ADMIN_PASSWORD=
 OPENSEARCH_JAVA_OPTS=
 ```
 
-Amazon OpenSearch Service 使用 `es`，OpenSearch Serverless 使用 `aoss`。凭据使用标准 AWS 环境变量、workload identity、shared configuration、ECS 或 EC2 credentials；不要为了 Focowiki 新增专用的静态 AWS key 字段。
+Amazon OpenSearch Service 使用 `es`，OpenSearch Serverless 使用 `aoss`。凭据使用标准 AWS 环境变量、工作负载身份、共享配置、ECS 或 EC2 凭据；不要为了 Focowiki 新增专用的静态 AWS 密钥字段。
 
 ### 使用外部 Meilisearch
 
-外部服务同样必须将 `COMPOSE_PROFILES` 留空。填写外部 endpoint、运行访问 key 和诊断 key；`MEILI_MASTER_KEY` 及内置容器资源字段留空。
+外部服务同样必须将 `COMPOSE_PROFILES` 留空。填写外部端点、运行访问密钥和诊断密钥；`MEILI_MASTER_KEY` 及内置容器资源字段留空。
 
-```env
+```dotenv
 SEARCH_PROVIDER=meilisearch
 SEARCH_INDEX_PREFIX=focowiki_prod
 COMPOSE_PROFILES=
 
 MEILI_HOST=https://search.example.com
 MEILI_MASTER_KEY=
-MEILI_API_KEY=<外部服务运行访问 key>
-MEILI_METRICS_API_KEY=<外部服务诊断 key>
+MEILI_API_KEY=<外部服务运行访问密钥>
+MEILI_METRICS_API_KEY=<外部服务诊断密钥>
 MEILI_API_KEY_FILE=
 MEILI_METRICS_API_KEY_FILE=
 MEILI_MAX_INDEXING_MEMORY=
@@ -217,7 +220,7 @@ MEILI_SCHEDULE_SNAPSHOT=
 MEILI_DUMP_DIR=
 ```
 
-也可以把两个 key 保存到宿主机的 `runtime-secrets` 目录，并改用 `MEILI_API_KEY_FILE` 和 `MEILI_METRICS_API_KEY_FILE` 指定容器内路径。生产环境必须同时提供运行访问 key 和诊断 key。
+也可以把两个密钥保存到宿主机的 `runtime-secrets` 目录，并改用 `MEILI_API_KEY_FILE` 和 `MEILI_METRICS_API_KEY_FILE` 指定容器内路径。生产环境必须同时提供运行访问密钥和诊断密钥。
 
 Focowiki 会忽略未选中搜索服务的字段。`.env`、`runtime-secrets` 和使用内置 OpenSearch 时生成的 `opensearch-security` 都包含私密部署数据，需要限制访问并纳入备份。
 
@@ -227,25 +230,25 @@ Focowiki 会忽略未选中搜索服务的字段。`.env`、`runtime-secrets` �
 | --- | --- | --- |
 | `PUBLIC_OPENAPI_PORT` | Compose 必填 | Developer OpenAPI 的宿主机和容器端口。模板使用 `43200`。 |
 | `PUBLIC_BASE_URL` | 是 | API 链接使用的公网 HTTPS 地址，例如 `https://openapi.example.com`。 |
-| `PUBLIC_OPENAPI_PUBLIC_ORIGIN` | 可选 | Developer OpenAPI 的公网 HTTPS origin，默认使用 `PUBLIC_BASE_URL`。 |
+| `PUBLIC_OPENAPI_PUBLIC_ORIGIN` | 可选 | Developer OpenAPI 的公网 HTTPS 来源地址，默认使用 `PUBLIC_BASE_URL`。 |
 
-Developer OpenAPI key 在 Admin UI 中创建，不要写入 `.env`。
+Developer OpenAPI 密钥在 Admin UI 中创建，不要写入 `.env`。
 
 ## S3 兼容存储
 
-生产 Compose 模板不启动对象存储服务。需要配置所有 Focowiki 容器都能访问的 AWS S3、Cloudflare R2、MinIO 或其他 S3 兼容 bucket。
+生产 Compose 模板不启动对象存储服务。需要配置所有 Focowiki 容器都能访问的 AWS S3、Cloudflare R2、MinIO 或其他 S3 兼容存储桶。
 
 | 变量 | 是否必填 | 填写方式 |
 | --- | --- | --- |
-| `S3_ENDPOINT` | 是 | 存储服务 endpoint URL。 |
-| `S3_REGION` | 是 | 存储服务要求的 region。 |
-| `S3_BUCKET` | 是 | 当前部署使用的 bucket。 |
-| `S3_ACCESS_KEY_ID` | 是 | 后端使用的存储访问 key ID。 |
-| `S3_SECRET_ACCESS_KEY` | 是 | 后端使用的存储 secret key。 |
-| `S3_PREFIX` | 是 | 当前部署独占的非空对象 key 前缀，例如 `production`。 |
-| `S3_FORCE_PATH_STYLE` | 可选 | 默认 `false`。存储服务要求 path style 时使用 `true`；AWS S3 通常使用 `false`。 |
+| `S3_ENDPOINT` | 是 | 存储服务端点 URL。 |
+| `S3_REGION` | 是 | 存储服务要求的区域。 |
+| `S3_BUCKET` | 是 | 当前部署使用的存储桶。 |
+| `S3_ACCESS_KEY_ID` | 是 | 后端使用的存储访问密钥 ID。 |
+| `S3_SECRET_ACCESS_KEY` | 是 | 后端使用的存储私密密钥。 |
+| `S3_PREFIX` | 是 | 当前部署独占的非空对象键前缀，例如 `production`。 |
+| `S3_FORCE_PATH_STYLE` | 可选 | 默认 `false`。存储服务要求路径式访问时使用 `true`；AWS S3 通常使用 `false`。 |
 
-凭据需要在配置前缀下列出 bucket，并读取、写入、检查和删除对象。备份与还原还要求存储服务支持列出对象版本。每个环境使用独立 bucket 或前缀。
+凭据需要在配置前缀下列出存储桶，并读取、写入、检查和删除对象。备份与还原还要求存储服务支持列出对象版本。每个环境使用独立存储桶或前缀。
 
 ## 分页与内容限制
 
@@ -257,23 +260,21 @@ Developer OpenAPI key 在 Admin UI 中创建，不要写入 `.env`。
 | `ADMIN_LIST_MAX_PAGE_SIZE` | Admin 列表允许的最大页大小。 |
 | `TREE_CHILD_DEFAULT_PAGE_SIZE` | 生成文件树直接子节点的默认页大小。 |
 | `TREE_CHILD_MAX_PAGE_SIZE` | 生成文件树直接子节点的最大页大小。 |
-| `PAGINATION_CURSOR_TTL_SECONDS` | 分页读取 cursor 的有效秒数。 |
+| `PAGINATION_CURSOR_TTL_SECONDS` | 分页游标的有效秒数。 |
 | `GENERATED_CONTENT_MAX_BYTES` | 单次 API 响应允许返回的生成文件最大字节数，超过时返回 HTTP 413。 |
 
 ## Worker 启动限制
 
 | 变量 | 是否必填 | 填写方式 |
 | --- | --- | --- |
-| `SOURCE_WORKER_DATABASE_POOL_MAX` | 可选 | 单个来源处理 Worker 使用的 PostgreSQL 连接数。默认 `6`，模板使用 `8`。 |
-| `PUBLICATION_WORKER_DATABASE_POOL_MAX` | 可选 | 单个发布 Worker 使用的 PostgreSQL 连接数。默认 `4`。 |
-| `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | 可选 | 单个维护 Worker 使用的 PostgreSQL 连接数。默认 `2`。 |
-| `SOURCE_WORKER_CPUS` | 可选 | 来源处理容器的 CPU 硬上限。模板使用 `2.0`。 |
-| `SOURCE_WORKER_MEMORY_LIMIT` | 可选 | 来源处理容器的内存硬上限。模板使用 `2g`。 |
-| `SOURCE_WORKER_PIDS_LIMIT` | 可选 | 来源处理容器允许的最大进程和线程数。模板使用 `128`。 |
+| `WORKER_DATABASE_POOL_MAX` | 可选 | 单个 Worker 使用的 PostgreSQL 连接数。模板使用 `8`。 |
+| `WORKER_CPUS` | 可选 | Worker 容器的 CPU 硬上限。模板使用 `2.0`。 |
+| `WORKER_MEMORY_LIMIT` | 可选 | Worker 容器的内存硬上限。模板使用 `2g`。 |
+| `WORKER_PIDS_LIMIT` | 可选 | Worker 容器允许的最大进程和线程数。模板使用 `128`。 |
 
 使用多个副本时，需要汇总所有 API 和 Worker 的连接池上限，并为迁移和管理员访问预留连接。
 
-来源处理镜像包含可选的语义增强运行能力。这些启动硬上限保留在 `.env`；语义分块、证据、查询向量并发和缓存上限应在测量 CPU、内存、服务商延迟与工作量后通过 Admin 配置调整。
+Worker 使用的 API 镜像包含可选语义增强运行时。这些启动硬上限保留在 `.env`；文档并发、语义分块、证据、查询嵌入并发和缓存上限应在测量 CPU、内存、服务商延迟与工作量后通过 Admin 配置调整。
 
 ## 安全审计
 
@@ -286,9 +287,9 @@ Developer OpenAPI key 在 Admin UI 中创建，不要写入 `.env`。
 启动前确认：
 
 1. `.env` 中所有占位符均已替换。
-2. API、Admin UI 与 source-worker 镜像固定为同一个 Focowiki 版本。
-3. 公网 origins 使用 HTTPS，并与反向代理域名一致。
-4. `ALLOWED_HOSTS` 包含反向代理转发给 API 的全部 hostname。
+2. API 与 Admin UI 镜像固定为同一个 Focowiki 版本。
+3. 公网来源地址使用 HTTPS，并与反向代理域名一致。
+4. `ALLOWED_HOSTS` 包含反向代理转发给 API 的全部主机名。
 5. 容器可以访问 PostgreSQL、Redis、所选搜索服务和 S3。
 6. S3 凭据可以在选定前缀下执行所需操作。
 7. `data`、`logs`、`opensearch-security`、`runtime-secrets` 和 `backups` 可写并已纳入备份计划。

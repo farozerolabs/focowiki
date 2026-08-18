@@ -50,10 +50,9 @@ describe("redis coordination cleanup", () => {
       sourceFileIds: ["source-file-a"]
     });
 
-    expect(deleted).toBe(8);
+    expect(deleted).toBe(7);
     expect(deletedKeys).toEqual(
       expect.arrayContaining([
-        "focowiki:knowledge-base-publication-locks:kb-test",
         "focowiki:page-cache:knowledge-bases:page-shared",
         "focowiki:pagination-cursors:knowledge-bases:query-contract:cursor-shared",
         "focowiki:pagination-invalid:source-files:kb-test",
@@ -107,6 +106,16 @@ describe("redis coordination cleanup", () => {
       "focowiki:public-openapi-key-cache:hash-test",
       "focowiki:public-openapi-key-used:key-test"
     ]);
+  });
+
+  it("publishes a best-effort unified-worker wakeup", async () => {
+    const client = createRedisClient({ keys: [], deletedKeys: [] });
+    const publish = vi.fn().mockResolvedValue(2);
+    client.publish = publish;
+    const redis = createRedisCoordinator(client, { keyPrefix: "review" });
+
+    await expect(redis.notifyWorkerWork("document")).resolves.toBe(true);
+    expect(publish).toHaveBeenCalledWith("review:worker:wakeup", "document");
   });
 });
 

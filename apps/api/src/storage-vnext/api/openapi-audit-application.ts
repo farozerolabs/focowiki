@@ -3,10 +3,12 @@ import type { Context } from "hono";
 import { resolveSecurityConfig, type RuntimeConfig } from "../../config.js";
 import { getAuditSourceIp, getRequestOrigin } from "../../security/request.js";
 import type { StorageVnextAuditPort } from "../audit/ports.js";
+import type { RuntimeLogger } from "../../logger.js";
 
 export function createStorageVnextOpenApiAuditApplication(input: {
   config: RuntimeConfig;
   audit: Pick<StorageVnextAuditPort, "append"> | null;
+  logger?: Pick<RuntimeLogger, "warn">;
 }) {
   return {
     async record(request: {
@@ -14,17 +16,20 @@ export function createStorageVnextOpenApiAuditApplication(input: {
       eventType: string;
       result: "success" | "failure" | "blocked";
       errorCode?: string | null;
+      knowledgeBaseId?: string | null;
+      targetKind?: string | null;
+      targetPublicId?: string | null;
     }): Promise<void> {
       if (!input.audit) return;
       const createdAt = new Date();
       const retentionDays = resolveSecurityConfig(input.config).audit.retentionDays;
       await input.audit.append({
         publicId: `audit-${randomUUID()}`,
-        knowledgeBaseId: null,
+        knowledgeBaseId: request.knowledgeBaseId?.trim() || null,
         actorPublicId: null,
         eventType: request.eventType,
-        targetKind: null,
-        targetPublicId: null,
+        targetKind: request.targetKind?.trim() || null,
+        targetPublicId: request.targetPublicId?.trim() || null,
         result: request.result,
         reasonCode: request.errorCode ?? null,
         sourceIp: getAuditSourceIp(input.config, request.context),
@@ -36,7 +41,12 @@ export function createStorageVnextOpenApiAuditApplication(input: {
         expiresAt: new Date(
           createdAt.getTime() + retentionDays * 24 * 60 * 60 * 1_000
         ).toISOString()
-      }).catch(() => undefined);
+      }).catch((error: unknown) => {
+        input.logger?.warn("audit.write_failed", {
+          eventType: request.eventType,
+          errorClass: error instanceof Error ? error.name : "UnknownError"
+        });
+      });
     }
   };
 }

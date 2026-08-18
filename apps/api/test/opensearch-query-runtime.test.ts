@@ -364,6 +364,35 @@ describe("OpenSearch query runtime", () => {
     expect(JSON.stringify(error)).not.toContain("secret");
   });
 
+  it("allows relationship ownership fields in ranked-lane results", async () => {
+    const client = createClient();
+    const query = createOpenSearchQueryPort({
+      client,
+      tokenizer: createTokenizer(),
+      maximumResultWindow: 2_000,
+      engineSearchCutoffMs: 1_000
+    });
+
+    await expect(query.query(request({
+      searchFields: [
+        "title", "targetTitle", "targetLogicalPath", "searchText"
+      ],
+      returnFields: [
+        "documentKind", "sourceFilePublicId", "sourceRevisionPublicId",
+        "logicalPath", "title", "targetSourceFilePublicId",
+        "targetSourceRevisionPublicId"
+      ]
+    }))).resolves.toMatchObject({ hits: [] });
+
+    expect(vi.mocked(client.search).mock.calls[0]![0]).toMatchObject({
+      body: {
+        _source: expect.arrayContaining([
+          "targetSourceFilePublicId", "targetSourceRevisionPublicId"
+        ])
+      }
+    });
+  });
+
   it("maps query connection failures to retryable provider-safe errors", async () => {
     const client = createClient();
     const query = createOpenSearchQueryPort({

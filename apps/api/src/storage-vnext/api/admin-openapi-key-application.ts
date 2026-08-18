@@ -32,7 +32,7 @@ export function createStorageVnextAdminOpenApiKeyApplication(input: {
         ? await input.redis.getPaginationCursor<string>(scope, request.cursor)
         : null;
       if (request.cursor && !repositoryCursor) return invalidPagination();
-      const page = await service.listKeysWithBootstrap({
+      const page = await service.listKeys({
         limit: request.limit,
         cursor: repositoryCursor
       });
@@ -43,8 +43,7 @@ export function createStorageVnextAdminOpenApiKeyApplication(input: {
           scope,
           cursor: page.nextCursor,
           ttlSeconds: input.config.pagination.cursorTtlSeconds
-        }),
-        oneTimeKey: page.oneTimeKey
+        })
       });
     },
 
