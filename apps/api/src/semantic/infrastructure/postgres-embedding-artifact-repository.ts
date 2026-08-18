@@ -120,9 +120,10 @@ export function createPostgresEmbeddingArtifactRepository(
           ) return "reserved" as const;
           if (
             (existing.state === "reserved"
-              && existing.reservation_expires_at !== null
-              && new Date(existing.reservation_expires_at).getTime()
-                <= Date.parse(input.createdAt))
+              && (existing.zero_owner_since !== null
+                || (existing.reservation_expires_at !== null
+                  && new Date(existing.reservation_expires_at).getTime()
+                    <= Date.parse(input.createdAt))))
             || existing.state === "deleted"
           ) {
             const reclaimed = await transaction<Array<{ object_id: string }>>`
