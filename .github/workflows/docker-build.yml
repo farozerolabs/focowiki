@@ -169,12 +169,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Validate release contracts
+      - name: Validate source contracts
+        run: pnpm test:validation
+
+      - name: Validate release OpenAPI
         env:
           FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          pnpm test:validation
-          pnpm openapi:validate
+        run: pnpm openapi:validate
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4.2.0
