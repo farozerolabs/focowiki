@@ -5,7 +5,7 @@ import {
   waitForResourceRevision
 } from "../lib/comprehensive-resource-revision-wait.mjs";
 
-test("waits for the published resource revision before dependent mutations", async () => {
+test("waits for the active resource revision before dependent mutations", async () => {
   const revisions = [1, 1, 2];
   const waits = [];
 
@@ -21,7 +21,7 @@ test("waits for the published resource revision before dependent mutations", asy
   assert.deepEqual(waits, [500, 500]);
 });
 
-test("fails closed when publication does not reach the expected revision", async () => {
+test("fails closed when activation does not reach the expected revision", async () => {
   await assert.rejects(
     waitForResourceRevision({
       expectedRevision: 2,

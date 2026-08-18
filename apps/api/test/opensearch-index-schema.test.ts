@@ -7,6 +7,7 @@ import {
 } from "../src/infrastructure/opensearch/opensearch-index-schema.js";
 import {
   createStorageVnextContentDocument,
+  createStorageVnextFileRelationshipDocument,
   createStorageVnextGraphSeedDocument
 } from "../src/storage-vnext/search/documents.js";
 import { createStorageVnextSearchSettings } from
@@ -33,6 +34,9 @@ describe("OpenSearch index schema", () => {
         documentKind: { type: "keyword" },
         schemaVersion: { type: "keyword" },
         segmentOrdinal: { type: "integer" },
+        relationPublicId: { type: "keyword" },
+        targetSourceFilePublicId: { type: "keyword" },
+        targetLogicalPath: { type: "text", analyzer: "standard" },
         okfSignals: {
           type: "object",
           dynamic: "strict",
@@ -120,6 +124,38 @@ describe("OpenSearch index schema", () => {
         id: document.id,
         documentKind: "graph_seed",
         rankingTerms: ["contract", "relation"]
+      }
+    });
+  });
+
+  it("serializes canonical relationship evidence under strict mappings", () => {
+    const tokenizer = createTokenizer();
+    const document = createStorageVnextFileRelationshipDocument({
+      knowledgeBaseId: "kb-a",
+      sourceFilePublicId: "file-a",
+      sourceRevisionPublicId: "revision-a",
+      logicalPath: "guides/a.md",
+      title: "Graph A",
+      relationPublicId: "relation-ab",
+      evidencePublicId: "evidence-ab",
+      targetSourceFilePublicId: "file-b",
+      targetSourceRevisionPublicId: "revision-b",
+      targetLogicalPath: "guides/b.md",
+      targetTitle: "Graph B",
+      relationKind: "references",
+      direction: "outgoing",
+      searchText: "Graph A references Graph B",
+      rankingTerms: ["Graph B", "guides/b.md"]
+    });
+
+    expect(serializeOpenSearchDocument({ document, tokenizer })).toMatchObject({
+      _id: document.id,
+      _source: {
+        documentKind: "file_relationship",
+        relationPublicId: "relation-ab",
+        targetSourceFilePublicId: "file-b",
+        targetLogicalPath: "guides/b.md",
+        rankingTerms: ["Graph B", "guides/b.md"]
       }
     });
   });

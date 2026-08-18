@@ -34,8 +34,8 @@ const report = {
 };
 
 assert(adminRoutes.length === 67, `Expected 67 Admin routes, found ${adminRoutes.length}.`);
-assert(openApiOperations.length === 43,
-  `Expected 43 OpenAPI operations, found ${openApiOperations.length}.`);
+assert(openApiOperations.length === 42,
+  `Expected 42 OpenAPI operations, found ${openApiOperations.length}.`);
 
 for (const route of adminRoutes) {
   await exercise({

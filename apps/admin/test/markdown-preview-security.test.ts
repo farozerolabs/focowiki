@@ -18,7 +18,7 @@ describe("Markdown preview security", () => {
     });
     const html = renderGeneratedTextPreview(content, {
       contentType: "application/json",
-      logicalPath: "_index/search/v1/0019.json"
+      logicalPath: "_index/pages/all-documents-part-0019.json"
     });
     const container = document.createElement("div");
 
@@ -104,12 +104,12 @@ describe("Markdown preview security", () => {
   });
 
   it.each([
-    ["schema.md", "schema-frontmatter.md", "schema-frontmatter.md"],
+    ["index.md", "pages/index.md", "pages/index.md"],
     ["log.md", "log-000001.md", "log-000001.md"],
     ["log-000002.md", "log-000001.md", "log-000001.md"],
-    ["_index/index.md", "manifest.json", "_index/manifest.json"],
-    ["_graph/index.md", "graph_node/v1/0001.json", "_graph/graph_node/v1/0001.json"],
-    ["_graph/index.md", "graph_edge/v1/0001.json", "_graph/graph_edge/v1/0001.json"],
+    ["_index/index.md", "catalog.json", "_index/catalog.json"],
+    ["_graph/index.md", "catalog.json", "_graph/catalog.json"],
+    ["_graph/by-directory/index.md", "all-relationships.json", "_graph/by-directory/all-relationships.json"],
     ["pages/team/index.md", "guide.md", "pages/team/guide.md"],
     ["pages/team/index-000002.md", "index-000001.md", "pages/team/index-000001.md"],
     ["pages/team/guide.md", "/pages/reference.md", "pages/reference.md"]

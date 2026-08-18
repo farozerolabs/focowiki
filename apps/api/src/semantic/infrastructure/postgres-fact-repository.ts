@@ -204,11 +204,11 @@ export function createPostgresSemanticFactRepository(
               ON source.knowledge_base_id = observation.knowledge_base_id
              AND source.public_id = observation.source_file_public_id
              AND source.deleted_at IS NULL
-            JOIN focowiki.source_file_current_revisions current_revision
-              ON current_revision.knowledge_base_id = observation.knowledge_base_id
-             AND current_revision.source_file_public_id
+            JOIN focowiki.source_file_active_revisions active_revision
+              ON active_revision.knowledge_base_id = observation.knowledge_base_id
+             AND active_revision.source_file_public_id
                = observation.source_file_public_id
-             AND current_revision.source_revision_public_id
+             AND active_revision.active_source_revision_public_id
                = observation.source_revision_public_id
             WHERE observation.knowledge_base_id = entity.knowledge_base_id
               AND observation.semantic_generation_public_id
@@ -280,35 +280,11 @@ function ownedSourceRevisionSql(
     (
       EXISTS (
         SELECT 1
-        FROM focowiki.source_file_current_revisions current_revision
-        WHERE current_revision.knowledge_base_id = ${input.knowledgeBaseId}
-          AND current_revision.source_file_public_id = ${input.sourceFilePublicId}
-          AND current_revision.source_revision_public_id
+        FROM focowiki.source_file_active_revisions active_revision
+        WHERE active_revision.knowledge_base_id = ${input.knowledgeBaseId}
+          AND active_revision.source_file_public_id = ${input.sourceFilePublicId}
+          AND active_revision.current_source_revision_public_id
             = ${input.sourceRevisionPublicId}
-      )
-      OR EXISTS (
-        SELECT 1
-        FROM focowiki.source_revisions candidate_revision
-        JOIN focowiki.semantic_stage_work_items stage
-          ON stage.knowledge_base_id = candidate_revision.knowledge_base_id
-         AND stage.semantic_generation_public_id
-           = ${input.semanticGenerationPublicId}
-         AND stage.source_file_public_id
-           = candidate_revision.source_file_public_id
-         AND stage.source_revision_public_id = candidate_revision.public_id
-         AND stage.state IN ('queued', 'running', 'retry', 'completed')
-        JOIN focowiki.operation_work_items work
-          ON work.knowledge_base_id = stage.knowledge_base_id
-         AND work.operation_public_id = stage.operation_public_id
-         AND work.work_kind = 'mutation'
-         AND work.state IN ('queued', 'running', 'retry')
-         AND work.checkpoint ->> 'candidateRevisionPublicId'
-           = candidate_revision.public_id
-        WHERE candidate_revision.knowledge_base_id = ${input.knowledgeBaseId}
-          AND candidate_revision.source_file_public_id
-            = ${input.sourceFilePublicId}
-          AND candidate_revision.public_id = ${input.sourceRevisionPublicId}
-          AND candidate_revision.revision_role = 'candidate'
       )
     )
   `;

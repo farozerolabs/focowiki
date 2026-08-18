@@ -18,9 +18,19 @@ const REMOVED_FIELDS = {
     "failedJobRetentionDays",
     "deadLetterJobRetentionDays",
     "retentionCleanupBatchSize",
+    "hardDeleteConcurrency",
+    "hardDeleteDatabaseBatchSize",
+    "hardDeleteObjectBatchSize",
+    "hardDeleteMaxAttempts",
+    "hardDeleteRetryDelayMs",
     "hardDeleteFailedRetentionDays"
   ],
-  publication: [
+  generated: [
+    "mode",
+    "intervalSeconds",
+    "roleConcurrency",
+    "claimBatchSize",
+    "generatedObjectWriteConcurrency",
     "generationAssemblyConcurrency",
     "generationRetentionDays",
     "batchSize",
@@ -39,13 +49,21 @@ const REMOVED_FIELDS = {
     "manifestShardSize",
     "graphEdgeShardSize",
     "graphCandidateLimit",
-    "graphMaintenanceBatchSize",
-    "rootSummaryLimit",
-    "okfLogMaxEntries",
-    "okfLogMaxBytes"
+    "graphMaintenanceBatchSize"
   ],
   graph: ["publicationShardSize", "cacheTtlSeconds"],
   maintenance: [
+    "knowledgeBaseMaintenanceMode",
+    "knowledgeBaseMaintenanceScanIntervalSeconds",
+    "knowledgeBaseMaintenanceConcurrency",
+    "deletionBatchSize",
+    "quarantineGracePeriodSeconds",
+    "projectionRepairConcurrency",
+    "projectionRepairDatabaseBatchSize",
+    "projectionRepairObjectWriteConcurrency",
+    "lexicalRebuildConcurrency",
+    "lexicalRebuildSourceReadConcurrency",
+    "lexicalRebuildMaxInFlightSourceBytes",
     "migrationBackfillConcurrency",
     "lexicalRebuildDatabaseWriteConcurrency",
     "lexicalRebuildClaimBatchSize",
@@ -55,6 +73,7 @@ const REMOVED_FIELDS = {
     "compactionConcurrency"
   ],
   search: [
+    "stagingRetentionHours",
     "branchCandidateLimit",
     "fusedCandidateLimit",
     "graphSeedLimit",
@@ -64,6 +83,14 @@ const REMOVED_FIELDS = {
     "engineResidentMemoryLimitBytes",
     "engineDatabaseSizeLimitBytes",
     "engineTaskQueueSizeLimitBytes"
+  ],
+  semantic: [
+    "communityAdapterTimeoutMs",
+    "maximumCommunityPartitions",
+    "maximumCommunityEntities",
+    "maximumCommunityRelationships",
+    "maximumCommunityBoundaryRelationships",
+    "maximumCommunitySummaryCharacters"
   ]
 } as const;
 
@@ -101,22 +128,25 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
 }): RuntimeSettingsValidationIssue[] {
   if (!isRecord(input.value)) return [issue("settings", "Settings must be an object")];
   const worker = section(input.value, "worker");
-  const publication = section(input.value, "publication");
+  const generated = section(input.value, "generated");
   const graph = section(input.value, "graph");
   const maintenance = section(input.value, "maintenance");
   const semantic = section(input.value, "semantic");
   const search = section(input.value, "search");
   const activeModel = input.value.activeModel;
-  if (!worker || !publication || !graph || !maintenance || !semantic || !search) {
+  if (!worker || !generated || !graph || !maintenance || !semantic || !search) {
     return [issue("settings", "Settings sections are incomplete")];
   }
 
   const issues: RuntimeSettingsValidationIssue[] = [];
+  if (Object.hasOwn(input.value, "publication")) {
+    issues.push(issue("publication", "publication is no longer supported"));
+  }
   rejectRemovedFields(worker, "worker", REMOVED_FIELDS.worker, issues);
   rejectRemovedFields(
-    publication,
-    "publication",
-    REMOVED_FIELDS.publication,
+    generated,
+    "generated",
+    REMOVED_FIELDS.generated,
     issues
   );
   rejectRemovedFields(graph, "graph", REMOVED_FIELDS.graph, issues);
@@ -127,6 +157,7 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
     issues
   );
   rejectRemovedFields(search, "search", REMOVED_FIELDS.search, issues);
+  rejectRemovedFields(semantic, "semantic", REMOVED_FIELDS.semantic, issues);
 
   integerRange(search, "taskPollIntervalMs", 100, 30_000, "search", issues);
   integerRange(search, "taskTimeoutMs", 10_000, 3_600_000, "search", issues);
@@ -141,7 +172,6 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
   );
   integerRange(search, "maxInFlightTasks", 1, 32, "search", issues);
   integerRange(search, "cleanupBatchSize", 1, 5_000, "search", issues);
-  integerRange(search, "stagingRetentionHours", 1, 720, "search", issues);
   integerRange(
     semantic,
     "searchLaneCutoffMs",
@@ -166,52 +196,37 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
     issues
   );
   positiveInteger(maintenance, "scanBatchSize", "maintenance", issues);
-  positiveInteger(maintenance, "deletionBatchSize", "maintenance", issues);
+  integerRange(maintenance, "hardDeleteConcurrency", 1, 16, "maintenance", issues);
   integerRange(
     maintenance,
-    "projectionRepairConcurrency",
+    "hardDeleteDatabaseBatchSize",
     1,
-    16,
-    "maintenance",
-    issues
-  );
-  integerRange(
-    maintenance,
-    "projectionRepairDatabaseBatchSize",
-    100,
     10_000,
     "maintenance",
     issues
   );
   integerRange(
     maintenance,
-    "projectionRepairObjectWriteConcurrency",
+    "hardDeleteObjectBatchSize",
     1,
-    32,
+    1_000,
+    "maintenance",
+    issues
+  );
+  integerRange(maintenance, "hardDeleteMaxAttempts", 1, 20, "maintenance", issues);
+  integerRange(
+    maintenance,
+    "hardDeleteRetryDelayMs",
+    100,
+    300_000,
     "maintenance",
     issues
   );
   integerRange(
     maintenance,
-    "lexicalRebuildConcurrency",
+    "hardDeleteFailedRetentionDays",
     1,
-    16,
-    "maintenance",
-    issues
-  );
-  integerRange(
-    maintenance,
-    "lexicalRebuildSourceReadConcurrency",
-    1,
-    32,
-    "maintenance",
-    issues
-  );
-  integerRange(
-    maintenance,
-    "lexicalRebuildMaxInFlightSourceBytes",
-    1_048_576,
-    536_870_912,
+    365,
     "maintenance",
     issues
   );
@@ -221,7 +236,6 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
   const capacityIssues = validateRuntimeSettingsResourceCapacity({
     snapshot: {
       worker: numericWorker(worker),
-      publication: numericPublication(publication),
       maintenance: numericMaintenance(maintenance),
       search: numericSearch(search),
       activeModel: isRecord(activeModel)
@@ -237,34 +251,13 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
 function numericWorker(value: Record<string, unknown>) {
   return {
     sourceFileConcurrency: numberValue(value.sourceFileConcurrency),
-    sourceObjectReadConcurrency: numberValue(value.sourceObjectReadConcurrency),
-    hardDeleteConcurrency: numberValue(value.hardDeleteConcurrency)
-  };
-}
-
-function numericPublication(value: Record<string, unknown>) {
-  return {
-    roleConcurrency: numberValue(value.roleConcurrency),
-    generatedObjectWriteConcurrency: numberValue(value.generatedObjectWriteConcurrency)
+    sourceObjectReadConcurrency: numberValue(value.sourceObjectReadConcurrency)
   };
 }
 
 function numericMaintenance(value: Record<string, unknown>) {
   return {
-    knowledgeBaseMaintenanceConcurrency: numberValue(
-      value.knowledgeBaseMaintenanceConcurrency
-    ),
-    projectionRepairConcurrency: numberValue(value.projectionRepairConcurrency),
-    projectionRepairObjectWriteConcurrency: numberValue(
-      value.projectionRepairObjectWriteConcurrency
-    ),
-    lexicalRebuildConcurrency: numberValue(value.lexicalRebuildConcurrency),
-    lexicalRebuildSourceReadConcurrency: numberValue(
-      value.lexicalRebuildSourceReadConcurrency
-    ),
-    lexicalRebuildMaxInFlightSourceBytes: numberValue(
-      value.lexicalRebuildMaxInFlightSourceBytes
-    )
+    hardDeleteConcurrency: numberValue(value.hardDeleteConcurrency)
   };
 }
 

@@ -1,4 +1,5 @@
 import { normalizeSourceRelativePath } from "./source-path.js";
+import { portableMarkdownHref } from "./portable-bundle.js";
 
 const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
 const REFERENCE_DEFINITION_PATTERN = /^( {0,3}\[[^\]\n]+\]:\s*)(<?[^>\s]+>?)(.*)$/u;
@@ -8,10 +9,39 @@ export function rewriteSourceMarkdownLinks(
   markdown: string,
   sourceRelativePath: string
 ): string {
+  return portableizeSourceMarkdownLinks(
+    canonicalizeSourceMarkdownLinks(markdown, sourceRelativePath),
+    `pages/${normalizeSourceRelativePath(sourceRelativePath).relativePath}`
+  );
+}
+
+export function canonicalizeSourceMarkdownLinks(
+  markdown: string,
+  sourceRelativePath: string
+): string {
   const source = normalizeSourceRelativePath(sourceRelativePath);
   const sourceDirectory = source.relativePath.includes("/")
     ? source.relativePath.slice(0, source.relativePath.lastIndexOf("/"))
     : "";
+  return rewriteMarkdownDestinations(markdown, (destination) =>
+    rewriteDestination(destination, sourceDirectory));
+}
+
+export function portableizeSourceMarkdownLinks(
+  markdown: string,
+  generatedPagePath: string
+): string {
+  const page = normalizeSourceRelativePath(
+    generatedPagePath.replace(/^pages\//u, "")
+  );
+  return rewriteMarkdownDestinations(markdown, (destination) =>
+    portableDestination(destination, page.relativePath));
+}
+
+function rewriteMarkdownDestinations(
+  markdown: string,
+  rewrite: (destination: string) => string
+): string {
   let activeFence: string | null = null;
 
   return markdown
@@ -28,18 +58,41 @@ export function rewriteSourceMarkdownLinks(
       const definition = line.match(REFERENCE_DEFINITION_PATTERN);
       if (definition) {
         const destination = definition[2] ?? "";
-        return `${definition[1] ?? ""}${rewriteDestination(destination, sourceDirectory)}${definition[3] ?? ""}`;
+        return `${definition[1] ?? ""}${rewrite(destination)}${definition[3] ?? ""}`;
       }
 
       return rewriteOutsideInlineCode(line, (segment) =>
         segment.replace(
           INLINE_LINK_PATTERN,
           (_match, prefix: string, destination: string, suffix: string) =>
-            `${prefix}${rewriteDestination(destination, sourceDirectory)}${suffix}`
+            `${prefix}${rewrite(destination)}${suffix}`
         )
       );
     })
     .join("\n");
+}
+
+function portableDestination(
+  destination: string,
+  sourceRelativePath: string
+): string {
+  const wrapped = destination.startsWith("<") && destination.endsWith(">");
+  const raw = wrapped ? destination.slice(1, -1) : destination;
+  const relative = portableSourceLink(raw, sourceRelativePath);
+  return wrapped ? `<${relative}>` : relative;
+}
+
+function portableSourceLink(value: string, sourceRelativePath: string): string {
+  const splitAt = firstSuffixIndex(value);
+  const rawPath = splitAt < 0 ? value : value.slice(0, splitAt);
+  const suffix = splitAt < 0 ? "" : value.slice(splitAt);
+  if (!rawPath.startsWith("/pages/")) return value;
+  try {
+    const targetPath = decodeURIComponent(rawPath.slice(1));
+    return `${portableMarkdownHref(`pages/${sourceRelativePath}`, targetPath)}${suffix}`;
+  } catch {
+    return value;
+  }
 }
 
 export function resolveSourceMarkdownLinkDestination(

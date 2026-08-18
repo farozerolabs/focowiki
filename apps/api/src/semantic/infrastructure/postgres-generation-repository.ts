@@ -413,6 +413,25 @@ export function createPostgresSemanticGenerationRepository(
         `;
         const candidatePublicId = candidates[0]?.public_id;
         if (!candidatePublicId) return "missing" as const;
+        const documentReferences = await transaction<Array<{ referenced: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1
+            FROM focowiki.document_processing_jobs job
+            WHERE job.knowledge_base_id = ${input.knowledgeBaseId}
+              AND job.semantic_generation_public_id = ${candidatePublicId}
+          ) AS referenced
+        `;
+        if (documentReferences[0]?.referenced === true) {
+          await transaction`
+            UPDATE focowiki.semantic_generations
+            SET state = 'superseded',
+                revision = revision + CASE WHEN state = 'superseded' THEN 0 ELSE 1 END
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND public_id = ${candidatePublicId}
+              AND generation_role = 'candidate'
+          `;
+          return "retained" as const;
+        }
         const artifacts = await transaction<Array<{ artifact_public_id: string }>>`
           SELECT DISTINCT artifact_public_id
           FROM focowiki.embedding_artifact_owners

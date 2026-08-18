@@ -1,32 +1,34 @@
 export type SourceFileLifecycleState =
-  | "queued"
-  | "running"
-  | "pending_publication"
-  | "visible"
-  | "failed";
-export type SourceFileCurrentStage =
-  | "upload_storage"
-  | "metadata_resolution"
-  | "llm_suggestion"
-  | "graph_generation"
-  | "graphrag_processing"
-  | "semantic_reconciliation"
-  | "embedding_generation"
-  | "affected_projection"
-  | "search_publication"
-  | "semantic_maintenance_required"
-  | "projection_generation"
-  | "generation_validation"
-  | "generation_activation";
+  | "waiting"
+  | "processing"
+  | "available"
+  | "error"
+  | "deleting";
+export type SourceFileWorkKind =
+  | "prepare"
+  | "first_layer"
+  | "content_projection"
+  | "graphrag"
+  | "relation_reconcile"
+  | "knowledge_projection"
+  | "activate"
+  | "cleanup";
+export type SourceFileCurrentStage = SourceFileWorkKind | SourceFileLifecycleState;
 export type SourceFileModelInvocationStatus =
   | "running"
   | "completed"
   | "failed"
-  | "skipped"
+  | "not_required"
   | "not_recorded";
-export type SourceFileGeneratedOutputStatus = "pending" | "visible" | "unavailable";
+export type SourceFileGeneratedOutputStatus =
+  | "unavailable" | "previous_available" | "current_available";
 export type SourceFileErrorState = "with_error" | "without_error";
-export type SourceFileActionState = "openable" | "retryable" | "none";
+export type SourceFileActionState =
+  | "openable"
+  | "retryable"
+  | "correctable"
+  | "details_only"
+  | "none";
 
 export type SourceFileListFilters = {
   fileNameQuery: string;
@@ -45,41 +47,29 @@ export type SourceFileListFilters = {
 };
 
 export const SOURCE_FILE_LIFECYCLE_STATES: SourceFileLifecycleState[] = [
-  "queued",
-  "running",
-  "pending_publication",
-  "visible",
-  "failed"
+  "waiting", "processing", "available", "error", "deleting"
+];
+
+export const SOURCE_FILE_WORK_KINDS: SourceFileWorkKind[] = [
+  "prepare", "first_layer", "content_projection", "graphrag",
+  "relation_reconcile", "knowledge_projection", "activate", "cleanup"
 ];
 
 export const SOURCE_FILE_CURRENT_STAGES: SourceFileCurrentStage[] = [
-  "upload_storage",
-  "metadata_resolution",
-  "llm_suggestion",
-  "graph_generation",
-  "graphrag_processing",
-  "semantic_reconciliation",
-  "embedding_generation",
-  "affected_projection",
-  "search_publication",
-  "semantic_maintenance_required",
-  "projection_generation",
-  "generation_validation",
-  "generation_activation"
+  ...SOURCE_FILE_WORK_KINDS,
+  ...SOURCE_FILE_LIFECYCLE_STATES
 ];
 
 export const SOURCE_FILE_MODEL_INVOCATION_STATUSES: SourceFileModelInvocationStatus[] = [
   "running",
   "completed",
   "failed",
-  "skipped",
+  "not_required",
   "not_recorded"
 ];
 
 export const SOURCE_FILE_GENERATED_OUTPUT_STATUSES: SourceFileGeneratedOutputStatus[] = [
-  "pending",
-  "visible",
-  "unavailable"
+  "unavailable", "previous_available", "current_available"
 ];
 
 export const SOURCE_FILE_ERROR_STATES: SourceFileErrorState[] = [
@@ -90,6 +80,8 @@ export const SOURCE_FILE_ERROR_STATES: SourceFileErrorState[] = [
 export const SOURCE_FILE_ACTION_STATES: SourceFileActionState[] = [
   "openable",
   "retryable",
+  "correctable",
+  "details_only",
   "none"
 ];
 

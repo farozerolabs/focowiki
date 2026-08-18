@@ -6,8 +6,6 @@ import { createPostgresStorageVnextAdminResourceRead } from
   "../src/storage-vnext/api/postgres-admin-resources.js";
 import type { StorageVnextCatalogReadPort } from
   "../src/storage-vnext/catalog/ports.js";
-import type { StorageVnextReleaseReadPort } from
-  "../src/storage-vnext/release/ports.js";
 import type { StorageVnextSearchQueryPort } from
   "../src/storage-vnext/search/ports.js";
 
@@ -70,9 +68,10 @@ describe("PostgreSQL storage vNext Admin reads", () => {
         pathQuery: "guide",
         sourceFileIdPrefix: "source-file-",
         state: null,
-        currentStage: "metadata_resolution",
+        blockingWorkKind: null,
+        currentStage: "available",
         modelInvocationStatus: "not_recorded",
-        generatedOutputStatus: "pending",
+        generatedOutputStatus: "unavailable",
         startedFrom: "2026-08-01T00:00:00.000Z",
         startedTo: "2026-08-02T00:00:00.000Z",
         endedFrom: "2026-08-01T00:00:00.000Z",
@@ -86,18 +85,26 @@ describe("PostgreSQL storage vNext Admin reads", () => {
     });
 
     expect(queries).toHaveLength(1);
-    expect(queries[0]?.text).toContain("source.created_at >=");
-    expect(queries[0]?.text).toContain("source.updated_at <=");
-    expect(queries[0]?.text).toContain("source.safe_error_code");
-    expect(queries[0]?.text).toContain("source.model_invocation_status");
-    expect(queries[0]?.text).toContain(
-      "source.model_invocation_source_revision_public_id = revision.public_id"
+    expect(queries[0]?.text).toContain("job.started_at >=");
+    expect(queries[0]?.text).toContain("job.terminal_at <=");
+    expect(queries[0]?.text).toContain("job.safe_error_code");
+    expect(queries[0]?.text).toContain("job.model_status");
+    expect(queries[0]?.text).toContain("job.state =");
+    expect(queries[0]?.text).toMatch(
+      /job\.blocking_work_kind =/u
     );
-    expect(queries[0]?.text).toContain(
-      "source.model_invocation_source_revision_public_id IS DISTINCT FROM revision.public_id"
+    expect(queries[0]?.text).toMatch(
+      /job\.state NOT IN \('waiting', 'processing'\)[\s\S]+job\.blocking_work_kind IS NULL[\s\S]+job\.state =/u
     );
+    expect(queries[0]?.text).toContain("lifecycle.generated_output_status");
+    expect(queries[0]?.text).toContain("= 'correctable'");
+    expect(queries[0]?.text).toContain("= 'details_only'");
+    expect(queries[0]?.text).toMatch(
+      /= 'none'\s+AND lifecycle\.generated_output_status = 'unavailable'\s+AND job\.state <> 'error'/u
+    );
+    expect(queries[0]?.text).not.toContain("pending_publication");
+    expect(queries[0]?.text).not.toContain("processing_stage_work_items");
     expect(queries[0]?.values).toEqual(expect.arrayContaining([
-      "pending",
       "not_recorded",
       "2026-08-01T00:00:00.000Z",
       "2026-08-02T00:00:00.000Z",
@@ -105,11 +112,9 @@ describe("PostgreSQL storage vNext Admin reads", () => {
       "SOURCE",
       "none"
     ]));
-    expect(queries[0]?.values.filter((value) => value === "pending").length)
-      .toBeGreaterThanOrEqual(4);
   });
 
-  it("selects a source revision stage from its latest semantic operation", async () => {
+  it("reads current-revision lifecycle from the compact source summary", async () => {
     const queries: Array<{ text: string; values: unknown[] }> = [];
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       queries.push({ text: strings.join("?"), values });
@@ -126,13 +131,36 @@ describe("PostgreSQL storage vNext Admin reads", () => {
     });
 
     const query = queries[0]?.text ?? "";
-    const operationOrder = query.indexOf("semantic_operation.created_at DESC");
-    const stageOrder = query.indexOf("CASE WHEN stage.state = 'failed'");
+    expect(query).toContain("JOIN focowiki.document_processing_jobs job");
     expect(query).toContain(
-      "JOIN focowiki.operations semantic_operation"
+      "job.source_revision_public_id = active.current_source_revision_public_id"
     );
-    expect(operationOrder).toBeGreaterThan(-1);
-    expect(stageOrder).toBeGreaterThan(operationOrder);
+    expect(query).toContain("job.blocking_work_kind");
+    expect(query).not.toContain("processing_source_summaries");
+    expect(query).not.toContain("processing_stage_work_items");
+  });
+
+  it("does not reconstruct document state from legacy operation or event facts", async () => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ text: strings.join("?"), values });
+      return Promise.resolve([]);
+    }) as unknown as DatabaseClient;
+    const application = createPostgresStorageVnextAdminResourceRead(sql);
+
+    await application.listSourceFiles({
+      knowledgeBaseId: "kb-deterministic",
+      directoryId: undefined,
+      filters: emptySourceFileFilters(),
+      limit: 20,
+      cursor: null
+    });
+
+    const query = queries[0]?.text ?? "";
+    expect(query).toContain("JOIN focowiki.document_processing_jobs job");
+    expect(query).not.toContain("operation_work_items");
+    expect(query).not.toContain("source_processing_events");
+    expect(query).not.toContain("search_publication");
   });
 
   it("returns the durable model invocation used for the current source revision", async () => {
@@ -142,10 +170,9 @@ describe("PostgreSQL storage vNext Admin reads", () => {
         knowledge_base_id: "kb-model",
         directory_public_id: null,
         logical_path: "model.md",
-        status: "ready",
-        safe_error_code: null,
-        safe_error_message: null,
-        revision: 3,
+        active_source_revision_public_id: "source-revision-model",
+        resource_revision: 3,
+        content_revision: 2,
         created_at: new Date("2026-08-01T00:00:00.000Z"),
         updated_at: new Date("2026-08-01T00:00:02.000Z"),
         source_revision_public_id: "source-revision-model",
@@ -153,12 +180,27 @@ describe("PostgreSQL storage vNext Admin reads", () => {
         byte_count: 12,
         content_type: "text/markdown; charset=utf-8",
         generated_path: "pages/model.md",
-        model_invocation_status: "completed",
-        model_invocation_model_name: "deepseek-v4-flash",
-        model_invocation_started_at: new Date("2026-08-01T00:00:00.000Z"),
-        model_invocation_ended_at: new Date("2026-08-01T00:00:02.000Z"),
-        model_invocation_warning_count: 1,
-        model_invocation_error_code: null
+        job_public_id: "document-job-model",
+        job_state: "available",
+        required_work_count: 8,
+        completed_work_count: 8,
+        active_work_kinds: [],
+        blocking_work_kind: null,
+        retrying_work_kind: null,
+        safe_error_code: null,
+        safe_error_message: null,
+        retryable: false,
+        retry_count: 0,
+        model_status: "completed",
+        model_name: "deepseek-v4-flash",
+        model_started_at: new Date("2026-08-01T00:00:00.000Z"),
+        model_ended_at: new Date("2026-08-01T00:00:02.000Z"),
+        model_warning_count: 1,
+        model_error_code: null,
+        model_layer_executions: [],
+        generated_output_status: "current_available",
+        processing_started_at: new Date("2026-08-01T00:00:00.000Z"),
+        processing_ended_at: new Date("2026-08-01T00:00:02.000Z")
       }]) as unknown as DatabaseClient
     );
 
@@ -169,7 +211,7 @@ describe("PostgreSQL storage vNext Admin reads", () => {
         pathQuery: null,
         sourceFileIdPrefix: null,
         state: null,
-        currentStage: null,
+        blockingWorkKind: null,
         modelInvocationStatus: "completed",
         generatedOutputStatus: null,
         startedFrom: null,
@@ -186,23 +228,108 @@ describe("PostgreSQL storage vNext Admin reads", () => {
 
     expect(result.items).toEqual([
       expect.objectContaining({
+        resourceRevision: 3,
+        contentRevision: 2,
         modelInvocationStatus: "completed",
         modelInvocationModelName: "deepseek-v4-flash",
         modelInvocationStartedAt: "2026-08-01T00:00:00.000Z",
         modelInvocationEndedAt: "2026-08-01T00:00:02.000Z",
         modelInvocationWarningCount: 1,
-        modelInvocationErrorCode: null
+        modelInvocationErrorCode: null,
+        processingStartedAt: "2026-08-01T00:00:00.000Z",
+        processingEndedAt: "2026-08-01T00:00:02.000Z"
       })
     ]);
   });
 
+  it("marks correctable deterministic input failures as manual correction", async () => {
+    const application = createPostgresStorageVnextAdminResourceRead(
+      (async () => [{
+        public_id: "source-file-invalid",
+        knowledge_base_id: "kb-invalid",
+        directory_public_id: null,
+        logical_path: "invalid.md",
+        active_source_revision_public_id: null,
+        resource_revision: 1,
+        content_revision: 0,
+        created_at: new Date("2026-08-01T00:00:00.000Z"),
+        updated_at: new Date("2026-08-01T00:00:02.000Z"),
+        source_revision_public_id: "source-revision-invalid",
+        checksum_sha256: "a".repeat(64),
+        byte_count: 12,
+        content_type: "text/markdown; charset=utf-8",
+        generated_path: null,
+        job_public_id: "document-job-invalid",
+        job_state: "error",
+        required_work_count: 8,
+        completed_work_count: 0,
+        active_work_kinds: [],
+        blocking_work_kind: "prepare",
+        retrying_work_kind: null,
+        safe_error_code: "semantic_source_metadata_invalid",
+        safe_error_message: "Source metadata is invalid.",
+        retryable: false,
+        retry_count: 0,
+        model_status: "not_required",
+        model_name: null,
+        model_started_at: null,
+        model_ended_at: null,
+        model_warning_count: 0,
+        model_error_code: null,
+        model_layer_executions: [],
+        generated_output_status: "unavailable",
+        processing_started_at: new Date("2026-08-01T00:00:00.000Z"),
+        processing_ended_at: new Date("2026-08-01T00:00:02.000Z")
+      }]) as unknown as DatabaseClient
+    );
+
+    const result = await application.listSourceFiles({
+      knowledgeBaseId: "kb-invalid",
+      directoryId: undefined,
+      filters: emptySourceFileFilters(),
+      limit: 20,
+      cursor: null
+    });
+
+    expect(result.items[0]?.terminalFailure).toMatchObject({
+      code: "semantic_source_metadata_invalid",
+      retryKind: "none"
+    });
+  });
+
+  it("reads content revision from the current content pointer instead of resource revision", async () => {
+    const queries: string[] = [];
+    const application = createPostgresStorageVnextAdminResourceRead(
+      ((strings: TemplateStringsArray) => {
+        queries.push(strings.join("?"));
+        return Promise.resolve([]);
+      }) as unknown as DatabaseClient
+    );
+
+    await application.listSourceFiles({
+      knowledgeBaseId: "kb-content-revision",
+      directoryId: undefined,
+      filters: emptySourceFileFilters(),
+      limit: 20,
+      cursor: null
+    });
+
+    expect(queries[0]).toContain("active.activation_sequence AS content_revision");
+  });
+
   it("returns matching directory entries before unified-index file matches", async () => {
     const application = createPostgresStorageVnextAdminRead({
-      sql: ((strings: TemplateStringsArray) => Promise.resolve(
-        strings.join("?").includes("resolve_release_directory_summaries")
-          ? [directoryRow("pages")]
-          : []
-      )) as unknown as DatabaseClient,
+      sql: ((strings: TemplateStringsArray) => {
+        const query = strings.join("?");
+        if (query.includes("knowledge_base_sequences")) {
+          return Promise.resolve([{
+            knowledge_base_id: "kb-1",
+            activation_revision: 1
+          }]);
+        }
+        return Promise.resolve(query.includes("directory_paths")
+          ? [directoryRow("pages")] : []);
+      }) as unknown as DatabaseClient,
       catalog: {
         async getKnowledgeBase() {
           return {
@@ -219,19 +346,6 @@ describe("PostgreSQL storage vNext Admin reads", () => {
           return [];
         }
       } as unknown as StorageVnextCatalogReadPort,
-      releases: {
-        async getActiveRoot() {
-          return {
-            publicId: "root-1",
-            knowledgeBaseId: "kb-1",
-            role: "active",
-            manifestChecksum: "checksum",
-            revision: 1,
-            createdAt: "2026-08-06T00:00:00.000Z",
-            expiresAt: null
-          };
-        }
-      } as unknown as StorageVnextReleaseReadPort,
       search: {
         async search() {
           return { items: [], nextCursor: null };
@@ -278,11 +392,6 @@ describe("PostgreSQL storage vNext Admin reads", () => {
           };
         }
       } as unknown as StorageVnextCatalogReadPort,
-      releases: {
-        async getActiveRoot() {
-          return null;
-        }
-      } as unknown as StorageVnextReleaseReadPort,
       search: {
         async search() {
           return { items: [], nextCursor: null };
@@ -306,11 +415,59 @@ describe("PostgreSQL storage vNext Admin reads", () => {
     })).resolves.toEqual({ ok: false, code: "INVALID_PAGINATION" });
   });
 
+  it("counts only uploaded source pages in a generated directory", async () => {
+    const queries: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      const query = strings.join("?");
+      queries.push(query);
+      return Promise.resolve(query.includes("knowledge_base_sequences")
+        ? [{ knowledge_base_id: "kb-source-count", activation_revision: 1 }]
+        : []);
+    }) as unknown as DatabaseClient;
+    const application = createPostgresStorageVnextAdminRead({
+      sql,
+      catalog: {
+        async getKnowledgeBase() {
+          return {
+            publicId: "kb-source-count",
+            name: "Source count",
+            description: null,
+            revision: 1,
+            visibility: "current",
+            createdAt: "2026-08-16T00:00:00.000Z",
+            updatedAt: "2026-08-16T00:00:00.000Z"
+          };
+        }
+      } as unknown as StorageVnextCatalogReadPort,
+      search: null
+    });
+
+    await application.listTree({
+      knowledgeBaseId: "kb-source-count",
+      parentPath: "pages",
+      entryType: null,
+      query: null,
+      limit: 20,
+      cursor: null
+    });
+
+    expect(queries[1]).toMatch(
+      /child\.logical_path LIKE path\.logical_path \|\| '\/%'\s+AND child\.source_file_public_id IS NOT NULL/u
+    );
+  });
+
   it("returns generated file path matches before unified-index source matches", async () => {
     let searchCalls = 0;
     const sql = ((strings: TemplateStringsArray) => {
       const query = strings.join("?");
-      if (query.includes("resolve_release_catalog")) {
+      if (query.includes("knowledge_base_sequences")) {
+        return Promise.resolve([{
+          knowledge_base_id: "kb-generated-search",
+          activation_revision: 1
+        }]);
+      }
+      if (query.includes("FROM focowiki.generated_page_heads page")
+        && !query.includes("directory_paths")) {
         return Promise.resolve([generatedFileRow("_graph/index.md", "graph")]);
       }
       return Promise.resolve([]);
@@ -333,19 +490,6 @@ describe("PostgreSQL storage vNext Admin reads", () => {
           return [];
         }
       } as unknown as StorageVnextCatalogReadPort,
-      releases: {
-        async getActiveRoot() {
-          return {
-            publicId: "root-generated-search",
-            knowledgeBaseId: "kb-generated-search",
-            role: "active",
-            manifestChecksum: "checksum",
-            revision: 1,
-            createdAt: "2026-08-06T00:00:00.000Z",
-            expiresAt: null
-          };
-        }
-      } as unknown as StorageVnextReleaseReadPort,
       search: {
         async search() {
           searchCalls += 1;
@@ -398,19 +542,6 @@ describe("PostgreSQL storage vNext Admin reads", () => {
           return [];
         }
       } as unknown as StorageVnextCatalogReadPort,
-      releases: {
-        async getActiveRoot() {
-          return {
-            publicId: "root-stale-search",
-            knowledgeBaseId: "kb-stale-search",
-            role: "active",
-            manifestChecksum: "checksum",
-            revision: 2,
-            createdAt: "2026-08-06T00:00:00.000Z",
-            expiresAt: null
-          };
-        }
-      } as unknown as StorageVnextReleaseReadPort,
       search: {
         async search() {
           return {
@@ -467,19 +598,6 @@ describe("PostgreSQL storage vNext Admin reads", () => {
           return [];
         }
       } as unknown as StorageVnextCatalogReadPort,
-      releases: {
-        async getActiveRoot() {
-          return {
-            publicId: "root-generated-directories",
-            knowledgeBaseId: "kb-generated-directories",
-            role: "active",
-            manifestChecksum: "checksum",
-            revision: 1,
-            createdAt: "2026-08-07T00:00:00.000Z",
-            expiresAt: null
-          };
-        }
-      } as unknown as StorageVnextReleaseReadPort,
       search: {
         async search() {
           return { items: [], nextCursor: null };
@@ -502,12 +620,13 @@ describe("PostgreSQL storage vNext Admin reads", () => {
       cursor: null
     });
 
-    expect(queries).toHaveLength(3);
-    for (const query of queries.slice(0, 2)) {
+    expect(queries).toHaveLength(5);
+    for (const query of [queries[1], queries[3]]) {
       expect(query).toContain("focowiki.public_generated_directory_id");
-      expect(query).not.toContain("coalesce(summary.directory_public_id, 'directory:')");
+      expect(query).not.toContain("resolve_release_directory_summaries");
     }
-    expect(queries[2]).toContain("focowiki.public_generated_file_id");
+    expect(queries[4]).toContain("focowiki.public_generated_file_id");
+    expect(queries.join("\n")).not.toContain("release_roots");
   });
 });
 
@@ -516,6 +635,7 @@ function emptySourceFileFilters() {
     pathQuery: null,
     sourceFileIdPrefix: null,
     state: null,
+    blockingWorkKind: null,
     currentStage: null,
     modelInvocationStatus: null,
     generatedOutputStatus: null,

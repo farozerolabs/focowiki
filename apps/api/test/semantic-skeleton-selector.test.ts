@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  remapSemanticSkeletonSelection,
   SEMANTIC_SKELETON_POLICY_VERSION,
   selectSemanticSkeleton
 } from "../src/semantic/graphrag/skeleton-selector.js";
@@ -260,5 +261,46 @@ describe("semantic skeleton selector", () => {
       "structural_bridge",
       "definition_density"
     ]);
+  });
+
+  it("remaps a persisted selection onto smaller retry chunks", () => {
+    const markdown = "abcdefghijklmnopqrstuvwxyz012345";
+    const originalChunks = createSemanticSourceChunks({
+      sourceRevisionPublicId: "revision-retry",
+      markdown,
+      maximumChunkCharacters: 16,
+      maximumChunks: 10
+    });
+    const retryChunks = createSemanticSourceChunks({
+      sourceRevisionPublicId: "revision-retry",
+      markdown,
+      maximumChunkCharacters: 8,
+      maximumChunks: 10
+    });
+    const persisted = selectSemanticSkeleton({
+      sourceRevisionPublicId: "revision-retry",
+      logicalPath: "retry.md",
+      markdown,
+      chunks: originalChunks,
+      policy: {
+        stableSamplingBasisPoints: 10_000,
+        structuralSelectionThreshold: 100,
+        maximumSelectedChunks: 2
+      }
+    });
+
+    const remapped = remapSemanticSkeletonSelection({
+      selection: persisted,
+      originalChunks,
+      retryChunks
+    });
+
+    expect(remapped.selected).toBe(true);
+    expect(remapped.sourceChunkCount).toBe(retryChunks.length);
+    expect(remapped.selectedChunkIds.length).toBeGreaterThan(0);
+    expect(remapped.selectedChunkIds.length).toBeLessThanOrEqual(8);
+    expect(remapped.selectedChunkIds.every((id) =>
+      retryChunks.some((chunk) => chunk.id === id))).toBe(true);
+    expect(remapped.decisionSha256).not.toBe(persisted.decisionSha256);
   });
 });

@@ -34,7 +34,7 @@ let rawKey = "";
 let originalRateLimits = null;
 
 try {
-  assert(operations.length === 43, `Expected 43 OpenAPI operations, found ${operations.length}.`);
+  assert(operations.length === 42, `Expected 42 OpenAPI operations, found ${operations.length}.`);
   await login();
   const runtime = await adminJson("GET", "/admin/api/settings/runtime");
   originalRateLimits = runtime.body?.settings?.rateLimits ?? null;

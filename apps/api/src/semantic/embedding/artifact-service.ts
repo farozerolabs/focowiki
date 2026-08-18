@@ -91,11 +91,13 @@ export function createEmbeddingArtifactService(input: {
             dimension,
             inputKind: request.embeddingInput.inputKind
           });
+          const compatible = await input.repository.findCompatible(identity);
           return {
             index,
             request,
             identity,
-            compatible: await input.repository.findCompatible(identity)
+            compatible,
+            reusable: compatible ? null : await input.repository.findReusable(identity)
           };
         }
       );
@@ -110,6 +112,22 @@ export function createEmbeddingArtifactService(input: {
             item.compatible?.state !== "verified"
             && item.compatible?.state !== "orphaned"
           ) {
+            if (item.reusable?.state === "verified"
+              || item.reusable?.state === "orphaned") {
+              try {
+                results[item.index] = await reuseAcrossRevision(
+                  item.request,
+                  item.identity,
+                  item.reusable,
+                  dimension
+                );
+                return;
+              } catch (error) {
+                if (!(error instanceof EmbeddingArtifactObjectUnavailableError)) {
+                  throw error;
+                }
+              }
+            }
             missing.push(item);
             return;
           }
@@ -233,6 +251,40 @@ export function createEmbeddingArtifactService(input: {
       vector,
       reused: true
     };
+  }
+
+  async function reuseAcrossRevision(
+    request: ResolveArtifactRequest,
+    identity: ReturnType<typeof createEmbeddingArtifactIdentity>,
+    sourceArtifact: EmbeddingArtifactRecord,
+    dimension: number
+  ): Promise<ResolveArtifactResult> {
+    throwIfAborted(request.signal);
+    const bytes = await input.store.readVerified({
+      descriptor: descriptorFromRecord(sourceArtifact),
+      maximumBytes: maximumVectorBytes(dimension),
+      ...(request.signal ? { signal: request.signal } : {})
+    });
+    const vector = decodeVectorArtifact({
+      bytes,
+      checksumSha256: sourceArtifact.vectorChecksumSha256,
+      dimension,
+      normalization: request.configuration.normalization,
+      maximumBytes: maximumVectorBytes(dimension)
+    });
+    throwIfAborted(request.signal);
+    const artifact = await input.repository.reuseVerified({
+      sourceArtifact,
+      identity,
+      artifactPublicId: identity.artifactPublicId,
+      semanticGenerationPublicId: request.semanticGenerationPublicId,
+      operationPublicId: request.operationPublicId,
+      sourceFilePublicId: request.embeddingInput.sourceFilePublicId,
+      sourceExcerpt: request.sourceExcerpt,
+      retentionKind: request.retentionKind,
+      reusedAt: clock()
+    });
+    return { artifact, vector, reused: true };
   }
 
   async function attachResolvedReference(

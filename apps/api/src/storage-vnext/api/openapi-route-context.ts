@@ -30,7 +30,8 @@ export function createStorageVnextOpenApiRouteContext(
 ) {
   const auditApplication = createStorageVnextOpenApiAuditApplication({
     config: dependencies.config,
-    audit: dependencies.audit
+    audit: dependencies.audit,
+    logger: dependencies.logger
   });
   const security = { ...dependencies, auditApplication };
   const keyService = createDeveloperOpenApiKeyService(security);

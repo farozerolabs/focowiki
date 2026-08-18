@@ -2,110 +2,100 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const bootstrapPath = resolve(
+const bootstrap = readFileSync(resolve(
   import.meta.dirname,
   "../migrations/001_storage_vnext.sql"
-);
+), "utf8").replace(/\s+/gu, " ").toLowerCase();
 
-function readNormalized(): string {
-  return readFileSync(bootstrapPath, "utf8").replace(/\s+/gu, " ").toLowerCase();
-}
-
-describe("storage vNext database baseline", () => {
-  it("creates each named authority and lifecycle family", () => {
-    const sql = readNormalized();
-
+describe("document indexing database baseline", () => {
+  it("creates the final source, document, model, semantic, and search authorities", () => {
     for (const table of [
       "knowledge_bases",
       "source_directories",
       "source_files",
-      "source_event_summaries",
       "source_revisions",
-      "source_file_current_revisions",
-      "runtime_setting_revisions",
-      "runtime_setting_current",
-      "model_configs",
-      "public_api_keys",
-      "webhook_subscriptions",
-      "graph_nodes",
-      "graph_edges",
-      "graph_evidence_refs",
-      "release_roots",
-      "release_shards",
-      "release_root_shards",
-      "release_catalog_entries",
-      "directory_summaries",
-      "knowledge_base_summaries",
-      "object_registrations",
-      "object_owners",
+      "source_file_active_revisions",
+      "source_revision_presentations",
+      "document_processing_jobs",
+      "document_model_analysis_results",
+      "document_model_layer_executions",
+      "document_artifact_work",
+      "document_artifact_receipts",
+      "relation_candidate_pairs",
+      "search_family_receipts",
+      "projection_dirty_scopes",
+      "projection_scope_storage_metrics",
+      "document_projection_waiting_completions",
+      "scoped_activation_owners",
+      "knowledge_base_sequences",
+      "generated_page_candidates",
+      "generated_page_heads",
+      "canonical_file_relations",
+      "relation_directed_evidence",
+      "semantic_generations",
+      "semantic_entities",
+      "semantic_relationships",
+      "semantic_vector_documents",
       "search_projections",
-      "meilisearch_projection_maintenance",
-      "active_snapshots",
-      "release_candidates",
-      "release_candidate_changed_facts",
-      "release_candidate_dependencies",
-      "release_candidate_validations",
-      "operations",
-      "operation_work_items",
-      "operation_dependencies",
-      "operation_idempotency",
+      "search_document_owners",
+      "object_owners",
       "cleanup_actions",
-      "upload_sessions",
-      "upload_entries",
-      "webhook_deliveries",
-      "operation_results",
-      "security_audit_events",
-      "diagnostic_events",
+      "operation_tombstones",
+      "runtime_generation"
+    ]) expect(bootstrap, table).toContain(`create table focowiki.${table}`);
+  });
+
+  it("retains only terminal knowledge-base deletion handoffs and idempotent webhook creates", () => {
+    expect(bootstrap).toContain("create table focowiki.operation_tombstones");
+    expect(bootstrap).toContain("operation_tombstones_expiry_idx");
+    expect(bootstrap).toContain("idempotency_key text");
+    expect(bootstrap).toContain("request_hash text");
+    expect(bootstrap).toContain("webhook_subscriptions_public_idempotency_key");
+  });
+
+  it("contains no superseded stage, publication, release, or deployment authority", () => {
+    for (const table of [
+      "processing_stage_work_items",
+      "processing_stage_dependencies",
+      "processing_stage_fairness",
+      "release_candidates",
+      "release_roots",
+      "active_snapshots",
+      "operation_dependencies",
       "deployment_scopes",
       "deployment_states",
-      "rebuild_checkpoints",
-      "validation_evidence",
-      "rollback_evidence",
-      "retirement_evidence",
-      "runtime_generation"
-    ]) {
-      expect(sql, table).toContain(`create table focowiki.${table}`);
-    }
+      "semantic_maintenance_checkpoints",
+      "source_relation_path_bindings"
+    ]) expect(bootstrap, table).not.toContain(`create table focowiki.${table}`);
+    expect(bootstrap).not.toContain("create table focowiki.candidate_identity_cards");
+    expect(bootstrap).not.toContain("drop table if exists");
+    expect(bootstrap).not.toContain("drop column");
   });
 
-  it("stores source bodies and searchable documents outside PostgreSQL", () => {
-    const sql = readNormalized();
-
-    expect(sql).not.toMatch(
+  it("keeps source bodies and provider search documents outside PostgreSQL", () => {
+    expect(bootstrap).not.toMatch(
       /\b(raw_body|raw_content|markdown_body|json_body|file_body|search_body)\b/u
     );
-    expect(sql).not.toContain("to_tsvector");
-    expect(sql).not.toContain("tsvector");
-    expect(sql).not.toContain("gin_trgm_ops");
-    expect(sql).toContain("source_revisions");
-    expect(sql).toContain("object_id text not null");
-    expect(sql).toContain("checksum_sha256 text not null");
+    expect(bootstrap).not.toContain("to_tsvector");
+    expect(bootstrap).not.toContain("tsvector");
+    expect(bootstrap).not.toContain("gin_trgm_ops");
+    expect(bootstrap).toContain("object_id text not null");
+    expect(bootstrap).toContain("checksum_sha256 text not null");
   });
 
-  it("stores the bounded LLM summary on the current source fact", () => {
-    const sql = readNormalized();
-
-    for (const column of [
-      "model_invocation_source_revision_public_id text",
-      "model_invocation_status text",
-      "model_invocation_model_name text",
-      "model_invocation_started_at timestamp with time zone",
-      "model_invocation_ended_at timestamp with time zone",
-      "model_invocation_warning_count integer",
-      "model_invocation_error_code text"
-    ]) {
-      expect(sql, column).toContain(column);
-    }
-    expect(sql).toContain("constraint source_files_model_invocation_check check");
+  it("stores immutable first-layer and GraphRAG execution facts", () => {
+    expect(bootstrap).toContain("layer text not null");
+    expect(bootstrap).toContain("provider_request_count integer not null");
+    expect(bootstrap).toContain("document_model_layer_executions_identity_key");
   });
 
-  it("writes the schema marker only after all vNext relations", () => {
-    const sql = readNormalized();
-    const markerTable = sql.indexOf("create table focowiki.runtime_generation");
-    const markerInsert = sql.indexOf("insert into focowiki.runtime_generation");
-
-    expect(markerTable).toBeGreaterThan(sql.indexOf("create table focowiki.retirement_evidence"));
+  it("writes the final runtime generation only after the schema", () => {
+    const markerTable = bootstrap.indexOf("create table focowiki.runtime_generation");
+    const markerInsert = bootstrap.indexOf("insert into focowiki.runtime_generation");
+    expect(markerTable).toBeGreaterThan(-1);
     expect(markerInsert).toBeGreaterThan(markerTable);
-    expect(sql).toContain("values (true, 'storage-vnext-v1')");
+    expect(bootstrap).toContain(
+      "values (true, 'storage-vnext-v9-document-indexing-hybrid')"
+    );
   });
 });

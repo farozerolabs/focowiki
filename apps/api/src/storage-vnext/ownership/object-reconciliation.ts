@@ -37,7 +37,6 @@ type RegistrationPagePort = {
     limit: number;
     cursor: StorageVnextOpaqueCursor | null;
   }): Promise<{ items: readonly StorageVnextObjectRegistration[]; nextCursor: string | null }>;
-  getClosure(objectId: string): Promise<StorageVnextOwnershipClosure>;
 };
 
 export async function reconcileStorageVnextProviderInventoryPage(input: {

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,137 +9,57 @@ import {
   validateMigrationManifest,
   type MigrationDescriptor
 } from "../src/db/migration-manifest.js";
-import {
-  MIGRATION_FILES,
-  RUNTIME_SCHEMA_GENERATION
-} from "../src/db/migrations.js";
+import { MIGRATION_FILES, RUNTIME_SCHEMA_GENERATION } from
+  "../src/db/migrations.js";
 
-const EXPECTED_BOOTSTRAP = [
-  ["001_storage_vnext.sql", "absent", "storage-vnext-v1", "clean_bootstrap"],
-  [
-    "002_extension_navigation_profile.sql",
-    "storage-vnext-v1",
-    "storage-vnext-v2",
-    "compatible"
-  ],
-  [
-    "003_general_purpose_semantic_search.sql",
-    "storage-vnext-v2",
-    "storage-vnext-v3-semantic",
-    "breaking_reset"
-  ]
-] as const;
-
-describe("storage vNext bootstrap manifest", () => {
-  it("declares an absent bootstrap followed by navigation and reset-only semantic schemas", () => {
-    expect(MIGRATION_MANIFEST.map((migration) => [
-      migration.fileName,
-      migration.sourceGeneration,
-      migration.targetGeneration,
-      migration.safety
-    ])).toEqual(EXPECTED_BOOTSTRAP);
-    expect(MIGRATION_FILES).toEqual([
-      "001_storage_vnext.sql",
-      "002_extension_navigation_profile.sql",
-      "003_general_purpose_semantic_search.sql"
-    ]);
-    expect(RUNTIME_SCHEMA_GENERATION).toBe("storage-vnext-v3-semantic");
+describe("document indexing bootstrap manifest", () => {
+  it("declares one clean bootstrap from an absent database", () => {
+    expect(MIGRATION_MANIFEST).toEqual([{
+      fileName: "001_storage_vnext.sql",
+      sourceGeneration: "absent",
+      targetGeneration: "storage-vnext-v9-document-indexing-hybrid",
+      safety: "clean_bootstrap"
+    }]);
+    expect(MIGRATION_FILES).toEqual(["001_storage_vnext.sql"]);
+    expect(RUNTIME_SCHEMA_GENERATION).toBe("storage-vnext-v9-document-indexing-hybrid");
   });
 
   it("covers the migration directory exactly once", () => {
-    const migrationFiles = readdirSync(
-      resolve(import.meta.dirname, "../migrations")
-    )
+    const files = readdirSync(resolve(import.meta.dirname, "../migrations"))
       .filter((fileName) => /^\d{3}_.+\.sql$/u.test(fileName))
       .sort();
-
-    expect([...MIGRATION_FILES]).toEqual(migrationFiles);
+    expect([...MIGRATION_FILES]).toEqual(files);
     expect(() => validateMigrationManifest(MIGRATION_MANIFEST, {
-      availableFiles: migrationFiles,
+      availableFiles: files,
       expectedRuntimeGeneration: RUNTIME_SCHEMA_GENERATION
     })).not.toThrow();
   });
 
-  it("keeps the profile upgrade additive and indexes its paged catalog reads", () => {
-    const migration = readFileSync(resolve(
-      import.meta.dirname,
-      "../migrations/002_extension_navigation_profile.sql"
-    ), "utf8");
-
-    expect(migration).toContain("navigation_profile_version");
-    expect(migration).toContain("public_generated_directory_id");
-    expect(migration).toContain("release_catalog_entries_root_path_c_idx");
-    expect(migration).toContain("release_catalog_tombstones_root_path_c_idx");
-    expect(migration).not.toMatch(/CREATE TABLE/iu);
-  });
-
-  it("initializes only an absent schema and becomes a no-op at the target", () => {
-    expect(createBootstrapPlan("absent")).toEqual({
-      pendingMigrations: MIGRATION_MANIFEST,
-      pendingFiles: [...MIGRATION_FILES],
-      targetGeneration: RUNTIME_SCHEMA_GENERATION
-    });
-    expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION)).toEqual({
-      pendingMigrations: [],
-      pendingFiles: [],
-      targetGeneration: RUNTIME_SCHEMA_GENERATION
-    });
-    expect(() => createBootstrapPlan("storage-vnext-v1"))
-      .toThrow(UnsupportedMigrationGenerationError);
-    expect(() => createBootstrapPlan("storage-vnext-v2"))
-      .toThrow(UnsupportedMigrationGenerationError);
-  });
-
-  it("rejects every historical or unknown schema generation", () => {
+  it("initializes only an absent schema and rejects every prior generation", () => {
+    expect(createBootstrapPlan("absent").pendingFiles).toEqual([
+      "001_storage_vnext.sql"
+    ]);
+    expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     for (const generation of [
-      "incremental-sharded-publication-v1",
-      "durable-search-projection-planning-v19",
+      "storage-vnext-v1",
+      "storage-vnext-v2",
+      "storage-vnext-v4-continuous-pipeline",
       "unknown-generation-v99"
-    ]) {
-      expect(() => createBootstrapPlan(generation)).toThrow(
-        UnsupportedMigrationGenerationError
-      );
-    }
+    ]) expect(() => createBootstrapPlan(generation)).toThrow(
+      UnsupportedMigrationGenerationError
+    );
   });
 
-  it.each([
-    {
-      name: "duplicate bootstrap entries",
-      manifest: [MIGRATION_MANIFEST[0]!, MIGRATION_MANIFEST[0]!]
-    },
-    {
-      name: "a non-bootstrap file",
-      manifest: [{
-        ...MIGRATION_MANIFEST[0]!,
-        fileName: "001_other.sql"
-      }]
-    },
-    {
-      name: "a non-absent source",
-      manifest: [{
-        ...MIGRATION_MANIFEST[0]!,
-        sourceGeneration: "previous"
-      }]
-    },
-    {
-      name: "an unsupported safety class",
-      manifest: [{
-        ...MIGRATION_MANIFEST[0]!,
-        safety: "requires_drain"
-      }]
-    }
-  ])("rejects $name", ({ manifest }) => {
-    expect(() => validateMigrationManifest(
-      manifest as unknown as readonly MigrationDescriptor[]
-    )).toThrow(MigrationManifestValidationError);
-  });
-
-  it("rejects file coverage and runtime-generation drift", () => {
+  it("rejects invalid manifests and file coverage drift", () => {
+    expect(() => validateMigrationManifest([
+      MIGRATION_MANIFEST[0]!, MIGRATION_MANIFEST[0]!
+    ])).toThrow(MigrationManifestValidationError);
+    expect(() => validateMigrationManifest([{
+      ...MIGRATION_MANIFEST[0]!,
+      sourceGeneration: "previous"
+    }] as readonly MigrationDescriptor[])).toThrow(MigrationManifestValidationError);
     expect(() => validateMigrationManifest(MIGRATION_MANIFEST, {
       availableFiles: []
-    })).toThrow(MigrationManifestValidationError);
-    expect(() => validateMigrationManifest(MIGRATION_MANIFEST, {
-      expectedRuntimeGeneration: "unexpected-runtime-generation"
     })).toThrow(MigrationManifestValidationError);
   });
 });

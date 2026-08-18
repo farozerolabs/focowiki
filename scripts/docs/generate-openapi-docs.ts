@@ -107,7 +107,14 @@ const tagOrder = new Map(
   ].map((tag, index) => [tag, index])
 );
 const nextOperationIds: Record<string, string[]> = {
+  getDeveloperOpenApiHealth: ["getDeveloperOpenApiVersion"],
+  getDeveloperOpenApiVersion: ["getDeveloperOpenApiContract"],
+  getDeveloperOpenApiContract: ["listKnowledgeBases"],
+  listKnowledgeBases: ["getKnowledgeBase", "createKnowledgeBase"],
   createKnowledgeBase: ["createUploadSession", "getKnowledgeBase"],
+  getKnowledgeBase: ["createUploadSession", "listKnowledgeBaseTree", "updateKnowledgeBase"],
+  updateKnowledgeBase: ["getKnowledgeBase"],
+  deleteKnowledgeBase: ["getResourceOperation"],
   createUploadSession: ["addUploadManifestEntries", "getUploadSession"],
   addUploadManifestEntries: ["sealUploadManifest", "getUploadSession"],
   sealUploadManifest: ["uploadSessionEntryContent", "getUploadSession"],
@@ -115,18 +122,32 @@ const nextOperationIds: Record<string, string[]> = {
   reconcileUploadSession: ["getUploadSession", "finalizeUploadSession"],
   finalizeUploadSession: ["getUploadSession", "listKnowledgeBaseSourceFiles"],
   getUploadSession: ["uploadSessionEntryContent", "reconcileUploadSession", "finalizeUploadSession"],
-  getKnowledgeBaseSourceFile: ["getSourceFileContent", "listKnowledgeBaseSourceFileEvents"],
+  cancelUploadSession: ["createUploadSession"],
+  listSourceDirectories: ["getSourceDirectory"],
+  getSourceDirectory: ["listSourceDirectories", "listKnowledgeBaseSourceFiles"],
   moveSourceFile: ["getResourceOperation"],
   replaceSourceFileContent: ["getResourceOperation"],
   deleteSourceFile: ["getResourceOperation"],
   moveSourceDirectory: ["getResourceOperation"],
   deleteSourceDirectory: ["getResourceOperation"],
+  listKnowledgeBaseSourceFiles: ["getKnowledgeBaseSourceFile"],
+  getKnowledgeBaseSourceFile: ["getSourceFileContent", "retryKnowledgeBaseSourceFile"],
+  getSourceFileContent: ["replaceSourceFileContent"],
+  retryKnowledgeBaseSourceFile: ["getKnowledgeBaseSourceFile"],
+  listResourceOperations: ["getResourceOperation"],
   listKnowledgeBaseTree: ["getFileContentByPath", "getFileContentById"],
+  getFileById: ["getFileContentById", "listRelatedFiles"],
+  getFileContentById: ["listRelatedFiles"],
+  getFileContentByPath: ["searchGeneratedFiles"],
   searchGeneratedFiles: ["getFileContentByPath", "getFileContentById", "expandGraph"],
   expandGraph: ["getFileContentByPath", "listRelatedFiles"],
   listRelatedFiles: ["getFileContentByPath", "expandGraph"],
+  getGraphOverview: ["listKnowledgeBaseTree", "searchGeneratedFiles"],
   createWebhook: ["listWebhookDeliveries"],
-  listWebhookDeliveries: ["redeliverWebhook"]
+  listWebhooks: ["createWebhook", "listWebhookDeliveries"],
+  deleteWebhook: ["listWebhooks"],
+  listWebhookDeliveries: ["redeliverWebhook"],
+  redeliverWebhook: ["listWebhookDeliveries"]
 };
 
 async function main() {
@@ -402,8 +423,6 @@ function parameterExampleByName(name: string): string | undefined {
     knowledgeBaseId: "knowledge-base-11111111-1111-4111-8111-111111111111",
     sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
     fileId: "source-file-11111111-1111-4111-8111-111111111111",
-    nodeId: `graph-node-v1:${"1".repeat(64)}`,
-    edgeId: `graph-edge-v1:${"1".repeat(64)}`,
     webhookId: "webhook-11111111-1111-4111-8111-111111111111",
     deliveryId: "delivery-11111111-1111-4111-8111-111111111111",
     cursor: "cursor_123",

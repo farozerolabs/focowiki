@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SourceFileErrorFilterHeader } from
   "../src/components/source-file-filter-controls";
+import { SourceFileStageFilterHeader } from
+  "../src/components/source-file-filter-controls";
 import { initI18n } from "../src/i18n";
 import {
   createEmptySourceFileListFilters,
@@ -24,7 +26,29 @@ describe("source file filter controls", () => {
     expect(screen.getByRole("button", { name: "Filter Error" })
       .getAttribute("aria-pressed")).toBe("false");
   });
+
+  it("filters the current-stage column by its displayed terminal value", async () => {
+    render(<StageFilterHarness />);
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Filter Current stage" }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Available" }));
+
+    expect(screen.getByTestId("stage-filter-value").textContent).toBe("available");
+  });
 });
+
+function StageFilterHarness() {
+  const [filters, setFilters] = useState<SourceFileListFilters>(
+    createEmptySourceFileListFilters()
+  );
+
+  return (
+    <>
+      <SourceFileStageFilterHeader filters={filters} onFiltersChange={setFilters} />
+      <output data-testid="stage-filter-value">{filters.currentStage ?? "none"}</output>
+    </>
+  );
+}
 
 function ErrorFilterHarness() {
   const [filters, setFilters] = useState<SourceFileListFilters>({

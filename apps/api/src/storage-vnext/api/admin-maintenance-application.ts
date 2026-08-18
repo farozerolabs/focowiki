@@ -9,6 +9,12 @@ import type { StorageVnextSemanticAdoptionSnapshot } from
 const MAINTENANCE_RESULT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 
 export type StorageVnextAdminMaintenanceApplication = {
+  getMaintenanceStatus(request: {
+    knowledgeBaseId: string;
+  }): Promise<
+    | { available: false }
+    | { available: true; status: Awaited<ReturnType<StorageVnextMaintenanceRepository["getStatus"]>> }
+  >;
   requestMaintenance(request: {
     knowledgeBaseId: string;
     idempotencyKey: string;
@@ -74,8 +80,16 @@ function createStorageVnextAdminMaintenanceBackend(input: {
       cancelledAt: string;
     }): Promise<unknown>;
   } | null;
+  onWorkAccepted: (() => Promise<void>) | null;
 }): StorageVnextAdminMaintenanceApplication {
   return {
+    async getMaintenanceStatus(request) {
+      if (!input.status) return { available: false as const };
+      return {
+        available: true as const,
+        status: await input.status.getStatus(request)
+      };
+    },
     async requestMaintenance(request: {
       knowledgeBaseId: string;
       idempotencyKey: string;
@@ -126,6 +140,7 @@ function createStorageVnextAdminMaintenanceBackend(input: {
       const status = await input.status.getStatus({
         knowledgeBaseId: request.knowledgeBaseId
       });
+      if (accepted.outcome === "queued") await input.onWorkAccepted?.();
       return {
         available: true as const,
         result: {
@@ -206,12 +221,14 @@ export function createStorageVnextAdminMaintenanceApplication(input: {
   semanticAdoption?: Parameters<typeof createStorageVnextAdminMaintenanceBackend>[0]["semanticAdoption"];
   semanticCancellation?: Parameters<typeof createStorageVnextAdminMaintenanceBackend>[0]["semanticCancellation"];
   cancellationCleanup?: Parameters<typeof createStorageVnextAdminMaintenanceBackend>[0]["cancellationCleanup"];
+  onWorkAccepted?: () => Promise<void>;
 }): StorageVnextAdminMaintenanceApplication {
   return input.backend ?? createStorageVnextAdminMaintenanceBackend({
     ...input,
     semanticAdoption: input.semanticAdoption ?? null,
     semanticCancellation: input.semanticCancellation ?? null,
-    cancellationCleanup: input.cancellationCleanup ?? null
+    cancellationCleanup: input.cancellationCleanup ?? null,
+    onWorkAccepted: input.onWorkAccepted ?? null
   });
 }
 

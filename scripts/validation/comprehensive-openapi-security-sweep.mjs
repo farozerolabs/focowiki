@@ -38,7 +38,7 @@ let revokedKeyId = "";
 let revokedRawKey = "";
 
 try {
-  assert(operations.length === 43, `Expected 43 OpenAPI operations, found ${operations.length}.`);
+  assert(operations.length === 42, `Expected 42 OpenAPI operations, found ${operations.length}.`);
   assert(Number.isSafeInteger(maximumBodyBytes) && maximumBodyBytes > 0, "Invalid request body ceiling.");
   await loginAdmin();
   ({ id: activeKeyId, rawKey: activeRawKey } = await createKey("openapi-security-active"));

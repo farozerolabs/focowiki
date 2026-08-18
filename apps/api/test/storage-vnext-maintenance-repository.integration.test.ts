@@ -156,12 +156,12 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       requestedAt: new Date(Date.now() - 10_000).toISOString()
     });
     const failedClaim = await repository.claimOne(
-      workerClaim("maintenance-worker-progress-failure")
+      workerClaim("unified-worker-progress-failure")
     );
     expect(failedClaim).not.toBeNull();
     await expect(repository.releaseForRetry({
       operationPublicId: "maintenance-progress",
-      leaseOwner: "maintenance-worker-progress-failure",
+      leaseOwner: "unified-worker-progress-failure",
       safeErrorCode: "MAINTENANCE_PHASE_TIMEOUT"
     })).resolves.toBe("retry");
     await expect(repository.getStatus({
@@ -173,7 +173,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       safeErrorCode: "MAINTENANCE_PHASE_TIMEOUT"
     });
 
-    await expect(coordinator.runOne(workerClaim("maintenance-worker-progress")))
+    await expect(coordinator.runOne(workerClaim("unified-worker-progress")))
       .resolves.toMatchObject({ outcome: "progress" });
     const status = await repository.getStatus({
       knowledgeBaseId: "kb-maintenance-progress"
@@ -207,7 +207,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       "kb-maintenance-resume",
       11
     ));
-    await expect(coordinator.runOne(workerClaim("maintenance-worker-one")))
+    await expect(coordinator.runOne(workerClaim("unified-worker-one")))
       .resolves.toMatchObject({ outcome: "progress" });
 
     const firstCheckpoint = await sql<Array<{
@@ -223,7 +223,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       batchOrdinal: 1
     });
 
-    const claimed = await repository.claimOne(workerClaim("maintenance-worker-stale"));
+    const claimed = await repository.claimOne(workerClaim("unified-worker-stale"));
     expect(claimed?.checkpoint).toMatchObject({ cursor: "source-cursor-50" });
     await sql`
       UPDATE focowiki.operation_work_items
@@ -235,7 +235,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       retryAt: new Date(Date.now() - 1_000).toISOString(),
       limit: 10
     })).resolves.toBe(1);
-    const reclaimed = await repository.claimOne(workerClaim("maintenance-worker-restart"));
+    const reclaimed = await repository.claimOne(workerClaim("unified-worker-restart"));
     expect(reclaimed).toMatchObject({
       operationPublicId: "maintenance-resume",
       attempt: 0,
@@ -243,7 +243,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
     });
     await repository.complete({
       operationPublicId: "maintenance-resume",
-      leaseOwner: "maintenance-worker-restart",
+      leaseOwner: "unified-worker-restart",
       state: "completed",
       resultCode: "MAINTENANCE_COMPLETED",
       summary: { completedCount: 50 }
@@ -264,7 +264,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       state: "completed",
       active: false,
       lastCompletedAt: expect.any(String),
-      maintenanceRequired: false,
+      maintenanceRequired: true,
       safeErrorCode: null
     });
   });
@@ -277,7 +277,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       "kb-maintenance-cancel",
       2
     ));
-    const claim = await repository.claimOne(workerClaim("maintenance-worker-cancel"));
+    const claim = await repository.claimOne(workerClaim("unified-worker-cancel"));
     expect(claim).not.toBeNull();
     const canceledAt = new Date().toISOString();
 
@@ -288,9 +288,9 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
     })).resolves.toBe("cancelled");
     await expect(repository.saveProgress({
       operationPublicId: "maintenance-cancel",
-      leaseOwner: "maintenance-worker-cancel",
+      leaseOwner: "unified-worker-cancel",
       checkpoint: claim!.checkpoint
-    })).resolves.toBeUndefined();
+    })).resolves.toBe("terminal");
 
     const residue = await sql<Array<{ work_count: number; result_count: number }>>`
       SELECT
@@ -305,11 +305,48 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
       knowledgeBaseId: "kb-maintenance-cancel"
     })).resolves.toMatchObject({
       requestId: "maintenance-cancel",
-      state: "superseded",
+      state: "canceled",
       active: false,
       maintenanceRequired: true,
       safeErrorCode: "MAINTENANCE_CANCELLED"
     });
+  });
+
+  it("recovers a cancelled running lease after worker restart for terminal cleanup", async () => {
+    await seedKnowledgeBase("kb-maintenance-cancel-restart", 1);
+    const coordinator = createCoordinator([]);
+    await coordinator.requestMaintenance(request(
+      "cancel-restart",
+      "kb-maintenance-cancel-restart",
+      1
+    ));
+    await repository.claimOne(workerClaim("worker-before-cancel-restart"));
+    await repository.cancel({
+      knowledgeBaseId: "kb-maintenance-cancel-restart",
+      operationPublicId: "maintenance-cancel-restart",
+      canceledAt: new Date().toISOString()
+    });
+
+    await expect(repository.recoverStale({
+      expiredBefore: new Date(Date.now() + 120_000).toISOString(),
+      retryAt: new Date().toISOString(),
+      limit: 10
+    })).resolves.toBe(1);
+    const recovered = await repository.claimOne(workerClaim("worker-after-cancel-restart"));
+    expect(recovered).toMatchObject({
+      operationPublicId: "maintenance-cancel-restart",
+      state: "superseded"
+    });
+    await repository.complete({
+      operationPublicId: "maintenance-cancel-restart",
+      leaseOwner: "worker-after-cancel-restart",
+      state: "superseded",
+      resultCode: "MAINTENANCE_SUPERSEDED"
+    });
+    await expect(sql`
+      SELECT operation_public_id FROM focowiki.operation_work_items
+      WHERE operation_public_id = 'maintenance-cancel-restart'
+    `).resolves.toEqual([]);
   });
 
   function createCoordinator(phaseResults: StorageVnextMaintenancePhaseResult[]) {

@@ -108,13 +108,40 @@ describe("storage vNext active unified search", () => {
         kind: "graph",
         sourceFilePublicId: "file-a",
         evidenceFamilies: ["file_graph"],
-        matchedFields: ["file_relationship"],
-        evidenceTypes: ["file_relationship"]
+        matchedFields: ["graph_node"],
+        evidenceTypes: ["graph_node"]
       }],
       evidenceStatus: {
         completedFamilies: ["file_graph"],
         degradedFamilies: []
       }
+    });
+  });
+
+  it("reports metadata evidence when metadata scope matched a file document", async () => {
+    const transport = createTransport({
+      search: vi.fn(async () => ({
+        hits: [{
+          ...hit("file-a", "revision-a", "pages/a.md", "Alpha", "policy"),
+          contentKind: "file"
+        }],
+        estimatedTotalHits: 1,
+        processingTimeMs: 1
+      }))
+    });
+    const search = createSearch(transport, createHydration([
+      current("file-a", "revision-a", "pages/a.md", "Alpha")
+    ]));
+
+    await expect(search.search({
+      knowledgeBaseId: "kb-a",
+      query: "policy",
+      kinds: ["file"],
+      scope: "metadata",
+      limit: 10,
+      cursor: null
+    })).resolves.toMatchObject({
+      items: [{ matchedFields: ["metadata"], evidenceTypes: ["metadata"] }]
     });
   });
 

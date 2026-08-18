@@ -49,17 +49,12 @@ function createConfig(): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+    generated: {
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     },
     pagination: {
       defaultPageSize: 50,
@@ -79,21 +74,12 @@ function createConfig(): RuntimeConfig {
 describe("source file task deletion Admin API", () => {
   it("maps internal deletion outcomes to the released Admin response fields", async () => {
     const application = createPostgresStorageVnextAdminSource({
-      catalog: {
-        getKnowledgeBase: vi.fn(async () => ({ publicId: knowledgeBase.id }))
-      } as never,
-      workflow: {} as never,
-      deletion: {
-        deleteSourceTasks: vi.fn(async () => [{
+      retryCurrentDocument: vi.fn(async () => ({ outcome: "not_found" as const })),
+      removeDocumentTasks: vi.fn(async () => [{
           sourceFilePublicId: "source-file-11111111-1111-4111-8111-111111111111",
-          outcome: "hidden" as const,
-          generatedFilePublicId: "generated-file-1",
-          generatedFilePath: "pages/guide.md"
+          outcome: "failed_attempt_removed" as const,
+          activeSourceRevisionPublicId: "source-revision-active"
         }])
-      } as never,
-      runtimeSettings: {
-        getCurrentRevision: vi.fn(async () => ({ publicId: "settings-1" }))
-      } as never
     });
 
     await expect(application.deleteSourceFileTasks({
@@ -105,8 +91,8 @@ describe("source file task deletion Admin API", () => {
         results: [{
           sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
           status: "hidden",
-          generatedFileId: "generated-file-1",
-          generatedFilePath: "pages/guide.md"
+          durableOutcome: "failed_attempt_removed",
+          activeSourceRevisionPublicId: "source-revision-active"
         }],
         summary: { deleted: 0, hidden: 1, skipped: 0 }
       }

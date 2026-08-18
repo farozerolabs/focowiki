@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
+  STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
   STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION,
   createStorageVnextContentDocument,
+  createStorageVnextFileRelationshipDocument,
   createStorageVnextGraphSeedDocument
 } from "../src/storage-vnext/search/documents.js";
 import { parseStorageVnextSearchDocument } from
@@ -139,6 +141,38 @@ describe("storage vNext minimal search document schemas", () => {
     expect(JSON.stringify(document)).not.toMatch(
       /lexicalText|exactTerms|phraseTerms|explicitReferences|fingerprint|checksum/u
     );
+  });
+
+  it("round-trips compact revision-owned relationship evidence", () => {
+    const document = createStorageVnextFileRelationshipDocument({
+      knowledgeBaseId: "kb-a",
+      sourceFilePublicId: "source-a",
+      sourceRevisionPublicId: "revision-a",
+      logicalPath: "pages/a.md",
+      fileKind: "page",
+      title: "A",
+      relationPublicId: "relation-ab",
+      evidencePublicId: "evidence-ab",
+      targetSourceFilePublicId: "source-b",
+      targetSourceRevisionPublicId: "revision-b",
+      targetLogicalPath: "pages/b.md",
+      targetTitle: "B",
+      relationKind: "references",
+      direction: "outgoing",
+      searchText: "A references B",
+      rankingTerms: ["B", "pages/b.md", "B"]
+    });
+
+    expect(document).toMatchObject({
+      id: expect.stringMatching(/^file-relationship-[a-f0-9]{64}$/u),
+      schemaVersion: STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
+      documentKind: "file_relationship",
+      sourceRevisionPublicId: "revision-a",
+      targetSourceRevisionPublicId: "revision-b",
+      rankingTerms: ["B", "pages/b.md"]
+    });
+    expect(parseStorageVnextSearchDocument(structuredClone(document)))
+      .toEqual(document);
   });
 
   it("rejects mismatched content kind and segment identity", () => {

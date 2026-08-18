@@ -9,7 +9,7 @@ describe("Developer OpenAPI generation schema", () => {
       Object.values(pathItem)
     );
 
-    expect(operations).toHaveLength(43);
+    expect(operations).toHaveLength(42);
     for (const operation of operations) {
       expect(readObject(operation).description).toEqual(expect.stringMatching(/\S/));
     }
@@ -41,6 +41,21 @@ describe("Developer OpenAPI generation schema", () => {
     }
   });
 
+  it("documents how to check knowledge-base deletion completion", () => {
+    const deletion = readOperation(
+      createDeveloperOpenApiDocument(),
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}",
+      "delete"
+    );
+
+    expect(String(deletion.description)).toMatch(/operation URL remains readable/iu);
+    expect(String(deletion.description)).toMatch(/knowledge-base URL returns 404/iu);
+    expect(String(deletion.description)).not.toMatch(/both.*404|pair of 404/iu);
+    const accepted = readObject(readObject(deletion.responses)["202"]);
+    expect(String(accepted.description)).toMatch(/operation used to check completion/iu);
+    expect(String(accepted.description)).not.toMatch(/terminal|temporary operation handle/iu);
+  });
+
   it("exposes final generated-file contracts without legacy bundle components", () => {
     const document = createDeveloperOpenApiDocument();
     const schemas = document.components.schemas;
@@ -53,6 +68,19 @@ describe("Developer OpenAPI generation schema", () => {
     expect(serialized).not.toContain("BundleTreeEntry");
     expect(serialized).not.toContain("BundleFile");
     expect(serialized).not.toContain("Bundle file identifier");
+  });
+
+  it("documents mirrored graph resources with portable page paths", () => {
+    const serialized = JSON.stringify(createDeveloperOpenApiDocument());
+
+    expect(serialized).toContain("_graph/by-file/handbook/guide.json");
+    expect(serialized).toContain("_graph/by-file/reference.json");
+    expect(serialized).not.toContain(
+      "_graph/by-file/source-file-11111111-1111-4111-8111-111111111111.json"
+    );
+    expect(serialized).not.toContain(
+      "_graph/by-file/source-file-22222222-2222-4222-8222-222222222222.json"
+    );
   });
 
   it("documents the same default tree parent used by the runtime", () => {
@@ -70,8 +98,10 @@ describe("Developer OpenAPI generation schema", () => {
 
     expect(parentPath).toMatchObject({
       in: "query",
-      schema: { default: "pages" }
+      schema: { default: "root" }
     });
+    expect(operation?.parameters?.some((parameter) => parameter.name === "query"))
+      .toBe(false);
   });
 
   it("documents the public generated-file path suffix accepted by the runtime", () => {
@@ -98,6 +128,18 @@ describe("Developer OpenAPI generation schema", () => {
     }
   });
 
+  it("documents one bidirectional related-file result instead of duplicate directions", () => {
+    const direction = readObject(readObject(
+      createDeveloperOpenApiDocument().components.schemas.RelatedFile
+    ).properties).direction;
+
+    expect(readObject(direction).enum).toEqual([
+      "outgoing",
+      "incoming",
+      "bidirectional"
+    ]);
+  });
+
   it("documents runtime search errors, required queries, and source-file search kinds", () => {
     const document = createDeveloperOpenApiDocument();
     const errorCode = readObject(readObject(document.components.schemas.Error).properties).error;
@@ -118,8 +160,9 @@ describe("Developer OpenAPI generation schema", () => {
       "all",
       "page"
     ]);
-    expect(String(readParameter(search, "mode").description)).toContain("exact path");
-    expect(String(readParameter(search, "mode").description)).toContain("content vector");
+    expect(String(readParameter(search, "mode").description)).toContain("file data");
+    expect(String(readParameter(search, "mode").description)).toContain("semantic similarity");
+    expect(String(readParameter(search, "mode").description)).not.toMatch(/lane|vector family/iu);
     expect(String(readParameter(search, "query").description)).toContain("2048 UTF-8 bytes");
     expect(readObject(readObject(document.components.schemas.FileSearchResult).properties).score)
       .toMatchObject({ type: "number" });
@@ -217,15 +260,40 @@ describe("Developer OpenAPI generation schema", () => {
     expect(readObject(schemas.UpdateKnowledgeBaseRequest)).toMatchObject({
       minProperties: 1
     });
+    expect(readObject(readObject(schemas.CreateKnowledgeBaseRequest).properties).name)
+      .toMatchObject({ maxLength: 255 });
+    expect(readObject(
+      readObject(readObject(schemas.CreateKnowledgeBaseRequest).properties).description
+    ).anyOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "string", maxLength: 16_384 })
+    ]));
+    expect(readObject(readObject(schemas.UpdateKnowledgeBaseRequest).properties).name)
+      .toMatchObject({ maxLength: 255 });
+    expect(readObject(
+      readObject(readObject(schemas.UpdateKnowledgeBaseRequest).properties).description
+    ).anyOf).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "string", maxLength: 16_384 })
+    ]));
+    expect(readRequestSchemaRef(
+      document,
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}",
+      "patch"
+    )).toBe("#/components/schemas/UpdateKnowledgeBaseRequest");
+    expect(readResponseSchemaRef(
+      document,
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}",
+      "patch",
+      "200"
+    )).toBe("#/components/schemas/KnowledgeBaseMutationResponse");
     expect(readObject(readObject(schemas.MoveSourceFileRequest).properties).relativePath)
       .toMatchObject({
         maxLength: 2_048,
-        pattern: "^(?:[^/]{1,240}/)*[^/]{1,237}\\.md$"
+        pattern: "^(?:[^/]{1,1000}/)*[^/]{1,997}\\.md$"
       });
     expect(readObject(readObject(schemas.MoveSourceDirectoryRequest).properties).relativePath)
       .toMatchObject({
         maxLength: 2_048,
-        pattern: "^(?:[^/]{1,240}/)*[^/]{1,240}$"
+        pattern: "^(?:[^/]{1,1000}/)*[^/]{1,1000}$"
       });
     expect(schemas).not.toHaveProperty("MoveSourceResourceRequest");
     expect(readRequestSchemaRef(
@@ -271,11 +339,11 @@ describe("Developer OpenAPI generation schema", () => {
     const webhookEvents = readObject(readObject(webhookRequest.properties).events);
     expect(webhookEvents).toMatchObject({ minItems: 1, uniqueItems: true });
     expect(readObject(webhookEvents.items).enum).toEqual([
-      "source_file.accepted",
-      "source_file.progress",
-      "source_file.completed",
-      "source_file.failed",
-      "generation.activated",
+      "document.waiting",
+      "document.processing",
+      "document.available",
+      "document.error",
+      "document.deleting",
       "file.deleted",
       "knowledge_base.deleted"
     ]);
@@ -358,38 +426,164 @@ describe("Developer OpenAPI generation schema", () => {
       const resourceOperation = readObject(example.operation);
       const actions = readObject(resourceOperation.actions);
       expect(actions.self).toBe(
-        `/openapi/v2/knowledge-bases/kb-11111111-1111-4111-8111-111111111111/operations/${String(resourceOperation.operationId)}`
+        `/openapi/v2/knowledge-bases/knowledge-base-11111111-1111-4111-8111-111111111111/operations/${String(resourceOperation.operationId)}`
       );
     }
   });
 
-  it("publishes the graph seed exclusivity rule as machine-readable contract metadata", () => {
+  it("uses public runtime identity prefixes in every generated example", () => {
+    const serialized = JSON.stringify(createDeveloperOpenApiDocument());
+
+    expect(serialized).toContain("knowledge-base-11111111-1111-4111-8111-111111111111");
+    expect(serialized).toContain("upload-11111111-1111-4111-8111-111111111111");
+    expect(serialized).toContain("directory-11111111-1111-4111-8111-111111111111");
+    expect(serialized).toContain("source-move-11111111-1111-4111-8111-111111111111");
+    expect(serialized).toContain("directory-move-22222222-2222-4222-8222-222222222222");
+    expect(serialized).toContain("deletion-33333333-3333-4333-8333-333333333333");
+    expect(serialized).toContain("source-replace-44444444-4444-4444-8444-444444444444");
+    expect(serialized).not.toMatch(/\bkb-11111111|upload-session-11111111|source-directory-11111111|resource-operation-/u);
+  });
+
+  it("publishes the upload operation handle and progressive document counters", () => {
+    const document = createDeveloperOpenApiDocument();
+    const createOperation = readOperation(
+      document,
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions",
+      "post"
+    );
+    const responses = readObject(createOperation.responses);
+    const responseExample = readObject(
+      readObject(readObject(readObject(responses["201"]).content)["application/json"]).example
+    );
+    const session = readObject(responseExample.session);
+    const actions = readObject(session.actions);
+    expect(actions.operation).toBe(
+      `/openapi/v2/knowledge-bases/${String(session.knowledgeBaseId)}/operations/${String(session.operationId)}`
+    );
+
+    const operationSchema = readObject(
+      readObject(readObject(document.components).schemas).ResourceOperation
+    );
+    const operationProperties = readObject(operationSchema.properties);
+    expect(readObject(operationProperties.kind).enum).toEqual([
+      "upload",
+      "knowledge_base_metadata",
+      "source_file_metadata",
+      "source_file_replace",
+      "source_file_move",
+      "source_directory_move",
+      "source_file_delete",
+      "source_directory_delete",
+      "knowledge_base_delete"
+    ]);
+    expect(readObject(operationProperties.state).enum).toEqual([
+      "processing",
+      "completed",
+      "failed",
+      "cancelled",
+      "superseded"
+    ]);
+    const resultProperties = readObject(readObject(operationProperties.result).properties);
+    expect(Object.keys(resultProperties)).toEqual([
+      "totalCount",
+      "waitingCount",
+      "processingCount",
+      "availableCount",
+      "failedCount",
+      "deletingCount",
+      "cancelledCount",
+      "supersededCount"
+    ]);
+    expect(readObject(operationProperties.result).additionalProperties).toBe(false);
+  });
+
+  it("accepts one readable file ID as the only graph expansion seed", () => {
     const operation = readOperation(
       createDeveloperOpenApiDocument(),
       "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/expand",
       "get"
     );
-    expect(operation["x-exactly-one-query-parameter"]).toEqual([
-      "fileId",
-      "nodeId",
-      "edgeId",
-      "query"
+    expect(operation["x-exactly-one-query-parameter"]).toBeUndefined();
+    expect(readParameter(operation, "fileId")).toMatchObject({ required: true });
+    expect((operation.parameters as Array<Record<string, unknown>>)
+      .map((parameter) => parameter.name)).toEqual([
+      "knowledgeBaseId", "fileId", "depth", "fanout", "limit", "cursor"
     ]);
-    expect(readObject(readParameter(operation, "query").schema)).toMatchObject({
-      minLength: 2,
-      maxLength: 512
-    });
     expect(operation["x-validation-detail-codes"]).toEqual(expect.arrayContaining([
-      "GRAPH_EXPANSION_SEED_REQUIRED",
+      "GRAPH_EXPANSION_FILE_ID_REQUIRED",
       "INVALID_GRAPH_EXPANSION_DEPTH"
     ]));
   });
 
-  it("requires ancestor arrays on every generated tree entry", () => {
+  it("removes duplicate and unproducible discovery fields", () => {
+    const schemas = createDeveloperOpenApiDocument().components.schemas;
+    const search = readObject(readObject(schemas.FileSearchResult).properties);
+    expect(search).not.toHaveProperty("generatedFileId");
+    expect(search).not.toHaveProperty("generatedFilePath");
+    expect(search).not.toHaveProperty("nodeId");
+    expect(search).not.toHaveProperty("edgeId");
+
+    const related = readObject(readObject(schemas.RelatedFile).properties);
+    expect(related).not.toHaveProperty("edgeId");
+    expect(related).not.toHaveProperty("weight");
+    expect(related).not.toHaveProperty("source");
+    expect(related).not.toHaveProperty("evidence");
+
+    const expansion = readObject(readObject(schemas.GraphExpansionResponse).properties);
+    expect(expansion).not.toHaveProperty("query");
+    expect(expansion).not.toHaveProperty("seedResults");
+
+    const overview = readObject(readObject(schemas.GraphOverviewResponse).properties);
+    const summary = readObject(readObject(overview.summary).properties);
+    expect(Object.keys(summary)).toEqual(["readableFileCount", "relationshipCount"]);
+    const resources = readObject(readObject(overview.resources).properties);
+    expect(Object.keys(resources)).toEqual([
+      "graphIndexPath", "byDirectoryPath", "byFilePath"
+    ]);
+    const actions = readObject(readObject(overview.readActions).properties);
+    expect(Object.keys(actions)).toEqual([
+      "graphIndexContent",
+      "listGraphRoot",
+      "listRelationshipsByDirectory",
+      "listRelationshipsByFile"
+    ]);
+    expect(schemas).not.toHaveProperty("FileSearchNextRequestTemplates");
+    expect(readObject(readObject(schemas.FileSearchResponse).properties))
+      .not.toHaveProperty("nextRequestTemplates");
+    expect(overview).not.toHaveProperty("message");
+    expect(overview).not.toHaveProperty("nextActions");
+  });
+
+  it("keeps webhook handoffs minimal and executable", () => {
+    const document = createDeveloperOpenApiDocument();
+    const createWebhook = readOperation(document, "/openapi/v2/webhooks", "post");
+    expect((createWebhook.parameters as Array<Record<string, unknown>>)
+      .map((parameter) => parameter.name)).toEqual(["Idempotency-Key"]);
+    const webhook = readObject(document.components.schemas.Webhook);
+    const webhookProperties = readObject(webhook.properties);
+    expect(webhookProperties).not.toHaveProperty("enabled");
+    expect(webhookProperties).not.toHaveProperty("updatedAt");
+
+    const delivery = readObject(document.components.schemas.WebhookDelivery);
+    expect(readObject(delivery.properties)).toHaveProperty("payload");
+
+    const listDeliveries = readOperation(
+      document,
+      "/openapi/v2/webhook-deliveries",
+      "get"
+    );
+    expect((listDeliveries.parameters as Array<Record<string, unknown>>)
+      .map((parameter) => parameter.name)).toEqual([
+      "webhookId", "limit", "cursor"
+    ]);
+  });
+
+  it("keeps generated tree entries limited to direct browsing fields", () => {
     const schema = readObject(
       createDeveloperOpenApiDocument().components.schemas.GeneratedTreeEntry
     );
-    expect(schema.required).toEqual(expect.arrayContaining(["ancestors"]));
+    expect(schema.required).not.toContain("ancestors");
+    expect(readObject(schema.properties)).not.toHaveProperty("ancestors");
   });
 
   it("documents generated-content limits, source-content headers, and the complete contract response", () => {
@@ -428,6 +622,96 @@ describe("Developer OpenAPI generation schema", () => {
       tags: expect.any(Object),
       components: expect.any(Object)
     }));
+  });
+
+  it("describes knowledge-base metadata updates as synchronous saved changes", () => {
+    const operation = readOperation(
+      createDeveloperOpenApiDocument(),
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}",
+      "patch"
+    );
+    expect(operation.description).toContain("updated record is returned after the change is saved");
+    expect(operation.description).not.toMatch(/background|poll/iu);
+
+    const response = readObject(readObject(operation.responses)["200"]);
+    expect(response.description).toBe("Updated knowledge-base record.");
+  });
+
+  it("shows the processing state returned by accepted resource mutations", () => {
+    const document = createDeveloperOpenApiDocument();
+    for (const [path, method] of [
+      ["/openapi/v2/knowledge-bases/{knowledgeBaseId}", "delete"],
+      ["/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}", "patch"],
+      ["/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}", "delete"],
+      ["/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/content", "put"],
+      ["/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories/{directoryId}", "patch"],
+      ["/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories/{directoryId}", "delete"]
+    ] as const) {
+      const response = readObject(
+        readObject(readOperation(document, path, method).responses)["202"]
+      );
+      const example = readObject(
+        readObject(readObject(response.content)["application/json"]).example
+      );
+      expect(readObject(example.operation).state).toBe("processing");
+    }
+  });
+
+  it("publishes only upload progress fields and states that the runtime can produce", () => {
+    const document = createDeveloperOpenApiDocument();
+    const session = readObject(document.components.schemas.UploadSession);
+    expect(readObject(readObject(session.properties).state).enum).toEqual([
+      "draft",
+      "manifest_building",
+      "manifest_sealed",
+      "uploading",
+      "finalizing",
+      "completed",
+      "cancelled",
+      "expired"
+    ]);
+    const counts = readObject(document.components.schemas.UploadSessionCounts);
+    expect(readObject(counts.properties)).not.toHaveProperty("failed");
+    expect(counts.required).not.toContain("failed");
+
+    const entry = readObject(document.components.schemas.UploadSessionEntry);
+    const properties = readObject(entry.properties);
+    expect(properties).not.toHaveProperty("sourceDirectoryId");
+    expect(properties).not.toHaveProperty("generatedPath");
+    expect(properties).not.toHaveProperty("errorCode");
+    expect(readObject(properties.disposition).enum).toEqual([
+      "upload_required",
+      "skipped_existing",
+      "waiting_reservation",
+      "rejected_deleting"
+    ]);
+    expect(readObject(properties.transferState).enum).toEqual([
+      "missing",
+      "uploaded",
+      "skipped"
+    ]);
+
+    const operation = readOperation(
+      document,
+      "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}",
+      "get"
+    );
+    expect(readObject(readParameter(operation, "transferState").schema).enum).toEqual([
+      "missing",
+      "uploaded"
+    ]);
+
+    const sourceFile = readObject(document.components.schemas.SourceResourceFile);
+    const sourceFileProperties = readObject(sourceFile.properties);
+    for (const redundantField of [
+      "activeRevisionId",
+      "mutable",
+      "deletable",
+      "deleting"
+    ]) {
+      expect(sourceFileProperties).not.toHaveProperty(redundantField);
+      expect(sourceFile.required).not.toContain(redundantField);
+    }
   });
 });
 

@@ -1,105 +1,45 @@
-import { createHash, randomUUID } from "node:crypto";
-import type { RuntimeSettingsService } from "../../runtime-settings/service.js";
-import type { StorageVnextCatalogRepository } from "../catalog/ports.js";
-import type { createStorageVnextDeletionCoordinator } from "../deletion/deletion-coordinator.js";
-import type { StorageVnextWorkflowRepository } from "../workflow/postgres-repository.js";
+import type { DocumentRetryOutcome } from
+  "../../document-indexing/infrastructure/postgres-document-retry.js";
+import type { DocumentTaskRemovalOutcome } from
+  "../../document-indexing/infrastructure/postgres-document-task-removal.js";
 import type { StorageVnextAdminSourceApplication } from "./admin-source-application.js";
 
 const SOURCE_RESULT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 
 export function createPostgresStorageVnextAdminSource(input: {
-  catalog: StorageVnextCatalogRepository;
-  workflow: StorageVnextWorkflowRepository;
-  deletion: ReturnType<typeof createStorageVnextDeletionCoordinator>;
-  runtimeSettings: RuntimeSettingsService;
+  retryCurrentDocument(input: {
+    knowledgeBaseId: string;
+    sourceFilePublicId: string;
+    retriedAt: string;
+  }): Promise<DocumentRetryOutcome>;
+  removeDocumentTasks(input: {
+    knowledgeBaseId: string;
+    sourceFilePublicIds: readonly string[];
+    removedAt: string;
+    resultExpiresAt: string;
+  }): Promise<readonly DocumentTaskRemovalOutcome[]>;
 }): StorageVnextAdminSourceApplication {
   return {
     async retrySourceFile(request) {
-      const knowledgeBase = await input.catalog.getKnowledgeBase(request);
-      if (!knowledgeBase) return failure("NOT_FOUND");
-      const file = await input.catalog.getSourceFile({
+      const result = await input.retryCurrentDocument({
         knowledgeBaseId: request.knowledgeBaseId,
-        publicId: request.sourceFileId
+        sourceFilePublicId: request.sourceFileId,
+        retriedAt: new Date().toISOString()
       });
-      if (!file) return failure("NOT_FOUND");
-      if (file.status !== "failed") return failure("SOURCE_FILE_RETRY_NOT_ALLOWED");
-      const revision = await input.catalog.getCurrentSourceRevision({
-        knowledgeBaseId: request.knowledgeBaseId,
-        sourceFilePublicId: request.sourceFileId
-      });
-      if (!revision) return failure("SOURCE_FILE_RETRY_RESOURCE_CONFLICT");
-      const publicationRetry = isPublicationRetry(file, revision.publicId);
-      const settingsRevision = await input.runtimeSettings.getCurrentRevision();
-      const idempotencyKey = [
-        "source-retry",
-        file.publicId,
-        revision.publicId,
-        String(file.revision)
-      ].join(":");
-      const requestHash = createHash("sha256")
-        .update([
-          "storage-vnext-source-retry-v2",
-          request.knowledgeBaseId,
-          file.publicId,
-          revision.publicId,
-          String(file.revision)
-        ].join("\0"))
-        .digest("hex");
-      const existing = await input.workflow.findIdempotent({
-        knowledgeBaseId: request.knowledgeBaseId,
-        key: idempotencyKey,
-        requestHash
-      });
-      if (existing) {
-        return success({
-          file: toAdminFile(file, revision, existing.type === "live" ? existing.work.attempt : 0),
-          retry: {
-            kind: publicationRetry ? "publication" : "source_processing",
-            scope: "source_file",
-            coalesced: true
-          }
-        });
+      if (result.outcome === "not_found") return failure("NOT_FOUND");
+      if (result.outcome === "already_running") {
+        return failure("SOURCE_FILE_RETRY_ALREADY_RUNNING");
       }
-      const now = new Date();
-      const operationPublicId = `source-retry-${randomUUID()}`;
-      await input.workflow.enqueue({
-        publicId: operationPublicId,
-        knowledgeBaseId: request.knowledgeBaseId,
-        kind: "source",
-        searchProviderKind: null,
-        state: "queued",
-        operationRevision: 1,
-        settingsRevisionPublicId: settingsRevision.publicId,
-        attempt: 0,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        nextAttemptAt: null,
-        safeErrorCode: null,
-        checkpoint: {
-          sourceFilePublicId: file.publicId,
-          sourceRevisionPublicId: revision.publicId,
-          ...(publicationRetry ? { semanticResumeStage: "publication" } : {})
-        },
-        idempotency: {
-          key: idempotencyKey,
-          requestHash,
-          expiresAt: new Date(now.getTime() + SOURCE_RESULT_RETENTION_MS).toISOString()
-        }
-      });
-      const updated = await input.catalog.updateSourceFileState({
-        knowledgeBaseId: request.knowledgeBaseId,
-        publicId: file.publicId,
-        metadata: file.metadata,
-        status: "pending",
-        safeErrorCode: null,
-        safeErrorMessage: null,
-        modelInvocation: publicationRetry ? file.modelInvocation ?? null : null,
-        revisionCheck: { expectedRevision: file.revision }
-      });
+      if (result.outcome === "not_allowed") {
+        return failure("SOURCE_FILE_RETRY_NOT_ALLOWED");
+      }
+      if (result.outcome === "resource_conflict") {
+        return failure("SOURCE_FILE_RETRY_RESOURCE_CONFLICT");
+      }
       return success({
-        file: toAdminFile(updated, revision, 0),
+        file: toAdminRetryFile(result),
         retry: {
-          kind: publicationRetry ? "publication" : "source_processing",
+          kind: "document_processing",
           scope: "source_file",
           coalesced: false
         }
@@ -107,43 +47,39 @@ export function createPostgresStorageVnextAdminSource(input: {
     },
 
     async deleteSourceFileTasks(request) {
-      const knowledgeBase = await input.catalog.getKnowledgeBase(request);
-      if (!knowledgeBase) return failure("NOT_FOUND");
-      const settingsRevision = await input.runtimeSettings.getCurrentRevision();
       const now = new Date();
-      const results = await input.deletion.deleteSourceTasks({
+      const results = await input.removeDocumentTasks({
         knowledgeBaseId: request.knowledgeBaseId,
         sourceFilePublicIds: request.sourceFileIds,
-        deletedAt: now.toISOString(),
-        settingsRevisionPublicId: settingsRevision.publicId,
+        removedAt: now.toISOString(),
         resultExpiresAt: new Date(now.getTime() + SOURCE_RESULT_RETENTION_MS).toISOString()
       });
       const mapped = results.map((result) => {
-        const base = {
+        if (result.outcome === "source_deletion_accepted") return {
           sourceFileId: result.sourceFilePublicId,
-          status: result.outcome
+          status: "deleted",
+          durableOutcome: result.outcome
         };
-        if (result.outcome === "skipped") {
-          return { ...base, reason: result.reason };
-        }
-        if (result.outcome === "hidden") {
-          return {
-            ...base,
-            ...(result.generatedFilePublicId
-              ? { generatedFileId: result.generatedFilePublicId }
-              : {}),
-            ...(result.generatedFilePath
-              ? { generatedFilePath: result.generatedFilePath }
-              : {})
-          };
-        }
-        return base;
+        if (result.outcome === "failed_attempt_removed") return {
+          sourceFileId: result.sourceFilePublicId,
+          status: "hidden",
+          durableOutcome: result.outcome,
+          activeSourceRevisionPublicId: result.activeSourceRevisionPublicId
+        };
+        return {
+          sourceFileId: result.sourceFilePublicId,
+          status: "skipped",
+          durableOutcome: result.outcome,
+          reason: result.reason
+        };
       });
       return success({
         results: mapped,
         summary: {
-          deleted: results.filter((result) => result.outcome === "deleted").length,
-          hidden: results.filter((result) => result.outcome === "hidden").length,
+          deleted: results.filter((result) =>
+            result.outcome === "source_deletion_accepted").length,
+          hidden: results.filter((result) =>
+            result.outcome === "failed_attempt_removed").length,
           skipped: results.filter((result) => result.outcome === "skipped").length
         }
       });
@@ -151,72 +87,41 @@ export function createPostgresStorageVnextAdminSource(input: {
   };
 }
 
-function isPublicationRetry(
-  file: NonNullable<Awaited<ReturnType<StorageVnextCatalogRepository["getSourceFile"]>>>,
-  sourceRevisionPublicId: string
-): boolean {
-  const code = file.safeErrorCode ?? "";
-  const reusableModelInvocation = file.modelInvocation;
-  return (
-    code === "PUBLICATION_FAILED"
-    || code.startsWith("semantic_publication_")
-  ) && reusableModelInvocation?.sourceRevisionPublicId === sourceRevisionPublicId
-    && ["completed", "skipped"].includes(reusableModelInvocation.status);
-}
-
-function toAdminFile(
-  file: Awaited<ReturnType<StorageVnextCatalogRepository["getSourceFile"]>> extends infer T
-    ? Exclude<T, null>
-    : never,
-  revision: Awaited<ReturnType<StorageVnextCatalogRepository["getCurrentSourceRevision"]>> extends infer T
-    ? Exclude<T, null>
-    : never,
-  retryCount: number
-) {
+function toAdminRetryFile(result: Extract<DocumentRetryOutcome, { outcome: "accepted" }>) {
+  const hasPreviousOutput = result.activeSourceRevisionPublicId !== null
+    && result.activeSourceRevisionPublicId !== result.sourceRevisionPublicId
+    && result.activeGeneratedPath !== null;
   return {
-    id: file.publicId,
-    name: file.title,
-    relativePath: file.logicalPath,
-    resourceRevision: file.revision,
-    contentType: revision.contentType,
-    sizeBytes: revision.byteCount,
-    metadata: file.metadata,
-    modelSuggestions: null,
+    id: result.sourceFilePublicId,
+    name: result.title,
+    relativePath: result.logicalPath,
+    resourceRevision: result.resourceRevision,
+    contentType: result.contentType,
+    sizeBytes: result.byteCount,
+    metadata: result.metadata,
     processingStartedAt: null,
     processingEndedAt: null,
-    retryCount,
-    modelInvocationStatus: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
-      ? file.modelInvocation.status : null,
-    modelInvocationModelName: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
-      ? file.modelInvocation.modelName : null,
-    modelInvocationStartedAt: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
-      ? file.modelInvocation.startedAt : null,
-    modelInvocationEndedAt: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
-      ? file.modelInvocation.endedAt : null,
-    modelInvocationWarningCount:
-      file.modelInvocation?.sourceRevisionPublicId === revision.publicId
-        ? file.modelInvocation.warningCount : null,
-    modelInvocationErrorCode: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
-      ? file.modelInvocation.errorCode : null,
-    generatedOutputStatus: "pending",
-    generatedFileAvailable: false,
-    generatedFilePath: null,
-    generatedFileId: null,
-    graphSummary: null,
-    state: file.status === "processing" ? "running" : file.status === "failed" ? "failed" : "queued",
-    currentStage: "metadata_resolution",
-    failure: file.status === "failed"
-      ? {
-          stage: "metadata_resolution",
-          code: file.safeErrorCode ?? "SOURCE_PROCESSING_FAILED",
-          message: file.safeErrorMessage ?? "Source processing failed.",
-          occurredAt: new Date().toISOString(),
-          retryKind: "source_processing",
-          correlationId: file.publicId
-        }
-      : null,
+    retryCount: result.retryCount,
+    modelInvocationStatus: null,
+    modelInvocationModelName: null,
+    modelInvocationStartedAt: null,
+    modelInvocationEndedAt: null,
+    modelInvocationWarningCount: null,
+    modelInvocationErrorCode: null,
+    modelLayerExecutions: [],
+    generatedOutputStatus: hasPreviousOutput ? "previous_available" : "unavailable",
+    generatedFileAvailable: hasPreviousOutput,
+    generatedFilePath: hasPreviousOutput ? result.activeGeneratedPath : null,
+    generatedFileId: hasPreviousOutput ? result.sourceFilePublicId : null,
+    state: "waiting",
+    requiredWorkCount: 8,
+    completedWorkCount: 0,
+    activeWorkKinds: [],
+    blockingWorkKind: "prepare",
+    retryingWorkKind: null,
+    failure: null,
     actions: [],
-    createdAt: revision.createdAt
+    createdAt: result.createdAt
   };
 }
 

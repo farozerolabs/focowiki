@@ -6,11 +6,12 @@ import type {
   StorageVnextImmutableBodyStore,
   StorageVnextImmutableBodyWriteResult
 } from "../ownership/s3-immutable-body-store.js";
-import type { StorageVnextReleaseReadPort } from "../release/ports.js";
 import type {
   StorageVnextSourceEventReadPort,
   StorageVnextSourceEventSummary
 } from "../source-events/ports.js";
+import { presentRelatedFiles } from
+  "../../document-indexing/application/document-related-file-presentation.js";
 import { StorageVnextSourceEventRepositoryError } from
   "../source-events/postgres-repository.js";
 import type { StorageVnextAdminCoreApplication } from "./admin-core-application.js";
@@ -21,7 +22,7 @@ import type { StorageVnextKnowledgeBaseCreationPort } from
 
 type GeneratedRow = {
   logical_path: string;
-  entry_kind: "source" | "index" | "directory" | "schema" | "log" | "graph";
+  entry_kind: "source" | "index" | "directory" | "log" | "graph";
   source_file_public_id: string | null;
   checksum_sha256: string;
   object_id: string;
@@ -42,7 +43,6 @@ type MetadataRow = {
 export function createPostgresStorageVnextAdminCore(input: {
   sql: DatabaseClient;
   catalog: StorageVnextCatalogRepository;
-  releases: StorageVnextReleaseReadPort;
   resources: StorageVnextAdminResourceRead;
   sourceEvents: StorageVnextSourceEventReadPort;
   mutations: StorageVnextAdminMutationApplication;
@@ -59,27 +59,32 @@ export function createPostgresStorageVnextAdminCore(input: {
         name: request.name,
         description: request.description
       });
-      return success(toKnowledgeBase(record, null));
+      return success(toKnowledgeBase(record, 0));
     },
 
     async getKnowledgeBase(request) {
       const record = await input.catalog.getKnowledgeBase(request);
       if (!record) return notFound();
-      return success(toKnowledgeBase(
-        record,
-        await input.releases.getActiveRoot(request.knowledgeBaseId)
-      ));
+      return success(toKnowledgeBase(record, await readActivationRevision(
+        input.sql,
+        request.knowledgeBaseId
+      )));
     },
 
     async deleteKnowledgeBase(request) {
       const record = await input.catalog.getKnowledgeBase(request);
       if (!record) return notFound();
-      await input.mutations.deleteKnowledgeBase({
+      const result = await input.mutations.deleteKnowledgeBase({
         knowledgeBaseId: request.knowledgeBaseId,
         idempotencyKey: `admin-delete-${request.knowledgeBaseId}-${record.revision}`,
         expectedResourceRevision: record.revision
       });
-      return success({ deleted: true });
+      return success({
+        accepted: true,
+        operationId: result.operation.id,
+        affectedDirectoryCount: result.affectedDirectoryCount,
+        affectedFileCount: result.affectedFileCount
+      });
     },
 
     async readGeneratedContent(request) {
@@ -93,7 +98,7 @@ export function createPostgresStorageVnextAdminCore(input: {
         maximumBytes: input.maximumGeneratedBytes
       });
       return success({
-        file: generatedFile(row),
+        file: generatedFile(row, bytes),
         relationships: request.includeRelationships && row.source_file_public_id
           ? await readRelationships(input.sql, {
               knowledgeBaseId: request.knowledgeBaseId,
@@ -111,28 +116,29 @@ export function createPostgresStorageVnextAdminCore(input: {
         public_id: string | null;
         revision: number | string | null;
       }>>`
-        SELECT entry.source_file_public_id AS public_id, source.revision
-        FROM focowiki.release_roots root
-        CROSS JOIN LATERAL focowiki.resolve_release_catalog(root.public_id) entry
+        SELECT page.source_file_public_id AS public_id, source.revision
+        FROM focowiki.generated_page_heads page
         LEFT JOIN focowiki.source_files source
-          ON source.knowledge_base_id = root.knowledge_base_id
-         AND source.public_id = entry.source_file_public_id
+          ON source.knowledge_base_id = page.knowledge_base_id
+         AND source.public_id = page.source_file_public_id
          AND source.deleted_at IS NULL
-        WHERE root.knowledge_base_id = ${request.knowledgeBaseId}
-          AND root.root_role = 'active'
-          AND entry.logical_path = ${request.logicalPath}
+        WHERE page.knowledge_base_id = ${request.knowledgeBaseId}
+          AND page.logical_path = ${request.logicalPath}
         LIMIT 1
       `;
       const row = rows[0];
       if (!row) return notFound();
       if (!row.public_id || row.revision === null) return notDeletable();
-      await input.mutations.deleteSourceFile({
+      const result = await input.mutations.deleteSourceFile({
         knowledgeBaseId: request.knowledgeBaseId,
         sourceFileId: row.public_id,
         idempotencyKey: `admin-delete-${row.public_id}-${row.revision}`,
         expectedResourceRevision: count(row.revision)
       });
-      return success({ deleted: true, publicationQueued: true });
+      return success({
+        accepted: true,
+        operationId: result.operation.id
+      });
     },
 
     async listFiles(request) {
@@ -140,6 +146,7 @@ export function createPostgresStorageVnextAdminCore(input: {
         pathQuery: request.filters.fileNameQuery ?? null,
         sourceFileIdPrefix: request.filters.fileIdQuery ?? null,
         state: request.filters.state ?? null,
+        blockingWorkKind: null,
         currentStage: request.filters.currentStage ?? null,
         generatedOutputStatus: request.filters.generatedOutputStatus ?? null,
         modelInvocationStatus: request.filters.modelInvocationStatus ?? null,
@@ -172,7 +179,9 @@ export function createPostgresStorageVnextAdminCore(input: {
       return success({
         items,
         nextCursor: page.nextCursor,
-        refreshAfterMs: items.some((item) => item.state === "queued" || item.state === "running")
+        refreshAfterMs: items.some((item) =>
+          item.state === "waiting" || item.state === "processing"
+          || item.state === "deleting")
           ? 2_000
           : 30_000
       });
@@ -213,27 +222,25 @@ async function readGeneratedRow(
   input: { knowledgeBaseId: string; logicalPath: string }
 ) {
   const rows = await sql<GeneratedRow[]>`
-    SELECT entry.logical_path, entry.entry_kind, entry.source_file_public_id,
-           entry.checksum_sha256, entry.object_id, entry.byte_count,
+    SELECT page.logical_path, page.entry_kind, page.source_file_public_id,
+           page.checksum_sha256, page.object_id, page.byte_count,
            registration.storage_key, registration.content_type,
            registration.object_format, source.title AS source_title,
            source.metadata AS source_metadata,
            focowiki.public_generated_file_id(
-             root.knowledge_base_id,
-             entry.logical_path
+             page.knowledge_base_id,
+             page.logical_path
            ) AS generated_file_public_id
-    FROM focowiki.release_roots root
-    CROSS JOIN LATERAL focowiki.resolve_release_catalog(root.public_id) entry
+    FROM focowiki.generated_page_heads page
     JOIN focowiki.object_registrations registration
-      ON registration.object_id = entry.object_id
+      ON registration.object_id = page.object_id
      AND registration.state = 'verified'
     LEFT JOIN focowiki.source_files source
-      ON source.knowledge_base_id = root.knowledge_base_id
-     AND source.public_id = entry.source_file_public_id
+      ON source.knowledge_base_id = page.knowledge_base_id
+     AND source.public_id = page.source_file_public_id
      AND source.deleted_at IS NULL
-    WHERE root.knowledge_base_id = ${input.knowledgeBaseId}
-      AND root.root_role = 'active'
-      AND entry.logical_path = ${input.logicalPath}
+    WHERE page.knowledge_base_id = ${input.knowledgeBaseId}
+      AND page.logical_path = ${input.logicalPath}
     LIMIT 1
   `;
   return rows[0] ?? null;
@@ -258,53 +265,114 @@ async function readRelationships(
   input: { knowledgeBaseId: string; sourceFileId: string; limit: number }
 ) {
   const rows = await sql<Array<{
+    relation_public_id: string;
     source_file_public_id: string;
     logical_path: string;
     title: string;
-    relation: string;
-    weight: number | string;
-    reason: string | null;
-    direction: "incoming" | "outgoing";
+    relation_kind: "references" | "related";
+    evidence_public_id: string;
+    evidence_source_file_public_id: string;
+    evidence_kind: "markdown_link" | "okf_metadata" | "stable_alias" | "semantic";
+    evidence: Record<string, unknown>;
   }>>`
-    WITH seeds AS (
-      SELECT public_id FROM focowiki.graph_nodes
-      WHERE knowledge_base_id = ${input.knowledgeBaseId}
-        AND source_file_public_id = ${input.sourceFileId}
-    )
-    SELECT related.source_file_public_id, generated.logical_path,
-           related.label AS title, edge.relation, edge.weight, edge.reason,
-           CASE WHEN edge.from_node_public_id IN (SELECT public_id FROM seeds)
-             THEN 'outgoing' ELSE 'incoming' END AS direction
-    FROM focowiki.graph_edges edge
-    JOIN focowiki.graph_nodes related
-      ON related.knowledge_base_id = edge.knowledge_base_id
-     AND related.public_id = CASE
-       WHEN edge.from_node_public_id IN (SELECT public_id FROM seeds)
-         THEN edge.to_node_public_id ELSE edge.from_node_public_id END
-    JOIN focowiki.release_roots root
-      ON root.knowledge_base_id = related.knowledge_base_id
-     AND root.root_role = 'active'
-    JOIN LATERAL focowiki.resolve_release_catalog(root.public_id) generated
-      ON generated.source_file_public_id = related.source_file_public_id
-    WHERE edge.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (edge.from_node_public_id IN (SELECT public_id FROM seeds)
-        OR edge.to_node_public_id IN (SELECT public_id FROM seeds))
-    ORDER BY edge.weight DESC, related.source_file_public_id
-    LIMIT ${input.limit}
+    SELECT relation.public_id AS relation_public_id,
+           CASE WHEN relation.first_source_file_public_id = ${input.sourceFileId}
+             THEN relation.second_source_file_public_id
+             ELSE relation.first_source_file_public_id END AS source_file_public_id,
+           page.logical_path, presentation.title,
+           relation.relation_kind, evidence.public_id AS evidence_public_id,
+           evidence.source_file_public_id AS evidence_source_file_public_id,
+           CASE evidence.evidence_kind
+             WHEN 'explicit_reference' THEN 'markdown_link'
+             WHEN 'title_alias' THEN 'stable_alias'
+             ELSE 'semantic'
+           END AS evidence_kind,
+           evidence.evidence
+    FROM focowiki.canonical_file_relations relation
+    JOIN focowiki.relation_directed_evidence evidence
+      ON evidence.knowledge_base_id = relation.knowledge_base_id
+     AND evidence.pair_public_id = relation.pair_public_id
+     AND evidence.active AND evidence.retired_at IS NULL
+    JOIN focowiki.source_files source
+      ON source.knowledge_base_id = relation.knowledge_base_id
+     AND source.public_id = CASE
+       WHEN relation.first_source_file_public_id = ${input.sourceFileId}
+         THEN relation.second_source_file_public_id
+       ELSE relation.first_source_file_public_id END
+     AND source.deleted_at IS NULL
+    JOIN focowiki.source_file_active_revisions active
+      ON active.knowledge_base_id = source.knowledge_base_id
+     AND active.source_file_public_id = source.public_id
+     AND active.active_source_revision_public_id IS NOT NULL
+    JOIN focowiki.source_revision_presentations presentation
+      ON presentation.knowledge_base_id = active.knowledge_base_id
+     AND presentation.source_file_public_id = active.source_file_public_id
+     AND presentation.source_revision_public_id
+       = active.active_source_revision_public_id
+    JOIN focowiki.generated_page_heads page
+      ON page.knowledge_base_id = active.knowledge_base_id
+     AND page.source_file_public_id = active.source_file_public_id
+     AND page.source_revision_public_id = active.active_source_revision_public_id
+     AND page.entry_kind = 'source'
+    WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
+      AND relation.active AND relation.retired_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM focowiki.source_file_active_revisions endpoint
+        WHERE endpoint.knowledge_base_id = relation.knowledge_base_id
+          AND endpoint.source_file_public_id
+            = relation.first_source_file_public_id
+          AND endpoint.active_source_revision_public_id
+            = relation.first_source_revision_public_id
+      )
+      AND EXISTS (
+        SELECT 1 FROM focowiki.source_file_active_revisions endpoint
+        WHERE endpoint.knowledge_base_id = relation.knowledge_base_id
+          AND endpoint.source_file_public_id
+            = relation.second_source_file_public_id
+          AND endpoint.active_source_revision_public_id
+            = relation.second_source_revision_public_id
+      )
+      AND (${input.sourceFileId} IN (
+        relation.first_source_file_public_id,
+        relation.second_source_file_public_id
+      ))
+    ORDER BY (CASE WHEN relation.first_source_file_public_id = ${input.sourceFileId}
+      THEN relation.second_source_file_public_id
+      ELSE relation.first_source_file_public_id END) COLLATE "C",
+      evidence.public_id COLLATE "C"
   `;
-  return rows.map((row) => ({
-    fileId: row.source_file_public_id,
-    sourceFileId: row.source_file_public_id,
-    generatedFileId: row.source_file_public_id,
-    path: row.logical_path,
-    title: row.title,
-    relationType: row.relation,
-    direction: row.direction,
-    weight: Number(row.weight),
-    reason: row.reason ?? "Related source-backed file",
-    source: "graph",
-    contentAvailable: true
-  }));
+  const related = presentRelatedFiles({
+    sourceFilePublicId: input.sourceFileId,
+    evidence: rows.map((row) => ({
+      relationPublicId: row.relation_public_id,
+      targetSourceFilePublicId: row.source_file_public_id,
+      direction: row.evidence_source_file_public_id === input.sourceFileId
+        ? "outgoing" as const : "incoming" as const,
+      evidencePublicId: row.evidence_public_id,
+      evidenceKind: row.evidence_kind,
+      evidence: row.evidence
+    }))
+  });
+  const details = new Map(rows.map((row) => [row.source_file_public_id, row]));
+  return related.slice(0, input.limit).map((item) => {
+    const detail = details.get(item.targetSourceFilePublicId);
+    if (!detail) throw new Error("Related file presentation lost its source row");
+    const reason = item.evidence.find((evidence) =>
+      typeof evidence.value.reason === "string")?.value.reason;
+    return {
+      fileId: item.targetSourceFilePublicId,
+      sourceFileId: item.targetSourceFilePublicId,
+      generatedFileId: item.targetSourceFilePublicId,
+      path: detail.logical_path,
+      title: detail.title,
+      relationType: detail.relation_kind,
+      direction: item.direction,
+      weight: 1,
+      reason: typeof reason === "string" ? reason : "Source-backed file relation",
+      source: "graph",
+      contentAvailable: true
+    };
+  });
 }
 
 function generatedDescriptor(row: GeneratedRow): StorageVnextImmutableBodyWriteResult {
@@ -318,12 +386,21 @@ function generatedDescriptor(row: GeneratedRow): StorageVnextImmutableBodyWriteR
     checksum: row.checksum_sha256,
     byteCount: count(row.byte_count),
     contentType: row.content_type,
-    objectFormat: row.object_format as StorageVnextImmutableBodyWriteResult["objectFormat"]
+    objectFormat: row.object_format as StorageVnextImmutableBodyWriteResult["objectFormat"],
+    requests: {
+      put: 0,
+      head: 0,
+      verification: 0,
+      attemptedBytes: 0,
+      retries: 0,
+      latencyMilliseconds: 0
+    }
   };
 }
 
-function generatedFile(row: GeneratedRow) {
+function generatedFile(row: GeneratedRow, bytes: Uint8Array) {
   const metadata = row.source_metadata ?? {};
+  const portable = portableJsonPresentation(row, bytes);
   return {
     id: row.source_file_public_id ?? row.generated_file_public_id,
     sourceFileId: row.source_file_public_id,
@@ -332,12 +409,42 @@ function generatedFile(row: GeneratedRow) {
     contentType: row.content_type,
     sizeBytes: count(row.byte_count),
     okfType: typeof metadata.type === "string" ? metadata.type : null,
-    title: row.source_title ?? nameOf(row.logical_path),
+    title: row.source_title ?? portable.title ?? nameOf(row.logical_path),
+    portableScopePath: portable.scopePath,
     description: typeof metadata.description === "string" ? metadata.description : null,
     tags: [],
     frontmatter: metadata,
     deletable: row.entry_kind === "source" && Boolean(row.source_file_public_id)
   };
+}
+
+function portableJsonPresentation(
+  row: Pick<GeneratedRow, "content_type" | "logical_path">,
+  bytes: Uint8Array
+): { title: string | null; scopePath: string | null } {
+  if (!row.content_type.toLocaleLowerCase("en-US").includes("json")
+    && !row.logical_path.toLocaleLowerCase("en-US").endsWith(".json")) {
+    return { title: null, scopePath: null };
+  }
+  try {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return { title: null, scopePath: null };
+    }
+    const record = value as Record<string, unknown>;
+    return {
+      title: typeof record.title === "string" && record.title.trim()
+        ? record.title : null,
+      scopePath: typeof record.scopePath === "string" && record.scopePath.trim()
+        ? record.scopePath
+        : typeof record.prefix === "string" && record.prefix.trim()
+          ? record.prefix
+          : typeof record.path === "string" && record.path.trim()
+            ? record.path : null
+    };
+  } catch {
+    return { title: null, scopePath: null };
+  }
 }
 
 function adminSourceFile(
@@ -347,7 +454,7 @@ function adminSourceFile(
 ) {
   const lifecycle = deriveSourceFileLifecycle({
     processingStatus: file.processingStatus,
-    processingStage: file.currentStage,
+    blockingWorkKind: file.blockingWorkKind,
     generatedOutputStatus: file.generatedOutputStatus,
     generatedPath: file.generatedPath,
     failure: file.terminalFailure
@@ -360,36 +467,43 @@ function adminSourceFile(
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
     metadata,
-    modelSuggestions: null,
-    processingStartedAt: file.createdAt,
-    processingEndedAt: file.processingStatus === "completed" || file.processingStatus === "failed"
-      ? file.updatedAt ?? file.createdAt
-      : null,
-    retryCount: 0,
+    processingStartedAt: file.processingStartedAt,
+    processingEndedAt: file.processingEndedAt,
+    retryCount: file.retryCount ?? 0,
     modelInvocationStatus: file.modelInvocationStatus ?? null,
     modelInvocationModelName: file.modelInvocationModelName ?? null,
     modelInvocationStartedAt: file.modelInvocationStartedAt ?? null,
     modelInvocationEndedAt: file.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: file.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: file.modelInvocationErrorCode ?? null,
+    modelLayerExecutions: file.modelLayerExecutions ?? [],
     generatedOutputStatus: file.generatedOutputStatus,
-    generatedFileAvailable: file.generatedOutputStatus === "visible",
+    generatedFileAvailable: file.generatedOutputStatus === "current_available"
+      || file.generatedOutputStatus === "previous_available",
     generatedFilePath: file.generatedPath,
     generatedFileId: file.generatedPath ? file.id : null,
-    graphSummary: null,
     state: lifecycle.state,
-    currentStage: lifecycle.currentStage,
+    requiredWorkCount: file.requiredWorkCount,
+    completedWorkCount: file.completedWorkCount,
+    activeWorkKinds: file.activeWorkKinds,
+    blockingWorkKind: lifecycle.blockingWorkKind,
+    retryingWorkKind: file.retryingWorkKind,
     failure: lifecycle.failure,
     actions: lifecycle.actions.map((kind) => ({
       kind,
-      method: kind === "view_failure_details" ? null : kind === "open_generated_file" ? "GET" : "POST",
+      method: kind === "view_failure_details" ? null
+        : kind === "open_generated_file" ? "GET"
+          : kind === "replace_source_content" ? "PUT" : "POST",
       href: kind === "view_failure_details" ? null
         : kind === "open_generated_file" && file.generatedPath
           ? `/admin/api/knowledge-bases/${encodeURIComponent(file.knowledgeBaseId)}`
             + `/files/content?path=${encodeURIComponent(file.generatedPath)}`
+          : kind === "replace_source_content"
+            ? `/admin/api/knowledge-bases/${encodeURIComponent(file.knowledgeBaseId)}`
+              + `/source-files/${encodeURIComponent(file.id)}/content`
           : `/admin/api/knowledge-bases/${encodeURIComponent(file.knowledgeBaseId)}`
             + `/source-files/${encodeURIComponent(file.id)}/retry`,
-      scope: kind === "retry_publication" ? "knowledge_base_publication" : "source_file"
+      scope: "source_file"
     })),
     createdAt: file.createdAt
   };
@@ -408,17 +522,25 @@ function adminSourceEvent(event: StorageVnextSourceEventSummary) {
   };
 }
 
+async function readActivationRevision(sql: DatabaseClient, knowledgeBaseId: string) {
+  const rows = await sql<Array<{ activation_revision: number | string }>>`
+    SELECT current_sequence AS activation_revision
+    FROM focowiki.knowledge_base_sequences
+    WHERE knowledge_base_id = ${knowledgeBaseId}
+  `;
+  return rows[0] ? count(rows[0].activation_revision) : 0;
+}
+
 function toKnowledgeBase(
   record: { publicId: string; name: string; description: string | null; revision: number; createdAt: string; updatedAt: string },
-  root: Awaited<ReturnType<StorageVnextReleaseReadPort["getActiveRoot"]>>
+  activationRevision: number
 ) {
   return {
     id: record.publicId,
     name: record.name,
     description: record.description,
-    activeGenerationId: root?.publicId ?? null,
+    activeContentRevision: activationRevision,
     resourceRevision: record.revision,
-    catalogGeneration: root?.revision ?? 0,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };

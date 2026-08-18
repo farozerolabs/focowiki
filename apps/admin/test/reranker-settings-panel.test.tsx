@@ -13,6 +13,7 @@ import {
   testRerankerConfiguration,
   updateRerankerConfiguration
 } from "@/lib/admin-api";
+import { showAdminToast } from "@/hooks/use-admin-toast";
 
 vi.mock("@/lib/admin-api", () => ({
   fetchRerankerConfigurations: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("@/lib/admin-api", () => ({
   resumeRerankerConfiguration: vi.fn(),
   deleteRerankerConfiguration: vi.fn()
 }));
+vi.mock("@/hooks/use-admin-toast", () => ({ showAdminToast: vi.fn() }));
 
 describe("RerankerSettingsPanel", () => {
   beforeEach(async () => {
@@ -97,6 +99,9 @@ describe("RerankerSettingsPanel", () => {
     }));
 
     fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() => expect(showAdminToast).toHaveBeenCalledWith({
+      title: "Reranker model test succeeded"
+    }));
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => {
       expect(testRerankerConfiguration).toHaveBeenCalledWith("reranker-config-a");

@@ -89,6 +89,22 @@ describe("storage vNext maintenance status contract", () => {
     });
   });
 
+  it("reports an explicit cancellation instead of calling it superseded", () => {
+    expect(createMapper).toBeTypeOf("function");
+    if (!createMapper) return;
+    expect(createMapper().mapTerminal({
+      operationPublicId: "maintenance-status-cancelled",
+      terminalState: "superseded",
+      resultCode: "MAINTENANCE_CANCELLED",
+      completedAt: "2026-08-01T10:01:00.000Z",
+      summary: {}
+    })).toMatchObject({
+      state: "canceled",
+      safeErrorCode: "MAINTENANCE_CANCELLED",
+      maintenanceRequired: true
+    });
+  });
+
   it("reports a legacy active navigation profile through the existing field", () => {
     expect(createMapper).toBeTypeOf("function");
     if (!createMapper) return;

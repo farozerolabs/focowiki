@@ -65,6 +65,9 @@ export function SourceResourceEditor(props: {
     { id: null, path: "" }
   ]);
   const [directories, setDirectories] = useState<SourceDirectory[]>([]);
+  const [directoryCursor, setDirectoryCursor] = useState<string | null>(null);
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [directoryLoadFailed, setDirectoryLoadFailed] = useState(false);
   const currentDestination = directoryStack.at(-1) ?? { id: null, path: "" };
   const isReplacement = props.request?.action === "replace";
 
@@ -74,6 +77,8 @@ export function SourceResourceEditor(props: {
     setValue("");
     setContent("");
     setErrorKey("");
+    setDirectoryLoadFailed(false);
+    setDirectoryCursor(null);
     setDirectoryStack([{ id: null, path: "" }]);
     if (!props.request) return () => { active = false; };
 
@@ -85,7 +90,11 @@ export function SourceResourceEditor(props: {
           knowledgeBaseId: props.knowledgeBaseId,
           sourceFileId: node.sourceFileId
         });
-        if (!active || !file?.resourceRevision) return;
+        if (!active) return;
+        if (!file?.resourceRevision) {
+          setErrorKey("errors.notFound");
+          return;
+        }
         const next: ResourceSnapshot = {
           id: file.id,
           kind: "file",
@@ -125,22 +134,71 @@ export function SourceResourceEditor(props: {
         });
         setValue(result.directory.name);
       }
-    })();
+    })().catch((error: unknown) => {
+      if (!active) return;
+      setErrorKey(readErrorMessageKey(error));
+    });
     return () => { active = false; };
   }, [props.knowledgeBaseId, props.request]);
 
   useEffect(() => {
     if (props.request?.action !== "move") return;
     let active = true;
+    setDirectoryLoadFailed(false);
+    setDirectories([]);
+    setDirectoryCursor(null);
+    setDirectoryLoading(true);
     void listSourceDirectories({
       knowledgeBaseId: props.knowledgeBaseId,
       parentDirectoryId: currentDestination.id
     }).then((result) => {
       if (!active) return;
-      setDirectories("messageKey" in result ? [] : result.items);
+      setDirectoryLoading(false);
+      if ("messageKey" in result) {
+        setDirectories([]);
+        setDirectoryCursor(null);
+        setDirectoryLoadFailed(true);
+        setErrorKey(result.messageKey);
+        return;
+      }
+      setDirectories(result.items);
+      setDirectoryCursor(result.nextCursor);
+    }).catch(() => {
+      if (!active) return;
+      setDirectoryLoading(false);
+      setDirectories([]);
+      setDirectoryCursor(null);
+      setDirectoryLoadFailed(true);
+      setErrorKey("errors.loadDirectoriesFailed");
     });
     return () => { active = false; };
   }, [currentDestination.id, props.knowledgeBaseId, props.request?.action]);
+
+  async function loadMoreDirectories() {
+    if (!directoryCursor || directoryLoading) return;
+    setDirectoryLoading(true);
+    let result;
+    try {
+      result = await listSourceDirectories({
+        knowledgeBaseId: props.knowledgeBaseId,
+        parentDirectoryId: currentDestination.id,
+        cursor: directoryCursor
+      });
+    } catch {
+      setDirectoryLoading(false);
+      setDirectoryLoadFailed(true);
+      setErrorKey("errors.loadDirectoriesFailed");
+      return;
+    }
+    setDirectoryLoading(false);
+    if ("messageKey" in result) {
+      setDirectoryLoadFailed(true);
+      setErrorKey(result.messageKey);
+      return;
+    }
+    setDirectories((current) => [...current, ...result.items]);
+    setDirectoryCursor(result.nextCursor);
+  }
 
   const targetPath = useMemo(() => {
     if (!snapshot) return "";
@@ -151,7 +209,7 @@ export function SourceResourceEditor(props: {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!snapshot) return;
-    if (snapshot.kind === "file" && props.request?.action === "rename" && !value.trim().endsWith(".md")) {
+    if (snapshot.kind === "file" && props.request?.action === "rename" && !isMarkdownFileName(value)) {
       setErrorKey("resourceEditing.markdownNameRequired");
       return;
     }
@@ -179,16 +237,57 @@ export function SourceResourceEditor(props: {
           });
     setBusy(false);
     if ("messageKey" in result) {
-      setErrorKey(result.messageKey);
+      const messageKey = result.messageKey === "errors.resourceRevisionConflict"
+        ? await refreshSnapshotAfterRevisionConflict(snapshot)
+        : result.messageKey;
+      setErrorKey(messageKey);
       showAdminToast({
         title: t("resourceEditing.failedTitle"),
-        description: t(result.messageKey),
+        description: t(messageKey),
         variant: "destructive"
       });
       return;
     }
     props.onAccepted(result.operation);
     props.onClose();
+  }
+
+  async function refreshSnapshotAfterRevisionConflict(
+    staleSnapshot: ResourceSnapshot
+  ): Promise<string> {
+    if (staleSnapshot.kind === "file") {
+      let file;
+      try {
+        file = await fetchSourceFile({
+          knowledgeBaseId: props.knowledgeBaseId,
+          sourceFileId: staleSnapshot.id
+        });
+      } catch (error) {
+        return readErrorMessageKey(error);
+      }
+      if (!file?.resourceRevision) return "errors.notFound";
+      setSnapshot({
+        id: file.id,
+        kind: "file",
+        name: file.name,
+        relativePath: file.relativePath,
+        resourceRevision: file.resourceRevision
+      });
+      return "resourceEditing.revisionRefreshed";
+    }
+    const result = await fetchSourceDirectory({
+      knowledgeBaseId: props.knowledgeBaseId,
+      sourceDirectoryId: staleSnapshot.id
+    });
+    if ("messageKey" in result) return result.messageKey;
+    setSnapshot({
+      id: result.directory.directoryId,
+      kind: "directory",
+      name: result.directory.name,
+      relativePath: result.directory.relativePath,
+      resourceRevision: result.directory.resourceRevision
+    });
+    return "resourceEditing.revisionRefreshed";
   }
 
   const commonForm = (
@@ -231,10 +330,21 @@ export function SourceResourceEditor(props: {
                 </Button>
               );
             })}
-            {directories.length === 0 ? (
+            {directories.length === 0 && !directoryLoadFailed ? (
               <p className="px-2 py-4 text-sm text-muted-foreground">
                 {t("resourceEditing.noDirectories")}
               </p>
+            ) : null}
+            {directoryCursor ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full justify-start"
+                disabled={directoryLoading}
+                onClick={() => void loadMoreDirectories()}
+              >
+                {t("detail.fileTreeSearchLoadMore")}
+              </Button>
             ) : null}
           </div>
         </div>
@@ -322,6 +432,16 @@ export function SourceResourceEditor(props: {
       </DialogContent>
     </Dialog>
   ) : null;
+}
+
+export function isMarkdownFileName(value: string): boolean {
+  return value.trim().toLowerCase().endsWith(".md");
+}
+
+function readErrorMessageKey(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : "errors.serviceUnavailable";
 }
 
 function parentPath(path: string): string {

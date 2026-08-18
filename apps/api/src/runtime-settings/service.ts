@@ -27,23 +27,24 @@ import {
   serializePublicModel,
   type ModelApiMode,
   type RuntimeGraphSettings,
+  type RuntimeGeneratedSettings,
   type RuntimeMaintenanceSettings,
   type RuntimeModelConfigDraft,
   type RuntimeModelConfigPrivate,
   type RuntimeModelConfigPublic,
   type RuntimeModelConfigUpdate,
-  type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
   type RuntimeSemanticSettings,
   type RuntimeSearchSettings,
   type RuntimeSettingKey,
-  type RuntimeSettingsSnapshot
+  type RuntimeSettingsSnapshot,
+  type RuntimeWorkerPublicSettings
 } from "./types.js";
 import {
   createRuntimeSettingsDefaults,
   sanitizeGraphSettings,
   sanitizeMaintenanceSettings,
-  sanitizePublicationSettings,
+  sanitizeGeneratedSettings,
   sanitizeRateLimitSettings,
   sanitizeSemanticSettings,
   sanitizeSearchSettings,
@@ -51,7 +52,7 @@ import {
   validateGraphSettings,
   validateMaintenanceSettings,
   validateModelDraft,
-  validatePublicationSettings,
+  validateGeneratedSettings,
   validateRateLimitSettings,
   validateSemanticSettings,
   validateSearchSettings,
@@ -73,8 +74,8 @@ export type RuntimeSettingsService = {
   getMaintenanceRevision: () => Promise<number>;
   getPublicSnapshot: () => Promise<{
     rateLimits: RuntimeRateLimitSettings;
-    worker: RuntimeSettingsSnapshot["worker"];
-    publication: RuntimePublicationSettings;
+    worker: RuntimeWorkerPublicSettings;
+    generated: RuntimeGeneratedSettings;
     graph: RuntimeGraphSettings;
     maintenance: RuntimeMaintenanceSettings;
     semantic: RuntimeSemanticSettings;
@@ -89,8 +90,8 @@ export type RuntimeSettingsService = {
     value: RuntimeSettingsSnapshot["worker"];
     actor?: string | null | undefined;
   }) => Promise<RuntimeSettingsSnapshot>;
-  updatePublication: (input: {
-    value: RuntimePublicationSettings;
+  updateGenerated: (input: {
+    value: RuntimeGeneratedSettings;
     actor?: string | null | undefined;
   }) => Promise<RuntimeSettingsSnapshot>;
   updateGraph: (input: {
@@ -165,10 +166,10 @@ export function createRuntimeSettingsService(input: {
         source: "bootstrap"
       });
     }
-    if (!existingKeys.has("publication")) {
+    if (!existingKeys.has("generated")) {
       await input.repository.upsertSetting({
-        key: "publication",
-        value: defaults.publication,
+        key: "generated",
+        value: defaults.generated,
         source: "bootstrap"
       });
     }
@@ -221,7 +222,7 @@ export function createRuntimeSettingsService(input: {
     const [
       rateLimitsRecord,
       workerRecord,
-      publicationRecord,
+      generatedRecord,
       graphRecord,
       maintenanceRecord,
       semanticRecord,
@@ -230,7 +231,7 @@ export function createRuntimeSettingsService(input: {
     ] = await Promise.all([
       input.repository.getSetting("rate_limits"),
       input.repository.getSetting("worker"),
-      input.repository.getSetting("publication"),
+      input.repository.getSetting("generated"),
       input.repository.getSetting("graph"),
       input.repository.getSetting("maintenance"),
       input.repository.getSetting("semantic"),
@@ -247,11 +248,11 @@ export function createRuntimeSettingsService(input: {
           ...(workerRecord?.value ?? {})
         } as RuntimeSettingsSnapshot["worker"]
       ),
-      publication: sanitizePublicationSettings(
+      generated: sanitizeGeneratedSettings(
         {
-          ...defaults.publication,
-          ...(publicationRecord?.value ?? {})
-        } as RuntimePublicationSettings
+          ...defaults.generated,
+          ...(generatedRecord?.value ?? {})
+        } as RuntimeGeneratedSettings
       ),
       graph: sanitizeGraphSettings(
         {
@@ -431,17 +432,6 @@ export function createRuntimeSettingsService(input: {
     return serializePublicModel(model);
   }
 
-  async function assertModelCanBeDeleted(id: string) {
-    const referenceCount =
-      await input.repository.countActiveSemanticGenerationReferences(id);
-    if (referenceCount > 0) {
-      throw new RuntimeSettingsValidationError([{
-        field: "model",
-        message: "model is referenced by an active semantic contract"
-      }]);
-    }
-  }
-
   return {
     ensureBootstrapped,
     getSnapshot,
@@ -459,8 +449,19 @@ export function createRuntimeSettingsService(input: {
       const snapshot = await getSnapshot();
       return {
         rateLimits: snapshot.rateLimits,
-        worker: snapshot.worker,
-        publication: snapshot.publication,
+        worker: {
+          sourceFileConcurrency: snapshot.worker.sourceFileConcurrency,
+          jobMaxAttempts: snapshot.worker.jobMaxAttempts,
+          jobRetryDelayMs: snapshot.worker.jobRetryDelayMs,
+          completedJobRetentionDays: snapshot.worker.completedJobRetentionDays
+        },
+        generated: {
+          directoryIndexMaxEntries: snapshot.generated.directoryIndexMaxEntries,
+          directoryIndexMaxBytes: snapshot.generated.directoryIndexMaxBytes,
+          rootSummaryLimit: snapshot.generated.rootSummaryLimit,
+          okfLogMaxEntries: snapshot.generated.okfLogMaxEntries,
+          okfLogMaxBytes: snapshot.generated.okfLogMaxBytes
+        },
         graph: snapshot.graph,
         maintenance: snapshot.maintenance,
         semantic: snapshot.semantic,
@@ -487,14 +488,14 @@ export function createRuntimeSettingsService(input: {
       }
       return updateSetting("worker", sanitizeWorkerSettings(value), actor, value);
     },
-    async updatePublication({ value, actor }) {
-      const issues = validatePublicationSettings(value);
+    async updateGenerated({ value, actor }) {
+      const issues = validateGeneratedSettings(value);
       if (issues.length > 0) {
         throw new RuntimeSettingsValidationError(issues);
       }
       return updateSetting(
-        "publication",
-        sanitizePublicationSettings(value),
+        "generated",
+        sanitizeGeneratedSettings(value),
         actor,
         value
       );
@@ -675,21 +676,8 @@ export function createRuntimeSettingsService(input: {
         return null;
       }
 
-      if (existing.isActive) {
-        throw new RuntimeSettingsValidationError([{
-          field: "model",
-          message: "active model cannot be deleted"
-        }]);
-      }
-
-      await assertModelCanBeDeleted(id);
-
       const runningCount = await input.repository.countRunningModelInvocations(id);
-      const runningSourceFileJobCount = existing.isActive
-        ? await input.repository.countRunningSourceFileJobs()
-        : 0;
-
-      if (runningCount > 0 || runningSourceFileJobCount > 0) {
+      if (runningCount > 0) {
         throw new RuntimeSettingsValidationError([
           {
             field: "model",

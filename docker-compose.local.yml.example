@@ -78,46 +78,13 @@ services:
     logging: *docker-logging
     restart: unless-stopped
 
-  source-worker:
-    image: ${FOCOWIKI_SOURCE_WORKER_IMAGE:?Set FOCOWIKI_SOURCE_WORKER_IMAGE in .env}
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: source-worker
-    command: ["node", "--max-old-space-size=256", "apps/api/runtime/source-worker.mjs"]
-    env_file:
-      - .env
-    environment: *runtime-environment
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime-secrets:/app/runtime-secrets
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/source-worker.mjs", "--healthcheck"]
-      interval: 15s
-      timeout: 15s
-      retries: 8
-      start_period: 20s
-    cpus: ${SOURCE_WORKER_CPUS:?Set SOURCE_WORKER_CPUS in .env}
-    mem_limit: ${SOURCE_WORKER_MEMORY_LIMIT:?Set SOURCE_WORKER_MEMORY_LIMIT in .env}
-    pids_limit: ${SOURCE_WORKER_PIDS_LIMIT:?Set SOURCE_WORKER_PIDS_LIMIT in .env}
-    stop_grace_period: 30s
-    logging: *docker-logging
-    restart: unless-stopped
-
-  publication-worker:
+  worker:
     image: focowiki-api:dev
     build:
       context: .
       dockerfile: Dockerfile
       target: api
-    command: ["node", "--max-old-space-size=512", "apps/api/runtime/publication-worker.mjs"]
+    command: ["node", "--max-old-space-size=512", "apps/api/runtime/worker.mjs"]
     env_file:
       - .env
     environment: *runtime-environment
@@ -132,41 +99,14 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/publication-worker.mjs", "--healthcheck"]
+      test: ["CMD", "node", "apps/api/runtime/worker.mjs", "--healthcheck"]
       interval: 15s
       timeout: 15s
       retries: 8
       start_period: 20s
-    stop_grace_period: 30s
-    logging: *docker-logging
-    restart: unless-stopped
-
-  maintenance-worker:
-    image: focowiki-api:dev
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: api
-    command: ["node", "apps/api/runtime/maintenance-worker.mjs"]
-    env_file:
-      - .env
-    environment: *runtime-environment
-    volumes:
-      - ./logs:/app/logs
-      - ./runtime-secrets:/app/runtime-secrets
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "apps/api/runtime/maintenance-worker.mjs", "--healthcheck"]
-      interval: 30s
-      timeout: 15s
-      retries: 8
-      start_period: 20s
+    cpus: ${WORKER_CPUS:?Set WORKER_CPUS in .env}
+    mem_limit: ${WORKER_MEMORY_LIMIT:?Set WORKER_MEMORY_LIMIT in .env}
+    pids_limit: ${WORKER_PIDS_LIMIT:?Set WORKER_PIDS_LIMIT in .env}
     stop_grace_period: 30s
     logging: *docker-logging
     restart: unless-stopped
@@ -174,6 +114,10 @@ services:
   search-init:
     profiles: ["opensearch", "meilisearch"]
     image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
     command: ["node", "apps/api/runtime/search-init.mjs"]
     environment:
       SEARCH_PROVIDER: ${SEARCH_PROVIDER}
@@ -186,10 +130,6 @@ services:
       BUNDLED_OPENSEARCH_SECURITY_ENABLED: "false"
     volumes:
       - ./runtime-secrets:/app/runtime-secrets
-    depends_on:
-      meilisearch:
-        condition: service_healthy
-        required: false
     logging: *docker-logging
     restart: "no"
 
@@ -211,9 +151,6 @@ services:
         condition: service_completed_successfully
       search-init:
         condition: service_completed_successfully
-        required: false
-      meilisearch:
-        condition: service_healthy
         required: false
       opensearch:
         condition: service_healthy
@@ -294,32 +231,36 @@ services:
     logging: *docker-logging
     restart: "no"
 
-  meilisearch:
-    profiles: ["meilisearch"]
-    image: getmeili/meilisearch:v1.51.0
-    environment:
-      MEILI_ENV: production
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}
-      MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY-}
-      MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS-}
-      MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR-}
-      MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT-}
-      MEILI_DUMP_DIR: ${MEILI_DUMP_DIR-}
-      TMPDIR: /meili_data/tmp
-      MEILI_NO_ANALYTICS: "true"
-      MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
-    volumes:
-      - ./data/meilisearch:/meili_data
-      - ./data/meilisearch/tmp:/meili_data/tmp
-      - ./data/meilisearch-snapshots:/meili_snapshots
-      - ./data/meilisearch-dumps:/meili_dumps
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7700/health"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 15s
-    logging: *docker-logging
+  # Optional Meilisearch alternative. Uncomment this entire service block and
+  # set both SEARCH_PROVIDER and COMPOSE_PROFILES to meilisearch to enable it.
+  # meilisearch:
+  #   profiles: ["meilisearch"]
+  #   image: getmeili/meilisearch:v1.51.0
+  #   ports:
+  #     - "127.0.0.1:${MEILI_PORT-57700}:7700"
+  #   environment:
+  #     MEILI_ENV: production
+  #     MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}
+  #     MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY-}
+  #     MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS-}
+  #     MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR-}
+  #     MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT-}
+  #     MEILI_DUMP_DIR: ${MEILI_DUMP_DIR-}
+  #     TMPDIR: /meili_data/tmp
+  #     MEILI_NO_ANALYTICS: "true"
+  #     MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+  #   volumes:
+  #     - ./data/meilisearch:/meili_data
+  #     - ./data/meilisearch/tmp:/meili_data/tmp
+  #     - ./data/meilisearch-snapshots:/meili_snapshots
+  #     - ./data/meilisearch-dumps:/meili_dumps
+  #   healthcheck:
+  #     test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7700/health"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 20
+  #     start_period: 15s
+  #   logging: *docker-logging
 
   opensearch:
     image: opensearchproject/opensearch:3.8.0

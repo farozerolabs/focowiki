@@ -85,6 +85,7 @@ type ParsedHit = {
   logicalPath: string;
   snippet: string | null;
   kind: "file" | "graph";
+  contentKind: "file" | "segment" | null;
   normalizedScore: number;
   matchedFields: readonly string[];
   continuationAfter: string;
@@ -112,6 +113,9 @@ export function createStorageVnextActiveSearch(
         providerKind: config.provider.kind,
         projectionPublicId: projection.publicId,
         providerIndexUid: projection.providerIndexUid,
+        activeContractRevision: projection.activeContractRevision ?? 0,
+        schemaChecksum: projection.schemaChecksum,
+        settingsChecksum: projection.settingsChecksum,
         okfFilters: normalized.okfFilters,
         rerank: normalized.rerank,
         rerankTopK: normalized.rerankTopK,
@@ -212,8 +216,8 @@ export function createStorageVnextActiveSearch(
           kind: candidate.kind,
           metadata: source.metadata,
           evidenceFamilies: [candidate.kind === "graph" ? "file_graph" : "lexical"],
-          matchedFields: publicMatchedFields(candidate),
-          evidenceTypes: publicEvidenceTypes(candidate),
+          matchedFields: publicMatchedFields(candidate, normalized.scope),
+          evidenceTypes: publicEvidenceTypes(candidate, normalized.scope),
           sourceExcerpt: candidate.kind === "file" ? candidate.snippet : null
         })),
         nextCursor: createNextCursor({
@@ -353,6 +357,9 @@ function parseHit(
   const sourceRevisionPublicId = hit.sourceRevisionPublicId;
   const logicalPath = hit.logicalPath;
   const documentKind = readString(hit.document, "documentKind");
+  const rawContentKind = readString(hit.document, "contentKind");
+  const contentKind = rawContentKind === "file" || rawContentKind === "segment"
+    ? rawContentKind : null;
   const kind = documentKind === "content" ? "file"
     : documentKind === "graph_seed" ? "graph"
       : null;
@@ -363,6 +370,7 @@ function parseHit(
     logicalPath,
     snippet: hit.snippets[0] ?? null,
     kind,
+    contentKind,
     normalizedScore: hit.normalizedScore,
     matchedFields: hit.matchedFields ?? [],
     continuationAfter: hit.continuationAfter
@@ -378,26 +386,37 @@ function completedEvidenceFamilies(
   ];
 }
 
-function publicMatchedFields(candidate: ParsedHit): string[] {
+function publicMatchedFields(
+  candidate: ParsedHit,
+  scope: "all" | "path" | "metadata"
+): string[] {
   const mapped = candidate.matchedFields.flatMap((field) => {
     if (field === "logicalPath") return ["path"];
     if (field === "title") return ["title"];
-    if (candidate.kind === "graph") return ["file_relationship"];
+    if (candidate.kind === "graph") return ["graph_node"];
+    if (field === "searchText" && scope === "metadata"
+      && candidate.contentKind === "file") return ["metadata"];
     if (["searchText", "headingAncestors", "rankingTerms"].includes(field)) {
       return ["content"];
     }
     return [];
   });
   if (mapped.length === 0 && candidate.snippet) {
-    mapped.push(candidate.kind === "graph" ? "file_relationship" : "content");
+    mapped.push(candidate.kind === "graph" ? "graph_node"
+      : scope === "metadata" && candidate.contentKind === "file"
+        ? "metadata" : "content");
   }
   return [...new Set(mapped)];
 }
 
-function publicEvidenceTypes(candidate: ParsedHit): string[] {
-  if (candidate.kind === "graph") return ["file_relationship"];
-  return [...new Set(publicMatchedFields(candidate).map((field) =>
-    field === "path" ? "path" : field === "title" ? "title" : "content"))];
+function publicEvidenceTypes(
+  candidate: ParsedHit,
+  scope: "all" | "path" | "metadata"
+): string[] {
+  if (candidate.kind === "graph") return ["graph_node"];
+  return [...new Set(publicMatchedFields(candidate, scope).map((field) =>
+    field === "path" ? "path" : field === "title" ? "title"
+      : field === "metadata" ? "metadata" : "content"))];
 }
 
 function isCurrent(
@@ -449,6 +468,9 @@ function createScopeHash(input: {
   providerKind: string;
   projectionPublicId: string;
   providerIndexUid: string;
+  activeContractRevision: number;
+  schemaChecksum: string;
+  settingsChecksum: string;
   okfFilters: OkfSearchFilters;
   rerank: boolean;
   rerankTopK: number | null;

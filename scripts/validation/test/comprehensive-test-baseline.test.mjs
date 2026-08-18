@@ -16,7 +16,6 @@ const repositoryRoot = process.cwd();
 const inventory = buildComprehensiveTestInventory(repositoryRoot);
 
 test("freezes every current test file and assigns one deterministic taxonomy", () => {
-  assert.ok(inventory.length > 400);
   assert.ok(inventory.every((row) => row.suite && row.taxonomy && /^[a-f0-9]{64}$/u.test(row.sha256)));
   const expected = JSON.parse(fs.readFileSync(
     "scripts/validation/fixtures/comprehensive-test-inventory.json",

@@ -1,6 +1,8 @@
 import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../../db/client.js";
 import type { StorageVnextUploadTerminalPort } from "./ports.js";
+import { convergePostgresUploadDocumentOperation } from
+  "../../document-indexing/infrastructure/postgres-upload-operation-aggregation.js";
 import {
   createStorageVnextUploadIdentity,
   createStorageVnextUploadRequestHash
@@ -17,6 +19,7 @@ type SessionSummaryRow = {
   expected_byte_count: number | string;
   received_entry_count: number | string;
   received_byte_count: number | string;
+  skipped_existing_count: number | string;
 };
 
 export function createPostgresStorageVnextUploadTerminalPort(
@@ -27,6 +30,38 @@ export function createPostgresStorageVnextUploadTerminalPort(
   return {
     async converge(context) {
       return sql.begin(async (transaction) => {
+        if (context.outcome === "accepted") {
+          const aggregateExpiresAt = new Date(
+            Date.parse(context.completedAt) + input.resultRetentionMilliseconds
+          ).toISOString();
+          await transaction`
+            UPDATE focowiki.upload_sessions
+            SET expires_at = ${aggregateExpiresAt}, updated_at = ${context.completedAt}
+            WHERE knowledge_base_id = ${context.knowledgeBaseId}
+              AND public_id = ${context.sessionPublicId}
+          `;
+          await transaction`
+            DELETE FROM focowiki.upload_path_reservations
+            WHERE upload_session_public_id = ${context.sessionPublicId}
+          `;
+          await transaction`
+            DELETE FROM focowiki.operation_work_items
+            WHERE knowledge_base_id = ${context.knowledgeBaseId}
+              AND operation_public_id = ${context.operationPublicId}
+              AND work_kind = 'upload'
+          `;
+          const aggregate = await convergePostgresUploadDocumentOperation(
+            transaction,
+            {
+              knowledgeBaseId: context.knowledgeBaseId,
+              operationPublicId: context.operationPublicId,
+              completedAt: context.completedAt
+            }
+          );
+          return {
+            status: aggregate === "completed" ? "completed" as const : "blocked" as const
+          };
+        }
         const existing = await transaction<ExistingResultRow[]>`
           SELECT terminal_state, result_code, correlation_public_id
           FROM focowiki.operation_results
@@ -38,8 +73,18 @@ export function createPostgresStorageVnextUploadTerminalPort(
           return { status: "completed" as const };
         }
         const summaries = await transaction<SessionSummaryRow[]>`
-          SELECT expected_entry_count, expected_byte_count,
-                 received_entry_count, received_byte_count
+          SELECT session.expected_entry_count, session.expected_byte_count,
+                 session.received_entry_count, session.received_byte_count,
+                 (SELECT count(*)
+                  FROM focowiki.upload_entries entry
+                  WHERE entry.upload_session_public_id = session.public_id
+                    AND EXISTS (
+                      SELECT 1 FROM focowiki.source_files source
+                      WHERE source.knowledge_base_id = entry.knowledge_base_id
+                        AND source.public_id = entry.source_file_public_id
+                        AND source.normalized_path = entry.normalized_path
+                        AND source.deleted_at IS NULL
+                    )) AS skipped_existing_count
           FROM focowiki.upload_sessions session
           WHERE session.public_id = ${context.sessionPublicId}
             AND session.knowledge_base_id = ${context.knowledgeBaseId}
@@ -88,6 +133,7 @@ async function persistResult(
   summary: SessionSummaryRow,
   expiresAt: string
 ): Promise<void> {
+  if (context.outcome === "accepted") throw terminalError("invalid_terminal_outcome");
   const terminalState = context.outcome;
   const expectedEntryCount = terminalCount(summary.expected_entry_count);
   const receivedEntryCount = terminalCount(summary.received_entry_count);
@@ -116,8 +162,10 @@ async function persistResult(
         expectedByteCount: terminalCount(summary.expected_byte_count),
         receivedEntryCount,
         receivedByteCount: terminalCount(summary.received_byte_count),
-        skippedExistingCount: expectedEntryCount - receivedEntryCount,
-        successorOperationPublicId: context.successorOperationPublicId
+        skippedExistingCount: context.outcome === "completed"
+          ? expectedEntryCount - receivedEntryCount
+          : terminalCount(summary.skipped_existing_count),
+        relatedOperationPublicId: context.relatedOperationPublicId
       })},
       ${context.sessionPublicId}, ${context.completedAt}, ${expiresAt}
     )
@@ -155,6 +203,7 @@ async function enqueueObjectCleanup(
         checkpoint: {},
         state: "queued",
         attempt_count: 0,
+        maximum_attempts: 10,
         lease_owner: null,
         lease_expires_at: null,
         safe_error_code: null,
@@ -164,7 +213,7 @@ async function enqueueObjectCleanup(
       "public_id", "operation_public_id", "knowledge_base_id", "action_kind",
       "cleanup_plane", "resource_kind", "resource_public_id", "required",
       "sequence_number", "idempotency_key", "request_hash", "checkpoint",
-      "state", "attempt_count", "lease_owner", "lease_expires_at",
+      "state", "attempt_count", "maximum_attempts", "lease_owner", "lease_expires_at",
       "safe_error_code", "not_before", "updated_at"
     )}
     ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
@@ -199,6 +248,7 @@ function assertMatchingResult(
   existing: ExistingResultRow,
   context: Parameters<StorageVnextUploadTerminalPort["converge"]>[0]
 ): void {
+  if (context.outcome === "accepted") throw terminalError("invalid_terminal_outcome");
   if (
     existing.terminal_state !== context.outcome
     || existing.result_code !== context.resultCode

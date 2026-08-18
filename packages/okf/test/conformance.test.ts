@@ -27,7 +27,7 @@ describe("validateOkfBundle", () => {
           content: "---\ntype: page\ntitle: Intro\n---\n# Intro"
         },
         {
-          path: "_index/search.json",
+          path: "_index/catalog.json",
           content: "{}"
         }
       ])
@@ -265,7 +265,7 @@ describe("validateOkfBundle", () => {
       expect(createConformanceIssue(
         ruleId,
         "normative",
-        "schema.md",
+        "_graph/index.md",
         "owned defect"
       )).toMatchObject({ disposition: "blocking" });
     }

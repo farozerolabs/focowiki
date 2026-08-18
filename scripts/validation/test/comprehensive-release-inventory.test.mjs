@@ -22,18 +22,18 @@ test("enumerates every Developer OpenAPI operation and nested contract field", (
   const inventory = buildDeveloperOpenApiInventory(openApiDocument);
   const operations = inventory.filter((item) => item.kind === "operation");
 
-  assert.equal(operations.length, 43);
+  assert.equal(operations.length, 42);
   assert.ok(inventory.some((item) => item.kind === "request-field"));
   assert.ok(inventory.some((item) => item.kind === "response-field"));
   assert.ok(inventory.some((item) => item.kind === "response-status"));
   assert.ok(inventory.some((item) => item.kind === "security"));
   assert.ok(inventory.some((item) => item.kind === "example"));
-  assert.equal(inventory.filter((item) => item.kind === "documentation").length, 86);
-  assert.equal(inventory.filter((item) => item.kind === "swagger-entry").length, 43);
+  assert.equal(inventory.filter((item) => item.kind === "documentation").length, 84);
+  assert.equal(inventory.filter((item) => item.kind === "swagger-entry").length, 42);
   assert.equal(new Set(inventory.map((item) => item.id)).size, inventory.length);
 });
 
-test("builds every source-derived release-audit inventory category", () => {
+test("builds every source-derived production-audit inventory category", () => {
   const inventory = currentInventory;
 
   assert.deepEqual(Object.keys(inventory).sort(), [...COMPREHENSIVE_INVENTORY_CATEGORIES].sort());
@@ -50,7 +50,7 @@ test("builds every source-derived release-audit inventory category", () => {
   assert.ok(inventory.adminUi.some((item) => item.kind === "control"));
   assert.ok(inventory.adminUi.some((item) => item.kind === "state"));
   const postgresTables = inventory.postgres.filter((item) => item.kind === "table");
-  assert.equal(postgresTables.length, 82);
+  assert.equal(postgresTables.length, 93);
   assert.ok(postgresTables.every((item) => item.ownershipBoundary === "schema:focowiki"));
   assert.ok(postgresTables.every((item) => item.lifecyclePhase.startsWith("migration:")));
   const criticalQueries = inventory.postgres.filter(
@@ -93,31 +93,35 @@ test("builds every source-derived release-audit inventory category", () => {
     .filter((item) => item.kind === "source")
     .map((item) => item.source));
   for (const sourcePath of [
-    "apps/api/src/semantic/application/stage-worker.ts",
-    "apps/api/src/semantic/infrastructure/source-stage-production-runtime.ts",
-    "apps/api/src/storage-vnext/source-processing/worker.ts",
-    "apps/api/src/storage-vnext/publication/worker.ts",
-    "apps/api/src/storage-vnext/maintenance/production-runtime.ts",
-    "apps/api/src/storage-vnext/deletion/deletion-worker.ts",
-    "apps/api/src/storage-vnext/search/provider-index-cleanup-worker.ts",
-    "apps/api/src/storage-vnext/webhook/worker.ts"
+    "apps/api/src/worker-main.ts",
+    "apps/api/src/storage-vnext/maintenance/maintenance-coordinator.ts",
+    "apps/api/src/document-indexing/infrastructure/production-background-runtime.ts",
+    "apps/api/src/storage-vnext/maintenance/upload-terminal-object-cleanup-worker.ts",
+    "apps/api/src/storage-vnext/maintenance/zero-owner-object-cleanup-worker.ts"
   ]) {
     assert.ok(workerSources.has(sourcePath), sourcePath);
   }
   const workerValues = new Set(inventory.workers
     .filter((item) => item.kind === "worker-value")
     .map((item) => item.name));
-  for (const stage of [
-    "extraction",
-    "reconciliation",
-    "embedding",
-    "community",
-    "vector",
-    "publication",
-    "validation",
-    "cleanup"
+  for (const workKind of [
+    "document",
+    "maintenance",
+    "cleanup",
+    "prepare",
+    "first_layer",
+    "content_projection",
+    "graphrag",
+    "relation_reconcile",
+    "knowledge_projection",
+    "activate"
   ]) {
-    assert.ok(workerValues.has(stage), stage);
+    assert.ok(workerValues.has(workKind), workKind);
+  }
+  for (const removedStage of [
+    "source_prepare", "semantic", "indexing", "finalizing", "publication_ready"
+  ]) {
+    assert.equal(workerValues.has(removedStage), false, removedStage);
   }
 });
 
@@ -168,7 +172,7 @@ test("Admin API body-field inventory excludes internal implementation objects", 
 test("Admin API UI consumers resolve an exact HTTP method", () => {
   const consumers = currentInventory.adminApi.filter((item) => item.kind === "ui-consumer");
 
-  assert.equal(consumers.length, 63);
+  assert.equal(consumers.length, 64);
   assert.ok(consumers.every((item) =>
     ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(item.method)));
 });

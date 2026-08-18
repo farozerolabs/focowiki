@@ -1,8 +1,8 @@
 const WRITE_CAPABLE_SERVICES = [
   "api",
-  "source-worker",
-  "publication-worker",
-  "maintenance-worker",
+  "worker",
+  "worker",
+  "worker",
   "migrate",
   "search-init"
 ];

@@ -19,6 +19,7 @@ export function FilePreviewPanel({
   relationships = [],
   selectedFileTitle,
   selectedFilePath,
+  errorMessageKey,
   onCopy,
   onOpenPreviewPath
 }: {
@@ -28,6 +29,7 @@ export function FilePreviewPanel({
   relationships?: GeneratedFileDetail["relationships"];
   selectedFileTitle: string;
   selectedFilePath: string;
+  errorMessageKey?: string;
   onCopy: (url: string) => void;
   onOpenPreviewPath: (path: string, title: string) => void;
 }) {
@@ -78,6 +80,9 @@ export function FilePreviewPanel({
         data-slot="file-preview-scroll"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
       >
+        {errorMessageKey ? (
+          <p className="mb-3 text-sm text-destructive">{t(errorMessageKey)}</p>
+        ) : null}
         {copiedUrl ? <p className="mb-3 text-sm text-muted-foreground">{t("result.copied")}</p> : null}
         {previewHtml ? (
           <article

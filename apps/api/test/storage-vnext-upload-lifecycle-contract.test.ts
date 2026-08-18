@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { mapUploadEntry } from
+import { deriveUploadSessionCounts, mapUploadEntry } from
   "../src/storage-vnext/api/postgres-admin-upload-session-store.js";
-import { mapUploadContentCommitError } from
+import { assertUploadSessionFinalizable, mapUploadContentCommitError } from
   "../src/storage-vnext/api/postgres-admin-upload.js";
+
+const workspaceRoot = resolve(import.meta.dirname, "../../..");
 
 type ManifestEntry = {
   entryPublicId: string;
@@ -59,7 +62,7 @@ type UploadCoordinator = {
   supersedeSession(input: {
     knowledgeBaseId: string;
     sessionPublicId: string;
-    successorOperationPublicId: string;
+    relatedOperationPublicId: string;
     supersededAt: string;
   }): Promise<void>;
   expireSessions(input: {
@@ -94,6 +97,76 @@ beforeAll(async () => {
 });
 
 describe("storage vNext upload lifecycle contract", () => {
+  it("keeps an incomplete upload session recoverable before finalization", () => {
+    expect(() => assertUploadSessionFinalizable({
+      state: "uploading",
+      counts: {
+        selected: 2,
+        uploadRequired: 2,
+        skippedExisting: 0,
+        waitingReservation: 0,
+        rejectedDeleting: 0,
+        uploaded: 1,
+        failed: 0,
+        finalized: 0
+      }
+    })).toThrowError(expect.objectContaining({ code: "UPLOAD_SESSION_INCOMPLETE" }));
+  });
+
+  it("accepts a completed upload finalization replay without new repository work", () => {
+    expect(assertUploadSessionFinalizable({
+      state: "completed",
+      counts: {
+        selected: 2,
+        uploadRequired: 2,
+        skippedExisting: 0,
+        waitingReservation: 0,
+        rejectedDeleting: 0,
+        uploaded: 2,
+        failed: 0,
+        finalized: 2
+      }
+    })).toBe("replayed");
+  });
+
+  it("accepts an in-progress upload finalization replay without new repository work", () => {
+    expect(assertUploadSessionFinalizable({
+      state: "finalizing",
+      counts: {
+        selected: 2,
+        uploadRequired: 2,
+        skippedExisting: 0,
+        waitingReservation: 0,
+        rejectedDeleting: 0,
+        uploaded: 2,
+        failed: 0,
+        finalized: 2
+      }
+    })).toBe("replayed");
+  });
+
+  it("keeps accepted upload counts stable while document indexing continues", () => {
+    expect(deriveUploadSessionCounts({
+      state: "finalizing",
+      expectedEntryCount: 5,
+      receivedEntryCount: 4,
+      entryCount: 5,
+      uploadRequiredCount: 0,
+      skippedExistingCount: 5,
+      waitingReservationCount: 0,
+      rejectedDeletingCount: 0
+    })).toEqual({
+      selected: 5,
+      uploadRequired: 4,
+      skippedExisting: 1,
+      waitingReservation: 0,
+      rejectedDeleting: 0,
+      uploaded: 4,
+      failed: 0,
+      finalized: 4
+    });
+  });
+
   it("maps a concurrent upload cancellation to an entry-not-found API error", () => {
     const mapped = mapUploadContentCommitError(errorWithCode("entry_missing"));
 
@@ -101,6 +174,26 @@ describe("storage vNext upload lifecycle contract", () => {
       name: "UploadSessionError",
       code: "UPLOAD_ENTRY_NOT_FOUND"
     });
+  });
+
+  it("requires the current session to own a path before accepting its body", () => {
+    const store = readFileSync(resolve(
+      workspaceRoot,
+      "apps/api/src/storage-vnext/api/postgres-admin-upload-session-store.ts"
+    ), "utf8");
+
+    expect(store).toContain("own_reservation.upload_session_public_id = entry.upload_session_public_id");
+  });
+
+  it("reconciles existing files against the document-indexing current revision", () => {
+    const application = readFileSync(resolve(
+      workspaceRoot,
+      "apps/api/src/storage-vnext/api/postgres-admin-upload.ts"
+    ), "utf8");
+
+    expect(application).toContain("source_file_active_revisions current_revision");
+    expect(application).toContain("current_revision.current_source_revision_public_id");
+    expect(application).not.toContain("source_file_current_revisions current_revision");
   });
 
   it("preserves the released skipped-existing entry contract", () => {
@@ -122,6 +215,46 @@ describe("storage vNext upload lifecycle contract", () => {
       existingResourceRevision: 3,
       receivedSize: null,
       receivedChecksumSha256: null
+    });
+  });
+
+  it("reports a competing live reservation as waiting instead of upload-required", () => {
+    expect(mapUploadEntry({
+      upload_session_public_id: "upload-waiting",
+      entry_public_id: "entry-waiting",
+      source_file_public_id: "file-waiting",
+      logical_path: "Guides/Waiting.md",
+      normalized_path: "guides/waiting.md",
+      checksum_sha256: null,
+      byte_count: 128,
+      object_id: null,
+      state: "pending",
+      existing_resource_revision: null,
+      reservation_session_public_id: "upload-owner",
+      rejected_deleting: false
+    })).toMatchObject({
+      disposition: "waiting_reservation",
+      transferState: "missing"
+    });
+  });
+
+  it("reports a deleting path separately from a transferable entry", () => {
+    expect(mapUploadEntry({
+      upload_session_public_id: "upload-deleting",
+      entry_public_id: "entry-deleting",
+      source_file_public_id: "file-deleting",
+      logical_path: "Guides/Deleting.md",
+      normalized_path: "guides/deleting.md",
+      checksum_sha256: null,
+      byte_count: 128,
+      object_id: null,
+      state: "pending",
+      existing_resource_revision: null,
+      reservation_session_public_id: null,
+      rejected_deleting: true
+    })).toMatchObject({
+      disposition: "rejected_deleting",
+      transferState: "missing"
     });
   });
 
@@ -151,7 +284,7 @@ describe("storage vNext upload lifecycle contract", () => {
     }));
     expect(fixture.repository.finalizeSession).toHaveBeenCalledTimes(1);
     expect(fixture.terminal.converge).toHaveBeenCalledWith(expect.objectContaining({
-      outcome: "completed",
+      outcome: "accepted",
       resultCode: "UPLOAD_ACCEPTED"
     }));
   });
@@ -199,6 +332,30 @@ describe("storage vNext upload lifecycle contract", () => {
       outcome: "timed_out",
       resultCode: "UPLOAD_EXPIRED"
     }));
+  });
+
+  it("continues expiring the page when one session fails to converge", async () => {
+    const fixture = createFixture();
+    fixture.expired.push(
+      sessionReference("upload-expired-failing", "operation-expired-failing"),
+      sessionReference("upload-expired-following", "operation-expired-following")
+    );
+    fixture.terminal.converge
+      .mockRejectedValueOnce(new Error("terminal convergence failed"))
+      .mockResolvedValueOnce({ status: "completed" as const });
+    const coordinator = createCoordinator(fixture);
+
+    await expect(coordinator.expireSessions({
+      expiredBefore: "2026-08-02T00:00:00.000Z",
+      limit: 2
+    })).rejects.toThrow("terminal convergence failed");
+
+    expect(fixture.repository.terminateSession).toHaveBeenCalledTimes(2);
+    expect(fixture.repository.terminateSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ sessionPublicId: "upload-expired-following" })
+    );
+    expect(fixture.terminal.converge).toHaveBeenCalledTimes(2);
   });
 
   it("rejects unsupported files before creating durable state", async () => {
@@ -307,7 +464,7 @@ describe("storage vNext upload lifecycle contract", () => {
     await coordinator.supersedeSession({
       knowledgeBaseId: "kb-upload-contract",
       sessionPublicId: "upload-contract",
-      successorOperationPublicId: "operation-upload-successor",
+      relatedOperationPublicId: "operation-upload-successor",
       supersededAt: "2026-08-01T00:02:30.000Z"
     });
 
@@ -317,7 +474,7 @@ describe("storage vNext upload lifecycle contract", () => {
     expect(fixture.terminal.converge).toHaveBeenCalledWith(expect.objectContaining({
       outcome: "superseded",
       resultCode: "UPLOAD_SUPERSEDED",
-      successorOperationPublicId: "operation-upload-successor",
+      relatedOperationPublicId: "operation-upload-successor",
       temporaryObjectIds: [`source-sha256:${entry.checksumSha256}`]
     }));
   });
@@ -384,7 +541,7 @@ describe("storage vNext upload lifecycle contract", () => {
     expect(fixture.terminal.converge).toHaveBeenCalledWith(expect.objectContaining({
       outcome: "deleted",
       resultCode: "KNOWLEDGE_BASE_DELETED",
-      successorOperationPublicId: "operation-delete-kb"
+      relatedOperationPublicId: "operation-delete-kb"
     }));
   });
 });

@@ -209,7 +209,7 @@ function constrainedStringAtLength(schema, length) {
   }
   if (
     typeof schema.pattern === "string"
-    && schema.pattern.includes("(?:[^/]{1,240}/)*[^/]{1,240}$")
+    && schema.pattern.includes("(?:[^/]{1,1000}/)*[^/]{1,1000}$")
   ) {
     return boundedSourcePath(length, "", 240);
   }

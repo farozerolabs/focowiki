@@ -5,7 +5,10 @@ import { join } from "node:path";
 import type { RuntimeConfig } from "../src/config.js";
 import { createApiApp } from "../src/server.js";
 import type { RuntimeSettingsRepository } from "../src/runtime-settings/repository.js";
-import { createRuntimeSettingsService } from "../src/runtime-settings/service.js";
+import {
+  createRuntimeSettingsService,
+  type RuntimeSettingsService
+} from "../src/runtime-settings/service.js";
 import type {
   ModelConfigStatus,
   RuntimeModelConfigDraft,
@@ -122,8 +125,8 @@ describe("runtime settings service", () => {
     const snapshot = await service.getSnapshot();
 
     expect(snapshot.worker.sourceFileConcurrency).toBe(2);
-    expect(snapshot.worker.hardDeleteConcurrency).toBe(1);
-    expect(snapshot.worker.hardDeleteObjectBatchSize).toBe(1_000);
+    expect(snapshot.maintenance.hardDeleteConcurrency).toBe(1);
+    expect(snapshot.maintenance.hardDeleteObjectBatchSize).toBe(1_000);
     expect(snapshot.worker).not.toHaveProperty("hardDeleteVersionPurgeEnabled");
     expect(snapshot.worker).not.toHaveProperty("databasePoolMax");
     expect(snapshot.rateLimits.publicOpenApi.max).toBe(1_200);
@@ -133,27 +136,24 @@ describe("runtime settings service", () => {
       sourceFileConcurrency: 2,
       sourceObjectReadConcurrency: 2
     });
-    expect(snapshot.publication).toMatchObject({
-      roleConcurrency: 1,
-      claimBatchSize: 1,
-      generatedObjectWriteConcurrency: 8
+    expect(snapshot.generated).toMatchObject({
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     });
     expect(snapshot.maintenance).toEqual({
       reconciliationEnabled: true,
-      knowledgeBaseMaintenanceMode: "manual",
-      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
-      knowledgeBaseMaintenanceConcurrency: 1,
       scanBatchSize: 500,
-      deletionBatchSize: 100,
-      quarantineGracePeriodSeconds: 86_400,
       maxAttempts: 5,
       retryDelayMs: 30_000,
-      projectionRepairConcurrency: 4,
-      projectionRepairDatabaseBatchSize: 2_000,
-      projectionRepairObjectWriteConcurrency: 4,
-      lexicalRebuildConcurrency: 4,
-      lexicalRebuildSourceReadConcurrency: 2,
-      lexicalRebuildMaxInFlightSourceBytes: 67_108_864
+      hardDeleteConcurrency: 1,
+      hardDeleteDatabaseBatchSize: 1_000,
+      hardDeleteObjectBatchSize: 1_000,
+      hardDeleteMaxAttempts: 3,
+      hardDeleteRetryDelayMs: 60_000,
+      hardDeleteFailedRetentionDays: 30
     });
     expect(snapshot.search).toEqual({
       requestTimeoutMs: 3_000,
@@ -167,19 +167,13 @@ describe("runtime settings service", () => {
       maxAttempts: 5,
       retryDelayMs: 2_000,
       cleanupBatchSize: 1_000,
-      stagingRetentionHours: 24,
       cropLength: 1_200
     });
     expect(snapshot.semantic).toEqual({
       maximumChunkCharacters: 8_000,
       maximumChunks: 32,
       maximumEvidenceTargets: 64,
-      maximumCommunityPartitions: 256,
-      maximumCommunityEntities: 10_000,
-      maximumCommunityRelationships: 20_000,
-      maximumCommunityBoundaryRelationships: 10_000,
-      maximumCommunitySummaryCharacters: 8_000,
-      communityAdapterTimeoutMs: 30_000,
+      graphRagAdapterTimeoutMs: 30_000,
       searchLaneCutoffMs: 2_500,
       queryEmbeddingConcurrency: 4,
       queryEmbeddingCacheEntries: 1_000
@@ -201,20 +195,20 @@ describe("runtime settings service", () => {
       value: {
         ...initial.semantic,
         maximumChunkCharacters: 12_000,
-        maximumCommunityEntities: 2_000,
+        graphRagAdapterTimeoutMs: 25_000,
         queryEmbeddingConcurrency: 2,
         searchLaneCutoffMs: 900
       }
     });
     expect(updated.semantic).toMatchObject({
       maximumChunkCharacters: 12_000,
-      maximumCommunityEntities: 2_000,
+      graphRagAdapterTimeoutMs: 25_000,
       queryEmbeddingConcurrency: 2,
       searchLaneCutoffMs: 900
     });
     await expect(service.updateSemantic({
       actor: "admin",
-      value: { ...updated.semantic, maximumCommunityEntities: 10_001 }
+      value: { ...updated.semantic, graphRagAdapterTimeoutMs: 300_001 }
     })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
@@ -329,7 +323,7 @@ describe("runtime settings service", () => {
     })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
       issues: expect.arrayContaining([
-        expect.objectContaining({ field: "maintenance.scanIntervalSeconds" })
+        expect.objectContaining({ field: "scanIntervalSeconds" })
       ])
     });
 
@@ -349,25 +343,16 @@ describe("runtime settings service", () => {
     });
     const defaults = await first.getSnapshot();
     const worker = { ...defaults.worker } as Record<string, unknown>;
-    const publication = { ...defaults.publication } as Record<string, unknown>;
+    const generated = { ...defaults.generated } as Record<string, unknown>;
     const maintenance = { ...defaults.maintenance } as Record<string, unknown>;
     delete worker.sourceObjectReadConcurrency;
-    delete publication.generatedObjectWriteConcurrency;
-    delete maintenance.projectionRepairConcurrency;
-    delete maintenance.projectionRepairDatabaseBatchSize;
-    delete maintenance.projectionRepairObjectWriteConcurrency;
-    delete maintenance.lexicalRebuildConcurrency;
-    delete maintenance.lexicalRebuildSourceReadConcurrency;
-    delete maintenance.lexicalRebuildMaxInFlightSourceBytes;
-    delete maintenance.knowledgeBaseMaintenanceMode;
-    delete maintenance.knowledgeBaseMaintenanceScanIntervalSeconds;
-    delete maintenance.knowledgeBaseMaintenanceConcurrency;
+    delete generated.directoryIndexMaxBytes;
     worker.sourceFileConcurrency = 3;
     worker.graphQueryConcurrency = 99;
-    publication.impactConcurrency = 99;
+    generated.impactConcurrency = 99;
     maintenance.compactionConcurrency = 99;
     await repository.upsertSetting({ key: "worker", value: worker, source: "admin" });
-    await repository.upsertSetting({ key: "publication", value: publication, source: "admin" });
+    await repository.upsertSetting({ key: "generated", value: generated, source: "admin" });
     await repository.upsertSetting({ key: "maintenance", value: maintenance, source: "admin" });
     const versions = Object.fromEntries(
       [...repository.settings].map(([key, value]) => [key, value.version])
@@ -386,22 +371,15 @@ describe("runtime settings service", () => {
       sourceFileConcurrency: 3,
       sourceObjectReadConcurrency: 2
     });
-    expect(snapshot.publication).toMatchObject({
-      generatedObjectWriteConcurrency: 8
+    expect(snapshot.generated).toMatchObject({
+      directoryIndexMaxBytes: 65_536
     });
     expect(snapshot.maintenance).toMatchObject({
-      knowledgeBaseMaintenanceMode: "manual",
-      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
-      knowledgeBaseMaintenanceConcurrency: 1,
-      projectionRepairConcurrency: 4,
-      projectionRepairDatabaseBatchSize: 2_000,
-      projectionRepairObjectWriteConcurrency: 4,
-      lexicalRebuildConcurrency: 4,
-      lexicalRebuildSourceReadConcurrency: 2,
-      lexicalRebuildMaxInFlightSourceBytes: 67_108_864
+      reconciliationEnabled: true,
+      scanBatchSize: 500
     });
     expect(snapshot.worker).not.toHaveProperty("graphQueryConcurrency");
-    expect(snapshot.publication).not.toHaveProperty("impactConcurrency");
+    expect(snapshot.generated).not.toHaveProperty("impactConcurrency");
     expect(snapshot.maintenance).not.toHaveProperty("compactionConcurrency");
     expect(Object.fromEntries(
       [...repository.settings].map(([key, value]) => [key, value.version])
@@ -425,14 +403,12 @@ describe("runtime settings service", () => {
       actor: "admin",
       value: {
         ...initial.maintenance,
-        scanBatchSize: 1_000,
-        deletionBatchSize: 250
+        scanBatchSize: 1_000
       }
     });
 
     expect(updated.maintenance).toMatchObject({
-      scanBatchSize: 1_000,
-      deletionBatchSize: 250
+      scanBatchSize: 1_000
     });
     expect(await redis.getRuntimeSettingsVersion()).not.toBe(previousVersion);
     expect(repository.auditLogs).toContainEqual(
@@ -473,16 +449,16 @@ describe("runtime settings service", () => {
         sourceObjectReadConcurrency: snapshot.worker.sourceFileConcurrency + 1
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
-    await expect(service.updatePublication({
+    await expect(service.updateGenerated({
       value: {
-        ...snapshot.publication,
-        generatedObjectWriteConcurrency: 33
+        ...snapshot.generated,
+        directoryIndexMaxEntries: 0
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
     await expect(service.updateMaintenance({
       value: {
         ...snapshot.maintenance,
-        projectionRepairConcurrency: 17
+        hardDeleteConcurrency: 17
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
   });
@@ -523,30 +499,26 @@ describe("runtime settings service", () => {
         claimBatchSize: 32
       }
     });
-    const maximumPublication = await service.updatePublication({
+    const updatedGenerated = await service.updateGenerated({
       value: {
-        ...maximumWorker.publication,
-        roleConcurrency: 32,
-        generatedObjectWriteConcurrency: 32,
-        claimBatchSize: 32
+        ...maximumWorker.generated,
+        directoryIndexMaxEntries: 10_000,
+        directoryIndexMaxBytes: 10_485_760
       }
     });
     const maximumMaintenance = await service.updateMaintenance({
       value: {
-        ...maximumPublication.maintenance,
-        projectionRepairConcurrency: 16,
-        projectionRepairDatabaseBatchSize: 10_000,
-        projectionRepairObjectWriteConcurrency: 32,
-        lexicalRebuildConcurrency: 16,
-        lexicalRebuildSourceReadConcurrency: 32,
-        lexicalRebuildMaxInFlightSourceBytes: 536_870_912
+        ...updatedGenerated.maintenance,
+        hardDeleteConcurrency: 16,
+        hardDeleteDatabaseBatchSize: 10_000,
+        hardDeleteObjectBatchSize: 1_000
       }
     });
 
     expect(maximumMaintenance.worker.sourceObjectReadConcurrency).toBe(32);
-    expect(maximumMaintenance.publication.generatedObjectWriteConcurrency).toBe(32);
-    expect(maximumMaintenance.maintenance.projectionRepairConcurrency).toBe(16);
-    expect(maximumMaintenance.maintenance.lexicalRebuildConcurrency).toBe(16);
+    expect(maximumMaintenance.generated.directoryIndexMaxEntries).toBe(10_000);
+    expect(maximumMaintenance.maintenance.hardDeleteConcurrency).toBe(16);
+    expect(maximumMaintenance.maintenance.hardDeleteDatabaseBatchSize).toBe(10_000);
   });
 
   it("rejects source concurrency above the process budget and undersized claim batches", async () => {
@@ -590,19 +562,19 @@ describe("runtime settings service", () => {
     await expect(service.updateWorker({ value: {} as never })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
-    await expect(service.updatePublication({
-      value: { ...initial.publication, generatedObjectWriteConcurrency: "eight" } as never
+    await expect(service.updateGenerated({
+      value: { ...initial.generated, directoryIndexMaxBytes: "large" } as never
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
     await expect(service.updateMaintenance({ value: [] as never })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
 
     expect((await service.getSnapshot()).worker).toEqual(initial.worker);
-    expect((await service.getSnapshot()).publication).toEqual(initial.publication);
+    expect((await service.getSnapshot()).generated).toEqual(initial.generated);
     expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
   });
 
-  it("validates knowledge-base maintenance scheduling atomically", async () => {
+  it("rejects removed maintenance scheduler fields atomically", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
     const service = createRuntimeSettingsService({
       config: createConfig({ modelEnabled: false }),
@@ -627,9 +599,8 @@ describe("runtime settings service", () => {
     await expect(service.updateMaintenance({
       value: {
         ...initial.maintenance,
-        knowledgeBaseMaintenanceMode: "automatic",
         knowledgeBaseMaintenanceScanIntervalSeconds: 59
-      }
+      } as never
     })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
       issues: expect.arrayContaining([
@@ -642,7 +613,7 @@ describe("runtime settings service", () => {
       value: {
         ...initial.maintenance,
         knowledgeBaseMaintenanceConcurrency: 17
-      }
+      } as never
     })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
       issues: expect.arrayContaining([
@@ -652,20 +623,7 @@ describe("runtime settings service", () => {
 
     expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
 
-    const automatic = await service.updateMaintenance({
-      value: {
-        ...initial.maintenance,
-        knowledgeBaseMaintenanceMode: "automatic",
-        knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
-        knowledgeBaseMaintenanceConcurrency: 2
-      }
-    });
-    expect(automatic.maintenance).toMatchObject({
-      knowledgeBaseMaintenanceMode: "automatic",
-      knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
-      knowledgeBaseMaintenanceConcurrency: 2
-    });
-    await expect(service.getMaintenanceRevision()).resolves.toBeGreaterThan(1);
+    await expect(service.getMaintenanceRevision()).resolves.toBe(1);
   });
 
   it("propagates concurrent live updates and preserves them after service restart", async () => {
@@ -716,9 +674,9 @@ describe("runtime settings service", () => {
     expect(restartedSnapshot.maintenance.reconciliationEnabled).toBe(false);
   });
 
-  it("creates a model without exposing the raw key and blocks deleting a running model", async () => {
+  it("creates a model without exposing the raw key and deletes it after running work ends", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
-    repository.runningSourceFileJobCount = 1;
+    repository.runningModelInvocationCount = 1;
     const service = createRuntimeSettingsService({
       config: createConfig({ modelEnabled: false }),
       repository,
@@ -747,23 +705,11 @@ describe("runtime settings service", () => {
     await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
-    repository.runningSourceFileJobCount = 0;
-    repository.runningModelInvocationCount = 1;
-    await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
-      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
-    });
     repository.runningModelInvocationCount = 0;
-    await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
-      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
-      issues: [expect.objectContaining({ field: "model" })]
-    });
-    await expect(service.pauseModel({ id: model.id })).resolves.toMatchObject({
-      status: "paused",
-      isActive: false
-    });
     await expect(service.deleteModel({ id: model.id })).resolves.toMatchObject({
       id: model.id,
-      status: "deleted"
+      status: "deleted",
+      isActive: false
     });
   });
 
@@ -924,7 +870,7 @@ describe("runtime settings service", () => {
     expect(wrongCredentialType.status).toBe(400);
   });
 
-  it("allows pausing but blocks deleting a generation model referenced by an active semantic contract", async () => {
+  it("soft deletes an active generation model and removes it from future selection", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
     const service = createRuntimeSettingsService({
       config: createConfig({ modelEnabled: false }),
@@ -947,21 +893,16 @@ describe("runtime settings service", () => {
       requestMinIntervalMs: 0,
       isActive: true
     });
-    repository.activeSemanticGenerationReferenceCount = 1;
-
-    await expect(service.pauseModel({ id: model.id })).resolves.toMatchObject({
+    await expect(service.deleteModel({ id: model.id })).resolves.toMatchObject({
       id: model.id,
-      status: "paused",
+      status: "deleted",
       isActive: false
-    });
-    await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
-      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
-      issues: [expect.objectContaining({ field: "model" })]
     });
     await expect(repository.getModel(model.id)).resolves.toMatchObject({
-      status: "paused",
+      status: "deleted",
       isActive: false
     });
+    await expect(repository.getActiveModel()).resolves.toBeNull();
   });
 
   it("keeps saved model keys usable after service recreation", async () => {
@@ -1074,7 +1015,7 @@ describe("runtime settings service", () => {
       headers: { cookie }
     });
     const initial = (await initialResponse.json()) as {
-      settings: RuntimeSettingsSnapshot;
+      settings: PublicRuntimeSettings;
     };
 
     for (const testCase of runtimeSettingFieldCases) {
@@ -1095,7 +1036,7 @@ describe("runtime settings service", () => {
       });
       expect(update.status, testCase.id).toBe(200);
       const updateBody = (await update.json()) as {
-        settings: RuntimeSettingsSnapshot;
+        settings: PublicRuntimeSettings;
       };
       expect(
         readNestedValue(
@@ -1109,7 +1050,7 @@ describe("runtime settings service", () => {
         headers: { cookie }
       });
       const reloadedBody = (await reloaded.json()) as {
-        settings: RuntimeSettingsSnapshot;
+        settings: PublicRuntimeSettings;
       };
       expect(
         readNestedValue(
@@ -1126,7 +1067,7 @@ describe("runtime settings service", () => {
         deploymentSecretDirectory: createRuntimeSecretDirectory(),
         resourceCapacity: createTestResourceCapacity()
       });
-      const restartedSnapshot = await restarted.getSnapshot();
+      const restartedSnapshot = await restarted.getPublicSnapshot();
       expect(
         readNestedValue(
           restartedSnapshot[testCase.section] as unknown as Record<string, unknown>,
@@ -1146,10 +1087,10 @@ describe("runtime settings service", () => {
       expect(restore.status, `${testCase.id} restore`).toBe(200);
     }
 
-    const restored = await runtimeSettings.getSnapshot();
+    const restored = await runtimeSettings.getPublicSnapshot();
     expect(restored.rateLimits).toEqual(initial.settings.rateLimits);
     expect(restored.worker).toEqual(initial.settings.worker);
-    expect(restored.publication).toEqual(initial.settings.publication);
+    expect(restored.generated).toEqual(initial.settings.generated);
     expect(restored.graph).toEqual(initial.settings.graph);
     expect(restored.maintenance).toEqual(initial.settings.maintenance);
     expect(restored.semantic).toEqual(initial.settings.semantic);
@@ -1187,19 +1128,18 @@ describe("runtime settings service", () => {
 
     expect(initial.status).toBe(200);
     const initialBody = (await initial.json()) as {
-      settings: RuntimeSettingsSnapshot;
+      settings: PublicRuntimeSettings;
       models: unknown[];
-      maintenanceStatus: unknown;
-      objectProtectionStatus: unknown;
     };
     expect(initialBody).toMatchObject({ settings: { activeModel: null }, models: [] });
+    expect(initialBody.settings).not.toHaveProperty("publication");
     expect(initialBody.settings).not.toHaveProperty("uploadGeneration");
     expect(initialBody.settings.rateLimits).not.toHaveProperty("upload");
     expect(initialBody.settings.maintenance).toMatchObject({
       reconciliationEnabled: true
     });
-    expect(initialBody.maintenanceStatus).toBeNull();
-    expect(initialBody.objectProtectionStatus).toBeNull();
+    expect(initialBody).not.toHaveProperty("maintenanceStatus");
+    expect(initialBody).not.toHaveProperty("objectProtectionStatus");
     const serializedInitial = JSON.stringify(initialBody);
     for (const forbidden of [
       "objectKey", "checksumSha256", "secretAccessKey", "SELECT ",
@@ -1216,14 +1156,14 @@ describe("runtime settings service", () => {
       }
     });
 
-    const invalidHardDeleteBatch = await app.request("/admin/api/settings/worker", {
+    const invalidHardDeleteBatch = await app.request("/admin/api/settings/maintenance", {
       method: "PUT",
       headers: withTrustedAdminOrigin({
         cookie,
         "content-type": "application/json"
       }),
       body: JSON.stringify({
-        ...initialBody.settings.worker,
+        ...initialBody.settings.maintenance,
         hardDeleteObjectBatchSize: 1_001,
       })
     });
@@ -1235,7 +1175,7 @@ describe("runtime settings service", () => {
       }
     });
 
-    const invalidGeneratedObjectWriteConcurrency = await app.request(
+    const removedPublicationRoute = await app.request(
       "/admin/api/settings/publication",
       {
       method: "PUT",
@@ -1244,17 +1184,11 @@ describe("runtime settings service", () => {
         "content-type": "application/json"
       }),
       body: JSON.stringify({
-        ...initialBody.settings.publication,
+        ...initialBody.settings.generated,
         generatedObjectWriteConcurrency: 33
       })
     });
-    expect(invalidGeneratedObjectWriteConcurrency.status).toBe(400);
-    await expect(invalidGeneratedObjectWriteConcurrency.json()).resolves.toMatchObject({
-      error: {
-        code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
-        messageKey: "errors.runtimeSettingsValidationFailed"
-      }
-    });
+    expect(removedPublicationRoute.status).toBe(404);
 
     const removedUploadGeneration = await app.request("/admin/api/settings/upload-generation", {
       method: "PUT",
@@ -1346,17 +1280,12 @@ function createConfig(input: { modelEnabled: boolean }): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
+    generated: {
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
+      rootSummaryLimit: 500,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
     },
     pagination: {
       defaultPageSize: 50,
@@ -1419,10 +1348,14 @@ function createTestResourceCapacity() {
   };
 }
 
+type PublicRuntimeSettings = Awaited<
+  ReturnType<RuntimeSettingsService["getPublicSnapshot"]>
+>;
+
 type RuntimeSettingFieldCase = {
   id: string;
-  section: Exclude<keyof RuntimeSettingsSnapshot, "activeModel">;
-  route: "rate-limits" | "worker" | "publication" | "graph" | "maintenance" | "semantic" | "search";
+  section: Exclude<keyof PublicRuntimeSettings, "activeModel">;
+  route: "rate-limits" | "worker" | "generated" | "graph" | "maintenance" | "semantic" | "search";
   path: readonly string[];
   value: string | number | boolean;
   prepare?: (section: Record<string, unknown>) => void;
@@ -1440,68 +1373,38 @@ const runtimeSettingFieldCases: readonly RuntimeSettingFieldCase[] = [
     section: "worker",
     route: "worker",
     path: ["sourceFileConcurrency"],
-    value: 1,
-    prepare: (section) => { section.sourceObjectReadConcurrency = 1; }
+    value: 1
   },
-  { id: "worker.sourceObjectReadConcurrency", section: "worker", route: "worker", path: ["sourceObjectReadConcurrency"], value: 1 },
-  { id: "worker.claimBatchSize", section: "worker", route: "worker", path: ["claimBatchSize"], value: 11 },
-  { id: "worker.pollIntervalMs", section: "worker", route: "worker", path: ["pollIntervalMs"], value: 1_001 },
-  { id: "worker.lockTtlSeconds", section: "worker", route: "worker", path: ["lockTtlSeconds"], value: 901 },
-  { id: "worker.heartbeatIntervalMs", section: "worker", route: "worker", path: ["heartbeatIntervalMs"], value: 15_001 },
   { id: "worker.jobMaxAttempts", section: "worker", route: "worker", path: ["jobMaxAttempts"], value: 4 },
   { id: "worker.jobRetryDelayMs", section: "worker", route: "worker", path: ["jobRetryDelayMs"], value: 30_001 },
   { id: "worker.completedJobRetentionDays", section: "worker", route: "worker", path: ["completedJobRetentionDays"], value: 8 },
-  { id: "worker.hardDeleteConcurrency", section: "worker", route: "worker", path: ["hardDeleteConcurrency"], value: 2 },
-  { id: "worker.hardDeleteDatabaseBatchSize", section: "worker", route: "worker", path: ["hardDeleteDatabaseBatchSize"], value: 999 },
-  { id: "worker.hardDeleteObjectBatchSize", section: "worker", route: "worker", path: ["hardDeleteObjectBatchSize"], value: 999 },
-  { id: "worker.hardDeleteMaxAttempts", section: "worker", route: "worker", path: ["hardDeleteMaxAttempts"], value: 4 },
-  { id: "worker.hardDeleteRetryDelayMs", section: "worker", route: "worker", path: ["hardDeleteRetryDelayMs"], value: 60_001 },
-  { id: "publication.mode", section: "publication", route: "publication", path: ["mode"], value: "manual" },
-  { id: "publication.intervalSeconds", section: "publication", route: "publication", path: ["intervalSeconds"], value: 301 },
-  {
-    id: "publication.roleConcurrency",
-    section: "publication",
-    route: "publication",
-    path: ["roleConcurrency"],
-    value: 2,
-    prepare: (section) => { section.claimBatchSize = 2; }
-  },
-  { id: "publication.claimBatchSize", section: "publication", route: "publication", path: ["claimBatchSize"], value: 2 },
-  { id: "publication.generatedObjectWriteConcurrency", section: "publication", route: "publication", path: ["generatedObjectWriteConcurrency"], value: 7 },
-  { id: "publication.directoryIndexMaxEntries", section: "publication", route: "publication", path: ["directoryIndexMaxEntries"], value: 201 },
-  { id: "publication.directoryIndexMaxBytes", section: "publication", route: "publication", path: ["directoryIndexMaxBytes"], value: 65_537 },
+  { id: "generated.directoryIndexMaxEntries", section: "generated", route: "generated", path: ["directoryIndexMaxEntries"], value: 201 },
+  { id: "generated.directoryIndexMaxBytes", section: "generated", route: "generated", path: ["directoryIndexMaxBytes"], value: 65_537 },
+  { id: "generated.rootSummaryLimit", section: "generated", route: "generated", path: ["rootSummaryLimit"], value: 501 },
+  { id: "generated.okfLogMaxEntries", section: "generated", route: "generated", path: ["okfLogMaxEntries"], value: 101 },
+  { id: "generated.okfLogMaxBytes", section: "generated", route: "generated", path: ["okfLogMaxBytes"], value: 65_537 },
   { id: "graph.candidateLimit", section: "graph", route: "graph", path: ["candidateLimit"], value: 201 },
   { id: "graph.acceptedEdgeLimit", section: "graph", route: "graph", path: ["acceptedEdgeLimit"], value: 41 },
   { id: "graph.searchDefaultDepth", section: "graph", route: "graph", path: ["searchDefaultDepth"], value: 0 },
   { id: "graph.searchMaxDepth", section: "graph", route: "graph", path: ["searchMaxDepth"], value: 1 },
   { id: "graph.searchDefaultFanout", section: "graph", route: "graph", path: ["searchDefaultFanout"], value: 11 },
   { id: "graph.searchMaxFanout", section: "graph", route: "graph", path: ["searchMaxFanout"], value: 26 },
-  { id: "graph.modelReviewEnabled", section: "graph", route: "graph", path: ["modelReviewEnabled"], value: false },
+  { id: "graph.shardSize", section: "graph", route: "graph", path: ["shardSize"], value: 5_001 },
   { id: "graph.genericPhraseThreshold", section: "graph", route: "graph", path: ["genericPhraseThreshold"], value: 5 },
-  { id: "maintenance.knowledgeBaseMaintenanceMode", section: "maintenance", route: "maintenance", path: ["knowledgeBaseMaintenanceMode"], value: "automatic" },
-  { id: "maintenance.knowledgeBaseMaintenanceScanIntervalSeconds", section: "maintenance", route: "maintenance", path: ["knowledgeBaseMaintenanceScanIntervalSeconds"], value: 3_600 },
-  { id: "maintenance.knowledgeBaseMaintenanceConcurrency", section: "maintenance", route: "maintenance", path: ["knowledgeBaseMaintenanceConcurrency"], value: 2 },
   { id: "maintenance.reconciliationEnabled", section: "maintenance", route: "maintenance", path: ["reconciliationEnabled"], value: false },
   { id: "maintenance.scanBatchSize", section: "maintenance", route: "maintenance", path: ["scanBatchSize"], value: 501 },
-  { id: "maintenance.deletionBatchSize", section: "maintenance", route: "maintenance", path: ["deletionBatchSize"], value: 101 },
-  { id: "maintenance.quarantineGracePeriodSeconds", section: "maintenance", route: "maintenance", path: ["quarantineGracePeriodSeconds"], value: 86_401 },
   { id: "maintenance.maxAttempts", section: "maintenance", route: "maintenance", path: ["maxAttempts"], value: 6 },
   { id: "maintenance.retryDelayMs", section: "maintenance", route: "maintenance", path: ["retryDelayMs"], value: 30_001 },
-  { id: "maintenance.projectionRepairConcurrency", section: "maintenance", route: "maintenance", path: ["projectionRepairConcurrency"], value: 5 },
-  { id: "maintenance.projectionRepairDatabaseBatchSize", section: "maintenance", route: "maintenance", path: ["projectionRepairDatabaseBatchSize"], value: 2_001 },
-  { id: "maintenance.projectionRepairObjectWriteConcurrency", section: "maintenance", route: "maintenance", path: ["projectionRepairObjectWriteConcurrency"], value: 5 },
-  { id: "maintenance.lexicalRebuildConcurrency", section: "maintenance", route: "maintenance", path: ["lexicalRebuildConcurrency"], value: 5 },
-  { id: "maintenance.lexicalRebuildSourceReadConcurrency", section: "maintenance", route: "maintenance", path: ["lexicalRebuildSourceReadConcurrency"], value: 3 },
-  { id: "maintenance.lexicalRebuildMaxInFlightSourceBytes", section: "maintenance", route: "maintenance", path: ["lexicalRebuildMaxInFlightSourceBytes"], value: 67_108_865 },
+  { id: "maintenance.hardDeleteConcurrency", section: "maintenance", route: "maintenance", path: ["hardDeleteConcurrency"], value: 2 },
+  { id: "maintenance.hardDeleteDatabaseBatchSize", section: "maintenance", route: "maintenance", path: ["hardDeleteDatabaseBatchSize"], value: 1_001 },
+  { id: "maintenance.hardDeleteObjectBatchSize", section: "maintenance", route: "maintenance", path: ["hardDeleteObjectBatchSize"], value: 999 },
+  { id: "maintenance.hardDeleteMaxAttempts", section: "maintenance", route: "maintenance", path: ["hardDeleteMaxAttempts"], value: 4 },
+  { id: "maintenance.hardDeleteRetryDelayMs", section: "maintenance", route: "maintenance", path: ["hardDeleteRetryDelayMs"], value: 60_001 },
+  { id: "maintenance.hardDeleteFailedRetentionDays", section: "maintenance", route: "maintenance", path: ["hardDeleteFailedRetentionDays"], value: 31 },
   { id: "semantic.maximumChunkCharacters", section: "semantic", route: "semantic", path: ["maximumChunkCharacters"], value: 16_001 },
   { id: "semantic.maximumChunks", section: "semantic", route: "semantic", path: ["maximumChunks"], value: 31 },
   { id: "semantic.maximumEvidenceTargets", section: "semantic", route: "semantic", path: ["maximumEvidenceTargets"], value: 65 },
-  { id: "semantic.maximumCommunityPartitions", section: "semantic", route: "semantic", path: ["maximumCommunityPartitions"], value: 255 },
-  { id: "semantic.maximumCommunityEntities", section: "semantic", route: "semantic", path: ["maximumCommunityEntities"], value: 9_999 },
-  { id: "semantic.maximumCommunityRelationships", section: "semantic", route: "semantic", path: ["maximumCommunityRelationships"], value: 19_999 },
-  { id: "semantic.maximumCommunityBoundaryRelationships", section: "semantic", route: "semantic", path: ["maximumCommunityBoundaryRelationships"], value: 9_999 },
-  { id: "semantic.maximumCommunitySummaryCharacters", section: "semantic", route: "semantic", path: ["maximumCommunitySummaryCharacters"], value: 8_001 },
-  { id: "semantic.communityAdapterTimeoutMs", section: "semantic", route: "semantic", path: ["communityAdapterTimeoutMs"], value: 30_001 },
+  { id: "semantic.graphRagAdapterTimeoutMs", section: "semantic", route: "semantic", path: ["graphRagAdapterTimeoutMs"], value: 30_001 },
   { id: "semantic.searchLaneCutoffMs", section: "semantic", route: "semantic", path: ["searchLaneCutoffMs"], value: 1_001 },
   { id: "semantic.queryEmbeddingConcurrency", section: "semantic", route: "semantic", path: ["queryEmbeddingConcurrency"], value: 5 },
   { id: "semantic.queryEmbeddingCacheEntries", section: "semantic", route: "semantic", path: ["queryEmbeddingCacheEntries"], value: 1_001 },
@@ -1516,7 +1419,6 @@ const runtimeSettingFieldCases: readonly RuntimeSettingFieldCase[] = [
   { id: "search.maxAttempts", section: "search", route: "search", path: ["maxAttempts"], value: 6 },
   { id: "search.retryDelayMs", section: "search", route: "search", path: ["retryDelayMs"], value: 2_001 },
   { id: "search.cleanupBatchSize", section: "search", route: "search", path: ["cleanupBatchSize"], value: 1_001 },
-  { id: "search.stagingRetentionHours", section: "search", route: "search", path: ["stagingRetentionHours"], value: 25 },
   { id: "search.cropLength", section: "search", route: "search", path: ["cropLength"], value: 1_201 }
 ];
 
@@ -1547,8 +1449,6 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
   public readonly settings = new Map<RuntimeSettingKey, RuntimeSettingRecord>();
   public readonly models = new Map<string, RuntimeModelConfigPrivate>();
   public runningModelInvocationCount = 0;
-  public runningSourceFileJobCount = 0;
-  public activeSemanticGenerationReferenceCount = 0;
   public readonly auditLogs: Array<{
     settingKey: string;
     action: string;
@@ -1574,6 +1474,10 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
       checksum: "0".repeat(64),
       version
     };
+  }
+
+  public async getRevision() {
+    return null;
   }
 
   public async upsertSetting(input: {
@@ -1611,6 +1515,11 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
 
   public async getModel(id: string) {
     return this.models.get(id) ?? null;
+  }
+
+  public async getModelRevision(id: string, revision: number) {
+    const model = this.models.get(id) ?? null;
+    return model?.configurationRevision === revision ? model : null;
   }
 
   public async getActiveModel() {
@@ -1738,11 +1647,4 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
     return this.runningModelInvocationCount;
   }
 
-  public async countRunningSourceFileJobs() {
-    return this.runningSourceFileJobCount;
-  }
-
-  public async countActiveSemanticGenerationReferences() {
-    return this.activeSemanticGenerationReferenceCount;
-  }
 }

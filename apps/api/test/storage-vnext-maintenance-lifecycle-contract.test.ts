@@ -179,7 +179,7 @@ describe("storage vNext maintenance lifecycle contract", () => {
     expect(fixture.liveOperations).toHaveLength(1);
   });
 
-  it.each(["upload", "mutation", "publication"] as const)(
+  it.each(["upload", "mutation", "document"] as const)(
     "defers maintenance while foreground %s work owns the knowledge base",
     async (ownerKind) => {
       const fixture = createFixture({ liveForegroundOwner: ownerKind });
@@ -364,6 +364,24 @@ describe("storage vNext maintenance lifecycle contract", () => {
     expect(fixture.liveCandidateRoots).toBe(0);
   });
 
+  it("cleans candidate state when cancellation wins during a running phase", async () => {
+    const fixture = createFixture();
+    const coordinator = createCoordinator(fixture);
+    await coordinator.requestMaintenance(request());
+    fixture.repository.saveProgress.mockResolvedValueOnce("terminal");
+
+    await expect(coordinator.runOne(workerClaim("worker-cancel-race"))).resolves.toEqual({
+      outcome: "superseded",
+      operationPublicId: "operation-maintenance-contract"
+    });
+    expect(fixture.cleanup.terminate).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-maintenance-contract",
+      operationPublicId: "operation-maintenance-contract",
+      outcome: "superseded"
+    });
+    expect(fixture.repository.complete).not.toHaveBeenCalled();
+  });
+
   it("terminates a stale plan without retrying or retaining its candidate", async () => {
     const fixture = createFixture();
     fixture.phaseRunner.runPhase.mockRejectedValueOnce(
@@ -486,7 +504,7 @@ function createCoordinator(
 }
 
 function createFixture(input: {
-  liveForegroundOwner?: "upload" | "mutation" | "publication" | "deletion";
+  liveForegroundOwner?: "upload" | "mutation" | "document" | "deletion";
   resourcePressureCode?: string;
 } = {}) {
   type LiveOperation = {
@@ -591,13 +609,14 @@ function createFixture(input: {
     saveProgress: vi.fn(async (saveInput: {
       operationPublicId: string;
       checkpoint: MaintenanceCheckpoint;
-    }) => {
+    }): Promise<"saved" | "terminal"> => {
       const operation = requireOperation(saveInput.operationPublicId);
       operation.checkpoint = structuredClone(saveInput.checkpoint);
       operation.state = "queued";
       operation.attempt = 0;
       operation.safeErrorCode = null;
       operation.leaseOwner = null;
+      return "saved" as const;
     }),
     releaseForRetry: vi.fn(async (retryInput: {
       operationPublicId: string;

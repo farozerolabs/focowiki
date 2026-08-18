@@ -37,6 +37,64 @@ describe("embedding artifact service", () => {
     }));
   });
 
+  it("rebinds a content-identical artifact to a new revision without a model call", async () => {
+    const encoded = encodeVectorArtifact({
+      vector: [0.6, 0.8, 0], normalization: "l2"
+    });
+    const prior = artifactRecord(encoded);
+    const rebound = {
+      ...prior,
+      publicId: "artifact-revision-2",
+      ownerPublicId: "content-revision-2",
+      sourceRevisionPublicId: "revision-2"
+    };
+    const reuseVerified = vi.fn(async () => rebound);
+    const gateway = { embed: vi.fn() };
+    const service = createEmbeddingArtifactService({
+      gateway,
+      repository: repositoryStub({
+        findCompatible: async () => null,
+        findReusable: async () => prior,
+        reuseVerified
+      }),
+      store: storeStub(encoded.bytes),
+      clock: () => "2026-08-14T08:00:00.000Z"
+    });
+    const request = {
+      ...resolveRequest(),
+      embeddingInput: buildSemanticEmbeddingInput({
+        inputKind: "content",
+        ownerPublicId: "content-revision-2",
+        sourceFilePublicId: "file-1",
+        sourceRevisionPublicId: "revision-2",
+        fields: { body: "Shared knowledge" },
+        evidenceTargets: [{
+          sourceFilePublicId: "file-1",
+          sourceRevisionPublicId: "revision-2",
+          evidencePublicId: "evidence-revision-2",
+          logicalPath: "renamed.md"
+        }],
+        maximumCharacters: 1_000,
+        maximumEvidenceTargets: 4
+      })
+    };
+
+    await expect(service.resolve(request)).resolves.toMatchObject({
+      reused: true,
+      artifact: { publicId: "artifact-revision-2" }
+    });
+    expect(gateway.embed).not.toHaveBeenCalled();
+    expect(reuseVerified).toHaveBeenCalledWith(expect.objectContaining({
+      sourceArtifact: prior,
+      identity: expect.objectContaining({
+        ownerPublicId: "content-revision-2",
+        sourceRevisionPublicId: "revision-2"
+      }),
+      sourceFilePublicId: "file-1",
+      reusedAt: "2026-08-14T08:00:00.000Z"
+    }));
+  });
+
   it("reclaims a compatible orphaned artifact without regenerating its vector", async () => {
     const encoded = encodeVectorArtifact({
       vector: [0.6, 0.8, 0], normalization: "l2"
@@ -476,8 +534,10 @@ function artifactRecord(encoded: ReturnType<typeof encodeVectorArtifact>): Embed
 function repositoryStub(overrides: Partial<EmbeddingArtifactRepositoryPort> = {}): EmbeddingArtifactRepositoryPort {
   return {
     findCompatible: async () => null,
+    findReusable: async () => null,
     reserveObject: async () => "reserved",
     commitVerified: async () => { throw new Error("unexpected commit"); },
+    reuseVerified: async () => { throw new Error("unexpected reuse"); },
     attachReference: async () => undefined,
     listSourceReferences: async () => [],
     markWriteFailed: async () => undefined,

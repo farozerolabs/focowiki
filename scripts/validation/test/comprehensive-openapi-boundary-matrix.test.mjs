@@ -105,7 +105,7 @@ test("keeps source-path min and max cases inside the documented segment grammar"
       type: "string",
       minLength: 4,
       maxLength: 2_048,
-      pattern: "^(?:[^/]{1,240}/)*[^/]{1,237}\\.md$"
+      pattern: "^(?:[^/]{1,1000}/)*[^/]{1,997}\\.md$"
     },
     example: "guide.md",
     location: "requestBody",

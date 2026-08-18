@@ -21,6 +21,7 @@
     "@focowiki/okf": "workspace:*",
     "@hono/node-server": "^2.0.11",
     "@opensearch-project/opensearch": "3.6.0",
+    "@smithy/node-http-handler": "4.9.1",
     "bcryptjs": "3.0.2",
     "hono": "^4.12.25",
     "meilisearch": "0.60.0",

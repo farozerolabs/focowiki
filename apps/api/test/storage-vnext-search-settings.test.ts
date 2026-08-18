@@ -5,15 +5,17 @@ import {
 } from "../src/storage-vnext/search/settings.js";
 import {
   createStorageVnextSearchSettingsChecksum
-} from "../src/storage-vnext/search/candidate-lifecycle.js";
+} from "../src/storage-vnext/search/index-identity.js";
 
 describe("storage vNext unified search settings", () => {
-  it("supports content and graph-seed documents in one index contract", () => {
+  it("supports content, graph seed, and relationship documents in one contract", () => {
     const settings = createStorageVnextSearchSettings({ searchCutoffMs: 750 });
 
     expect(settings.searchableAttributes).toEqual([
       "title",
       "logicalPath",
+      "targetTitle",
+      "targetLogicalPath",
       "searchText",
       "rankingTerms"
     ]);
@@ -24,6 +26,12 @@ describe("storage vNext unified search settings", () => {
       "fileKind",
       "schemaVersion",
       "sourceFilePublicId",
+      "sourceRevisionPublicId",
+      "relationPublicId",
+      "evidencePublicId",
+      "targetSourceFilePublicId",
+      "targetSourceRevisionPublicId",
+      "visible",
       "okfSignals.status",
       "okfSignals.trustTier",
       "okfSignals.staleAfterEpochDay"
@@ -32,6 +40,7 @@ describe("storage vNext unified search settings", () => {
       "sourceFilePublicId",
       "sourceRevisionPublicId",
       "logicalPath",
+      "targetLogicalPath",
       "searchText",
       "okfSignals"
     ]));

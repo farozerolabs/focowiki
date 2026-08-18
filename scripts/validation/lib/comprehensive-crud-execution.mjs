@@ -148,7 +148,7 @@ export function mutationResumeDecision(input) {
 }
 
 export function buildReplacementBody(originalBytes, alias, kind = "replacement") {
-  const marker = "This complete revision verifies source replacement and publication continuity.";
+  const marker = "This complete revision verifies source replacement and active-read continuity.";
   return Buffer.concat([
     Buffer.from(originalBytes),
     Buffer.from(`\n\n## Comprehensive ${kind} ${alias}\n\n${marker}\n`)

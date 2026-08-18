@@ -33,9 +33,9 @@ const ONE_SHOT_SERVICES = ["migrate", "minio-init", "search-init"]
   .filter((service) => expectedActiveServices.includes(service));
 const APP_RUNTIME_SERVICES = [
   "api",
-  "maintenance-worker",
-  "publication-worker",
-  "source-worker"
+  "worker",
+  "worker",
+  "worker"
 ].filter((service) => expectedActiveServices.includes(service));
 const psRows = lines(docker([...composeArgs, "ps", "--all", "--format", "json"]))
   .map((line) => JSON.parse(line));
@@ -81,8 +81,8 @@ const reconciliation = reconcileComprehensiveDockerRuntime({
   expectedActiveServices,
   oneShotServices: ONE_SHOT_SERVICES,
   appRuntimeServices: APP_RUNTIME_SERVICES,
-  resourceLimitedServices: expectedActiveServices.includes("source-worker")
-    ? ["source-worker"] : [],
+  resourceLimitedServices: expectedActiveServices.includes("worker")
+    ? ["worker"] : [],
   allowedInactiveServices: psRows.some((row) => row.Service === inactiveProvider)
     ? [inactiveProvider] : [],
   containers: inspections

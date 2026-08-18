@@ -37,19 +37,11 @@ describe("storage vNext runtime settings aggregate capacity", () => {
   });
 
   it.each([
-    ["database", { worker: { sourceFileConcurrency: 2 } }, "databaseCapacity"],
-    ["search", {
-      maintenance: {
-        knowledgeBaseMaintenanceConcurrency: 3,
-        projectionRepairConcurrency: 3,
-        lexicalRebuildConcurrency: 3
-      }
-    }, "searchCapacity"],
-    ["object-store", {
-      publication: { generatedObjectWriteConcurrency: 2 }
-    }, "objectStoreCapacity"],
+    ["database", { maintenance: { hardDeleteConcurrency: 4 } }, "databaseCapacity"],
+    ["search", { search: { maxInFlightTasks: 4 } }, "searchCapacity"],
+    ["object-store", { maintenance: { hardDeleteConcurrency: 4 } }, "objectStoreCapacity"],
     ["memory", { search: { indexBatchCompressedBytes: 101 } }, "memoryCapacity"],
-    ["CPU", { activeModel: { suggestionConcurrency: 2 } }, "cpuCapacity"]
+    ["CPU", { maintenance: { hardDeleteConcurrency: 5 } }, "cpuCapacity"]
   ] as const)("rejects aggregate %s pressure", (_plane, overrides, field) => {
     expect(validateCapacity).toBeTypeOf("function");
     if (!validateCapacity) return;
@@ -60,17 +52,22 @@ describe("storage vNext runtime settings aggregate capacity", () => {
     expect(issues).toContainEqual(expect.objectContaining({ field }));
   });
 
-  it("allows capacity to be reallocated without increasing the aggregate", () => {
+  it("keeps the active document window independent from phase resource capacity", () => {
     expect(validateCapacity).toBeTypeOf("function");
     if (!validateCapacity) return;
     const changed = merge(snapshot(), {
-      worker: { sourceFileConcurrency: 2 },
-      publication: { roleConcurrency: 0 }
+      worker: {
+        sourceFileConcurrency: 16,
+        sourceObjectReadConcurrency: 16
+      }
     });
-    expect(validateCapacity({ snapshot: changed, capacity: capacity() })).toEqual([]);
+    expect(validateCapacity({
+      snapshot: changed,
+      capacity: capacity()
+    })).toEqual([]);
   });
 
-  it("reserves capacity for an active model when the deployment starts without one", () => {
+  it("keeps external generation concurrency independent from worker CPU admission", () => {
     expect(createCapacity).toBeTypeOf("function");
     expect(validateCapacity).toBeTypeOf("function");
     if (!createCapacity || !validateCapacity) return;
@@ -80,9 +77,7 @@ describe("storage vNext runtime settings aggregate capacity", () => {
     const derived = createCapacity({
       config: {
         database: {
-          sourceWorkerPoolMax: 2,
-          publicationWorkerPoolMax: 1,
-          maintenanceWorkerPoolMax: 1
+          workerPoolMax: 4
         }
       },
       defaults
@@ -102,21 +97,10 @@ function snapshot(): Record<string, unknown> {
   return {
     worker: {
       sourceFileConcurrency: 1,
-      sourceObjectReadConcurrency: 1,
-      hardDeleteConcurrency: 1
-    },
-    publication: {
-      roleConcurrency: 1,
-      generatedObjectWriteConcurrency: 1
+      sourceObjectReadConcurrency: 1
     },
     maintenance: {
-      knowledgeBaseMaintenanceConcurrency: 1,
-      projectionRepairConcurrency: 1,
-      projectionRepairDatabaseBatchSize: 100,
-      projectionRepairObjectWriteConcurrency: 1,
-      lexicalRebuildConcurrency: 1,
-      lexicalRebuildSourceReadConcurrency: 1,
-      lexicalRebuildMaxInFlightSourceBytes: 1_048_576
+      hardDeleteConcurrency: 1
     },
     search: {
       maxInFlightTasks: 3,
@@ -131,7 +115,7 @@ function capacity(): Record<string, number> {
     databaseConnections: 4,
     searchTasks: 3,
     objectStoreRequests: 4,
-    memoryBytes: 1_048_876,
+    memoryBytes: 300,
     cpuConcurrency: 5
   };
 }

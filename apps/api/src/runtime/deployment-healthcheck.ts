@@ -13,12 +13,12 @@ import type { OpenSearchClientPort } from
 import { createRedisClient } from "../redis/coordination.js";
 import { assertDeploymentSecret } from "../security/runtime-secrets.js";
 import { createS3StorageAdapter } from "../storage/s3.js";
+import { createGraphRagRuntime } from
+  "../semantic/graphrag/graph-rag-runtime.js";
 
 type DeploymentHealthcheckRole =
   | "api"
-  | "source-worker"
-  | "publication-worker"
-  | "maintenance-worker";
+  | "worker";
 
 type DeploymentDependencyHealthcheck = {
   assertDeploymentSecret: () => void;
@@ -34,8 +34,29 @@ type DeploymentDependencyHealthcheck = {
   };
   checkStorage: () => Promise<void>;
   checkSearch: () => Promise<void>;
+  checkWorkerRuntime?: (() => Promise<void>) | undefined;
   checkRole?: (() => Promise<void>) | undefined;
 };
+
+type WorkerRuntime = {
+  start: () => Promise<void>;
+  close: () => Promise<void>;
+};
+
+export async function runWorkerRuntimeHealthcheck(
+  createRuntime: () => WorkerRuntime = () => createGraphRagRuntime({
+    poolSize: 1,
+    maximumBacklog: 1,
+    maximumTasksPerChild: 1
+  })
+): Promise<void> {
+  const graphRag = createRuntime();
+  try {
+    await graphRag.start();
+  } finally {
+    await graphRag.close();
+  }
+}
 
 export async function runDeploymentDependencyHealthcheck(
   dependencies: DeploymentDependencyHealthcheck
@@ -50,6 +71,7 @@ export async function runDeploymentDependencyHealthcheck(
     await dependencies.redis.ping();
     await dependencies.checkStorage();
     await dependencies.checkSearch();
+    await dependencies.checkWorkerRuntime?.();
     await dependencies.checkRole?.();
   } finally {
     try {
@@ -123,6 +145,13 @@ export async function runRuntimeDeploymentHealthcheck(
         await search.close();
       }
     },
+    ...(options.role === "worker"
+      ? {
+          async checkWorkerRuntime() {
+            await runWorkerRuntimeHealthcheck();
+          }
+        }
+      : {}),
     ...(options.httpPorts
       ? {
           checkRole: () => checkHttpHealthEndpoints(

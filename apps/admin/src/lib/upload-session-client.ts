@@ -43,6 +43,7 @@ export async function runUploadSession(input: {
   signal?: AbortSignal | undefined;
 }): Promise<UploadClientResult> {
   if (input.signal?.aborted) return canceledUploadResult();
+  const idempotencyKey = crypto.randomUUID();
   const manifest = [] as Array<{
     relativePath: string;
     declaredSize: number;
@@ -65,17 +66,22 @@ export async function runUploadSession(input: {
   }
   const created = await createUploadSession({
     knowledgeBaseId: input.knowledgeBaseId,
-    idempotencyKey: crypto.randomUUID(),
+    idempotencyKey,
     declaredFileCount: manifest.length,
-    declaredByteCount: manifest.reduce((sum, entry) => sum + entry.declaredSize, 0),
-    signal: input.signal
+    declaredByteCount: manifest.reduce((sum, entry) => sum + entry.declaredSize, 0)
   });
-  if (input.signal?.aborted) return canceledUploadResult();
   if (isFailure(created)) {
     return { ok: false, failure: created, sessionId: null };
   }
   const sessionId = created.session.id;
   input.onSessionReady?.(sessionId, created.transport);
+  if (input.signal?.aborted) {
+    return cancelFailedUploadSession({
+      knowledgeBaseId: input.knowledgeBaseId,
+      sessionId,
+      failure: { messageKey: "errors.uploadCancelled" }
+    });
+  }
   try {
     const result = await continueUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
@@ -86,7 +92,13 @@ export async function runUploadSession(input: {
       onProgress: input.onProgress,
       signal: input.signal
     });
-    if (input.signal?.aborted) return canceledUploadResult();
+    if (input.signal?.aborted) {
+      return cancelFailedUploadSession({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sessionId,
+        failure: { messageKey: "errors.uploadCancelled" }
+      });
+    }
     if (result.ok) return result;
     return cancelFailedUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
@@ -94,11 +106,14 @@ export async function runUploadSession(input: {
       failure: result.failure
     });
   } catch {
-    if (input.signal?.aborted) return canceledUploadResult();
     return cancelFailedUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
       sessionId,
-      failure: { messageKey: "errors.uploadFailed" }
+      failure: {
+        messageKey: input.signal?.aborted
+          ? "errors.uploadCancelled"
+          : "errors.uploadFailed"
+      }
     });
   }
 }
@@ -213,10 +228,17 @@ async function cancelFailedUploadSession(input: {
   sessionId: string;
   failure: ApiFailure;
 }): Promise<UploadClientResult> {
-  await cancelUploadSession({
+  const cancellation = await cancelUploadSession({
     knowledgeBaseId: input.knowledgeBaseId,
     sessionId: input.sessionId
-  }).catch(() => undefined);
+  }).catch(() => ({ messageKey: "errors.uploadCleanupFailed" }));
+  if (isFailure(cancellation)) {
+    return {
+      ok: false,
+      failure: { messageKey: "errors.uploadCleanupFailed" },
+      sessionId: input.sessionId
+    };
+  }
   return {
     ok: false,
     failure: input.failure,
@@ -235,8 +257,9 @@ function canceledUploadResult(): UploadClientResult {
 export async function cancelFolderUpload(input: {
   knowledgeBaseId: string;
   sessionId: string;
-}): Promise<void> {
-  await cancelUploadSession(input);
+}): Promise<ApiFailure | null> {
+  const result = await cancelUploadSession(input);
+  return isFailure(result) ? result : null;
 }
 
 async function transferMissingEntries(input: {

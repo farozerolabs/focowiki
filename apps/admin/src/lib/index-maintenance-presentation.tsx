@@ -20,7 +20,7 @@ export function indexMaintenanceStageLabel(
 
 export function indexMaintenanceFailureLabel(
   code: string | null,
-  fallback: string,
+  fallback: string | null,
   translate: (key: string) => string
 ): string {
   if (code === "INDEX_MAINTENANCE_STATISTICS_FAILED") {
@@ -32,5 +32,6 @@ export function indexMaintenanceFailureLabel(
   if (code === "INDEX_MAINTENANCE_FAILED") {
     return translate("indexMaintenance.failures.general");
   }
-  return fallback;
+  if (fallback) return fallback;
+  return translate("indexMaintenance.failures.general");
 }

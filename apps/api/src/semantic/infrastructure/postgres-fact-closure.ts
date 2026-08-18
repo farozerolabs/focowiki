@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { portableByFileGraphPath } from "@focowiki/okf";
 import type { TransactionSql } from "postgres";
 import { generatedPagePath } from "../../domain/source-path.js";
 import type {
@@ -178,11 +179,10 @@ export async function buildSemanticAffectedClosure(
     ]),
     dirtyPartitionKeys: unique(entityPublicIds.map((id) => `entity-${id.slice(0, 2)}`)),
     affectedFileNeighborPublicIds: neighbors.map((row) => row.source_file_public_id),
-    generatedLogicalPaths: unique([
-      ...input.evidence.slice(0, 1).map((evidence) =>
-        generatedPagePath(evidence.logicalPath)),
-      `_graph/by-file/${input.sourceFilePublicId}.json`
-    ]),
+    generatedLogicalPaths: unique(input.evidence.slice(0, 1).flatMap((evidence) => {
+      const pagePath = generatedPagePath(evidence.logicalPath);
+      return [pagePath, portableByFileGraphPath(pagePath)];
+    })),
     graphShardPublicIds: unique(entityPublicIds.map((id) => shard("graph", id))),
     searchShardPublicIds: unique([
       input.sourceFilePublicId,

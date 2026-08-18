@@ -8,7 +8,13 @@ import type {
   StorageVnextPublicId,
   StorageVnextTimestamp
 } from "../shared/types.js";
-import type { StorageVnextCleanupTarget } from "./terminal-convergence.js";
+export type StorageVnextCleanupTarget = {
+  publicId: StorageVnextPublicId;
+  resourceKind: string;
+  plane: "postgres" | "object_storage" | "search" | "redis" | "process";
+  required: boolean;
+  sequence: number;
+};
 
 export type StorageVnextCleanupAction = {
   publicId: StorageVnextPublicId;
@@ -129,6 +135,7 @@ const LIVE_STATES: readonly StorageVnextCleanupAction["state"][] = [
   "running",
   "retry"
 ];
+const DEFAULT_MAXIMUM_ATTEMPTS = 10;
 
 export function createPostgresStorageVnextCleanupActionRepository(
   sql: DatabaseClient
@@ -142,7 +149,7 @@ export function createPostgresStorageVnextCleanupActionRepository(
            cleanup_plane, resource_kind, resource_public_id, required, sequence_number,
            search_provider_kind,
            idempotency_key, request_hash, checkpoint, state, attempt_count,
-           lease_owner, lease_expires_at, safe_error_code, not_before)
+           maximum_attempts, lease_owner, lease_expires_at, safe_error_code, not_before)
         VALUES
           (${action.publicId}, ${action.operationPublicId}, ${action.knowledgeBaseId},
            ${action.domain}, ${action.target.plane}, ${action.target.resourceKind},
@@ -150,6 +157,7 @@ export function createPostgresStorageVnextCleanupActionRepository(
            ${action.searchProviderKind},
            ${action.idempotency.key}, ${action.idempotency.requestHash},
            ${sql.json(action.checkpoint)}, ${action.state}, ${action.attempt},
+           ${DEFAULT_MAXIMUM_ATTEMPTS},
            ${action.leaseOwner}, ${action.leaseExpiresAt}, ${action.safeErrorCode},
            ${action.notBefore})
         ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
@@ -182,6 +190,7 @@ export function createPostgresStorageVnextCleanupActionRepository(
           SELECT public_id
           FROM focowiki.cleanup_actions
           WHERE state IN ('queued', 'retry')
+            AND attempt_count < maximum_attempts
             AND not_before <= now()
             ${selector ? sql`
               AND action_kind = ${selector.domain}
@@ -227,7 +236,15 @@ export function createPostgresStorageVnextCleanupActionRepository(
           LIMIT ${limit}
         )
         UPDATE focowiki.cleanup_actions AS action
-        SET state = 'retry', lease_owner = NULL, lease_expires_at = NULL,
+        SET state = CASE
+              WHEN attempt_count < maximum_attempts THEN 'retry'
+              ELSE 'failed'
+            END,
+            completed_at = CASE
+              WHEN attempt_count < maximum_attempts THEN NULL
+              ELSE now()
+            END,
+            lease_owner = NULL, lease_expires_at = NULL,
             not_before = ${input.notBefore},
             safe_error_code = ${input.safeErrorCode}, updated_at = now()
         FROM stale

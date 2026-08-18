@@ -26,15 +26,6 @@ export function createPostgresStorageVnextApiKeyRepository(
   sql: DatabaseClient
 ): PublicOpenApiKeyRepository {
   return {
-    async countActivePublicOpenApiKeys() {
-      const rows = await sql<Array<{ count: number | string }>>`
-        SELECT count(*) AS count
-        FROM focowiki.public_api_keys
-        WHERE enabled
-      `;
-      return Number(rows[0]?.count ?? 0);
-    },
-
     async listPublicOpenApiKeys(input) {
       const cursor = decodeCursor(input.cursor);
       const rows = await sql<ApiKeyRow[]>`

@@ -3,16 +3,229 @@ import { StorageVnextCatalogRepositoryError } from
   "../src/storage-vnext/catalog/postgres-repository.js";
 import { createPostgresStorageVnextOpenApiApplication } from
   "../src/storage-vnext/api/postgres-openapi-application.js";
-import type { StorageVnextSourceEventSummary } from
-  "../src/storage-vnext/source-events/ports.js";
-import { StorageVnextSourceEventRepositoryError } from
-  "../src/storage-vnext/source-events/postgres-repository.js";
 import { SearchProviderError } from
   "../src/application/ports/search-provider-runtime.js";
 import { StorageVnextActiveSearchInputError } from
   "../src/storage-vnext/search/active-search.js";
 
 describe("storage vNext Developer OpenAPI application", () => {
+  it.each(["id", "path"] as const)(
+    "returns byte-equivalent uploaded Markdown for source-backed file content by %s",
+    async (lookup) => {
+      const original = [
+        "---",
+        'title: "Original order"',
+        'status: "stable"',
+        "---",
+        "",
+        "# Original order",
+        "",
+        "Keep the uploaded bytes and final newline.",
+        ""
+      ].join("\n");
+      const sql = (async (strings: TemplateStringsArray) => {
+        const query = strings.join("?");
+        if (query.includes("SELECT page.logical_path")) {
+          return [{
+            logical_path: "pages/original.md",
+            source_file_public_id: "source-file-original",
+            object_id: "object-generated"
+          }];
+        }
+        if (query.includes("knowledge_base_sequences")) {
+          return [{
+            knowledge_base_id: "knowledge-base-original",
+            activation_revision: 7
+          }];
+        }
+        throw new Error(`Unexpected query: ${query}`);
+      }) as never;
+      const application = createPostgresStorageVnextOpenApiApplication({
+        sql,
+        catalog: null as never,
+        adminRead: null as never,
+        adminCore: {
+          async readGeneratedContent() {
+            return {
+              ok: true as const,
+              value: {
+                file: {
+                  id: "source-file-original",
+                  sourceFileId: "source-file-original",
+                  logicalPath: "pages/original.md",
+                  title: "Original order"
+                },
+                content: [
+                  "---",
+                  'status: "stable"',
+                  'title: "Original order"',
+                  "---",
+                  "# Original order"
+                ].join("\n")
+              }
+            };
+          }
+        } as never,
+        resources: {
+          async readSourceContent() {
+            return {
+              content: new TextEncoder().encode(original),
+              contentType: "text/markdown; charset=utf-8",
+              resourceRevision: 1,
+              contentRevision: 1
+            };
+          }
+        } as never,
+        source: null as never,
+        search: null,
+        webhooks: null as never
+      });
+
+      const result = lookup === "id"
+        ? await application.getFileContentById({
+            knowledgeBaseId: "knowledge-base-original",
+            fileId: "source-file-original"
+          })
+        : await application.getFileContentByPath({
+            knowledgeBaseId: "knowledge-base-original",
+            path: "pages/original.md"
+          });
+
+      expect(result).toMatchObject({
+        file: {
+          fileId: "source-file-original",
+          path: "pages/original.md",
+          title: "Original order"
+        },
+        content: original
+      });
+    }
+  );
+
+  it.each([
+    ["name", "界".repeat(86)],
+    ["description", "界".repeat(5_462)]
+  ] as const)("rejects an oversized knowledge-base %s before persistence", async (field, value) => {
+    const create = vi.fn();
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql: null as never,
+      catalog: null as never,
+      adminRead: null as never,
+      adminCore: null as never,
+      resources: null as never,
+      source: null as never,
+      search: null,
+      webhooks: null as never,
+      knowledgeBaseCreation: { create }
+    });
+
+    await expect(application.createKnowledgeBase({
+      name: field === "name" ? value : "Knowledge base",
+      description: field === "description" ? value : null
+    })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      httpStatus: 422,
+      details: { field }
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a graph file seed that is not part of the active release", async () => {
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql: (async () => []) as never,
+      catalog: null as never,
+      adminRead: null as never,
+      adminCore: null as never,
+      resources: null as never,
+      source: null as never,
+      search: null,
+      webhooks: null as never
+    });
+
+    await expect(application.expandGraph({
+      knowledgeBaseId: "knowledge-base-graph-seed",
+      fileId: "definitely-missing",
+      depth: 0,
+      fanout: 10,
+      limit: 10,
+      cursor: null
+    })).rejects.toMatchObject({ code: "NOT_FOUND", httpStatus: 404 });
+  });
+
+  it("uses a returned readable file ID as the graph seed without a second search", async () => {
+    const search = vi.fn(async () => ({
+      items: [{
+        publicId: "source-file-guide",
+        sourceFilePublicId: "source-file-guide",
+        logicalPath: "pages/guide.md",
+        title: "Coastal operations guide",
+        snippet: "Explains how the station is maintained.",
+        score: 0.8,
+        kind: "file" as const,
+        metadata: { tags: ["operations"] }
+      }],
+      nextCursor: null
+    }));
+    const sql = (async (strings: TemplateStringsArray) => {
+      const query = strings.join("?");
+      if (query.includes("SELECT page.logical_path")) {
+        return [{
+          logical_path: "pages/guide.md",
+          source_file_public_id: "source-file-guide",
+          object_id: "object-guide"
+        }];
+      }
+      if (query.includes("knowledge_base_sequences")) {
+        return [{
+          knowledge_base_id: "knowledge-base-graph-query",
+          activation_revision: 1
+        }];
+      }
+      return [];
+    }) as never;
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql,
+      catalog: null as never,
+      adminRead: null as never,
+      adminCore: {
+        async readGeneratedContent() {
+          return {
+            ok: true as const,
+            value: {
+              file: {
+                id: "source-file-guide",
+                sourceFileId: "source-file-guide",
+                logicalPath: "pages/guide.md",
+                title: "guide"
+              },
+              content: "# Coastal operations guide\n\nStation maintenance."
+            }
+          };
+        }
+      } as never,
+      resources: null as never,
+      source: null as never,
+      search: { search },
+      webhooks: null as never
+    });
+
+    await expect(application.expandGraph({
+      knowledgeBaseId: "knowledge-base-graph-query",
+      fileId: "source-file-guide",
+      depth: 1,
+      fanout: 10,
+      limit: 10,
+      cursor: null
+    })).resolves.toMatchObject({
+      seedFile: {
+        fileId: "source-file-guide",
+        title: "Coastal operations guide"
+      },
+      resultSummary: { relationshipCount: 0 }
+    });
+    expect(search).not.toHaveBeenCalled();
+  });
+
   it("maps an invalid knowledge-base cursor to the public validation error", async () => {
     const application = createPostgresStorageVnextOpenApiApplication({
       sql: null as never,
@@ -21,107 +234,15 @@ describe("storage vNext Developer OpenAPI application", () => {
           throw new StorageVnextCatalogRepositoryError("invalid_cursor");
         }
       } as never,
-      releases: null as never,
       adminRead: null as never,
       adminCore: null as never,
       resources: null as never,
-      sourceEvents: null as never,
       source: null as never,
       search: null,
       webhooks: null as never
     });
 
     await expect(application.listKnowledgeBases({
-      limit: 10,
-      cursor: "tampered"
-    })).rejects.toMatchObject({
-      code: "VALIDATION_ERROR",
-      httpStatus: 422,
-      details: { field: "cursor" }
-    });
-  });
-
-  it("returns the bounded source event history with the requested page cursor", async () => {
-    const calls: unknown[] = [];
-    const application = createPostgresStorageVnextOpenApiApplication({
-      sql: null as never,
-      catalog: null as never,
-      releases: null as never,
-      adminRead: null as never,
-      adminCore: null as never,
-      resources: {
-        async getSourceFile() {
-          return { id: "source-file-one" };
-        }
-      } as never,
-      sourceEvents: {
-        async list(input: unknown) {
-          calls.push(input);
-          return {
-            items: [
-              sourceEvent("source-event-accepted", "upload_storage", "info"),
-              sourceEvent("source-event-progress", "metadata_resolution", "warning")
-            ],
-            nextCursor: "events-next"
-          };
-        }
-      },
-      source: null as never,
-      search: null,
-      webhooks: null as never
-    });
-
-    await expect(application.listSourceFileEvents({
-      knowledgeBaseId: "knowledge-base-one",
-      sourceFileId: "source-file-one",
-      limit: 2,
-      cursor: "events-cursor"
-    })).resolves.toEqual({
-      items: [
-        expect.objectContaining({
-          eventId: "source-event-accepted",
-          stageKey: "upload_storage"
-        }),
-        expect.objectContaining({
-          eventId: "source-event-progress",
-          severity: "warning"
-        })
-      ],
-      nextCursor: "events-next"
-    });
-    expect(calls).toEqual([{
-      knowledgeBaseId: "knowledge-base-one",
-      sourceFileId: "source-file-one",
-      limit: 2,
-      cursor: "events-cursor"
-    }]);
-  });
-
-  it("maps an invalid source event cursor to the public validation error", async () => {
-    const application = createPostgresStorageVnextOpenApiApplication({
-      sql: null as never,
-      catalog: null as never,
-      releases: null as never,
-      adminRead: null as never,
-      adminCore: null as never,
-      resources: {
-        async getSourceFile() {
-          return { id: "source-file-one" };
-        }
-      } as never,
-      sourceEvents: {
-        async list() {
-          throw new StorageVnextSourceEventRepositoryError("invalid_cursor");
-        }
-      },
-      source: null as never,
-      search: null,
-      webhooks: null as never
-    });
-
-    await expect(application.listSourceFileEvents({
-      knowledgeBaseId: "knowledge-base-one",
-      sourceFileId: "source-file-one",
       limit: 10,
       cursor: "tampered"
     })).rejects.toMatchObject({
@@ -144,25 +265,14 @@ describe("storage vNext Developer OpenAPI application", () => {
     "maps search failure %s to %s",
     async (failure, code, httpStatus) => {
       const application = createPostgresStorageVnextOpenApiApplication({
-        sql: null as never,
+        sql: (async () => [{
+          knowledge_base_id: "knowledge-base-search-errors",
+          activation_revision: 1
+        }]) as never,
         catalog: null as never,
-        releases: {
-          async getActiveRoot() {
-            return {
-              publicId: "root-search-errors",
-              knowledgeBaseId: "knowledge-base-search-errors",
-              role: "active",
-              manifestChecksum: "a".repeat(64),
-              revision: 1,
-              createdAt: "2026-08-07T00:00:00.000Z",
-              expiresAt: null
-            };
-          }
-        } as never,
         adminRead: null as never,
         adminCore: null as never,
         resources: null as never,
-        sourceEvents: null as never,
         source: null as never,
         search: {
           async search() {
@@ -206,23 +316,9 @@ describe("storage vNext Developer OpenAPI application", () => {
     const application = createPostgresStorageVnextOpenApiApplication({
       sql: null as never,
       catalog: null as never,
-      releases: {
-        async getActiveRoot() {
-          return {
-            publicId: "root-file-kind",
-            knowledgeBaseId: "knowledge-base-file-kind",
-            role: "active",
-            manifestChecksum: "a".repeat(64),
-            revision: 1,
-            createdAt: "2026-08-07T00:00:00.000Z",
-            expiresAt: null
-          };
-        }
-      } as never,
       adminRead: null as never,
       adminCore: null as never,
       resources: null as never,
-      sourceEvents: null as never,
       source: null as never,
       search: { search },
       webhooks: null as never
@@ -255,6 +351,12 @@ describe("storage vNext Developer OpenAPI application", () => {
       if (query.includes("indexed_document_count")) {
         return [{ indexed_document_count: "12", indexed_relationship_count: "34" }];
       }
+      if (query.includes("knowledge_base_sequences")) {
+        return [{
+          knowledge_base_id: "knowledge-base-graph-summary",
+          activation_revision: 1
+        }];
+      }
       if (query.includes("seed_source_file_public_id")) {
         return [{
           seed_source_file_public_id: "source-file-one",
@@ -277,23 +379,9 @@ describe("storage vNext Developer OpenAPI application", () => {
     const application = createPostgresStorageVnextOpenApiApplication({
       sql,
       catalog: null as never,
-      releases: {
-        async getActiveRoot() {
-          return {
-            publicId: "root-graph-summary",
-            knowledgeBaseId: "knowledge-base-graph-summary",
-            role: "active",
-            manifestChecksum: "a".repeat(64),
-            revision: 1,
-            createdAt: "2026-08-07T00:00:00.000Z",
-            expiresAt: null
-          };
-        }
-      } as never,
       adminRead: null as never,
       adminCore: null as never,
       resources: null as never,
-      sourceEvents: null as never,
       source: null as never,
       search: {
         async search() {
@@ -349,24 +437,3 @@ describe("storage vNext Developer OpenAPI application", () => {
     });
   });
 });
-
-function sourceEvent(
-  publicId: string,
-  stageKey: StorageVnextSourceEventSummary["stageKey"],
-  severity: "info" | "warning" | "error"
-) {
-  return {
-    publicId,
-    knowledgeBaseId: "knowledge-base-one",
-    sourceFilePublicId: "source-file-one",
-    sourceRevisionPublicId: "source-revision-one",
-    sequence: 10,
-    stageKey,
-    messageKey: `sourceFiles.phase.${stageKey}`,
-    startedAt: "2026-08-01T00:00:00.000Z",
-    endedAt: null,
-    severity,
-    createdAt: "2026-08-01T00:00:00.000Z",
-    expiresAt: "2026-09-01T00:00:00.000Z"
-  };
-}

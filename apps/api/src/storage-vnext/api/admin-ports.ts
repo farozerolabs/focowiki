@@ -67,7 +67,7 @@ export type StorageVnextAdminFilePage = StorageVnextPage<StorageVnextAdminFile> 
 };
 
 export type StorageVnextAdminOperationState =
-  "accepted" | "validating" | "processing" | "publishing" |
+  "accepted" | "validating" | "processing" |
   "completed" | "failed" | "cancelled" | "superseded";
 
 export type StorageVnextAdminOperation = {

@@ -21,6 +21,16 @@ export function resolveApiAppServices(options: ApiAppOptions) {
   const storageVnextAdminProcessing = options.storageVnextAdminProcessing ?? null;
   const runtimeSettings = options.runtimeSettings ?? null;
   const storageVnextAdminSource = options.storageVnextAdminSource ?? null;
+  const logger = options.logger ?? createRuntimeLogger(options.config);
+  const notifyWorker = async (
+    kind: "document" | "deletion" | "maintenance"
+  ): Promise<void> => {
+    try {
+      await options.redis?.notifyWorkerWork(kind);
+    } catch {
+      logger.warn("worker.wakeup_publish_failed", { kind });
+    }
+  };
   const sessionManager = options.redis
     ? createAdminSessionManager(
         options.config.admin,
@@ -31,10 +41,24 @@ export function resolveApiAppServices(options: ApiAppOptions) {
   const storageVnextAdminUpload = options.storageVnextAdminUpload ?? null;
   const storageVnextAdminMutation = options.storageVnextAdminMutation ?? null;
   const storageVnextAdminCore = options.storageVnextAdminCore ?? null;
-  const logger = options.logger ?? createRuntimeLogger(options.config);
+  const uploadApplication = createStorageVnextAdminUploadApplication({
+    backend: storageVnextAdminUpload,
+    onWorkAccepted: () => notifyWorker("document")
+  });
+  const sourceApplication = createStorageVnextAdminSourceApplication({
+    backend: storageVnextAdminSource,
+    onDocumentWorkAccepted: () => notifyWorker("document"),
+    onDeletionWorkAccepted: () => notifyWorker("deletion")
+  });
+  const mutationApplication = createStorageVnextAdminMutationApplication({
+    backend: storageVnextAdminMutation,
+    onDocumentWorkAccepted: () => notifyWorker("document"),
+    onDeletionWorkAccepted: () => notifyWorker("deletion")
+  });
   const adminAuditApplication = createStorageVnextAdminAuditApplication({
     config: options.config,
-    audit: storageVnextAudit
+    audit: storageVnextAudit,
+    logger
   });
   const storageVnextOpenApi = options.storageVnextOpenApi ?? null;
   const developerOpenApiContext = createStorageVnextOpenApiRouteContext({
@@ -44,12 +68,8 @@ export function resolveApiAppServices(options: ApiAppOptions) {
     logger,
     audit: storageVnextAudit,
     apiKeys: options.storageVnextApiKeys ?? null,
-    uploadApplication: createStorageVnextAdminUploadApplication({
-      backend: storageVnextAdminUpload
-    }),
-    sourceApplication: createStorageVnextAdminMutationApplication({
-      backend: storageVnextAdminMutation
-    }),
+    uploadApplication,
+    sourceApplication: mutationApplication,
     openApiApplication: createDeveloperOpenApiService({
       backend: storageVnextOpenApi
     })
@@ -71,9 +91,7 @@ export function resolveApiAppServices(options: ApiAppOptions) {
     adminProcessingApplication: createStorageVnextAdminProcessingApplication({
       backend: storageVnextAdminProcessing
     }),
-    adminSourceApplication: createStorageVnextAdminSourceApplication({
-      backend: storageVnextAdminSource
-    }),
+    adminSourceApplication: sourceApplication,
     adminMaintenanceApplication: createStorageVnextAdminMaintenanceApplication({
       backend: options.storageVnextAdminMaintenance ?? null,
       catalog: options.storageVnextCatalog ?? null,
@@ -82,19 +100,16 @@ export function resolveApiAppServices(options: ApiAppOptions) {
       runtimeSettings,
       semanticAdoption: options.semanticAdoption ?? null,
       semanticCancellation: options.semanticCancellation ?? null,
-      cancellationCleanup: options.maintenanceCancellationCleanup ?? null
+      cancellationCleanup: options.maintenanceCancellationCleanup ?? null,
+      onWorkAccepted: () => notifyWorker("maintenance")
     }),
-    adminUploadApplication: createStorageVnextAdminUploadApplication({
-      backend: storageVnextAdminUpload
-    }),
+    adminUploadApplication: uploadApplication,
     adminOpenApiKeyApplication: createStorageVnextAdminOpenApiKeyApplication({
       config: options.config,
       repository: options.storageVnextApiKeys ?? null,
       redis: options.redis ?? null
     }),
-    adminMutationApplication: createStorageVnextAdminMutationApplication({
-      backend: storageVnextAdminMutation
-    }),
+    adminMutationApplication: mutationApplication,
     adminCoreApplication: createStorageVnextAdminCoreApplication({
       backend: storageVnextAdminCore
     }),

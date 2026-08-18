@@ -26,4 +26,4 @@ if [ -n "${OPENSEARCH_SECURITY_DIR:-}" ]; then
   chmod 700 "${OPENSEARCH_SECURITY_DIR}"
 fi
 
-exec su-exec node:node "$@"
+exec gosu node:node "$@"

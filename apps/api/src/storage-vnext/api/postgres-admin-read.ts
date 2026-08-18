@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
 import type { StorageVnextCatalogReadPort } from "../catalog/ports.js";
-import type { StorageVnextReleaseReadPort } from "../release/ports.js";
 import type { StorageVnextSearchQueryPort } from "../search/ports.js";
 import type {
   StorageVnextAdminApplicationResult,
@@ -44,7 +43,6 @@ type TreeSearchCursor = {
 export function createPostgresStorageVnextAdminRead(input: {
   sql: DatabaseClient;
   catalog: StorageVnextCatalogReadPort;
-  releases: StorageVnextReleaseReadPort;
   search: StorageVnextSearchQueryPort | null;
 }): StorageVnextAdminReadApplication {
   return {
@@ -55,11 +53,13 @@ export function createPostgresStorageVnextAdminRead(input: {
           limit: request.limit,
           cursor: request.cursor
         });
-        const items = await Promise.all(page.items.map(async (knowledgeBase) =>
-          toKnowledgeBase(
-            knowledgeBase,
-            await input.releases.getActiveRoot(knowledgeBase.publicId)
-          )
+        const revisions = await readActivationRevisions(
+          input.sql,
+          page.items.map((knowledgeBase) => knowledgeBase.publicId)
+        );
+        const items = page.items.map((knowledgeBase) => toKnowledgeBase(
+          knowledgeBase,
+          revisions.get(knowledgeBase.publicId) ?? 0
         ));
         return success({ items, nextCursor: page.nextCursor });
       } catch {
@@ -72,20 +72,18 @@ export function createPostgresStorageVnextAdminRead(input: {
       if (!knowledgeBase) return success(null);
       return success(toKnowledgeBase(
         knowledgeBase,
-        await input.releases.getActiveRoot(knowledgeBase.publicId)
+        await readActivationRevision(input.sql, knowledgeBase.publicId)
       ));
     },
 
     async listTree(request) {
       const knowledgeBase = await input.catalog.getKnowledgeBase(request);
       if (!knowledgeBase) return notFound();
-      const root = await input.releases.getActiveRoot(request.knowledgeBaseId);
-      if (!root) {
-        return request.cursor
-          ? invalidPagination()
-          : success({ items: [], nextCursor: null });
-      }
-      const scope = treeScope(request, root.publicId);
+      const activationRevision = await readActivationRevision(
+        input.sql,
+        request.knowledgeBaseId
+      );
+      const scope = treeScope(request, activationRevision);
       let cursor: TreeCursor | null;
       try {
         cursor = decodeTreeCursor(request.cursor, scope);
@@ -93,71 +91,95 @@ export function createPostgresStorageVnextAdminRead(input: {
         return invalidPagination();
       }
       const rows = await input.sql<TreeRow[]>`
-        WITH tree_entries AS (
+        WITH page_heads AS MATERIALIZED (
+          SELECT page.logical_path, page.entry_kind,
+                 page.source_file_public_id, page.source_revision_public_id,
+                 CASE WHEN strpos(page.logical_path, '/') = 0 THEN ''
+                   ELSE regexp_replace(page.logical_path, '/[^/]+$', '')
+                 END AS parent_path
+          FROM focowiki.generated_page_heads page
+          LEFT JOIN focowiki.source_file_active_revisions active
+            ON active.knowledge_base_id = page.knowledge_base_id
+           AND active.source_file_public_id = page.source_file_public_id
+          WHERE page.knowledge_base_id = ${request.knowledgeBaseId}
+            AND (page.source_file_public_id IS NULL
+              OR active.active_source_revision_public_id = page.source_revision_public_id)
+        ), directory_paths AS MATERIALIZED (
+          SELECT DISTINCT array_to_string(parts[1:depth], '/') AS logical_path
+          FROM (
+            SELECT string_to_array(logical_path, '/') AS parts
+            FROM page_heads
+          ) page
+          CROSS JOIN LATERAL generate_series(
+            1,
+            greatest(coalesce(array_length(parts, 1), 0) - 1, 0)
+          ) depth
+        ), directory_entries AS (
           SELECT
             coalesce(
-              summary.directory_public_id,
+              directory.public_id,
               focowiki.public_generated_directory_id(
-                ${request.knowledgeBaseId},
-                summary.logical_path
+                ${request.knowledgeBaseId}, path.logical_path
               )
             ) AS record_id,
-            summary.logical_path,
-            CASE
-              WHEN strpos(summary.logical_path, '/') = 0 THEN ''
-              ELSE regexp_replace(summary.logical_path, '/[^/]+$', '')
+            path.logical_path,
+            CASE WHEN strpos(path.logical_path, '/') = 0 THEN ''
+              ELSE regexp_replace(path.logical_path, '/[^/]+$', '')
             END AS parent_path,
-            'directory'::text AS entry_type,
-            NULL::text AS source_file_public_id,
-            summary.directory_public_id AS source_directory_public_id,
-            NULL::text AS entry_kind,
-            (
-              SELECT count(*)
-              FROM focowiki.resolve_release_directory_summaries(${root.publicId}) child
-              WHERE CASE
-                  WHEN strpos(child.logical_path, '/') = 0 THEN ''
-                  ELSE regexp_replace(child.logical_path, '/[^/]+$', '')
-                END = summary.logical_path
-            ) AS direct_directory_count,
-            summary.direct_file_count,
-            summary.descendant_file_count,
+            directory.public_id AS source_directory_public_id,
+            (SELECT count(*) FROM directory_paths child
+             WHERE CASE WHEN strpos(child.logical_path, '/') = 0 THEN ''
+               ELSE regexp_replace(child.logical_path, '/[^/]+$', '') END
+               = path.logical_path) AS direct_directory_count,
+            (SELECT count(*) FROM page_heads child
+             WHERE child.parent_path = path.logical_path) AS direct_file_count,
+            (SELECT count(*) FROM page_heads child
+             WHERE child.logical_path LIKE path.logical_path || '/%'
+               AND child.source_file_public_id IS NOT NULL)
+              AS descendant_file_count,
             coalesce(directory.revision, 0) AS resource_revision
-          FROM focowiki.resolve_release_directory_summaries(${root.publicId}) summary
+          FROM directory_paths path
           LEFT JOIN focowiki.source_directories directory
             ON directory.knowledge_base_id = ${request.knowledgeBaseId}
-           AND directory.public_id = summary.directory_public_id
            AND directory.deleted_at IS NULL
-          WHERE summary.directory_public_id IS NULL OR directory.public_id IS NOT NULL
+           AND path.logical_path LIKE 'pages/%'
+           AND directory.logical_path = substring(path.logical_path FROM 7)
+        ), tree_entries AS (
+          SELECT
+            directory.record_id, directory.logical_path, directory.parent_path,
+            'directory'::text AS entry_type,
+            NULL::text AS source_file_public_id,
+            directory.source_directory_public_id,
+            NULL::text AS entry_kind,
+            directory.direct_directory_count, directory.direct_file_count,
+            directory.descendant_file_count, directory.resource_revision
+          FROM directory_entries directory
 
           UNION ALL
 
           SELECT
             coalesce(
-              entry.source_file_public_id,
+              page.source_file_public_id,
               focowiki.public_generated_file_id(
                 ${request.knowledgeBaseId},
-                entry.logical_path
+                page.logical_path
               )
             ),
-            entry.logical_path,
-            CASE
-              WHEN strpos(entry.logical_path, '/') = 0 THEN ''
-              ELSE regexp_replace(entry.logical_path, '/[^/]+$', '')
-            END AS parent_path,
+            page.logical_path, page.parent_path,
             'file'::text AS entry_type,
-            entry.source_file_public_id,
+            page.source_file_public_id,
             NULL::text AS source_directory_public_id,
-            entry.entry_kind,
+            page.entry_kind,
             0::bigint AS direct_directory_count,
             0::bigint AS direct_file_count,
             0::bigint AS descendant_file_count,
             source.revision AS resource_revision
-          FROM focowiki.resolve_release_catalog(${root.publicId}) entry
+          FROM page_heads page
           LEFT JOIN focowiki.source_files source
             ON source.knowledge_base_id = ${request.knowledgeBaseId}
-           AND source.public_id = entry.source_file_public_id
+           AND source.public_id = page.source_file_public_id
            AND source.deleted_at IS NULL
-          WHERE entry.source_file_public_id IS NULL OR source.public_id IS NOT NULL
+          WHERE page.source_file_public_id IS NULL OR source.public_id IS NOT NULL
         )
         SELECT record_id, logical_path, parent_path, entry_type,
                source_file_public_id, source_directory_public_id, entry_kind,
@@ -195,13 +217,11 @@ export function createPostgresStorageVnextAdminRead(input: {
       const knowledgeBase = await input.catalog.getKnowledgeBase(request);
       if (!knowledgeBase) return notFound();
       if (!input.search) return unavailable();
-      const root = await input.releases.getActiveRoot(request.knowledgeBaseId);
-      if (!root) {
-        return request.cursor
-          ? invalidPagination()
-          : success({ items: [], nextCursor: null });
-      }
-      const scope = treeSearchScope(request, root.publicId);
+      const activationRevision = await readActivationRevision(
+        input.sql,
+        request.knowledgeBaseId
+      );
+      const scope = treeSearchScope(request, activationRevision);
       try {
         const cursor = decodeTreeSearchCursor(request.cursor, scope);
         if (cursor.phase === "files") {
@@ -222,7 +242,6 @@ export function createPostgresStorageVnextAdminRead(input: {
             search: input.search,
             catalog: input.catalog,
             knowledgeBaseId: request.knowledgeBaseId,
-            rootPublicId: root.publicId,
             query: request.query,
             limit: request.limit,
             logicalPath: cursor.logicalPath,
@@ -234,7 +253,6 @@ export function createPostgresStorageVnextAdminRead(input: {
         const directoryRows = await listMatchingDirectories({
           sql: input.sql,
           knowledgeBaseId: request.knowledgeBaseId,
-          rootPublicId: root.publicId,
           query: request.query,
           limit: request.limit + 1,
           logicalPath: cursor.logicalPath,
@@ -273,7 +291,6 @@ export function createPostgresStorageVnextAdminRead(input: {
           search: input.search,
           catalog: input.catalog,
           knowledgeBaseId: request.knowledgeBaseId,
-          rootPublicId: root.publicId,
           query: request.query,
           limit: remaining,
           logicalPath: null,
@@ -297,18 +314,46 @@ function toKnowledgeBase(
   record: Awaited<ReturnType<StorageVnextCatalogReadPort["getKnowledgeBase"]>> extends infer T
     ? Exclude<T, null>
     : never,
-  root: Awaited<ReturnType<StorageVnextReleaseReadPort["getActiveRoot"]>>
+  activationRevision: number
 ): StorageVnextAdminKnowledgeBase {
   return {
     id: record.publicId,
     name: record.name,
     description: record.description,
-    activeVersionId: root?.publicId ?? null,
+    activeVersionId: activationRevision > 0
+      ? `activation-revision-${activationRevision}` : null,
     resourceRevision: record.revision,
-    catalogVersion: root?.revision ?? 0,
+    catalogVersion: activationRevision,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
+}
+
+async function readActivationRevision(
+  sql: DatabaseClient,
+  knowledgeBaseId: string
+): Promise<number> {
+  return (await readActivationRevisions(sql, [knowledgeBaseId]))
+    .get(knowledgeBaseId) ?? 0;
+}
+
+async function readActivationRevisions(
+  sql: DatabaseClient,
+  knowledgeBaseIds: readonly string[]
+): Promise<Map<string, number>> {
+  if (knowledgeBaseIds.length === 0) return new Map();
+  const rows = await sql<Array<{
+    knowledge_base_id: string;
+    activation_revision: number | string;
+  }>>`
+    SELECT knowledge_base_id, current_sequence AS activation_revision
+    FROM focowiki.knowledge_base_sequences
+    WHERE knowledge_base_id = ANY(${knowledgeBaseIds}::text[])
+  `;
+  return new Map(rows.map((row) => [
+    row.knowledge_base_id,
+    toCount(row.activation_revision)
+  ]));
 }
 
 function toTreeEntry(row: TreeRow): StorageVnextAdminTreeEntry {
@@ -441,68 +486,88 @@ function toGeneratedFileSearchItem(
 async function listMatchingDirectories(input: {
   sql: DatabaseClient;
   knowledgeBaseId: string;
-  rootPublicId: string;
   query: string;
   limit: number;
   logicalPath: string | null;
   recordId: string | null;
 }): Promise<TreeRow[]> {
   return input.sql<TreeRow[]>`
+    WITH page_heads AS MATERIALIZED (
+      SELECT page.logical_path,
+             CASE WHEN strpos(page.logical_path, '/') = 0 THEN ''
+               ELSE regexp_replace(page.logical_path, '/[^/]+$', '')
+             END AS parent_path
+      FROM focowiki.generated_page_heads page
+      LEFT JOIN focowiki.source_file_active_revisions active
+        ON active.knowledge_base_id = page.knowledge_base_id
+       AND active.source_file_public_id = page.source_file_public_id
+      WHERE page.knowledge_base_id = ${input.knowledgeBaseId}
+        AND (page.source_file_public_id IS NULL
+          OR active.active_source_revision_public_id = page.source_revision_public_id)
+    ), directory_paths AS MATERIALIZED (
+      SELECT DISTINCT array_to_string(parts[1:depth], '/') AS logical_path
+      FROM (
+        SELECT string_to_array(logical_path, '/') AS parts FROM page_heads
+      ) page
+      CROSS JOIN LATERAL generate_series(
+        1,
+        greatest(coalesce(array_length(parts, 1), 0) - 1, 0)
+      ) depth
+    )
     SELECT
       coalesce(
-        summary.directory_public_id,
+        directory.public_id,
         focowiki.public_generated_directory_id(
           ${input.knowledgeBaseId},
-          summary.logical_path
+          path.logical_path
         )
       ) AS record_id,
-      summary.logical_path,
+      path.logical_path,
       CASE
-        WHEN strpos(summary.logical_path, '/') = 0 THEN ''
-        ELSE regexp_replace(summary.logical_path, '/[^/]+$', '')
+        WHEN strpos(path.logical_path, '/') = 0 THEN ''
+        ELSE regexp_replace(path.logical_path, '/[^/]+$', '')
       END AS parent_path,
       'directory'::text AS entry_type,
       NULL::text AS source_file_public_id,
-      summary.directory_public_id AS source_directory_public_id,
+      directory.public_id AS source_directory_public_id,
       NULL::text AS entry_kind,
-      (
-        SELECT count(*)
-        FROM focowiki.resolve_release_directory_summaries(${input.rootPublicId}) child
-        WHERE CASE
-            WHEN strpos(child.logical_path, '/') = 0 THEN ''
-            ELSE regexp_replace(child.logical_path, '/[^/]+$', '')
-          END = summary.logical_path
-      ) AS direct_directory_count,
-      summary.direct_file_count,
-      summary.descendant_file_count,
+      (SELECT count(*) FROM directory_paths child
+       WHERE CASE WHEN strpos(child.logical_path, '/') = 0 THEN ''
+         ELSE regexp_replace(child.logical_path, '/[^/]+$', '') END
+         = path.logical_path) AS direct_directory_count,
+      (SELECT count(*) FROM page_heads child
+       WHERE child.parent_path = path.logical_path) AS direct_file_count,
+      (SELECT count(*) FROM page_heads child
+       WHERE child.logical_path LIKE path.logical_path || '/%')
+        AS descendant_file_count,
       coalesce(directory.revision, 0) AS resource_revision
-    FROM focowiki.resolve_release_directory_summaries(${input.rootPublicId}) summary
+    FROM directory_paths path
     LEFT JOIN focowiki.source_directories directory
       ON directory.knowledge_base_id = ${input.knowledgeBaseId}
-     AND directory.public_id = summary.directory_public_id
      AND directory.deleted_at IS NULL
-    WHERE (summary.directory_public_id IS NULL OR directory.public_id IS NOT NULL)
-      AND strpos(lower(summary.logical_path), lower(${input.query.trim()})) > 0
+     AND path.logical_path LIKE 'pages/%'
+     AND directory.logical_path = substring(path.logical_path FROM 7)
+    WHERE strpos(lower(path.logical_path), lower(${input.query.trim()})) > 0
       AND (
         ${input.logicalPath}::text IS NULL
         OR (
-          summary.logical_path,
+          path.logical_path,
           coalesce(
-            summary.directory_public_id,
+            directory.public_id,
             focowiki.public_generated_directory_id(
               ${input.knowledgeBaseId},
-              summary.logical_path
+              path.logical_path
             )
           )
         ) >
            (${input.logicalPath}::text, ${input.recordId}::text)
       )
-    ORDER BY summary.logical_path COLLATE "C",
+    ORDER BY path.logical_path COLLATE "C",
              coalesce(
-               summary.directory_public_id,
+               directory.public_id,
                focowiki.public_generated_directory_id(
                  ${input.knowledgeBaseId},
-                 summary.logical_path
+                 path.logical_path
                )
              ) COLLATE "C"
     LIMIT ${input.limit}
@@ -512,7 +577,6 @@ async function listMatchingDirectories(input: {
 async function listMatchingGeneratedFiles(input: {
   sql: DatabaseClient;
   knowledgeBaseId: string;
-  rootPublicId: string;
   query: string;
   limit: number;
   logicalPath: string | null;
@@ -522,38 +586,39 @@ async function listMatchingGeneratedFiles(input: {
     SELECT
       focowiki.public_generated_file_id(
         ${input.knowledgeBaseId},
-        entry.logical_path
+        page.logical_path
       ) AS record_id,
-      entry.logical_path,
+      page.logical_path,
       CASE
-        WHEN strpos(entry.logical_path, '/') = 0 THEN ''
-        ELSE regexp_replace(entry.logical_path, '/[^/]+$', '')
+        WHEN strpos(page.logical_path, '/') = 0 THEN ''
+        ELSE regexp_replace(page.logical_path, '/[^/]+$', '')
       END AS parent_path,
       'file'::text AS entry_type,
       NULL::text AS source_file_public_id,
       NULL::text AS source_directory_public_id,
-      entry.entry_kind,
+      page.entry_kind,
       0::bigint AS direct_directory_count,
       0::bigint AS direct_file_count,
       0::bigint AS descendant_file_count,
       NULL::bigint AS resource_revision
-    FROM focowiki.resolve_release_catalog(${input.rootPublicId}) entry
-    WHERE entry.source_file_public_id IS NULL
-      AND strpos(lower(entry.logical_path), lower(${input.query.trim()})) > 0
+    FROM focowiki.generated_page_heads page
+    WHERE page.knowledge_base_id = ${input.knowledgeBaseId}
+      AND page.source_file_public_id IS NULL
+      AND strpos(lower(page.logical_path), lower(${input.query.trim()})) > 0
       AND (
         ${input.logicalPath}::text IS NULL
         OR (
-          entry.logical_path,
+          page.logical_path,
           focowiki.public_generated_file_id(
             ${input.knowledgeBaseId},
-            entry.logical_path
+            page.logical_path
           )
         ) > (${input.logicalPath}::text, ${input.recordId}::text)
       )
-    ORDER BY entry.logical_path COLLATE "C",
+    ORDER BY page.logical_path COLLATE "C",
              focowiki.public_generated_file_id(
                ${input.knowledgeBaseId},
-               entry.logical_path
+               page.logical_path
              ) COLLATE "C"
     LIMIT ${input.limit}
   `;
@@ -564,7 +629,6 @@ async function searchGeneratedFilePage(input: {
   search: StorageVnextSearchQueryPort;
   catalog: StorageVnextCatalogReadPort;
   knowledgeBaseId: string;
-  rootPublicId: string;
   query: string;
   limit: number;
   logicalPath: string | null;
@@ -574,7 +638,6 @@ async function searchGeneratedFilePage(input: {
   const rows = await listMatchingGeneratedFiles({
     sql: input.sql,
     knowledgeBaseId: input.knowledgeBaseId,
-    rootPublicId: input.rootPublicId,
     query: input.query,
     limit: input.limit + 1,
     logicalPath: input.logicalPath,
@@ -666,11 +729,11 @@ async function searchFilePage(input: {
 
 function treeScope(
   request: Parameters<StorageVnextAdminReadApplication["listTree"]>[0],
-  rootPublicId: string
+  activationRevision: number
 ) {
   return JSON.stringify({
     knowledgeBaseId: request.knowledgeBaseId,
-    rootPublicId,
+    activationRevision,
     parentPath: request.parentPath,
     entryType: request.entryType,
     query: request.query?.trim().toLocaleLowerCase("en-US") ?? ""
@@ -679,11 +742,11 @@ function treeScope(
 
 function treeSearchScope(
   request: Parameters<StorageVnextAdminReadApplication["searchFiles"]>[0],
-  rootPublicId: string
+  activationRevision: number
 ) {
   return JSON.stringify({
     knowledgeBaseId: request.knowledgeBaseId,
-    rootPublicId,
+    activationRevision,
     query: request.query.trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US")
   });
 }
@@ -785,7 +848,6 @@ function decodeTreeSearchCursor(value: string | null, scope: string): TreeSearch
 function fileKind(row: TreeRow): string {
   if (row.source_file_public_id) return "page";
   if (row.logical_path === "index.md") return "index";
-  if (row.logical_path === "schema.md") return "schema";
   if (row.logical_path === "log.md") return "log";
   if (row.logical_path.startsWith("_graph/")) return "graph_index";
   if (row.logical_path.startsWith("_index/")) return "search_index";

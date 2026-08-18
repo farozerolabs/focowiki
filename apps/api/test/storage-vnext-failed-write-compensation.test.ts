@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AbortMultipartUploadCommand,
-  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  HeadObjectCommand,
+  ListObjectVersionsCommand,
   ListMultipartUploadsCommand
 } from "@aws-sdk/client-s3";
 import {
@@ -73,7 +75,18 @@ describe("storage vNext failed immutable-write compensation", () => {
       registrations,
       bodyStore: {
         describe: () => descriptor,
-        putVerified: vi.fn(async () => ({ ...descriptor, outcome: "stored" as const })),
+        putVerified: vi.fn(async () => ({
+          ...descriptor,
+          outcome: "stored" as const,
+          requests: {
+            put: 1,
+            head: 0,
+            verification: 0,
+            attemptedBytes: descriptor.byteCount,
+            retries: 0,
+            latencyMilliseconds: 1
+          }
+        })),
         verify: vi.fn(async () => undefined),
         readVerified: vi.fn()
       },
@@ -92,23 +105,26 @@ describe("storage vNext failed immutable-write compensation", () => {
     }));
   });
 
-  it("does not compensate a duplicate writer that never owned the reservation", async () => {
+  it("waits for and reuses a concurrent immutable write without compensation", async () => {
     const registrations = registrationRepository({
       state: "reserved",
-      reserveError: Object.assign(new Error("busy"), { code: "write_in_progress" })
+      reserveError: Object.assign(new Error("busy"), { code: "write_in_progress" }),
+      verifyAfterRegistrationReads: 2
     });
     const putVerified = vi.fn();
+    const verify = vi.fn(async () => undefined);
     const compensation = { compensate: vi.fn() };
     const writer = createStorageVnextImmutableObjectWriter({
       registrations,
       bodyStore: {
         describe: () => descriptor,
         putVerified,
-        verify: vi.fn(),
+        verify,
         readVerified: vi.fn()
       },
       compensation,
-      clock: () => "2026-08-01T03:00:00.000Z"
+      clock: () => "2026-08-01T03:00:00.000Z",
+      concurrentWritePollMilliseconds: 1
     });
 
     await expect(writer.putVerified({
@@ -116,8 +132,9 @@ describe("storage vNext failed immutable-write compensation", () => {
       objectFormat: "source-markdown-v1",
       writeAttemptPublicId: "write-duplicate",
       createdAt: "2026-08-01T02:59:00.000Z"
-    })).rejects.toMatchObject({ code: "write_in_progress" });
+    })).resolves.toMatchObject({ outcome: "reused", objectId: descriptor.objectId });
     expect(putVerified).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
     expect(compensation.compensate).not.toHaveBeenCalled();
   });
 
@@ -185,20 +202,55 @@ describe("storage vNext failed immutable-write compensation", () => {
     }));
   });
 
-  it("aborts every exact-key multipart upload and deletes only the owned current key", async () => {
+  it("purges every exact-key version, marker, and multipart upload", async () => {
+    const uploads = new Set(["upload-a", "upload-b"]);
+    const versions = new Set(["version-a", "marker-a"]);
     const send = vi.fn(async (command:
       | ListMultipartUploadsCommand
       | AbortMultipartUploadCommand
-      | DeleteObjectCommand) => {
+      | ListObjectVersionsCommand
+      | DeleteObjectsCommand
+      | HeadObjectCommand) => {
       if (command instanceof ListMultipartUploadsCommand) {
         return {
           Uploads: [
-            { Key: descriptor.storageKey, UploadId: "upload-a" },
+            ...[...uploads].map((UploadId) => ({
+              Key: descriptor.storageKey,
+              UploadId
+            })),
             { Key: `${descriptor.storageKey}.other`, UploadId: "upload-other" },
-            { Key: descriptor.storageKey, UploadId: "upload-b" }
           ],
           IsTruncated: false
         };
+      }
+      if (command instanceof AbortMultipartUploadCommand) {
+        uploads.delete(command.input.UploadId!);
+        return {};
+      }
+      if (command instanceof ListObjectVersionsCommand) {
+        return {
+          Versions: versions.has("version-a") ? [{
+            Key: descriptor.storageKey,
+            VersionId: "version-a"
+          }] : [],
+          DeleteMarkers: versions.has("marker-a") ? [{
+            Key: descriptor.storageKey,
+            VersionId: "marker-a"
+          }] : [],
+          IsTruncated: false
+        };
+      }
+      if (command instanceof DeleteObjectsCommand) {
+        for (const object of command.input.Delete?.Objects ?? []) {
+          if (object.VersionId) versions.delete(object.VersionId);
+        }
+        return { Errors: [] };
+      }
+      if (command instanceof HeadObjectCommand) {
+        throw Object.assign(new Error("missing"), {
+          name: "NotFound",
+          $metadata: { httpStatusCode: 404 }
+        });
       }
       return {};
     });
@@ -217,8 +269,11 @@ describe("storage vNext failed immutable-write compensation", () => {
       .map((command) => command.input.UploadId);
     expect(aborted).toEqual(["upload-a", "upload-b"]);
     expect(send.mock.calls.map(([command]) => command).find(
-      (command) => command instanceof DeleteObjectCommand
-    )?.input).toEqual({ Bucket: "owned-bucket", Key: descriptor.storageKey });
+      (command) => command instanceof DeleteObjectsCommand
+    )?.input.Delete?.Objects).toEqual([
+      { Key: descriptor.storageKey, VersionId: "version-a" },
+      { Key: descriptor.storageKey, VersionId: "marker-a" }
+    ]);
     await expect(provider.deleteCurrentObject("other/prefix.md"))
       .rejects.toMatchObject({ code: "scope_conflict" });
   });
@@ -228,11 +283,13 @@ function registrationRepository(input: {
   state: "reserved" | "verified";
   reserveError?: Error;
   markVerifiedError?: Error;
+  verifyAfterRegistrationReads?: number;
 }): StorageVnextOwnershipRepository & {
   deleteFailedReservation: ReturnType<typeof vi.fn>;
   markDeleting: ReturnType<typeof vi.fn>;
   markDeleted: ReturnType<typeof vi.fn>;
 } {
+  let registrationReads = 0;
   let registration: StorageVnextObjectRegistration | null = {
     objectId: descriptor.objectId,
     storageKey: descriptor.storageKey,
@@ -265,7 +322,21 @@ function registrationRepository(input: {
       registration = { ...registration!, state: "verified" };
       return registration;
     },
-    async getRegistration() { return registration; },
+    async getRegistration() {
+      registrationReads += 1;
+      if (
+        registration
+        && input.verifyAfterRegistrationReads
+        && registrationReads >= input.verifyAfterRegistrationReads
+      ) {
+        registration = {
+          ...registration,
+          state: "verified",
+          verifiedAt: "2026-08-01T03:00:00.000Z"
+        };
+      }
+      return registration;
+    },
     async getRegistrationsByStorageKeys() { return registration ? [registration] : []; },
     async listRegistrations() {
       return { items: registration ? [registration] : [], nextCursor: null };
@@ -285,6 +356,7 @@ function registrationRepository(input: {
     },
     async attach() {},
     async release() {},
+    async releaseVerifiedReservation() {},
     markDeleting,
     markDeleted,
     deleteFailedReservation

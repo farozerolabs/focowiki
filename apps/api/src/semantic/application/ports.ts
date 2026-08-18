@@ -95,7 +95,7 @@ export type SemanticGenerationRepositoryPort = {
   discardCandidateByOperation(input: {
     knowledgeBaseId: string;
     operationPublicId: SemanticPublicId;
-  }): Promise<"deleted" | "missing">;
+  }): Promise<"deleted" | "retained" | "missing">;
 };
 
 export type SemanticFactRepositoryPort = {
@@ -127,15 +127,4 @@ export type SemanticFactRepositoryPort = {
     limit: number;
     cursor: string | null;
   }): Promise<{ items: readonly SemanticEntity[]; nextCursor: string | null }>;
-};
-
-export type SemanticSourceBodyReadPort = {
-  readVerifiedStream(request: {
-    objectId: string;
-    checksum: string;
-    byteCount: number;
-    contentType: string;
-    maxBytes: number;
-    signal?: AbortSignal;
-  }): Promise<AsyncIterable<Uint8Array>>;
 };

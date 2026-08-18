@@ -17,19 +17,21 @@ import { cn } from "@/lib/utils";
 import {
   fromDatetimeLocalValue,
   SOURCE_FILE_ACTION_STATES,
+  SOURCE_FILE_CURRENT_STAGES,
   SOURCE_FILE_ERROR_STATES,
   SOURCE_FILE_GENERATED_OUTPUT_STATUSES,
   SOURCE_FILE_MODEL_INVOCATION_STATUSES,
-  SOURCE_FILE_CURRENT_STAGES,
+  SOURCE_FILE_WORK_KINDS,
   SOURCE_FILE_LIFECYCLE_STATES,
   sourceFileFilterCount,
   toDatetimeLocalValue,
   type SourceFileActionState,
+  type SourceFileCurrentStage,
   type SourceFileErrorState,
   type SourceFileGeneratedOutputStatus,
   type SourceFileListFilters,
   type SourceFileModelInvocationStatus,
-  type SourceFileCurrentStage,
+  type SourceFileWorkKind,
   type SourceFileLifecycleState
 } from "@/lib/source-file-list-filters";
 
@@ -146,9 +148,14 @@ export function SourceFileStageFilterHeader({
       value={filters.currentStage}
       options={SOURCE_FILE_CURRENT_STAGES.map((stage) => ({
         value: stage,
-        label: t(`tasks.phase.${toCamelCase(stage)}`)
+        label: isSourceFileWorkKind(stage)
+          ? t(`tasks.workKind.${toCamelCase(stage)}`)
+          : t(`tasks.fileStatus.${stage}`)
       }))}
-      onChange={(currentStage) => onFiltersChange({ ...filters, currentStage })}
+      onChange={(currentStage) => onFiltersChange({
+        ...filters,
+        currentStage
+      })}
     />
   );
 }
@@ -456,5 +463,9 @@ function toCamelCase(value: string): string {
 }
 
 function generatedStatusKey(value: SourceFileGeneratedOutputStatus): string {
-  return value === "visible" ? "available" : value;
+  return toCamelCase(value);
+}
+
+function isSourceFileWorkKind(value: SourceFileCurrentStage): value is SourceFileWorkKind {
+  return SOURCE_FILE_WORK_KINDS.includes(value as SourceFileWorkKind);
 }

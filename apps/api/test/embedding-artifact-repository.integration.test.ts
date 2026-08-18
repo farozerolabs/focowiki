@@ -433,24 +433,23 @@ describeOwnedDatabase("embedding artifact PostgreSQL repository", () => {
       `;
       await transaction`
         UPDATE focowiki.source_revisions
-        SET revision_role = 'rollback',
-            expires_at = '2027-08-09T00:00:00.000Z'
+        SET retired_at = '2026-08-09T00:00:00.000Z'
         WHERE public_id = 'revision-artifact'
       `;
       await transaction`
         INSERT INTO focowiki.source_revisions (
           public_id, knowledge_base_id, source_file_public_id, object_id,
-          checksum_sha256, byte_count, content_type, revision_role
+          checksum_sha256, byte_count, content_type
         ) VALUES (
           'revision-artifact-new', 'kb-artifact', 'file-artifact',
           'source-object-artifact-new', ${"e".repeat(64)}, 11,
-          'text/markdown', 'current'
+          'text/markdown'
         )
       `;
       await transaction`
-        UPDATE focowiki.source_file_current_revisions
-        SET source_revision_public_id = 'revision-artifact-new',
-            revision = revision + 1
+        UPDATE focowiki.source_file_active_revisions
+        SET current_source_revision_public_id = 'revision-artifact-new',
+            active_source_revision_public_id = NULL
         WHERE knowledge_base_id = 'kb-artifact'
           AND source_file_public_id = 'file-artifact'
       `;
@@ -534,11 +533,11 @@ describeOwnedDatabase("embedding artifact PostgreSQL repository", () => {
     await sql`
       INSERT INTO focowiki.source_revisions (
         public_id, knowledge_base_id, source_file_public_id, object_id,
-        checksum_sha256, byte_count, content_type, revision_role, expires_at
+        checksum_sha256, byte_count, content_type
       ) VALUES (
         'revision-artifact-candidate', 'kb-artifact', 'file-artifact',
         'source-object-artifact-candidate', ${"8".repeat(64)}, 12,
-        'text/markdown', 'candidate', '2027-08-08T00:00:00.000Z'
+        'text/markdown'
       )
     `;
     await sql`
@@ -548,6 +547,12 @@ describeOwnedDatabase("embedding artifact PostgreSQL repository", () => {
         'operation-artifact-mutation', 'kb-artifact', 'source_replace',
         'processing'
       )
+    `;
+    await sql`
+      UPDATE focowiki.source_file_active_revisions
+      SET current_source_revision_public_id = 'revision-artifact-candidate'
+      WHERE knowledge_base_id = 'kb-artifact'
+        AND source_file_public_id = 'file-artifact'
     `;
     await sql`
       INSERT INTO focowiki.runtime_setting_revisions (
@@ -597,6 +602,15 @@ describeOwnedDatabase("embedding artifact PostgreSQL repository", () => {
 
   async function seed() {
     await sql`INSERT INTO focowiki.knowledge_bases (public_id, name, revision) VALUES ('kb-artifact', 'Artifact KB', 1)`;
+    await sql`INSERT INTO focowiki.knowledge_base_sequences (knowledge_base_id, current_sequence) VALUES ('kb-artifact', 1)`;
+    await sql`
+      INSERT INTO focowiki.model_configs (
+        public_id, provider, model, secret_reference, config, enabled, revision
+      ) VALUES (
+        'model-config-test', 'openai-compatible', 'test-model',
+        'runtime-settings:model-config-test', '{}'::jsonb, true, 1
+      )
+    `;
     for (const suffix of ["a", "b"]) {
       await sql`
         INSERT INTO focowiki.operations (
@@ -649,9 +663,9 @@ describeOwnedDatabase("embedding artifact PostgreSQL repository", () => {
         'text/markdown', 'source-markdown-v1', 'verified', 'source-write-artifact', now()
       )
     `;
-    await sql`INSERT INTO focowiki.source_files (public_id, knowledge_base_id, logical_path, normalized_path, title, status, revision) VALUES ('file-artifact', 'kb-artifact', 'artifact.md', 'artifact.md', 'Artifact', 'ready', 1)`;
-    await sql`INSERT INTO focowiki.source_revisions (public_id, knowledge_base_id, source_file_public_id, object_id, checksum_sha256, byte_count, content_type, revision_role) VALUES ('revision-artifact', 'kb-artifact', 'file-artifact', 'source-object-artifact', ${"d".repeat(64)}, 10, 'text/markdown', 'current')`;
-    await sql`INSERT INTO focowiki.source_file_current_revisions (knowledge_base_id, source_file_public_id, source_revision_public_id, revision) VALUES ('kb-artifact', 'file-artifact', 'revision-artifact', 1)`;
+    await sql`INSERT INTO focowiki.source_files (public_id, knowledge_base_id, logical_path, normalized_path, title, revision) VALUES ('file-artifact', 'kb-artifact', 'artifact.md', 'artifact.md', 'Artifact', 1)`;
+    await sql`INSERT INTO focowiki.source_revisions (public_id, knowledge_base_id, source_file_public_id, object_id, checksum_sha256, byte_count, content_type) VALUES ('revision-artifact', 'kb-artifact', 'file-artifact', 'source-object-artifact', ${"d".repeat(64)}, 10, 'text/markdown')`;
+    await sql`INSERT INTO focowiki.source_file_active_revisions (knowledge_base_id, source_file_public_id, current_source_revision_public_id, active_source_revision_public_id, activation_sequence) VALUES ('kb-artifact', 'file-artifact', 'revision-artifact', 'revision-artifact', 1)`;
   }
 
   async function count(table: string, where: string, parameters: string[] = []): Promise<number> {

@@ -1,5 +1,11 @@
 const SECRET_NAME_PATTERN =
   /(ADMIN_PASSWORD|ADMIN_SESSION_SECRET|PUBLIC_OPENAPI_KEY|OPENAPI_KEY|rawKey|S3_ACCESS_KEY_ID|S3_SECRET_ACCESS_KEY|MODEL_API_KEY|AUTHORIZATION|COOKIE|SESSION)/gi;
+const SECURITY_AUDIT_SECRET_PATTERN =
+  /password|session=|\bPUBLIC_OPENAPI_KEY\b|\bS3_SECRET(?:_ACCESS_KEY)?\b|\bMODEL_API_KEY\b|Bearer\s+[A-Za-z0-9._-]+/i;
+
+export function hasSecretLikeAuditData(rows) {
+  return SECURITY_AUDIT_SECRET_PATTERN.test(JSON.stringify(rows));
+}
 
 export function redactPotentialPathText(value) {
   return String(value ?? "")

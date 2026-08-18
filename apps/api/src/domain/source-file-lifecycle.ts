@@ -1,29 +1,24 @@
 export type SourceFileLifecycleState =
-  | "queued"
-  | "running"
-  | "pending_publication"
-  | "visible"
-  | "failed";
+  | "waiting"
+  | "processing"
+  | "available"
+  | "error"
+  | "deleting";
 
-export type SourceFileFailureStage =
-  | "upload_storage"
-  | "metadata_resolution"
-  | "llm_suggestion"
-  | "graph_generation"
-  | "graphrag_processing"
-  | "semantic_reconciliation"
-  | "embedding_generation"
-  | "affected_projection"
-  | "search_publication"
-  | "semantic_maintenance_required"
-  | "projection_generation"
-  | "generation_validation"
-  | "generation_activation";
+export type SourceFileWorkKind =
+  | "prepare"
+  | "first_layer"
+  | "content_projection"
+  | "graphrag"
+  | "relation_reconcile"
+  | "knowledge_projection"
+  | "activate"
+  | "cleanup";
 
-export type SourceFileRetryKind = "source_processing" | "publication" | "none";
+export type SourceFileRetryKind = "document_processing" | "none";
 
 export type SourceFileTerminalFailure = {
-  stage: SourceFileFailureStage;
+  workKind: SourceFileWorkKind;
   code: string;
   message: string;
   occurredAt: string;
@@ -34,64 +29,75 @@ export type SourceFileTerminalFailure = {
 export type SourceFileLifecycleActionKind =
   | "open_generated_file"
   | "view_failure_details"
-  | "retry_source_processing"
-  | "retry_publication";
+  | "replace_source_content"
+  | "retry_document_processing";
+
+export type SourceFileGeneratedOutputStatus =
+  | "unavailable"
+  | "previous_available"
+  | "current_available";
 
 export type SourceFileLifecycleProjection = {
   state: SourceFileLifecycleState;
-  currentStage: SourceFileFailureStage;
+  blockingWorkKind: SourceFileWorkKind | null;
   failure: SourceFileTerminalFailure | null;
   actions: SourceFileLifecycleActionKind[];
 };
 
 export function deriveSourceFileLifecycle(input: {
-  processingStatus: "queued" | "running" | "completed" | "failed";
-  processingStage: SourceFileFailureStage;
-  generatedOutputStatus: "pending" | "visible" | "unavailable";
+  processingStatus: SourceFileLifecycleState;
+  blockingWorkKind: SourceFileWorkKind | null;
+  generatedOutputStatus: SourceFileGeneratedOutputStatus;
   generatedPath: string | null;
   failure: SourceFileTerminalFailure | null;
 }): SourceFileLifecycleProjection {
-  if (input.failure) {
+  if (input.processingStatus === "error" && input.failure) {
+    const open = input.generatedOutputStatus === "previous_available"
+      && input.generatedPath
+      ? ["open_generated_file" as const]
+      : [];
     return {
-      state: "failed",
-      currentStage: input.failure.stage,
+      state: "error",
+      blockingWorkKind: null,
       failure: input.failure,
-      actions: failureActions(input.failure.retryKind)
+      actions: [...open, ...failureActions(input.failure)]
     };
   }
-  if (input.processingStatus === "queued") {
-    return projection("queued", input.processingStage);
-  }
-  if (input.processingStatus === "running") {
-    return projection("running", input.processingStage);
-  }
-  if (input.generatedOutputStatus === "visible" && input.generatedPath) {
+  if (input.processingStatus === "available") {
     return {
-      ...projection(
-        "visible",
-        input.processingStage === "semantic_maintenance_required"
-          ? input.processingStage
-          : "generation_activation"
-      ),
-      actions: ["open_generated_file"]
+      state: "available",
+      blockingWorkKind: null,
+      failure: null,
+      actions: input.generatedOutputStatus === "current_available"
+        && input.generatedPath ? ["open_generated_file"] : []
     };
   }
-  return projection("pending_publication", input.processingStage);
+  return {
+    state: input.processingStatus,
+    blockingWorkKind: input.processingStatus === "processing"
+      || input.processingStatus === "waiting"
+      ? input.blockingWorkKind
+      : null,
+    failure: null,
+    actions: []
+  };
 }
 
-function projection(
-  state: SourceFileLifecycleState,
-  currentStage: SourceFileFailureStage
-): SourceFileLifecycleProjection {
-  return { state, currentStage, failure: null, actions: [] };
-}
-
-function failureActions(retryKind: SourceFileRetryKind): SourceFileLifecycleActionKind[] {
-  if (retryKind === "source_processing") {
-    return ["view_failure_details", "retry_source_processing"];
+function failureActions(
+  failure: SourceFileTerminalFailure
+): SourceFileLifecycleActionKind[] {
+  if (deterministicSourceInputError(failure.code)) {
+    return ["view_failure_details", "replace_source_content"];
   }
-  if (retryKind === "publication") {
-    return ["view_failure_details", "retry_publication"];
+  if (failure.retryKind === "document_processing") {
+    return ["view_failure_details", "retry_document_processing"];
   }
   return ["view_failure_details"];
+}
+
+function deterministicSourceInputError(code: string): boolean {
+  return code === "semantic_source_body_empty"
+    || code === "semantic_source_metadata_invalid"
+    || code === "source_body_empty"
+    || code === "source_frontmatter_invalid";
 }

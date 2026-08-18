@@ -278,9 +278,17 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     }
 
     const result = await services.adminCoreApplication.createKnowledgeBase(input);
-    return result.ok
-      ? context.json({ knowledgeBase: result.value }, 201)
-      : missingRepositoryBackend(context);
+    if (!result.ok) return missingRepositoryBackend(context);
+    const knowledgeBaseId = typeof result.value.id === "string" ? result.value.id : null;
+    await services.adminAuditApplication.record({
+      context,
+      eventType: "knowledge_base_create",
+      result: "success",
+      knowledgeBaseId,
+      targetKind: "knowledge_base",
+      targetPublicId: knowledgeBaseId
+    });
+    return context.json({ knowledgeBase: result.value }, 201);
   });
 
   app.get(
@@ -312,7 +320,16 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
           ? notFound(context)
           : missingRepositoryBackend(context);
       }
-      return context.json(result.value);
+      const knowledgeBaseId = context.req.param("knowledgeBaseId");
+      await services.adminAuditApplication.record({
+        context,
+        eventType: "knowledge_base_delete",
+        result: "success",
+        knowledgeBaseId,
+        targetKind: "knowledge_base",
+        targetPublicId: knowledgeBaseId
+      });
+      return context.json(result.value, 202);
     }
   );
 
@@ -365,7 +382,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
           ? notFound(context)
           : missingRepositoryBackend(context);
       }
-      return context.json(result.value, 200);
+      return context.json(result.value, 202);
     }
   );
 

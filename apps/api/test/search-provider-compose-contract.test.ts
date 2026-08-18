@@ -15,6 +15,7 @@ describe("search provider Compose contract", () => {
     expect(read(".env.example")).toContain("SEARCH_PROVIDER=opensearch");
     expect(read(".env.example")).toContain("COMPOSE_PROFILES=opensearch");
     expect(read(".env.dev.example")).toContain("SEARCH_PROVIDER=opensearch");
+    expect(read(".env.dev.example")).toContain("COMPOSE_PROFILES=opensearch");
     for (const path of composeFiles) {
       expect(read(path), path).toContain(
         "image: opensearchproject/opensearch:3.8.0"
@@ -22,15 +23,15 @@ describe("search provider Compose contract", () => {
     }
   });
 
-  it("keeps provider services under separate profiles and uses one shared initializer", () => {
+  it("keeps OpenSearch active and the optional Meilisearch service fully commented", () => {
     for (const path of composeFiles) {
       const compose = read(path);
       expect(service(compose, "opensearch"), path).toContain(
         'profiles: ["opensearch"]'
       );
-      expect(service(compose, "meilisearch"), path).toContain(
-        'profiles: ["meilisearch"]'
-      );
+      expect(service(compose, "meilisearch"), path).toBe("");
+      expect(compose, path).toContain("  # meilisearch:");
+      expect(compose, path).toContain('  #   profiles: ["meilisearch"]');
       expect(compose, path).not.toContain("bundled-search");
     }
     for (const path of runtimeComposeFiles) {
@@ -74,6 +75,18 @@ describe("search provider Compose contract", () => {
       expect(opensearch, path).toContain("OPENSEARCH_JAVA_OPTS:");
       expect(opensearch, path).toMatch(/127\.0\.0\.1:\$\{OPENSEARCH_PORT[^\n]*:9200/u);
     }
+  });
+
+  it("keeps the commented local Meilisearch block ready for loopback use", () => {
+    for (const path of [
+      "docker-compose.dev.yml.example",
+      "docker-compose.local.yml.example"
+    ]) {
+      expect(read(path), path).toContain(
+        '  #     - "127.0.0.1:${MEILI_PORT-57700}:7700"'
+      );
+    }
+    expect(read(".env.dev.example")).toContain("MEILI_PORT=57700");
   });
 
   it("documents the provider matrix without adding provider fields to Admin UI", () => {
@@ -133,7 +146,9 @@ describe("search provider Compose contract", () => {
     expect(compose).not.toContain("./opensearch-security/root-ca.pem:");
     expect(compose).not.toContain("./opensearch-security/node.pem:");
     expect(compose).not.toContain("./opensearch-security/admin.pem:");
-    expect(read("Dockerfile")).toContain("apk add --no-cache libstdc++ openssl su-exec");
+    expect(read("Dockerfile")).toContain(
+      "ca-certificates dumb-init gosu libgomp1 libstdc++6 openssl"
+    );
     expect(read("Dockerfile")).toContain("apps/api/runtime/search-init.mjs");
     expect(read("apps/api/scripts/build-runtime.mjs")).toContain(
       '"search-init": "src/search-init-main.ts"'
@@ -144,14 +159,12 @@ describe("search provider Compose contract", () => {
     expect(read(".gitignore")).toContain("opensearch-security/");
   });
 
-  it("orders initialization before the selected bundled provider without blocking external providers", () => {
+  it("orders OpenSearch initialization and lets Meilisearch initialization retry startup", () => {
     for (const path of runtimeComposeFiles) {
       const compose = read(path);
       const searchInit = service(compose, "search-init");
       const migrate = service(compose, "migrate");
-      expect(searchInit, path).toContain(
-        "meilisearch:\n        condition: service_healthy\n        required: false"
-      );
+      expect(searchInit, path).not.toContain("depends_on:");
       expect(service(compose, "opensearch"), path).toContain(
         "search-init:\n        condition: service_completed_successfully"
       );
@@ -159,6 +172,9 @@ describe("search provider Compose contract", () => {
         "search-init:\n        condition: service_completed_successfully\n        required: false"
       );
     }
+    const initializer = read("apps/api/src/search-init-main.ts");
+    expect(initializer).toContain("maxAttempts: 60");
+    expect(initializer).toContain("retryDelayMs: 1_000");
   });
 
   it("does not impose bundled TLS or admin-password inputs on external OpenSearch", () => {

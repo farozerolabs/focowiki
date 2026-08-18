@@ -13,6 +13,8 @@ import {
 } from "../src/storage-vnext/ownership/object-reconciliation.js";
 import type { StorageVnextObjectRegistration } from
   "../src/storage-vnext/ownership/ports.js";
+import { createProductionDocumentStorageReconciliation } from
+  "../src/document-indexing/infrastructure/production-document-storage-reconciliation.js";
 
 describe("storage vNext provider inventory and object reconciliation", () => {
   it("pages current objects, versions, delete markers, and multipart uploads separately", async () => {
@@ -162,14 +164,6 @@ describe("storage vNext provider inventory and object reconciliation", () => {
       },
       registrations: {
         listRegistrations: vi.fn(async () => ({ items: [verified], nextCursor: null })),
-        getClosure: vi.fn(async () => ({
-          objectId: verified.objectId,
-          owners: [{ publicId: "owner", knowledgeBaseId: "kb", objectId: verified.objectId,
-            kind: "source_revision" as const, ownerPublicId: "revision", createdAt: "2026-08-01T00:00:00.000Z" }],
-          ownerCount: 1,
-          referenceCount: 1,
-          graceExpiresAt: null
-        }))
       },
       limit: 10,
       cursor: null
@@ -179,6 +173,48 @@ describe("storage vNext provider inventory and object reconciliation", () => {
       issue: "missing_bytes",
       objectId: verified.objectId
     })]);
+  });
+
+  it("reconciles only registrations owned by the maintained knowledge base", async () => {
+    const provider = {
+      listPage: vi.fn(),
+      headCurrent: vi.fn(async () => true)
+    };
+    const registrations = {
+      listRegistrationsForKnowledgeBase: vi.fn(async () => ({
+        items: [] as StorageVnextObjectRegistration[],
+        nextCursor: null
+      }))
+    };
+    const reconciliation = createProductionDocumentStorageReconciliation({
+      provider,
+      registrations: registrations as never,
+      now: () => "2026-08-14T00:00:00.000Z"
+    });
+
+    await expect(reconciliation.runPage({
+      knowledgeBaseId: "kb-maintained",
+      limit: 10,
+      cursor: null
+    })).resolves.toEqual({ processedCount: 10, nextCursor: null });
+    expect(registrations.listRegistrationsForKnowledgeBase).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-maintained",
+      limit: 10,
+      cursor: null
+    });
+    expect(provider.listPage).not.toHaveBeenCalled();
+
+    registrations.listRegistrationsForKnowledgeBase.mockResolvedValueOnce({
+      items: [registration("verified", "runs/svnext-inventory/missing.md")],
+      nextCursor: null
+    });
+    provider.headCurrent.mockResolvedValueOnce(false);
+    await expect(reconciliation.runPage({
+      knowledgeBaseId: "kb-maintained",
+      limit: 10,
+      cursor: null
+    }))
+      .rejects.toMatchObject({ code: "storage_reconciliation_findings_detected" });
   });
 });
 

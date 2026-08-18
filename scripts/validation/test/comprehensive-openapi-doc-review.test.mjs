@@ -20,10 +20,10 @@ test("reviews every operation, locale page, response item, and evidence source",
   });
 
   assert.equal(review.ok, true);
-  assert.equal(review.operations.length, 43);
-  assert.equal(review.pages.length, 86);
-  assert.equal(review.explorerEntries.length, 43);
-  assert.equal(review.responseItems.filter((item) => item.kind === "response-field").length, 4327);
+  assert.equal(review.operations.length, 42);
+  assert.equal(review.pages.length, 84);
+  assert.equal(review.explorerEntries.length, 42);
+  assert.equal(review.responseItems.filter((item) => item.kind === "response-field").length, 4091);
   assert.ok(review.responseItems.every((item) => item.contractPresent));
   assert.ok(review.responseItems.every((item) => item.explorerPresent));
   assert.ok(review.operations.every((item) => item.lifecycleVerified));

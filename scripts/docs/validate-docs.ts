@@ -108,13 +108,218 @@ async function main() {
   await validateGeneratedOperationTables();
   await validatePublicOpenApiCopy();
   await validateDocumentedRuntimeFacts();
+  await validateAdminConfigurationDocumentation();
   await validateAgentSearchGuidance();
+  await validateAgentIntegrationContracts(openApiDocument);
+  await validateAgentSkillLanguage();
+  await validateHandwrittenDocumentationBoundaries(markdownFiles);
   await validateMarkdownLinks(markdownFiles);
   await validateLanguageStyle(markdownFiles);
   await validateCurrentArchitectureLanguage(markdownFiles);
   await validateSensitiveContent(markdownFiles);
   validateSafeContent("Developer OpenAPI contract", JSON.stringify(openApiDocument));
   console.log("Documentation validation passed.");
+}
+
+async function validateAgentIntegrationContracts(document: OpenApiDocument) {
+  const operationIds = collectOperationIds(document);
+  const requiredOperationIds = [
+    "uploadSessionEntryContent",
+    "getKnowledgeBaseSourceFile",
+    "listKnowledgeBaseTree",
+    "getFileContentByPath",
+    "searchGeneratedFiles",
+    "expandGraph"
+  ];
+
+  for (const operationId of requiredOperationIds) {
+    if (!operationIds.has(operationId)) {
+      throw new Error(`Agent integration requires missing OpenAPI operation ${operationId}.`);
+    }
+  }
+
+  for (const locale of locales) {
+    const content = (await Promise.all(
+      locale.agentIntegrationPages.map((file) => fs.readFile(file, "utf8"))
+    )).join("\n");
+    const required = locale.name === "Simplified Chinese"
+      ? ["每个文档独立索引", "activeContentRevision", "uploadSessionEntryContent"]
+      : ["indexed independently", "activeContentRevision", "uploadSessionEntryContent"];
+    assertRequiredDocumentationPhrases(
+      `${locale.name} Agent integration pages`,
+      content,
+      required
+    );
+    assertForbiddenDocumentationPhrases(
+      `${locale.name} Agent integration pages`,
+      content,
+      ["uploadSessionContentBatch"]
+    );
+  }
+}
+
+async function validateAgentSkillLanguage() {
+  const agentAnsweringSkillPages = [
+    path.join(docsRoot, "agent-integration", "own-agent-client", "skill-design.md"),
+    path.join(docsRoot, "agent-integration", "third-party-agent-client", "skill-design.md"),
+    path.join(docsRoot, "zh-CN", "agent-integration", "own-agent-client", "skill-design.md"),
+    path.join(docsRoot, "zh-CN", "agent-integration", "third-party-agent-client", "skill-design.md")
+  ];
+  const skillPages = [
+    ...agentAnsweringSkillPages,
+    path.join(docsRoot, "guide", "file-cleaning-ingestion.md"),
+    path.join(docsRoot, "zh-CN", "guide", "file-cleaning-ingestion.md")
+  ];
+  const forbiddenSkillDetails = [
+    "Focowiki",
+    "OpenAPI",
+    "activeContentRevision",
+    "generatedOutputStatus",
+    "sourceFileId",
+    "semanticStatus",
+    "evidenceStatus",
+    "rerankerStatus",
+    "graphStatus",
+    "readActions",
+    "_index/",
+    "_graph/"
+  ];
+
+  for (const file of skillPages) {
+    const content = await fs.readFile(file, "utf8");
+    for (const block of fencedBlocks(content)) {
+      if (file.includes(`${path.sep}zh-CN${path.sep}`) && /[\u3400-\u9fff]/u.test(block)) {
+        throw new Error(`Skill package content must stay English in ${relative(file)}.`);
+      }
+      if (!agentAnsweringSkillPages.includes(file)) {
+        continue;
+      }
+      for (const detail of forbiddenSkillDetails) {
+        if (block.includes(detail)) {
+          throw new Error(
+            `Skill package content exposes backend detail ${detail} in ${relative(file)}.`
+          );
+        }
+      }
+    }
+  }
+}
+
+function fencedBlocks(content: string): string[] {
+  const lines = content.split("\n");
+  const blocks: string[] = [];
+  let fenceLength = 0;
+  let current: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^(`{3,})(?:[A-Za-z0-9_-]+)?\s*$/u);
+    if (fenceLength === 0) {
+      if (match) {
+        fenceLength = match[1].length;
+        current = [];
+      }
+      continue;
+    }
+    if (match && match[1].length >= fenceLength) {
+      blocks.push(current.join("\n"));
+      fenceLength = 0;
+      current = [];
+      continue;
+    }
+    current.push(line);
+  }
+
+  return blocks;
+}
+
+async function validateAdminConfigurationDocumentation() {
+  const englishAdminPath = path.join(docsRoot, "deployment", "admin-settings.md");
+  const chineseAdminPath = path.join(docsRoot, "zh-CN", "deployment", "admin-settings.md");
+  const englishDockerPath = path.join(docsRoot, "deployment", "docker-compose.md");
+  const chineseDockerPath = path.join(docsRoot, "zh-CN", "deployment", "docker-compose.md");
+  const chineseOpenApiPath = path.join(docsRoot, "zh-CN", "openapi", "index.md");
+  const englishAdmin = await fs.readFile(englishAdminPath, "utf8");
+  const chineseAdmin = await fs.readFile(chineseAdminPath, "utf8");
+  const englishDocker = await fs.readFile(englishDockerPath, "utf8");
+  const chineseDocker = await fs.readFile(chineseDockerPath, "utf8");
+  const chineseOpenApi = await fs.readFile(chineseOpenApiPath, "utf8");
+
+  assertRequiredDocumentationPhrases(englishAdminPath, englishAdmin, [
+    "Model configuration",
+    "GraphRAG adapter timeout milliseconds",
+    "Embedding Models",
+    "Reranker Models"
+  ]);
+  assertRequiredDocumentationPhrases(chineseAdminPath, chineseAdmin, [
+    "模型配置",
+    "GraphRAG 适配器超时毫秒",
+    "嵌入模型",
+    "重排模型"
+  ]);
+
+  const staleEnglishSettings = [
+    "Knowledge-base maintenance mode",
+    "Automatic maintenance interval seconds",
+    "Knowledge-base maintenance concurrency",
+    "Storage deletion batch size",
+    "Storage cleanup grace seconds",
+    "Generated-content repair concurrency",
+    "Search rebuild concurrency",
+    "Incomplete index retention hours",
+    "Maximum community partitions",
+    "Community adapter timeout milliseconds",
+    "own Settings tab",
+    "Reranker Settings tab"
+  ];
+  const staleChineseSettings = [
+    "知识库维护模式",
+    "自动维护间隔秒数",
+    "知识库维护并发",
+    "存储删除批次大小",
+    "存储清理宽限秒数",
+    "生成内容修复并发",
+    "搜索重建并发",
+    "未完成索引保留小时数",
+    "最大社区分区数",
+    "社区适配器超时毫秒",
+    "向量模型",
+    "查询向量"
+  ];
+
+  assertForbiddenDocumentationPhrases(englishAdminPath, englishAdmin, staleEnglishSettings);
+  assertForbiddenDocumentationPhrases(chineseAdminPath, chineseAdmin, staleChineseSettings);
+  assertForbiddenDocumentationPhrases(chineseDockerPath, chineseDocker, ["在设置中分别创建", "向量模型"]);
+  assertForbiddenDocumentationPhrases(chineseOpenApiPath, chineseOpenApi, ["向量模型配置"]);
+  assertRequiredDocumentationPhrases(englishDockerPath, englishDocker, [
+    "Model configuration",
+    "Upload completion requires both configurations."
+  ]);
+  assertRequiredDocumentationPhrases(chineseDockerPath, chineseDocker, [
+    "模型配置",
+    "完成上传需要这两项配置。"
+  ]);
+  assertForbiddenDocumentationPhrases(englishDockerPath, englishDocker, [
+    "No model credentials are required for the base file-first workflow."
+  ]);
+  assertForbiddenDocumentationPhrases(chineseDockerPath, chineseDocker, [
+    "基础文件优先流程不要求模型凭据。"
+  ]);
+}
+
+function assertRequiredDocumentationPhrases(file: string, content: string, phrases: string[]) {
+  for (const phrase of phrases) {
+    if (!content.includes(phrase)) {
+      throw new Error(`Documentation is missing ${phrase} in ${relative(file)}.`);
+    }
+  }
+}
+
+function assertForbiddenDocumentationPhrases(file: string, content: string, phrases: string[]) {
+  for (const phrase of phrases) {
+    if (content.includes(phrase)) {
+      throw new Error(`Documentation contains stale phrase ${phrase} in ${relative(file)}.`);
+    }
+  }
 }
 
 async function validateAgentSearchGuidance() {
@@ -129,7 +334,7 @@ async function validateAgentSearchGuidance() {
     ].map((file) => fs.readFile(file, "utf8")))).join("\n");
     const required = locale.name === "Simplified Chinese"
       ? ["完整独立问题", "最多执行两轮", "来源 Markdown", "rerankTopK",
-          "rerankScoreThreshold", "cosine"]
+          "rerankScoreThreshold", "余弦"]
       : ["standalone natural-language question", "at most two", "source Markdown",
           "rerankTopK", "rerankScoreThreshold", "cosine"];
     for (const phrase of required) {
@@ -151,6 +356,100 @@ async function validateAgentSearchGuidance() {
       }
     }
   }
+}
+
+async function validateHandwrittenDocumentationBoundaries(markdownFiles: string[]) {
+  const englishAdminPath = path.join(docsRoot, "deployment", "admin-settings.md");
+  const chineseAdminPath = path.join(docsRoot, "zh-CN", "deployment", "admin-settings.md");
+  const englishGraphPath = path.join(docsRoot, "guide", "file-first-graph.md");
+  const chineseGraphPath = path.join(docsRoot, "zh-CN", "guide", "file-first-graph.md");
+  const [englishAdmin, chineseAdmin, englishGraph, chineseGraph] = await Promise.all([
+    englishAdminPath,
+    chineseAdminPath,
+    englishGraphPath,
+    chineseGraphPath
+  ].map((file) => fs.readFile(file, "utf8")));
+
+  assertRequiredDocumentationPhrases(englishAdminPath, englishAdmin, [
+    "Completing an upload requires both one active generation model and one active, validated embedding configuration."
+  ]);
+  assertRequiredDocumentationPhrases(chineseAdminPath, chineseAdmin, [
+    "完成上传需要一个生效生成模型和一个已经验证并生效的嵌入模型配置"
+  ]);
+  assertRequiredDocumentationPhrases(englishGraphPath, englishGraph, [
+    "requires one current readable `fileId`",
+    "does not accept a free-text query, node ID, or edge ID",
+    "index-directory-leaf-<stable-id>.md",
+    "index-extension-leaf-<stable-id>.md",
+    "_graph/by-file/guides/install.json"
+  ]);
+  assertRequiredDocumentationPhrases(chineseGraphPath, chineseGraph, [
+    "要求一个当前可读取的 `fileId`",
+    "不能使用自由文本查询、节点 ID 或边 ID",
+    "index-directory-leaf-<stable-id>.md",
+    "index-extension-leaf-<stable-id>.md",
+    "_graph/by-file/guides/install.json"
+  ]);
+
+  const allDocumentation = (await Promise.all(
+    markdownFiles.map((file) => fs.readFile(file, "utf8"))
+  )).join("\n");
+  assertForbiddenDocumentationPhrases("handwritten documentation", allDocumentation, [
+    "schema.md",
+    "r-terms.json",
+    "uploadSessionContentBatch",
+    "_graph/by-file/pages/",
+    "file, node, edge, or query seed",
+    "文件、节点、边或查询作为起点"
+  ]);
+
+  const guideContent = [englishGraph, chineseGraph].join("\n");
+  assertForbiddenDocumentationPhrases("file relationship guides", guideContent, [
+    "PostgreSQL stores relationship facts",
+    "Redis coordinates",
+    "generation-scoped durable facts",
+    "projection scope",
+    "PostgreSQL 保存关系事实",
+    "Redis 协调",
+    "按生成版本保存的持久化事实",
+    "投影范围"
+  ]);
+
+  const chineseProse = (await Promise.all(
+    markdownFiles
+      .filter((file) => file.includes(`${path.sep}zh-CN${path.sep}`))
+      .map(async (file) => stripInlineCode(stripCodeBlocks(await fs.readFile(file, "utf8"))))
+  )).join("\n");
+  assertForbiddenDocumentationPhrases("Simplified Chinese prose", chineseProse, [
+    "登录 session",
+    "兼容 bucket",
+    "要求的 region",
+    "OpenSearch heap",
+    "OpenSearch endpoint",
+    "Meilisearch snapshot",
+    "OpenSearch snapshot",
+    "HTTPS origins",
+    "API 接受的 hostnames",
+    "健康检查 hostname",
+    "OpenSearch 的 demo 安装程序",
+    "兼容的 Meilisearch snapshot",
+    "OpenSearch snapshot",
+    "OpenSearch heap",
+    "S3 兼容 bucket",
+    "要求的 region",
+    "独立 bucket",
+    "path style",
+    "canonical URL",
+    "cookie banner",
+    "独立行、sheet",
+    "语言文字 bucket 路由",
+    "多语言 postings",
+    "Compose project name",
+    "分页读取 cursor",
+    "全部 hostname",
+    "输入的 hash",
+    "| 隐私 | secrets"
+  ]);
 }
 
 async function validateCurrentArchitectureLanguage(markdownFiles: string[]) {
@@ -175,6 +474,8 @@ async function validateSwaggerUiStaticAsset() {
 async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
   const copies = readRecord(JSON.parse(await fs.readFile(localeCopyPath, "utf8")));
   const operationIds = collectOperationIds(document);
+  const fieldNames = collectOpenApiFieldNames(document);
+  const contractStrings = collectOpenApiStrings(document);
   const tags = new Set(
     collectOperations(document).flatMap(({ operation }) =>
       readArray(operation.tags).filter((tag): tag is string => typeof tag === "string")
@@ -187,6 +488,8 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
     const descriptions = readRecord(copy.operationDescriptions);
     const successDescriptions = readRecord(copy.successResponseDescriptions);
     const tagLabels = readRecord(copy.tagLabels);
+    const fieldDescriptions = readRecord(copy.fieldDescriptions);
+    const translatedDescriptions = readRecord(copy.descriptions);
     const missingSummaries = [...operationIds].filter((operationId) => typeof summaries[operationId] !== "string");
     const missingDescriptions = [...operationIds].filter((operationId) => typeof descriptions[operationId] !== "string");
     const missingSuccessDescriptions = [...operationIds].filter(
@@ -194,6 +497,12 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
     );
     const staleSummaries = Object.keys(summaries).filter((operationId) => !operationIds.has(operationId));
     const staleDescriptions = Object.keys(descriptions).filter((operationId) => !operationIds.has(operationId));
+    const staleFieldDescriptions = Object.keys(fieldDescriptions).filter(
+      (fieldName) => !fieldNames.has(fieldName)
+    );
+    const staleTranslatedDescriptions = Object.keys(translatedDescriptions).filter(
+      (description) => !contractStrings.has(description)
+    );
     const missingTags = [...tags].filter((tag) => typeof tagLabels[tag] !== "string");
 
     if (
@@ -202,6 +511,8 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
       missingSuccessDescriptions.length > 0 ||
       staleSummaries.length > 0 ||
       staleDescriptions.length > 0 ||
+      staleFieldDescriptions.length > 0 ||
+      staleTranslatedDescriptions.length > 0 ||
       missingTags.length > 0
     ) {
       throw new Error(
@@ -214,6 +525,12 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
             : "",
           staleSummaries.length > 0 ? `Stale summaries: ${staleSummaries.join(", ")}.` : "",
           staleDescriptions.length > 0 ? `Stale descriptions: ${staleDescriptions.join(", ")}.` : "",
+          staleFieldDescriptions.length > 0
+            ? `Stale field descriptions: ${staleFieldDescriptions.join(", ")}.`
+            : "",
+          staleTranslatedDescriptions.length > 0
+            ? `Stale translated descriptions: ${staleTranslatedDescriptions.join(", ")}.`
+            : "",
           missingTags.length > 0 ? `Missing tag labels: ${missingTags.join(", ")}.` : ""
         ]
           .filter(Boolean)
@@ -221,6 +538,37 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
       );
     }
   }
+}
+
+function collectOpenApiFieldNames(value: unknown, result = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) {
+    for (const item of value) collectOpenApiFieldNames(item, result);
+    return result;
+  }
+  if (!value || typeof value !== "object") return result;
+
+  const record = value as Record<string, unknown>;
+  const properties = readRecord(record.properties);
+  for (const fieldName of Object.keys(properties)) result.add(fieldName);
+  if (typeof record.name === "string") result.add(record.name);
+  for (const nested of Object.values(record)) collectOpenApiFieldNames(nested, result);
+  return result;
+}
+
+function collectOpenApiStrings(value: unknown, result = new Set<string>()): Set<string> {
+  if (typeof value === "string") {
+    result.add(value);
+    return result;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectOpenApiStrings(item, result);
+    return result;
+  }
+  if (!value || typeof value !== "object") return result;
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    collectOpenApiStrings(nested, result);
+  }
+  return result;
 }
 
 async function validatePublicOpenApiCopy() {
@@ -293,8 +641,19 @@ async function validateDocumentedRuntimeFacts() {
     if (/10 seconds|10 秒/u.test(content)) {
       throw new Error(`Webhook documentation hard-codes a deployment-controlled timeout in ${relative(file)}.`);
     }
-    if (!/source_file\.progress[^\n]+sourceRevisionId/u.test(content)) {
-      throw new Error(`Webhook progress payload omits sourceRevisionId in ${relative(file)}.`);
+    for (const eventType of [
+      "document.waiting",
+      "document.processing",
+      "document.available",
+      "document.error",
+      "document.deleting"
+    ]) {
+      if (!new RegExp(`${eventType.replace(".", "\\.")}[^\\n]+sourceFileId`, "u").test(content)) {
+        throw new Error(`Webhook document payload omits sourceFileId in ${relative(file)}.`);
+      }
+    }
+    if (/sourceRevisionId/u.test(content)) {
+      throw new Error(`Webhook documentation exposes internal sourceRevisionId in ${relative(file)}.`);
     }
     if (!/Automatic retry|自动重试/u.test(content)) {
       throw new Error(`Webhook automatic retry behavior is missing in ${relative(file)}.`);
@@ -612,13 +971,13 @@ async function validateDeploymentDocumentation() {
       privateInfrastructureText: "PostgreSQL and Redis are not published to host ports",
       settingsSections: {
         "API Rate Limits": 6,
-        Worker: 14,
-        Publication: 7,
-        Graph: 8,
-        Maintenance: 15,
-        Search: 13,
-        "Semantic Search": 12,
-        Embeddings: 14,
+        Worker: 4,
+        "Generated Knowledge Base": 5,
+        Graph: 9,
+        Maintenance: 10,
+        Search: 12,
+        "Semantic Search": 7,
+        "Embedding Models": 14,
         Models: 11
       }
     },
@@ -630,13 +989,13 @@ async function validateDeploymentDocumentation() {
       privateInfrastructureText: "PostgreSQL 和 Redis 不会映射到宿主机端口",
       settingsSections: {
         "API 限流": 6,
-        Worker: 14,
-        发布: 7,
-        图关系: 8,
-        维护: 15,
-        搜索: 13,
-        语义搜索: 12,
-        向量模型: 14,
+        Worker: 4,
+        生成知识库: 5,
+        图关系: 9,
+        维护: 10,
+        搜索: 12,
+        语义搜索: 7,
+        嵌入模型: 14,
         模型: 11
       }
     }
@@ -654,8 +1013,7 @@ async function validateDeploymentDocumentation() {
     /write-capable role|可写角色/iu,
     /backup manifest|备份 manifest/iu,
     /publication pressure|发布压力/iu,
-    /\bbounded\b|有界/iu,
-    /\bshards?\b|分片/iu
+    /\bbounded\b|有界/iu
   ];
 
   for (const localOrUnusedKey of [
@@ -879,6 +1237,10 @@ function isExternalLink(target: string): boolean {
 
 function stripCodeBlocks(content: string): string {
   return content.replace(/```[\s\S]*?```/g, "");
+}
+
+function stripInlineCode(content: string): string {
+  return content.replace(/`[^`\n]*`/g, "");
 }
 
 function extractMarkdownTables(content: string): string[][] {

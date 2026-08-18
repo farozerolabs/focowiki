@@ -56,7 +56,9 @@ export function UploadSourceDialog({
   const selectedFileTotalSize = formatUploadBytes(totalSelectedFileBytes(selectedFiles));
   const invalidPaths = invalidSelectedUploadPaths(selectedFiles);
   const uploadSelectionErrorKey = hasUnsupportedMarkdownFile(selectedFiles) || invalidPaths.length > 0
-    ? "errors.uploadMarkdownOnly"
+    ? hasUnsupportedMarkdownFile(selectedFiles)
+      ? "errors.uploadMarkdownOnly"
+      : "errors.uploadInvalidPath"
     : hasDuplicateFileName(selectedFiles)
       ? "errors.duplicateUploadFileName"
       : "";
@@ -104,8 +106,16 @@ export function UploadSourceDialog({
     uploadAbortControllerRef.current = null;
 
     if (!result.ok) {
-      setIsUploading(false);
-      activeSessionIdRef.current = null;
+      if (result.sessionId) {
+        activeSessionIdRef.current = result.sessionId;
+        setIsUploading(true);
+      } else {
+        setIsUploading(false);
+        activeSessionIdRef.current = null;
+        if (result.failure.messageKey === "errors.uploadCancelled") {
+          resetSelection();
+        }
+      }
       setUploadError(result.failure.messageKey);
       return;
     }
@@ -159,15 +169,22 @@ export function UploadSourceDialog({
   }
 
   async function handleCancelUpload() {
-    uploadOperationEpochRef.current += 1;
-    uploadAbortControllerRef.current?.abort();
-    uploadAbortControllerRef.current = null;
+    if (uploadAbortControllerRef.current) {
+      uploadAbortControllerRef.current.abort();
+      return;
+    }
     const sessionId = activeSessionIdRef.current;
+    if (sessionId) {
+      const failure = await cancelFolderUpload({ knowledgeBaseId, sessionId })
+        .catch(() => ({ messageKey: "errors.uploadCleanupFailed" }));
+      if (failure) {
+        setUploadError("errors.uploadCleanupFailed");
+        return;
+      }
+    }
+    uploadOperationEpochRef.current += 1;
     setIsUploading(false);
     resetSelection();
-    if (sessionId) {
-      await cancelFolderUpload({ knowledgeBaseId, sessionId }).catch(() => undefined);
-    }
   }
 
   return (

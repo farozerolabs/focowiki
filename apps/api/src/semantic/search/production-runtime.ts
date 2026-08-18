@@ -15,6 +15,8 @@ import { createSemanticQueryEmbeddingGateway } from "./query-embedding.js";
 import { createSemanticRankedLaneAdapter } from "./ranked-lanes.js";
 import { createPostgresActiveVectorHitRepository } from
   "../infrastructure/postgres-active-vector-hit-repository.js";
+import { createPostgresActiveFileRelationshipHitRepository } from
+  "../../document-indexing/infrastructure/postgres-active-file-relationship-hit-repository.js";
 
 export function createSemanticSearchProductionRuntime(input: {
   sql: DatabaseClient;
@@ -30,7 +32,19 @@ export function createSemanticSearchProductionRuntime(input: {
 }) {
   let queryGateway: ReturnType<typeof createSemanticQueryEmbeddingGateway> | null = null;
   let queryGatewayKey = "";
-  const rankedLanes = createSemanticRankedLaneAdapter({ query: input.provider.query });
+  const activeRelationshipHits =
+    createPostgresActiveFileRelationshipHitRepository(input.sql);
+  const rankedLanes = createSemanticRankedLaneAdapter({
+    query: input.provider.query,
+    relationshipDocuments: {
+      async resolveActive(request) {
+        if (request.signal.aborted) throw request.signal.reason;
+        const result = await activeRelationshipHits.resolveActive(request);
+        if (request.signal.aborted) throw request.signal.reason;
+        return result;
+      }
+    }
+  });
   const activeVectorHits = createPostgresActiveVectorHitRepository(input.sql);
   return createSemanticSearchOrchestrator({
     reranker: input.reranker,

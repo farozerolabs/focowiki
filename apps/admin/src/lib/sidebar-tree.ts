@@ -1,11 +1,33 @@
 import type { AdminSidebarTreeNode } from "@/components/app-sidebar";
-import type { GeneratedTreeEntry, GeneratedTreeSearchResult } from "@/lib/admin-api";
+import type {
+  GeneratedTreeEntry,
+  GeneratedTreeSearchResult,
+  SourceFileRecord
+} from "@/lib/admin-api";
 
 export type TreePageState = {
   items: GeneratedTreeEntry[];
   nextCursor: string | null;
   isLoading: boolean;
 };
+
+export function sourceFileEditorNode(file: SourceFileRecord): AdminSidebarTreeNode {
+  return {
+    id: file.id,
+    name: file.name,
+    logicalPath: file.relativePath,
+    entryType: "file",
+    children: [],
+    isExpanded: false,
+    isActive: false,
+    nextCursor: null,
+    deletable: true,
+    sourceDirectoryId: null,
+    sourceFileId: file.id,
+    resourceRevision: file.resourceRevision ?? null,
+    descendantFileCount: 0
+  };
+}
 
 export function buildSidebarTree(
   treePages: Record<string, TreePageState>,

@@ -13,6 +13,10 @@ import { describe, expect, it } from "vitest";
 import { createStorageVnextCoordinationPlane } from "../src/storage-vnext/bootstrap/coordination-plane.js";
 import { createStorageVnextObjectPlane } from "../src/storage-vnext/bootstrap/object-plane.js";
 import {
+  createStorageVnextOpenSearchPlane,
+  type StorageVnextOwnedOpenSearchClient
+} from "../src/storage-vnext/bootstrap/opensearch-plane.js";
+import {
   createStorageVnextOwnerMarkerDocument,
   serializeStorageVnextOwnerMarker
 } from "../src/storage-vnext/bootstrap/owner-marker.js";
@@ -168,6 +172,46 @@ describe("storage vNext owned concrete store planes", () => {
     expect(deletedIndexes).toEqual([recordedIndex]);
     expect(deletedTaskFilters).toEqual([[41]]);
     expect(indexes).toEqual(new Set([unrelatedIndex]));
+  });
+
+  it("deletes only recorded OpenSearch indexes", async () => {
+    const recordedIndex = `${proof.searchScope}active`;
+    const unrelatedIndex = "customer_documents";
+    const indexes = new Set([recordedIndex, unrelatedIndex]);
+    const deletedIndexes: string[] = [];
+    const plane = createStorageVnextOpenSearchPlane({
+      client: createFakeOpenSearchClient(indexes, deletedIndexes),
+      receipt: {
+        marker: createStorageVnextOwnerMarkerDocument(proof, proof.searchScope),
+        recordedIndexUids: [recordedIndex],
+        recordedTaskUids: []
+      }
+    });
+
+    await plane.reset(proof);
+
+    expect(await plane.verifyReset(proof)).toBe(true);
+    expect(deletedIndexes).toEqual([recordedIndex]);
+    expect(indexes).toEqual(new Set([unrelatedIndex]));
+  });
+
+  it("refuses an unrecorded run-prefixed OpenSearch index before deletion", async () => {
+    const recordedIndex = `${proof.searchScope}active`;
+    const unrecordedIndex = `${proof.searchScope}unproven`;
+    const indexes = new Set([recordedIndex, unrecordedIndex]);
+    const deletedIndexes: string[] = [];
+    const plane = createStorageVnextOpenSearchPlane({
+      client: createFakeOpenSearchClient(indexes, deletedIndexes),
+      receipt: {
+        marker: createStorageVnextOwnerMarkerDocument(proof, proof.searchScope),
+        recordedIndexUids: [recordedIndex],
+        recordedTaskUids: []
+      }
+    });
+
+    await expect(plane.reset(proof)).rejects.toThrow(/not proven/u);
+    expect(deletedIndexes).toEqual([]);
+    expect(indexes).toEqual(new Set([recordedIndex, unrecordedIndex]));
   });
 
   it("deletes more than one bounded page of recorded Meilisearch tasks", async () => {
@@ -401,6 +445,27 @@ function createFakeSearchClient(
       },
       async waitForTask() {
         return {};
+      }
+    }
+  };
+}
+
+function createFakeOpenSearchClient(
+  indexes: Set<string>,
+  deletedIndexes: string[]
+): StorageVnextOwnedOpenSearchClient {
+  return {
+    indices: {
+      async get() {
+        return {
+          body: Object.fromEntries([...indexes].map((indexUid) => [indexUid, {}]))
+        };
+      },
+      async delete(input) {
+        const indexUid = String(input.index);
+        deletedIndexes.push(indexUid);
+        indexes.delete(indexUid);
+        return { body: { acknowledged: true } };
       }
     }
   };

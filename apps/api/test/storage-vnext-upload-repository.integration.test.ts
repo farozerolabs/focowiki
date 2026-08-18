@@ -8,12 +8,14 @@ import { createPostgresStorageVnextUploadRepository } from
   "../src/storage-vnext/upload/postgres-repository.js";
 import { createPostgresStorageVnextUploadTerminalPort } from
   "../src/storage-vnext/upload/postgres-terminal.js";
-import { createPostgresStorageVnextWorkflowRepository } from
-  "../src/storage-vnext/workflow/postgres-repository.js";
 import { findIdempotentUploadSession } from
   "../src/storage-vnext/api/postgres-admin-upload-session-store.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
+import { seedRequiredDocumentProcessingContract } from
+  "./helpers/document-processing-contract.js";
+import type { SemanticMaintenanceTarget } from
+  "../src/semantic/domain/contracts.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -40,7 +42,6 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
   const terminal = createPostgresStorageVnextUploadTerminalPort(database, {
     resultRetentionMilliseconds: 86_400_000
   });
-  const workflow = createPostgresStorageVnextWorkflowRepository(database);
   const bodyWriter = createDatabaseBackedBodyWriter(sql);
   const coordinator = createStorageVnextUploadCoordinator({
     repository,
@@ -57,7 +58,10 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
     await sql`
       INSERT INTO focowiki.runtime_setting_revisions
         (public_id, checksum_sha256, settings_values)
-      VALUES ('settings-upload-integration', ${"a".repeat(64)}, '{}'::jsonb)
+      VALUES (
+        'settings-upload-integration', ${"a".repeat(64)},
+        ${sql.json({ sections: { worker: { jobMaxAttempts: 3 } } })}
+      )
     `;
   }, 120_000);
 
@@ -103,11 +107,11 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
 
     const counts = await scopedCounts("kb-upload-success");
     expect(counts).toMatchObject({
-      upload_sessions: "0",
-      upload_entries: "0",
+      upload_sessions: "1",
+      upload_entries: "2",
       upload_reservations: "0",
       upload_work: "0",
-      operation_results: "1",
+      operation_results: "0",
       source_files: "2",
       source_revisions: "2",
       current_revisions: "2",
@@ -123,11 +127,7 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       FROM focowiki.operation_results
       WHERE knowledge_base_id = 'kb-upload-success'
     `;
-    expect(terminalResults[0]?.result_summary).toMatchObject({
-      expectedEntryCount: 2,
-      receivedEntryCount: 2,
-      skippedExistingCount: 0
-    });
+    expect(terminalResults).toEqual([]);
     const directories = await sql<Array<{
       logical_path: string;
       parent_path: string | null;
@@ -149,18 +149,87 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       sessionPublicId: "upload-success"
     });
     expect(await scopedCounts("kb-upload-success")).toEqual(counts);
-    const claimed = await workflow.claim({
-      kinds: ["source"],
-      owner: "source-upload-integration",
-      limit: 2,
-      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
-    });
-    expect(claimed).toHaveLength(2);
-    expect(claimed.map((work) => work.checkpoint.sourceRevisionPublicId).sort())
-      .toEqual(expect.arrayContaining([
+    const jobs = await sql<Array<{ source_revision_public_id: string }>>`
+      SELECT source_revision_public_id
+      FROM focowiki.document_processing_jobs
+      WHERE knowledge_base_id = 'kb-upload-success'
+      ORDER BY source_revision_public_id
+    `;
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((job) => job.source_revision_public_id)).toEqual(
+      expect.arrayContaining([
         expect.stringMatching(/^source-revision-[0-9a-f]{64}$/u),
         expect.stringMatching(/^source-revision-[0-9a-f]{64}$/u)
-      ]));
+      ])
+    );
+  });
+
+  it("bootstraps a missing semantic contract from models activated after knowledge base creation", async () => {
+    const knowledgeBaseId = "kb-upload-late-models";
+    await seedKnowledgeBaseWithoutContract(knowledgeBaseId);
+    await seedKnowledgeBaseWithoutContract("kb-upload-late-models-config-holder");
+    const configurations = await seedRequiredDocumentProcessingContract(
+      sql,
+      "kb-upload-late-models-config-holder"
+    );
+    const target = lateSemanticTarget(knowledgeBaseId, configurations);
+    const lateRepository = createPostgresStorageVnextUploadRepository(database, {
+      sourceWorkRetentionMilliseconds: 86_400_000,
+      async resolveSemanticTarget() {
+        return target;
+      }
+    });
+    const lateCoordinator = createStorageVnextUploadCoordinator({
+      repository: lateRepository,
+      terminal,
+      bodyWriter,
+      limits: { maximumEntries: 100, maximumManifestBytes: 262_144 }
+    });
+    const current = manifestEntry(
+      "entry-late-models",
+      "file-late-models",
+      "Late.md",
+      "# Late model activation\n"
+    );
+    await lateCoordinator.openSession(sessionRequest(
+      "late-models",
+      knowledgeBaseId,
+      [current]
+    ));
+    await lateCoordinator.putEntry(putRequest(
+      knowledgeBaseId,
+      "late-models",
+      current
+    ));
+
+    await expect(lateCoordinator.finalizeSession({
+      knowledgeBaseId,
+      sessionPublicId: "upload-late-models",
+      completedAt: "2026-08-01T00:05:00.000Z"
+    })).resolves.toMatchObject({
+      outcome: "accepted",
+      acceptedRevisionCount: 1,
+      sourceWorkCount: 1
+    });
+    await expect(sql<Array<{
+      model_id: string;
+      embedding_revision_id: string;
+    }>>`
+      SELECT generation.generation_model_configuration_public_id AS model_id,
+             contract.embedding_configuration_revision_public_id
+               AS embedding_revision_id
+      FROM focowiki.semantic_generations generation
+      JOIN focowiki.semantic_projection_contracts contract
+        ON contract.knowledge_base_id = generation.knowledge_base_id
+       AND contract.semantic_generation_public_id = generation.public_id
+      WHERE generation.knowledge_base_id = ${knowledgeBaseId}
+        AND generation.generation_role = 'active'
+        AND generation.state = 'active'
+        AND generation.deleted_at IS NULL
+    `).resolves.toEqual([{
+      model_id: target.generationModelConfigurationPublicId,
+      embedding_revision_id: target.embeddingConfigurationRevisionPublicId
+    }]);
   });
 
   it("persists a checksum computed after sealing a manifest without one", async () => {
@@ -355,6 +424,7 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
     const operations = await sql<Array<{ count: number | string }>>`
       SELECT count(*) AS count FROM focowiki.operations
       WHERE knowledge_base_id = 'kb-upload-conflict'
+        AND operation_kind = 'upload'
     `;
     expect(operations[0]?.count).toBe("1");
     await coordinator.cancelSession({
@@ -383,11 +453,11 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
     const current = await sql<Array<{ object_id: string; revision: number | string }>>`
       SELECT revision.object_id, source.revision
       FROM focowiki.source_files source
-      JOIN focowiki.source_file_current_revisions current_revision
+      JOIN focowiki.source_file_active_revisions current_revision
         ON current_revision.knowledge_base_id = source.knowledge_base_id
        AND current_revision.source_file_public_id = source.public_id
       JOIN focowiki.source_revisions revision
-        ON revision.public_id = current_revision.source_revision_public_id
+        ON revision.public_id = current_revision.current_source_revision_public_id
       WHERE source.knowledge_base_id = ${knowledgeBaseId}
         AND source.public_id = ${entry.sourceFilePublicId}
     `;
@@ -468,14 +538,14 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       outcome: "completed",
       resultCode: "UPLOAD_ACCEPTED",
       completedAt: "2026-08-01T00:07:00.000Z",
-      successorOperationPublicId: null
+      relatedOperationPublicId: null
     });
     expect(await scopedCounts(knowledgeBaseId)).toMatchObject({
       source_files: "1",
       source_revisions: "1",
       current_revisions: "1",
       source_work: "1",
-      operation_results: "2"
+      operation_results: "1"
     });
   });
 
@@ -487,7 +557,17 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       "Cancel.md",
       "# Cancel\n"
     );
-    await coordinator.openSession(sessionRequest("cancel", "kb-upload-cancel", [entry]));
+    const pending = manifestEntry(
+      "entry-cancel-pending",
+      "file-cancel-pending",
+      "Pending.md",
+      "# Pending\n"
+    );
+    await coordinator.openSession(sessionRequest(
+      "cancel",
+      "kb-upload-cancel",
+      [entry, pending]
+    ));
     await coordinator.putEntry(putRequest("kb-upload-cancel", "cancel", entry));
     await coordinator.cancelSession({
       knowledgeBaseId: "kb-upload-cancel",
@@ -506,13 +586,22 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       cleanup_actions: "1",
       zero_owner_objects: "1"
     });
-    const result = await sql<Array<{ terminal_state: string; result_code: string }>>`
-      SELECT terminal_state, result_code FROM focowiki.operation_results
+    const result = await sql<Array<{
+      terminal_state: string;
+      result_code: string;
+      result_summary: Record<string, unknown>;
+    }>>`
+      SELECT terminal_state, result_code, result_summary FROM focowiki.operation_results
       WHERE knowledge_base_id = 'kb-upload-cancel'
     `;
     expect(result[0]).toEqual({
       terminal_state: "cancelled",
-      result_code: "UPLOAD_CANCELLED"
+      result_code: "UPLOAD_CANCELLED",
+      result_summary: expect.objectContaining({
+        expectedEntryCount: 2,
+        receivedEntryCount: 1,
+        skippedExistingCount: 0
+      })
     });
   });
 
@@ -537,10 +626,10 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
     await sql`
       INSERT INTO focowiki.source_files (
         public_id, knowledge_base_id, directory_public_id, logical_path,
-        normalized_path, title, metadata, status, revision
+        normalized_path, title, metadata, revision
       ) VALUES (
         'file-competing-current', 'kb-upload-finalize-conflict', NULL,
-        'Conflict.md', 'conflict.md', 'Conflict', '{}'::jsonb, 'ready', 1
+        'Conflict.md', 'conflict.md', 'Conflict', '{}'::jsonb, 1
       )
     `;
 
@@ -589,7 +678,7 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
     await coordinator.supersedeSession({
       knowledgeBaseId: "kb-upload-superseded",
       sessionPublicId: "upload-superseded",
-      successorOperationPublicId: "operation-upload-successor",
+      relatedOperationPublicId: "operation-upload-successor",
       supersededAt: "2026-08-01T00:15:00.000Z"
     });
 
@@ -610,7 +699,7 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       successor_operation_public_id: string | null;
     }>>`
       SELECT terminal_state, result_code,
-             result_summary->>'successorOperationPublicId' AS successor_operation_public_id
+             result_summary->>'relatedOperationPublicId' AS successor_operation_public_id
       FROM focowiki.operation_results
       WHERE knowledge_base_id = 'kb-upload-superseded'
     `;
@@ -629,7 +718,11 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       "Expire.md",
       "# Expire\n"
     );
-    await coordinator.openSession(sessionRequest("expire", "kb-upload-expire", [entry]));
+    await coordinator.openSession({
+      ...sessionRequest("expire", "kb-upload-expire", [entry]),
+      createdAt: "2026-07-31T22:00:00.000Z",
+      expiresAt: "2026-07-31T23:00:00.000Z"
+    });
 
     await expect(coordinator.expireSessions({
       expiredBefore: "2026-08-01T02:00:00.000Z",
@@ -725,11 +818,36 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
   });
 
   async function seedKnowledgeBase(knowledgeBaseId: string): Promise<void> {
-    await sql`
-      INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
-      VALUES (${knowledgeBaseId}, ${`Knowledge base ${knowledgeBaseId}`}, 1)
-    `;
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+        VALUES (${knowledgeBaseId}, ${`Knowledge base ${knowledgeBaseId}`}, 1)
+      `;
+      await transaction`
+        INSERT INTO focowiki.knowledge_base_sequences (
+          knowledge_base_id, current_sequence
+        ) VALUES (${knowledgeBaseId}, 0)
+      `;
+    });
+    await seedRequiredDocumentProcessingContract(sql, knowledgeBaseId);
   }
+
+  async function seedKnowledgeBaseWithoutContract(
+    knowledgeBaseId: string
+  ): Promise<void> {
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+        VALUES (${knowledgeBaseId}, ${`Knowledge base ${knowledgeBaseId}`}, 1)
+      `;
+      await transaction`
+        INSERT INTO focowiki.knowledge_base_sequences (
+          knowledge_base_id, current_sequence
+        ) VALUES (${knowledgeBaseId}, 0)
+      `;
+    });
+  }
+
 
   async function scopedCounts(knowledgeBaseId: string) {
     const rows = await sql<Array<Record<string, number | string>>[]>`
@@ -748,10 +866,10 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
          WHERE knowledge_base_id = ${knowledgeBaseId}) AS source_files,
         (SELECT count(*) FROM focowiki.source_revisions
          WHERE knowledge_base_id = ${knowledgeBaseId}) AS source_revisions,
-        (SELECT count(*) FROM focowiki.source_file_current_revisions
+        (SELECT count(*) FROM focowiki.source_file_active_revisions
          WHERE knowledge_base_id = ${knowledgeBaseId}) AS current_revisions,
-        (SELECT count(*) FROM focowiki.operation_work_items
-         WHERE knowledge_base_id = ${knowledgeBaseId} AND work_kind = 'source') AS source_work,
+        (SELECT count(*) FROM focowiki.document_processing_jobs
+         WHERE knowledge_base_id = ${knowledgeBaseId}) AS source_work,
         (SELECT count(DISTINCT registration.object_id)
          FROM focowiki.object_registrations registration
          JOIN focowiki.source_revisions revision ON revision.object_id = registration.object_id
@@ -878,6 +996,35 @@ function putRequest(
 
 async function* chunks(body: string): AsyncGenerator<Uint8Array> {
   yield Buffer.from(body, "utf8");
+}
+
+function lateSemanticTarget(
+  knowledgeBaseId: string,
+  configurations: Awaited<ReturnType<
+    typeof seedRequiredDocumentProcessingContract
+  >>
+): SemanticMaintenanceTarget {
+  return {
+    knowledgeBaseId,
+    generationModelConfigurationPublicId:
+      configurations.generationModelConfigurationPublicId,
+    generationModelConfigurationRevision:
+      configurations.generationModelConfigurationRevision,
+    extractionContractVersion: "extract-v1",
+    graphSchemaVersion: "graph-v1",
+    promptContractVersion: "prompt-v1",
+    embeddingConfigurationRevisionPublicId:
+      configurations.embeddingConfigurationRevisionPublicId,
+    embeddingQueryPolicyRevisionPublicId:
+      configurations.embeddingConfigurationRevisionPublicId,
+    minimumVectorRelevance: 0.7,
+    resolvedDimension: 3,
+    normalization: "l2",
+    artifactSchemaVersion: "artifact-v1",
+    vectorSchemaVersion: "vector-v1",
+    searchProviderKind: "opensearch",
+    mappingFingerprintSha256: "a".repeat(64)
+  };
 }
 
 function databaseConnectionUrl(connectionUrl: string, databaseName: string): string {

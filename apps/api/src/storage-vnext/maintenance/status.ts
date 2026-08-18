@@ -45,9 +45,13 @@ export function createStorageVnextMaintenanceStatusMapper() {
       input: StorageVnextMaintenanceTerminalStatusInput
     ): StorageVnextMaintenanceStatus {
       const summary = boundedSummary(input.summary);
+      const state = input.terminalState === "superseded"
+        && input.resultCode === "MAINTENANCE_CANCELLED"
+        ? "canceled"
+        : input.terminalState;
       return {
         requestId: input.operationPublicId,
-        state: input.terminalState,
+        state,
         trigger: trigger(summary.trigger),
         stage: phase(summary.phase),
         active: false,

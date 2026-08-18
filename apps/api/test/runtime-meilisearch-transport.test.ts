@@ -44,22 +44,27 @@ describe("runtime Meilisearch transport", () => {
     for (const field of ["requestTimeoutMs", "maxAttempts", "retryDelayMs"]) {
       expect(selectedProvider).toContain(`input.settings.${field}`);
     }
-    const sourceWorker = readFileSync(resolve(
+    const productionRuntime = readFileSync(resolve(
       rootDir,
-      "apps/api/src/storage-vnext/source-processing/production-runtime.ts"
+      "apps/api/src/document-indexing/infrastructure/production-runtime.ts"
     ), "utf8");
-    expect(sourceWorker).toContain("createDynamicRuntimeSearchQueryProvider");
-    const publicationPipeline = readFileSync(resolve(
+    expect(productionRuntime.match(/createRuntimeSearchProvider\(/gu)).toHaveLength(1);
+    const documentProcessor = readFileSync(resolve(
       rootDir,
-      "apps/api/src/storage-vnext/publication/production-pipeline.ts"
+      "apps/api/src/document-indexing/infrastructure/production-document-fixed-processor.ts"
     ), "utf8");
-    expect(publicationPipeline).toContain("searchProvider: SearchProviderRuntime");
-    expect(publicationPipeline).not.toMatch(/infrastructure\/(?:meilisearch|opensearch)/u);
+    const backgroundRuntime = readFileSync(resolve(
+      rootDir,
+      "apps/api/src/document-indexing/infrastructure/production-background-runtime.ts"
+    ), "utf8");
+    expect(documentProcessor).toContain("searchProvider:");
+    expect(backgroundRuntime).toContain("searchProvider:");
+    expect(`${documentProcessor}\n${backgroundRuntime}`).not.toContain(
+      "createRuntimeSearchProvider("
+    );
+    expect(`${documentProcessor}\n${backgroundRuntime}`)
+      .not.toMatch(/infrastructure\/(?:meilisearch|opensearch)/u);
     expect(selectedProvider).toContain("createRuntimeMeilisearchTransport");
     expect(selectedProvider).toContain("createOpenSearchClient");
-    expect(readFileSync(resolve(
-      rootDir,
-      "apps/api/src/storage-vnext/maintenance/production-runtime.ts"
-    ), "utf8")).toContain("createRuntimeSearchProvider");
   });
 });

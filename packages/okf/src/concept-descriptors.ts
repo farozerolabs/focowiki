@@ -1,4 +1,3 @@
-import { bundleSchemaTitle, knowledgeBaseTitle } from "./titles.js";
 import { canonicalizeGeneratedTextIdentity } from "./text-identity.js";
 
 export type GeneratedConceptDescriptor = {
@@ -38,29 +37,6 @@ export function createGeneratedConceptDescriptor(
   };
 }
 
-export function bundleSchemaDescriptor(title?: string): GeneratedConceptDescriptor {
-  const resolvedKnowledgeBaseTitle = knowledgeBaseTitle(title);
-  return createGeneratedConceptDescriptor({
-    path: "schema.md",
-    type: "Schema Reference",
-    title: bundleSchemaTitle(title),
-    description: `Metadata and navigation conventions for ${resolvedKnowledgeBaseTitle}.`,
-    manifestIdentity: "schema"
-  });
-}
-
-export function schemaReferenceDescriptor(input: {
-  path: string;
-  title: string;
-  description: string;
-}): GeneratedConceptDescriptor {
-  return createGeneratedConceptDescriptor({
-    ...input,
-    type: "Schema Reference",
-    manifestIdentity: `schema:${input.path}`
-  });
-}
-
 export function directoryIndexPageDescriptor(input: {
   directoryPath: string;
   directoryTitle: string;
@@ -83,7 +59,7 @@ export function updateHistoryPageDescriptor(page: number): GeneratedConceptDescr
     path: `log-${padPage(page)}.md`,
     type: "Update History Page",
     title: `Update history page ${page}`,
-    description: `Retained publication details for update history page ${page}.`,
+    description: `Retained content update details for history page ${page}.`,
     manifestIdentity: `update-history:${page}`
   });
 }

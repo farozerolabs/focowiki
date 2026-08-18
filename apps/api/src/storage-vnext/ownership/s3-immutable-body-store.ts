@@ -15,7 +15,17 @@ import {
 
 export type StorageVnextImmutableBodyWriteResult =
   & StorageVnextImmutableObjectDescriptor
-  & { outcome: "stored" | "reused" };
+  & {
+    outcome: "stored" | "reused";
+    requests: {
+      put: number;
+      head: number;
+      verification: number;
+      attemptedBytes: number;
+      retries: number;
+      latencyMilliseconds: number;
+    };
+  };
 
 export type StorageVnextImmutableBodyStore = {
   describe(input: {
@@ -64,12 +74,7 @@ export function createS3StorageVnextImmutableBodyStore(input: {
 
     async putVerified(request) {
       assertWriteRequest(request);
-      const existing = await readMetadata(input.client, bucket, request.descriptor.storageKey);
-      if (existing) {
-        assertMetadata(existing, request.descriptor);
-        return { ...request.descriptor, outcome: "reused" };
-      }
-      let outcome: "stored" | "reused" = "stored";
+      const startedAt = performance.now();
       try {
         await input.client.send(new PutObjectCommand({
           Bucket: bucket,
@@ -86,16 +91,40 @@ export function createS3StorageVnextImmutableBodyStore(input: {
         }));
       } catch (error) {
         if (!isPreconditionFailure(error)) throw error;
-        outcome = "reused";
+        const existing = await readMetadata(
+          input.client,
+          bucket,
+          request.descriptor.storageKey
+        );
+        if (!existing) {
+          throw new StorageVnextImmutableBodyStoreError("object_missing");
+        }
+        assertMetadata(existing, request.descriptor);
+        return {
+          ...request.descriptor,
+          outcome: "reused",
+          requests: {
+            put: 1,
+            head: 1,
+            verification: 1,
+            attemptedBytes: request.descriptor.byteCount,
+            retries: 0,
+            latencyMilliseconds: Math.max(0, performance.now() - startedAt)
+          }
+        };
       }
-      const verified = await readMetadata(
-        input.client,
-        bucket,
-        request.descriptor.storageKey
-      );
-      if (!verified) throw new StorageVnextImmutableBodyStoreError("object_missing");
-      assertMetadata(verified, request.descriptor);
-      return { ...request.descriptor, outcome };
+      return {
+        ...request.descriptor,
+        outcome: "stored",
+        requests: {
+          put: 1,
+          head: 0,
+          verification: 0,
+          attemptedBytes: request.descriptor.byteCount,
+          retries: 0,
+          latencyMilliseconds: Math.max(0, performance.now() - startedAt)
+        }
+      };
     },
 
     async verify(request) {

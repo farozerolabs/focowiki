@@ -5,6 +5,54 @@ const REFERENCE_DEFINITION_PATTERN =
 const FULL_REFERENCE_LINK_PATTERN = /!?\[([^\]\n]*)\]\[([^\]\n]*)\]/gu;
 const SHORTCUT_REFERENCE_LINK_PATTERN = /!?\[([^\]\n]+)\](?![\[(])/gu;
 
+export type SourcePathRewrite = {
+  sourceFilePublicId?: string;
+  sourceLinkBase?: {
+    sourceFilePublicId: string;
+    logicalPath: string;
+  };
+  from: string;
+  to: string | null;
+  includeDescendants: boolean;
+};
+
+export function rewriteMovedSourceMarkdownLinks(
+  markdown: string,
+  rewrites: readonly SourcePathRewrite[]
+): string {
+  const activeRewrites = rewrites.filter((rewrite): rewrite is SourcePathRewrite & {
+    to: string;
+  } => rewrite.to !== null);
+  if (activeRewrites.length === 0) return markdown;
+  const normalized = normalizeRewrites(activeRewrites);
+  let activeFence: string | null = null;
+  return markdown.split("\n").map((line) => {
+    const fence = line.match(FENCE_PATTERN)?.[1] ?? null;
+    if (fence) {
+      if (!activeFence) activeFence = fence[0] ?? null;
+      else if (fence[0] === activeFence) activeFence = null;
+      return line;
+    }
+    if (activeFence) return line;
+    const definition = line.match(REFERENCE_DEFINITION_PATTERN);
+    if (definition) {
+      const rewritten = rewriteDestination(definition[3] ?? "", normalized);
+      if (rewritten !== definition[3]) {
+        return `${definition[1]}${rewritten}${definition[4] ?? ""}`;
+      }
+    }
+    return replaceOutsideInlineCode(line, (segment) => segment.replace(
+      INLINE_LINK_PATTERN,
+      (match, label: string, destination: string, suffix: string) => {
+        const rewritten = rewriteDestination(destination, normalized);
+        if (rewritten === destination) return match;
+        const imagePrefix = match.startsWith("!") ? "!" : "";
+        return `${imagePrefix}[${label}](${rewritten}${suffix})`;
+      }
+    ));
+  }).join("\n");
+}
+
 export function removeDeletedSourceMarkdownLinks(
   markdown: string,
   removedSourceLogicalPaths: readonly string[]
@@ -89,6 +137,58 @@ function generatedPath(destination: string): string {
   } catch {
     return "";
   }
+}
+
+function rewriteDestination(
+  destination: string,
+  rewrites: readonly SourcePathRewrite[]
+): string {
+  const wrapped = destination.startsWith("<") && destination.endsWith(">");
+  const unwrapped = wrapped ? destination.slice(1, -1) : destination;
+  const suffixOffset = unwrapped.search(/[?#]/u);
+  const rawPath = suffixOffset < 0 ? unwrapped : unwrapped.slice(0, suffixOffset);
+  const suffix = suffixOffset < 0 ? "" : unwrapped.slice(suffixOffset);
+  if (!rawPath.startsWith("/") || rawPath.startsWith("//")) return destination;
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(rawPath.slice(1));
+  } catch {
+    return destination;
+  }
+  const rewrite = rewrites.find((item) =>
+    decodedPath === item.from
+    || item.includeDescendants && decodedPath.startsWith(`${item.from}/`));
+  if (!rewrite) return destination;
+  const rewrittenPath = `${rewrite.to}${decodedPath.slice(rewrite.from.length)}`;
+  const value = `/${encodeURI(rewrittenPath)}${suffix}`;
+  return wrapped ? `<${value}>` : value;
+}
+
+function normalizeRewrites(
+  rewrites: readonly (SourcePathRewrite & { to: string })[]
+): Array<SourcePathRewrite & { to: string }> {
+  const seen = new Map<string, string>();
+  return rewrites.map((item) => ({
+    from: item.from.replace(/^\/+|\/+$/gu, ""),
+    to: item.to.replace(/^\/+|\/+$/gu, ""),
+    includeDescendants: item.includeDescendants
+  })).sort((left, right) => right.from.length - left.from.length)
+    .filter((item) => {
+      if (!item.from || !item.to || item.from.includes("\0") || item.to.includes("\0")) {
+        throw new Error("Source path rewrite is invalid");
+      }
+      if (item.from === item.to) return false;
+      const key = `${item.from}\0${item.includeDescendants}`;
+      const priorTarget = seen.get(key);
+      if (priorTarget !== undefined) {
+        if (priorTarget !== item.to) {
+          throw new Error("Source path rewrite is conflicting");
+        }
+        return false;
+      }
+      seen.set(key, item.to);
+      return true;
+    });
 }
 
 function replaceOutsideInlineCode(

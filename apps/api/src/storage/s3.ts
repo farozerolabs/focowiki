@@ -11,6 +11,7 @@ import {
   S3Client,
   type S3ClientConfig
 } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { Readable } from "node:stream";
 import type { RuntimeConfig } from "../config.js";
 import {
@@ -104,6 +105,13 @@ type S3StorageOptions = {
   keyspace: StorageKeyspace;
 };
 
+export const S3_HTTP_TIMEOUTS = {
+  connectionTimeout: 10_000,
+  requestTimeout: 60_000,
+  socketTimeout: 60_000,
+  throwOnRequestTimeout: true
+} as const;
+
 export function createS3ClientConfig(
   storage: RuntimeConfig["storage"]
 ): S3ClientConfig {
@@ -114,7 +122,8 @@ export function createS3ClientConfig(
       accessKeyId: storage.accessKeyId,
       secretAccessKey: storage.secretAccessKey
     },
-    forcePathStyle: storage.forcePathStyle
+    forcePathStyle: storage.forcePathStyle,
+    requestHandler: new NodeHttpHandler(S3_HTTP_TIMEOUTS)
   };
 }
 
@@ -337,6 +346,7 @@ export class S3StorageAdapter implements StorageAdapter {
   }
 
   public async purgePrefix(prefix: string): Promise<{ deleted: number; remaining: number }> {
+    assertListingPrefix(this.keyspace.prefix, prefix);
     let deleted = 0;
     try {
       let keyMarker: string | undefined;
@@ -407,6 +417,7 @@ export class S3StorageAdapter implements StorageAdapter {
   }
 
   public async countPrefix(prefix: string): Promise<number> {
+    assertListingPrefix(this.keyspace.prefix, prefix);
     const verification = await this.client.send(
       new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, MaxKeys: 1 })
     );

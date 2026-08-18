@@ -5,8 +5,11 @@ import {
   type GraphRagAdapterResponse
 } from "../src/semantic/graphrag/contracts.js";
 import {
-  createGraphRagExtractionGateway
+  createGraphRagExtractionGateway,
+  semanticRetryChunkCharacters
 } from "../src/semantic/graphrag/extraction-gateway.js";
+import { selectSemanticSkeleton } from
+  "../src/semantic/graphrag/skeleton-selector.js";
 import {
   createSemanticSourceChunks,
   semanticChunkManifestHash
@@ -96,6 +99,13 @@ describe("semantic GraphRAG extraction gateway", () => {
       markdown: "a".repeat(100),
       maximumChunks: 2
     })).toThrow("bounded extraction manifest");
+    expect(() => createSemanticSourceChunks({
+      ...input,
+      markdown: "  \n"
+    })).toThrow(expect.objectContaining({
+      code: "semantic_source_body_empty",
+      retryable: false
+    }));
   });
 
   it("rejects reordered prompt manifests before any model call", async () => {
@@ -237,6 +247,64 @@ describe("semantic GraphRAG extraction gateway", () => {
     expect(result.chunks.every((chunk) => chunk.text.length <= 8)).toBe(true);
   });
 
+  it("accepts a retry selection precomputed with the effective chunk size", async () => {
+    const markdown = "abcdefghijklmnopqrstuvwxyz012345";
+    const maximumChunkCharacters = 16;
+    const maximumChunks = 10;
+    const retryAttempt = 2;
+    const effectiveMaximum = semanticRetryChunkCharacters({
+      configuredMaximum: maximumChunkCharacters,
+      maximumChunks,
+      sourceCharacters: markdown.length,
+      retryAttempt
+    });
+    const plannedChunks = createSemanticSourceChunks({
+      sourceRevisionPublicId: "revision-a",
+      markdown,
+      maximumChunkCharacters: effectiveMaximum,
+      maximumChunks
+    });
+    const selection = selectSemanticSkeleton({
+      sourceRevisionPublicId: "revision-a",
+      logicalPath: "alpha.md",
+      markdown,
+      chunks: plannedChunks,
+      policy: {
+        stableSamplingBasisPoints: 10_000,
+        structuralSelectionThreshold: 1,
+        maximumSelectedChunks: 2
+      }
+    });
+    const gateway = createGraphRagExtractionGateway({
+      pool: fakePool(async (request) => request.operation === "prepare"
+        ? ok(request, {
+            canonicalInputHash:
+              (request.source as { canonicalInputHash: string }).canonicalInputHash,
+            promptRevision: "general-purpose-graph-v2",
+            prompts: (request.source as { chunks: Array<{ id: string }> }).chunks
+              .map((chunk) => ({ chunkId: chunk.id, prompt: `Extract ${chunk.id}` }))
+          })
+        : ok(request, { entities: [], mentions: [], relationships: [] })),
+      selectSkeleton: () => selection,
+      maximumChunkCharacters,
+      maximumChunks,
+      retryAttempt,
+      model: { async complete() { return "<|COMPLETE|>"; } }
+    });
+
+    await expect(gateway.extract({
+      knowledgeBaseId: "kb-a",
+      semanticGenerationPublicId: "generation-a",
+      sourceFilePublicId: "file-a",
+      sourceRevisionPublicId: "revision-a",
+      logicalPath: "alpha.md",
+      markdown,
+      signal: new AbortController().signal
+    })).resolves.toMatchObject({
+      selection: { decisionSha256: selection.decisionSha256 }
+    });
+  });
+
   it("records complete coverage without Python or generation work when not selected", async () => {
     let poolCalls = 0;
     let modelCalls = 0;
@@ -339,6 +407,57 @@ describe("semantic GraphRAG extraction gateway", () => {
     expect(modelCalls).toBe(1);
     expect(result.generationRequestCount).toBe(1);
     expect(result.selection.selectedChunkIds).toEqual([result.chunks[1]!.id]);
+  });
+
+  it("reuses durable chunk outputs without counting another model request", async () => {
+    const outputs = new Map<string, string>();
+    let modelCalls = 0;
+    const gateway = createGraphRagExtractionGateway({
+      pool: fakePool(async (request) => request.operation === "prepare"
+        ? ok(request, {
+            canonicalInputHash:
+              (request.source as { canonicalInputHash: string }).canonicalInputHash,
+            promptRevision: "general-purpose-graph-v2",
+            prompts: (request.source as { chunks: Array<{ id: string }> }).chunks
+              .map((chunk) => ({ chunkId: chunk.id, prompt: `Extract ${chunk.id}` }))
+          })
+        : ok(request, { entities: [], mentions: [], relationships: [] })),
+      selectSkeleton: selectEveryChunk,
+      maximumChunks: 1,
+      chunkOutputs: {
+        async resolve(input) {
+          const existing = outputs.get(input.promptFingerprintSha256);
+          if (existing) {
+            return { output: existing, reused: true };
+          }
+          const output = await input.complete();
+          outputs.set(input.promptFingerprintSha256, output);
+          return { output, reused: false };
+        }
+      },
+      model: {
+        async complete() {
+          modelCalls += 1;
+          return "<|COMPLETE|>";
+        }
+      }
+    });
+    const request = {
+      knowledgeBaseId: "kb-a",
+      semanticGenerationPublicId: "generation-a",
+      sourceFilePublicId: "file-a",
+      sourceRevisionPublicId: "revision-a",
+      logicalPath: "alpha.md",
+      markdown: "Alpha",
+      signal: new AbortController().signal
+    };
+
+    const first = await gateway.extract(request);
+    const second = await gateway.extract(request);
+
+    expect(modelCalls).toBe(1);
+    expect(first.generationRequestCount).toBe(1);
+    expect(second.generationRequestCount).toBe(0);
   });
 });
 

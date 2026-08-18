@@ -6,7 +6,6 @@ import {
   adminFieldCaseKindFromEvidenceId,
   buildAdminFieldOccurrenceMatrix,
   createAdminBoundaryRateLimitLease,
-  createPublicationIntervalLease,
   enumerateRequiredAdminFieldCases,
   locateAdminFieldRoute,
   remainingAdminRateLimitWindowMs,
@@ -227,19 +226,6 @@ test("raises temporary Admin boundary capacities and preserves an exact restore 
   lease.elevated.adminLogin.max = 200;
   assert.equal(lease.restore.adminLogin.max, 8);
   assert.deepEqual(original.adminLogin, { max: 8, windowSeconds: 900 });
-});
-
-test("creates a temporary fast publication lease without mutating the restore snapshot", () => {
-  const original = { mode: "batch", intervalSeconds: 300, claimBatchSize: 10 };
-  const lease = createPublicationIntervalLease(original, 1);
-
-  assert.deepEqual(lease.elevated, {
-    mode: "batch",
-    intervalSeconds: 1,
-    claimBatchSize: 10
-  });
-  assert.deepEqual(lease.restore, original);
-  assert.deepEqual(original, { mode: "batch", intervalSeconds: 300, claimBatchSize: 10 });
 });
 
 test("waits only for the unelapsed Admin rate-limit window plus a bounded cushion", () => {

@@ -34,6 +34,8 @@ We tested RAG-style search first. Chunk recall often missed document context, cr
 
 Focowiki uses readable Markdown as the core knowledge representation. It preserves metadata, generates indexes and graph files, records related links, and gives Agents a corpus they can explore in a loop: read the index, open files, follow leads, search again, compare evidence, and answer with cited sources.
 
+In a generated bundle, `pages/` is the authoritative readable content, `_index/` contains path-linked page indexes, and `_graph/` contains path-linked page relationships. Markdown links are relative and per-file graph resources mirror page paths, so the complete directory remains navigable after it is copied without the service or API.
+
 <img src="./docs/public/images/focowiki-architecture.png" alt="Focowiki architecture" width="880" />
 
 ## Quick Start
@@ -68,12 +70,11 @@ Read README.md and help me deploy Focowiki with Docker Compose.
 The Docker Compose template uses `latest` by default. To pin a release, set the image tags in `.env`:
 
 ```env
-FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.1.0
-FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
-FOCOWIKI_SOURCE_WORKER_IMAGE=ghcr.io/farozerolabs/focowiki-source-worker:0.1.0
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:<release-tag>
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:<release-tag>
 ```
 
-Pin all three images to the same release tag.
+Pin both images to the same release tag.
 
 Read the [Docker Compose deployment guide](https://docs.focowiki.com/deployment/docker-compose) for configuration details.
 
@@ -96,7 +97,7 @@ Focowiki takes Markdown files and folders and turns them into a knowledge base t
 
 - **Upload documents and folders.** Add individual Markdown files or complete folder trees. Focowiki keeps their paths, names, metadata, links, and content.
 - **Browse organized knowledge.** Open documents from a file tree, move or rename files and folders, replace content, and remove outdated material.
-- **Find relevant documents.** Ask a complete natural-language question with default hybrid retrieval, browse directory indexes, follow related documents, and optionally rerank a limited number of source-grounded candidates. Search always returns readable source files; applications and Agents read the Markdown before using it as evidence. Once a knowledge base has a semantic contract, uploads and body replacements run GraphRAG and vector indexing automatically before final search publication.
+- **Find relevant documents.** Ask a complete natural-language question with default hybrid retrieval, browse directory indexes, follow related documents, and optionally rerank a limited number of source-grounded candidates. Search always returns readable source files; applications and Agents read the Markdown before using it as evidence. Once a knowledge base has a semantic contract, uploads and body replacements run GraphRAG and vector indexing automatically before becoming available.
 - **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow graph relationships, and manage document changes.
 - **Manage the system from the Admin UI.** Create knowledge bases, monitor file processing, configure models and runtime settings, and manage API keys.
 - **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, OpenSearch or Meilisearch, and S3-compatible storage.
@@ -157,6 +158,9 @@ Focowiki uses pnpm, TypeScript, Vite, React, Hono, PostgreSQL, Redis, and S3-com
 
 ```bash
 pnpm install
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r apps/api/python/requirements.lock
 cp .env.dev.example .env
 cp docker-compose.local.yml.example docker-compose.local.yml
 docker compose -f docker-compose.local.yml up -d postgres redis minio minio-init opensearch
@@ -164,13 +168,15 @@ pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
 
+`pnpm dev` starts the Admin UI, both API listeners, and the unified worker. Keep the Python virtual environment active while the development runtime is running.
+
 Local service URLs:
 
 - Admin UI: `http://127.0.0.1:43100`
 - Admin API: `http://127.0.0.1:43000`
 - Developer OpenAPI: `http://127.0.0.1:43200`
 
-The local environment template selects OpenSearch by default. Set both `SEARCH_PROVIDER` and `COMPOSE_PROFILES` to `meilisearch` to use Meilisearch instead.
+The local environment template selects OpenSearch by default. To use the bundled Meilisearch service, uncomment the complete `meilisearch` service block in the Compose template, set both `SEARCH_PROVIDER` and `COMPOSE_PROFILES` to `meilisearch`, then start `meilisearch search-init` instead of `opensearch`. The template exposes Meilisearch only on loopback at `MEILI_PORT` (default `57700`) for the host development runtime.
 
 ## License
 

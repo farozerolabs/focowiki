@@ -2,7 +2,7 @@ import type {
   SemanticActiveProjectionRecord
 } from "./ports.js";
 import type { SemanticMaintenanceTarget } from "../domain/contracts.js";
-import { semanticContractFingerprint } from "./adoption.js";
+import { semanticContractFingerprint } from "../domain/maintenance-contract.js";
 
 export type SemanticAdoptionMode =
   | "full"

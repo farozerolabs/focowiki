@@ -155,13 +155,14 @@ export function RerankerSettingsPanel() {
 
   async function runAction(
     key: string,
+    successTitle: string,
     action: () => Promise<{ configuration: RerankerConfiguration } | ApiFailure>
   ) {
     setBusy(key);
     const result = await action();
     setBusy("");
     if (failed(result)) return showFailure(result);
-    showAdminToast({ title: t("settings.rerankers.toast.updated") });
+    showAdminToast({ title: successTitle });
     await load();
   }
 
@@ -246,6 +247,7 @@ export function RerankerSettingsPanel() {
                           icon={<TestTube2Icon data-icon="inline-start" />}
                           onClick={() => void runAction(
                             `test-${configuration.publicId}`,
+                            t("settings.rerankers.toast.tested"),
                             () => testRerankerConfiguration(configuration.publicId)
                           )}
                         />
@@ -260,6 +262,7 @@ export function RerankerSettingsPanel() {
                             icon={<PauseIcon data-icon="inline-start" />}
                             onClick={() => void runAction(
                               `pause-${configuration.publicId}`,
+                              t("settings.rerankers.toast.paused"),
                               () => pauseRerankerConfiguration(
                                 configuration.publicId, configuration.revision
                               )
@@ -273,6 +276,7 @@ export function RerankerSettingsPanel() {
                                 icon={<PlayIcon data-icon="inline-start" />}
                                 onClick={() => void runAction(
                                   `resume-${configuration.publicId}`,
+                                  t("settings.rerankers.toast.resumed"),
                                   () => resumeRerankerConfiguration(
                                     configuration.publicId, configuration.revision
                                   )
@@ -284,6 +288,7 @@ export function RerankerSettingsPanel() {
                               icon={<CheckIcon data-icon="inline-start" />}
                               onClick={() => void runAction(
                                 `activate-${configuration.publicId}`,
+                                t("settings.rerankers.toast.activated"),
                                 () => activateRerankerConfiguration(
                                   configuration.publicId, configuration.revision
                                 )

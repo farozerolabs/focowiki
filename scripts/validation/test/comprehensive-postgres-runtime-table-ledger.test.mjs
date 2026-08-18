@@ -7,7 +7,7 @@ import {
 
 test("reconciles every inventoried table and declared runtime partition", () => {
   const report = reconcileComprehensivePostgresRuntimeTables({
-    phase: "publication",
+    phase: "document-activation",
     expectedTableNames: ["events", "knowledge_bases"],
     runtimeTables: [
       table("events", { exactRows: 2 }),
@@ -31,7 +31,7 @@ test("reconciles every inventoried table and declared runtime partition", () => 
 
 test("rejects missing fixed tables and unexplained runtime tables", () => {
   assert.throws(() => reconcileComprehensivePostgresRuntimeTables({
-    phase: "publication",
+    phase: "document-activation",
     expectedTableNames: ["events", "knowledge_bases"],
     runtimeTables: [table("events"), table("unknown")]
   }), /knowledge_bases|unknown/u);

@@ -69,14 +69,16 @@ describe("storage vNext public disclosure contract", () => {
     }
   });
 
-  it("routes operation results through the shared public sanitizer", () => {
+  it("publishes operation results through the bounded public presenter", () => {
     const source = readFileSync(
-      resolve(workspaceRoot, "apps/api/src/developer-openapi/source-resource-routes.ts"),
+      resolve(workspaceRoot, "apps/api/src/developer-openapi/resource-operation-presenter.ts"),
       "utf8"
     );
 
-    expect(source).toContain("sanitizeStorageVnextPublicValue(operation.result)");
-    expect(source).not.toContain("function toPublicOperationResult(");
+    expect(source).toContain("PROGRESS_FIELDS");
+    expect(source).not.toContain("sessionPublicId");
+    expect(source).not.toContain("sourceRevisionPublicId");
+    expect(source).not.toContain("affectedSourceCount");
   });
 
   it("removes physical identities from generated metadata and log text", () => {

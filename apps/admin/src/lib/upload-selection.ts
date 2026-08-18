@@ -96,7 +96,7 @@ function isSafeMarkdownRelativePath(path: string): boolean {
         !segment ||
         segment === "." ||
         segment === ".." ||
-        segment.length > 240 ||
+        [...segment].length > 1_000 ||
         /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(segment)
     ) ||
     normalizedPath.length > 2_048 ||
@@ -104,5 +104,5 @@ function isSafeMarkdownRelativePath(path: string): boolean {
   ) {
     return false;
   }
-  return !/^(?:index(?:-map)?|log)(?:-\d+)?\.md$/iu.test(name);
+  return !/^(?:index|log)(?:-\d+)?\.md$/iu.test(name);
 }

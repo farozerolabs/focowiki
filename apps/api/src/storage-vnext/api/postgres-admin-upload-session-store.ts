@@ -21,6 +21,8 @@ export type StorageVnextUploadSessionRow = {
   entry_count: number | string;
   upload_required_count: number | string;
   skipped_existing_count: number | string;
+  waiting_reservation_count: number | string;
+  rejected_deleting_count: number | string;
   expires_at: Date;
   created_at: Date;
   updated_at: Date;
@@ -37,6 +39,8 @@ export type StorageVnextUploadEntryRow = {
   object_id: string | null;
   state: "pending" | "uploaded" | "verified";
   existing_resource_revision: number | string | null;
+  reservation_session_public_id?: string | null;
+  rejected_deleting?: boolean;
 };
 
 type StorageVnextUploadTerminalRow = {
@@ -90,6 +94,12 @@ export async function lockUploadSession(
             WHERE entry.upload_session_public_id = session.public_id) AS entry_count,
            (SELECT count(*) FROM focowiki.upload_entries entry
             WHERE entry.upload_session_public_id = session.public_id
+              AND EXISTS (
+                SELECT 1 FROM focowiki.upload_path_reservations reservation
+                WHERE reservation.knowledge_base_id = entry.knowledge_base_id
+                  AND reservation.normalized_path = entry.normalized_path
+                  AND reservation.upload_session_public_id = entry.upload_session_public_id
+              )
               AND NOT EXISTS (
                 SELECT 1 FROM focowiki.source_files source
                 WHERE source.knowledge_base_id = entry.knowledge_base_id
@@ -105,7 +115,27 @@ export async function lockUploadSession(
                   AND source.public_id = entry.source_file_public_id
                   AND source.normalized_path = entry.normalized_path
                   AND source.deleted_at IS NULL
-              )) AS skipped_existing_count
+              )) AS skipped_existing_count,
+           (SELECT count(*) FROM focowiki.upload_entries entry
+            JOIN focowiki.upload_path_reservations reservation
+              ON reservation.knowledge_base_id = entry.knowledge_base_id
+             AND reservation.normalized_path = entry.normalized_path
+             AND reservation.upload_session_public_id <> entry.upload_session_public_id
+            WHERE entry.upload_session_public_id = session.public_id) AS waiting_reservation_count,
+           (SELECT count(*) FROM focowiki.upload_entries entry
+            WHERE entry.upload_session_public_id = session.public_id
+              AND EXISTS (
+                SELECT 1 FROM focowiki.source_files source
+                WHERE source.knowledge_base_id = entry.knowledge_base_id
+                  AND source.normalized_path = entry.normalized_path
+                  AND source.deleted_at IS NOT NULL
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.source_files source
+                WHERE source.knowledge_base_id = entry.knowledge_base_id
+                  AND source.normalized_path = entry.normalized_path
+                  AND source.deleted_at IS NULL
+              )) AS rejected_deleting_count
     FROM focowiki.upload_sessions session
     JOIN focowiki.operation_idempotency idempotency
       ON idempotency.operation_public_id = session.operation_public_id
@@ -133,6 +163,12 @@ export async function requireUploadSession(
             WHERE entry.upload_session_public_id = session.public_id) AS entry_count,
            (SELECT count(*) FROM focowiki.upload_entries entry
             WHERE entry.upload_session_public_id = session.public_id
+              AND EXISTS (
+                SELECT 1 FROM focowiki.upload_path_reservations reservation
+                WHERE reservation.knowledge_base_id = entry.knowledge_base_id
+                  AND reservation.normalized_path = entry.normalized_path
+                  AND reservation.upload_session_public_id = entry.upload_session_public_id
+              )
               AND NOT EXISTS (
                 SELECT 1 FROM focowiki.source_files source
                 WHERE source.knowledge_base_id = entry.knowledge_base_id
@@ -148,7 +184,27 @@ export async function requireUploadSession(
                   AND source.public_id = entry.source_file_public_id
                   AND source.normalized_path = entry.normalized_path
                   AND source.deleted_at IS NULL
-              )) AS skipped_existing_count
+              )) AS skipped_existing_count,
+           (SELECT count(*) FROM focowiki.upload_entries entry
+            JOIN focowiki.upload_path_reservations reservation
+              ON reservation.knowledge_base_id = entry.knowledge_base_id
+             AND reservation.normalized_path = entry.normalized_path
+             AND reservation.upload_session_public_id <> entry.upload_session_public_id
+            WHERE entry.upload_session_public_id = session.public_id) AS waiting_reservation_count,
+           (SELECT count(*) FROM focowiki.upload_entries entry
+            WHERE entry.upload_session_public_id = session.public_id
+              AND EXISTS (
+                SELECT 1 FROM focowiki.source_files source
+                WHERE source.knowledge_base_id = entry.knowledge_base_id
+                  AND source.normalized_path = entry.normalized_path
+                  AND source.deleted_at IS NOT NULL
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.source_files source
+                WHERE source.knowledge_base_id = entry.knowledge_base_id
+                  AND source.normalized_path = entry.normalized_path
+                  AND source.deleted_at IS NULL
+              )) AS rejected_deleting_count
     FROM focowiki.upload_sessions session
     JOIN focowiki.operation_idempotency idempotency
       ON idempotency.operation_public_id = session.operation_public_id
@@ -171,7 +227,14 @@ export async function requireUploadEntry(
     SELECT entry.upload_session_public_id, entry.entry_public_id,
            entry.source_file_public_id, entry.logical_path,
            entry.normalized_path, entry.checksum_sha256, entry.byte_count,
-           entry.object_id, entry.state, source.revision AS existing_resource_revision
+           entry.object_id, entry.state, source.revision AS existing_resource_revision,
+           reservation.upload_session_public_id AS reservation_session_public_id,
+           EXISTS (
+             SELECT 1 FROM focowiki.source_files deleting
+             WHERE deleting.knowledge_base_id = entry.knowledge_base_id
+               AND deleting.normalized_path = entry.normalized_path
+               AND deleting.deleted_at IS NOT NULL
+           ) AS rejected_deleting
     FROM focowiki.upload_entries entry
     JOIN focowiki.upload_sessions session
       ON session.public_id = entry.upload_session_public_id
@@ -181,10 +244,19 @@ export async function requireUploadEntry(
      AND source.public_id = entry.source_file_public_id
      AND source.normalized_path = entry.normalized_path
      AND source.deleted_at IS NULL
+    LEFT JOIN focowiki.upload_path_reservations reservation
+      ON reservation.knowledge_base_id = entry.knowledge_base_id
+     AND reservation.normalized_path = entry.normalized_path
     WHERE entry.knowledge_base_id = ${input.knowledgeBaseId}
       AND entry.upload_session_public_id = ${input.sessionId}
       AND entry.entry_public_id = ${input.entryId}
       AND session.state = 'uploading'
+      AND EXISTS (
+        SELECT 1 FROM focowiki.upload_path_reservations own_reservation
+        WHERE own_reservation.knowledge_base_id = entry.knowledge_base_id
+          AND own_reservation.normalized_path = entry.normalized_path
+          AND own_reservation.upload_session_public_id = entry.upload_session_public_id
+      )
   `;
   if (!rows[0]) throw new UploadSessionError("UPLOAD_ENTRY_NOT_FOUND");
   return rows[0];
@@ -217,18 +289,29 @@ export async function readUploadEntries(
   cursor: string | null
 ) {
   const state = transferState === "uploaded" ? "verified"
-    : transferState === "missing" ? "pending" : null;
+    : transferState === "missing" ? "pending"
+      : transferState === "failed" ? "failed" : null;
   const rows = await sql<StorageVnextUploadEntryRow[]>`
     SELECT entry.upload_session_public_id, entry.entry_public_id,
            entry.source_file_public_id, entry.logical_path, entry.normalized_path,
            entry.checksum_sha256, entry.byte_count, entry.object_id, entry.state,
-           source.revision AS existing_resource_revision
+           source.revision AS existing_resource_revision,
+           reservation.upload_session_public_id AS reservation_session_public_id,
+           EXISTS (
+             SELECT 1 FROM focowiki.source_files deleting
+             WHERE deleting.knowledge_base_id = entry.knowledge_base_id
+               AND deleting.normalized_path = entry.normalized_path
+               AND deleting.deleted_at IS NOT NULL
+           ) AS rejected_deleting
     FROM focowiki.upload_entries entry
     LEFT JOIN focowiki.source_files source
       ON source.knowledge_base_id = entry.knowledge_base_id
      AND source.public_id = entry.source_file_public_id
      AND source.normalized_path = entry.normalized_path
      AND source.deleted_at IS NULL
+    LEFT JOIN focowiki.upload_path_reservations reservation
+      ON reservation.knowledge_base_id = entry.knowledge_base_id
+     AND reservation.normalized_path = entry.normalized_path
     WHERE entry.upload_session_public_id = ${sessionId}
       AND (${state}::text IS NULL OR entry.state = ${state})
       AND (${cursor}::text IS NULL OR entry.entry_public_id COLLATE "C" > ${cursor} COLLATE "C")
@@ -242,30 +325,16 @@ export async function readUploadEntries(
   };
 }
 
-export async function assertUploadPathsAvailable(
-  sql: TransactionSql,
-  knowledgeBaseId: string,
-  normalizedPaths: string[]
-) {
-  const rows = await sql<Array<{ conflict: boolean }>>`
-    SELECT EXISTS (
-      SELECT 1 FROM focowiki.source_files
-      WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND normalized_path = ANY(${normalizedPaths}) AND deleted_at IS NULL
-    ) OR EXISTS (
-      SELECT 1 FROM focowiki.upload_path_reservations
-      WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND normalized_path = ANY(${normalizedPaths})
-    ) AS conflict
-  `;
-  if (rows[0]?.conflict) throw new UploadSessionError("UPLOAD_MANIFEST_DUPLICATE_PATH");
-}
-
 export function mapUploadEntry(row: StorageVnextUploadEntryRow): UploadSessionEntryRecord {
   const directoryPath = row.logical_path.includes("/")
     ? row.logical_path.slice(0, row.logical_path.lastIndexOf("/"))
     : "";
   const skippedExisting = row.existing_resource_revision !== null;
+  const rejectedDeleting = !skippedExisting && row.rejected_deleting === true;
+  const waitingReservation = !skippedExisting
+    && !rejectedDeleting
+    && Boolean(row.reservation_session_public_id)
+    && row.reservation_session_public_id !== row.upload_session_public_id;
   return {
     id: row.entry_public_id,
     sessionId: row.upload_session_public_id,
@@ -279,7 +348,13 @@ export function mapUploadEntry(row: StorageVnextUploadEntryRow): UploadSessionEn
     receivedChecksumSha256: row.object_id && !skippedExisting
       ? row.checksum_sha256
       : null,
-    disposition: skippedExisting ? "skipped_existing" : "upload_required",
+    disposition: skippedExisting
+      ? "skipped_existing"
+      : rejectedDeleting
+        ? "rejected_deleting"
+        : waitingReservation
+          ? "waiting_reservation"
+          : "upload_required",
     transferState: skippedExisting
       ? "skipped"
       : row.state === "pending" ? "missing" : "uploaded",
@@ -336,13 +411,19 @@ async function readUploadTerminal(
 }
 
 function mapUploadSession(row: StorageVnextUploadSessionRow): UploadSessionRecord {
-  const counts = emptyUploadSessionCounts();
-  counts.selected = uploadCount(row.entry_count);
-  counts.uploadRequired = uploadCount(row.upload_required_count);
-  counts.skippedExisting = uploadCount(row.skipped_existing_count);
-  counts.uploaded = uploadCount(row.received_entry_count);
+  const counts = deriveUploadSessionCounts({
+    state: row.state,
+    expectedEntryCount: row.expected_entry_count,
+    receivedEntryCount: row.received_entry_count,
+    entryCount: row.entry_count,
+    uploadRequiredCount: row.upload_required_count,
+    skippedExistingCount: row.skipped_existing_count,
+    waitingReservationCount: row.waiting_reservation_count,
+    rejectedDeletingCount: row.rejected_deleting_count
+  });
   return {
     id: row.public_id,
+    operationId: row.operation_public_id,
     knowledgeBaseId: row.knowledge_base_id,
     state: row.state === "draft" && counts.selected > 0 ? "manifest_building" : row.state,
     idempotencyKey: row.idempotency_key,
@@ -358,6 +439,39 @@ function mapUploadSession(row: StorageVnextUploadSessionRow): UploadSessionRecor
   };
 }
 
+export function deriveUploadSessionCounts(input: {
+  state: StorageVnextUploadSessionRow["state"];
+  expectedEntryCount: number | string;
+  receivedEntryCount: number | string;
+  entryCount: number | string;
+  uploadRequiredCount: number | string;
+  skippedExistingCount: number | string;
+  waitingReservationCount: number | string;
+  rejectedDeletingCount: number | string;
+}) {
+  const counts = emptyUploadSessionCounts();
+  const receivedEntryCount = uploadCount(input.receivedEntryCount);
+  if (input.state === "finalizing") {
+    const expectedEntryCount = uploadCount(input.expectedEntryCount);
+    if (receivedEntryCount > expectedEntryCount) {
+      throw new Error("Invalid finalized upload counts");
+    }
+    counts.selected = expectedEntryCount;
+    counts.uploadRequired = receivedEntryCount;
+    counts.skippedExisting = expectedEntryCount - receivedEntryCount;
+    counts.uploaded = receivedEntryCount;
+    counts.finalized = receivedEntryCount;
+    return counts;
+  }
+  counts.selected = uploadCount(input.entryCount);
+  counts.uploadRequired = uploadCount(input.uploadRequiredCount);
+  counts.skippedExisting = uploadCount(input.skippedExistingCount);
+  counts.waitingReservation = uploadCount(input.waitingReservationCount);
+  counts.rejectedDeleting = uploadCount(input.rejectedDeletingCount);
+  counts.uploaded = receivedEntryCount;
+  return counts;
+}
+
 function mapTerminalUploadSession(row: StorageVnextUploadTerminalRow): UploadSessionRecord {
   const summary = readRecord(row.result_summary);
   const counts = emptyUploadSessionCounts();
@@ -368,6 +482,7 @@ function mapTerminalUploadSession(row: StorageVnextUploadTerminalRow): UploadSes
   counts.finalized = row.terminal_state === "completed" ? counts.uploaded : 0;
   return {
     id: row.correlation_public_id,
+    operationId: row.public_id,
     knowledgeBaseId: row.knowledge_base_id,
     state: mapTerminalState(row.terminal_state),
     idempotencyKey: "",

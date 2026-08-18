@@ -114,11 +114,22 @@ export function createStorageVnextMaintenanceCoordinator(input: {
             operationPublicId: claim.operationPublicId
           };
         }
-        await input.repository.saveProgress({
+        const saveOutcome = await input.repository.saveProgress({
           operationPublicId: claim.operationPublicId,
           leaseOwner: requireLeaseOwner(claim.leaseOwner),
           checkpoint: updated.checkpoint
         });
+        if (saveOutcome === "terminal") {
+          await input.cleanup.terminate({
+            knowledgeBaseId: claim.knowledgeBaseId,
+            operationPublicId: claim.operationPublicId,
+            outcome: "superseded"
+          });
+          return {
+            outcome: "superseded" as const,
+            operationPublicId: claim.operationPublicId
+          };
+        }
         return {
           outcome: phaseResult.outcome,
           operationPublicId: claim.operationPublicId

@@ -11,6 +11,7 @@ export function useDetailPageRefresh(input: {
   knowledgeBaseId: string;
   activeViewRef: RefObject<DetailView>;
   sourceFilesRef: RefObject<SourceFileRecord[]>;
+  hasBackgroundActivity: boolean;
   sourceFilePageLoadingRef: RefObject<boolean>;
   sourceFileFilterTimeoutRef: RefObject<number | null>;
   refreshIntervalMsRef: RefObject<number>;
@@ -26,7 +27,8 @@ export function useDetailPageRefresh(input: {
         shouldScheduleSourceFileRefresh({
           activeView: input.activeViewRef.current,
           isVisible: isVisible(),
-          sourceFiles: input.sourceFilesRef.current
+          sourceFiles: input.sourceFilesRef.current,
+          hasBackgroundActivity: input.hasBackgroundActivity
         })
         && !input.sourceFilePageLoadingRef.current
       ) {
@@ -59,5 +61,5 @@ export function useDetailPageRefresh(input: {
       if (timeoutId !== null) window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [input.knowledgeBaseId]);
+  }, [input.knowledgeBaseId, input.hasBackgroundActivity]);
 }

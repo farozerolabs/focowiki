@@ -78,7 +78,7 @@ export type AnalyzeOkfMetadataOptions = {
   candidatePaths?: readonly string[];
 };
 
-export type OkfPublicationMetadataInput = {
+export type OkfGeneratedMetadataInput = {
   ownership: OkfOwnership;
   metadata: SourceMetadataDefaults;
   artifactKind?: "concept" | "bundle_root";

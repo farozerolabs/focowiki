@@ -1,18 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createDeveloperOpenApiDocument } from "../src/developer-openapi/openapi-document.js";
-import {
-  renderIndexFile,
-  renderPageFile,
-  renderSchemaFile
-} from "../src/okf/publication-files.js";
-import { renderBoundedRootFile } from "../src/publication/bounded-root-writer.js";
+import { renderPageFile } from "../src/okf/generated-files.js";
+import { renderDocumentRootPage } from
+  "../src/document-indexing/application/document-generated-navigation.js";
 import {
   presentOpenApiGeneratedFile,
   presentOpenApiSearchResult
 } from "../src/storage-vnext/api/openapi-presenters.js";
 import * as searchDocuments from "../src/storage-vnext/search/documents.js";
-import * as candidateValidator from
-  "../src/storage-vnext/publication/candidate-validator.js";
+import { validateDocumentOkfMarkdownMetadata } from
+  "../src/document-indexing/application/document-okf-validation.js";
 
 const normalizedSignals = {
   effectiveStatus: "stable" as const,
@@ -41,9 +38,8 @@ const compactSignals: {
   sourceCount: 1
 };
 
-describe("OKF 0.2 publication writers", () => {
+describe("OKF 0.2 generated-file writers", () => {
   it("emits native 0.2 and canonical generated metadata from both root writers", () => {
-    const standard = renderIndexFile([], "2026-08-07T10:00:00Z", "Knowledge base").content;
     const boundedInput = {
       path: "index.md",
       knowledgeBase: {
@@ -51,42 +47,35 @@ describe("OKF 0.2 publication writers", () => {
         name: "Knowledge base",
         description: null,
         sourceFileCount: 0,
-        graphEdgeCount: 0
+        graphEdgeCount: 0,
+        changedAt: "2026-08-07T10:00:00Z"
       },
       rootEntryCount: 0,
-      generationId: "generation-a",
-      changedAt: "2026-08-07T10:00:00Z"
-    };
-    const bounded = renderBoundedRootFile(boundedInput).body;
+    } as const;
+    const bounded = new TextDecoder().decode(
+      renderDocumentRootPage(boundedInput).bytes
+    );
 
-    for (const body of [standard, bounded]) {
-      expect(body).toContain('okf_version: "0.2"');
-      expect(body).not.toContain("Generated at:");
-      expect(body.split("---")[1]?.trim()).toBe('okf_version: "0.2"');
-    }
-    for (const body of [
-      renderSchemaFile("Knowledge base", "2026-08-07T10:00:00Z").content,
-      renderBoundedRootFile({ ...boundedInput, path: "schema.md" }).body
-    ]) {
-      expect(body).toContain("generated:");
-      expect(body).toContain("process:focowiki-publication");
-    }
+    expect(bounded).toContain('okf_version: "0.2"');
+    expect(bounded).not.toContain("Generated at:");
+    expect(bounded.split("---")[1]?.trim()).toBe('okf_version: "0.2"');
+    expect(bounded).not.toContain("schema.md");
   });
 
-  it("documents the 0.2 schema without recommending legacy timestamp", () => {
-    const schema = renderSchemaFile("Knowledge base", "2026-08-07T10:00:00Z").content;
-    expect(schema).toContain("Normative OKF 0.2");
-    expect(schema).toContain("Safe raw frontmatter remains readable");
-    expect(schema).toContain("normalized signal is null");
-    expect(schema).toContain("Attested Computation");
-    expect(schema).toContain("generated");
-    expect(schema).not.toContain("`timestamp`");
+  it("preserves a source-authored Schema section without generating a root schema concept", () => {
+    const body = "# Guide\n\n# Schema\n\n| Field | Type |\n| --- | --- |\n| id | string |";
+    const rendered = renderPageFile({
+      pagePath: "pages/guide.md",
+      metadata: { type: "Guide", title: "Guide" },
+      suggestions: null
+    }, body);
+    expect(rendered).toContain("# Schema\n\n| Field | Type |");
+    expect(rendered).not.toContain("schema.md");
   });
 
   it("does not generate numbered citations and preserves a legacy appendix byte-for-byte", () => {
     const page = {
       pagePath: "pages/guide.md",
-      fileId: "file-a",
       metadata: {
         type: "Guide",
         title: "Guide",
@@ -102,10 +91,9 @@ describe("OKF 0.2 publication writers", () => {
     expect(preserved.endsWith(legacy)).toBe(true);
   });
 
-  it("keeps a no-op publication byte stable", () => {
+  it("keeps a no-op generated update byte stable", () => {
     const input = {
       pagePath: "pages/guide.md",
-      fileId: "file-a",
       metadata: {
         type: "Guide",
         title: "Guide",
@@ -122,24 +110,11 @@ describe("OKF 0.2 publication writers", () => {
   });
 
   it("keeps incomplete source computation advisory while blocking owned defects", () => {
-    const validate = (candidateValidator as unknown as {
-      validateStorageVnextOkfMarkdownMetadata?: (input: {
-        logicalPath: string;
-        kind: "source" | "schema" | "directory";
-        body: string;
-      }) => unknown;
-    }).validateStorageVnextOkfMarkdownMetadata;
-    expect(validate).toBeTypeOf("function");
-    expect(() => validate!({
+    expect(() => validateDocumentOkfMarkdownMetadata({
       logicalPath: "pages/incomplete.md",
       kind: "source",
       body: "---\ntype: Attested Computation\nruntime: [python]\nparameters: invalid\n---\n# Incomplete"
     })).not.toThrow();
-    expect(() => validate!({
-      logicalPath: "schema.md",
-      kind: "schema",
-      body: "---\ntype: Schema Reference\n---\n# Schema"
-    })).toThrow(/OKF 0\.2 metadata/iu);
   });
 });
 
@@ -240,10 +215,9 @@ describe("OKF 0.2 Developer OpenAPI", () => {
   it("returns real hydrated metadata and derived signals for search results", () => {
     const result = presentOpenApiSearchResult({
       knowledgeBaseId: "kb-a",
-      generationId: "generation-a",
+      activeContentRevision: 1,
       mode: "file",
       depth: 0,
-      nodePublicId: null,
       item: {
         publicId: "file-a",
         sourceFilePublicId: "file-a",
@@ -289,7 +263,7 @@ describe("OKF 0.2 Developer OpenAPI", () => {
         attester: false
       }
     ]) {
-      const result = presentOpenApiGeneratedFile("kb-a", "generation-a", {
+      const result = presentOpenApiGeneratedFile("kb-a", 1, {
         id: "file-a",
         logicalPath: "pages/computation.md",
         tags: ["runtime"],

@@ -4,6 +4,7 @@ import type {
 } from "../../application/ports/search-provider-runtime.js";
 import {
   STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
+  STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
   STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
 } from "../../storage-vnext/search/documents.js";
 import type {
@@ -12,11 +13,26 @@ import type {
 } from "./orchestrator.js";
 import type { OkfSearchFilters } from
   "../../storage-vnext/search/okf-signals.js";
+import { generatedPagePath } from "../../domain/source-path.js";
 
 const ALL_FIELDS = ["title", "logicalPath", "searchText", "rankingTerms"];
 
 export function createSemanticRankedLaneAdapter(input: {
   query: SearchProviderQueryPort;
+  relationshipDocuments: {
+    resolveActive(request: {
+      knowledgeBaseId: string;
+      documents: readonly {
+        documentId: string;
+        sourceFilePublicId: string;
+        sourceRevisionPublicId: string;
+        targetSourceFilePublicId: string;
+        targetSourceRevisionPublicId: string;
+      }[];
+      limit: number;
+      signal: AbortSignal;
+    }): Promise<readonly string[]>;
+  };
 }) {
   return {
     async run(request: {
@@ -53,8 +69,9 @@ export function createSemanticRankedLaneAdapter(input: {
         continuation: null,
         searchFields: branch.searchFields,
         returnFields: [
-          "documentKind", "schemaVersion", "sourceFilePublicId",
+          "id", "documentKind", "schemaVersion", "sourceFilePublicId",
           "sourceRevisionPublicId", "logicalPath", "title", "searchText"
+          , "targetSourceFilePublicId", "targetSourceRevisionPublicId"
         ],
         cropLength: 1_200,
         deadlineMs: request.deadlineMs,
@@ -63,7 +80,36 @@ export function createSemanticRankedLaneAdapter(input: {
       } satisfies SearchProviderQueryRequest);
       if (request.signal.aborted) throw request.signal.reason;
       const normalizedQuery = normalize(request.query);
+      const activeRelationshipIds = request.lane === "file_relationship"
+        ? new Set(await input.relationshipDocuments.resolveActive({
+            knowledgeBaseId: request.knowledgeBaseId,
+            documents: response.hits.flatMap((hit) => {
+              const targetSourceFilePublicId = readString(
+                hit.document,
+                "targetSourceFilePublicId"
+              );
+              const targetSourceRevisionPublicId = readString(
+                hit.document,
+                "targetSourceRevisionPublicId"
+              );
+              return targetSourceFilePublicId && targetSourceRevisionPublicId
+                ? [{
+                    documentId: hit.documentId,
+                    sourceFilePublicId: hit.sourceFilePublicId,
+                    sourceRevisionPublicId: hit.sourceRevisionPublicId,
+                    targetSourceFilePublicId,
+                    targetSourceRevisionPublicId
+                  }]
+                : [];
+            }),
+            limit: response.hits.length,
+            signal: request.signal
+          }))
+        : null;
       return response.hits.flatMap((hit) => {
+        if (activeRelationshipIds && !activeRelationshipIds.has(hit.documentId)) {
+          return [];
+        }
         const title = readString(hit.document, "title");
         const path = readString(hit.document, "logicalPath") ?? hit.logicalPath;
         if (request.lane === "exact_path" && normalize(path) !== normalizedQuery) {
@@ -76,7 +122,7 @@ export function createSemanticRankedLaneAdapter(input: {
         return [{
           sourceFilePublicId: hit.sourceFilePublicId,
           sourceRevisionPublicId: hit.sourceRevisionPublicId,
-          evidenceTargetPath: hit.logicalPath,
+          evidenceTargetPath: generatedPagePath(hit.logicalPath),
           rank: 0,
           normalizedScore: hit.normalizedScore,
           bodyGrounded: true,
@@ -91,7 +137,7 @@ function laneDefinition(
   lane: SemanticRankedLane,
   scope: "all" | "path" | "metadata"
 ): {
-  documentKind: "content" | "graph_seed";
+  documentKind: "content" | "graph_seed" | "file_relationship";
   schemaVersion: string;
   searchFields: readonly string[];
   evidenceFamilies: SearchProviderQueryRequest["evidenceFamilies"];
@@ -117,6 +163,16 @@ function laneDefinition(
     searchFields: ["searchText", "rankingTerms"],
     evidenceFamilies: ["jieba"],
     matchingStrategy: "all"
+  };
+  if (lane === "file_relationship") return {
+    documentKind: "file_relationship",
+    schemaVersion: STORAGE_VNEXT_FILE_RELATIONSHIP_SCHEMA_VERSION,
+    searchFields: [
+      "title", "logicalPath", "targetTitle", "targetLogicalPath",
+      "searchText", "rankingTerms"
+    ],
+    evidenceFamilies: ["graph"],
+    matchingStrategy: "last"
   };
   return {
     documentKind: lane === "file_graph" ? "graph_seed" : "content",

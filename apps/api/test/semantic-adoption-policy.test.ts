@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifySemanticAdoption } from
   "../src/semantic/application/adoption-policy.js";
 import { semanticContractFingerprint } from
-  "../src/semantic/application/adoption.js";
+  "../src/semantic/domain/maintenance-contract.js";
 import type { SemanticActiveProjectionRecord } from
   "../src/semantic/application/ports.js";
 import type { SemanticMaintenanceTarget } from

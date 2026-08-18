@@ -36,22 +36,6 @@ export function createAdminBoundaryRateLimitLease(rateLimits, minimums) {
   return { elevated, restore };
 }
 
-export function createPublicationIntervalLease(publication, intervalSeconds) {
-  if (
-    !publication
-    || typeof publication !== "object"
-    || !Number.isInteger(intervalSeconds)
-    || intervalSeconds < 1
-  ) {
-    throw new Error("A valid publication snapshot and positive interval are required.");
-  }
-  const restore = structuredClone(publication);
-  const elevated = structuredClone(publication);
-  elevated.mode = "batch";
-  elevated.intervalSeconds = Math.min(elevated.intervalSeconds, intervalSeconds);
-  return { elevated, restore };
-}
-
 export function remainingAdminRateLimitWindowMs(input) {
   const windowMs = input.windowSeconds * 1_000;
   const elapsedMs = Math.max(0, input.nowMs - input.startedAtMs);

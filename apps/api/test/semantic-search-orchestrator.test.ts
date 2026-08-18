@@ -32,7 +32,8 @@ describe("semantic search orchestrator", () => {
     const result = orchestrator.search(request());
     await Promise.resolve();
     expect(started).toEqual(expect.arrayContaining([
-      "exact_path", "exact_title", "lexical", "jieba", "file_graph", "embedding"
+      "exact_path", "exact_title", "lexical", "jieba", "file_graph",
+      "file_relationship", "embedding"
     ]));
     expect(started).not.toContain("content_vector");
     releaseEmbedding();
@@ -299,7 +300,7 @@ describe("semantic search orchestrator", () => {
     });
 
     await orchestrator.search({ ...request(), limit: 1 });
-    expect(requestedLimits).toHaveLength(9);
+    expect(requestedLimits).toHaveLength(10);
     expect(new Set(requestedLimits)).toEqual(new Set([30]));
   });
 

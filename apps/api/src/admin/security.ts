@@ -84,7 +84,10 @@ function createSupportedAdminContentType(app: Hono): MiddlewareHandler {
       return context.json(
         {
           error: {
-            code: "UNSUPPORTED_MEDIA_TYPE"
+            code: "UNSUPPORTED_MEDIA_TYPE",
+            ...(expectedMediaType === "text/markdown" ? {
+              messageKey: "errors.sourceContentTypeUnsupported"
+            } : {})
           }
         },
         415

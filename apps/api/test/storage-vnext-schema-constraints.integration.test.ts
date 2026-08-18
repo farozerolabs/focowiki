@@ -79,54 +79,39 @@ describeOwnedDatabase("storage vNext cross-scope database constraints", () => {
     `).rejects.toMatchObject({ code: "23503" });
   });
 
-  it("rejects active search and release pointers from another scope", async () => {
+  it("rejects an active source pointer from another knowledge base", async () => {
+    await createSourceGraphFixture(sql, "d", "kb-a");
+    await createSourceGraphFixture(sql, "e", "kb-b");
     await sql`
-      INSERT INTO focowiki.release_roots
-        (public_id, knowledge_base_id, root_role, manifest_checksum_sha256, revision)
-      VALUES ('root-a', 'kb-a', 'active', ${"a".repeat(64)}, 1)
+      INSERT INTO focowiki.knowledge_base_sequences (
+        knowledge_base_id, current_sequence
+      ) VALUES ('kb-a', 1), ('kb-b', 1)
     `;
-    await sql`
-      INSERT INTO focowiki.search_projections
-        (public_id, knowledge_base_id, projection_role, provider_kind, provider_index_uid,
-         schema_checksum_sha256, settings_checksum_sha256,
-         document_checksum_sha256, revision, document_count, state)
-      VALUES ('search-b', 'kb-b', 'active', 'meilisearch', 'owned-search-b',
-        ${"b".repeat(64)}, ${"c".repeat(64)}, ${"d".repeat(64)}, 1, 0, 'ready')
-    `;
-    await sql`
-      INSERT INTO focowiki.operations
-        (public_id, knowledge_base_id, operation_kind, state)
-      VALUES ('operation-a', 'kb-a', 'publication', 'accepted')
-    `;
-
     await expect(sql`
-      INSERT INTO focowiki.active_snapshots
-        (knowledge_base_id, release_root_public_id, search_projection_public_id,
-         manifest_checksum_sha256, revision, activated_by_operation_public_id,
-         publicly_visible_at)
-      VALUES ('kb-a', 'root-a', 'search-b', ${"a".repeat(64)}, 1, 'operation-a', now())
-    `).rejects.toMatchObject({ code: "23503" });
+      INSERT INTO focowiki.source_file_active_revisions (
+        knowledge_base_id, source_file_public_id,
+        current_source_revision_public_id, active_source_revision_public_id,
+        activation_sequence
+      ) VALUES ('kb-a', 'file-d', 'revision-e', 'revision-e', 1)
+    `).rejects.toMatchObject({ code: "23514" });
   });
 
-  it("rejects a second source revision identity for the same file content", async () => {
+  it("rejects mutation of immutable source revision content", async () => {
     await createSourceGraphFixture(sql, "c", "kb-a");
     await expect(sql`
-      INSERT INTO focowiki.source_revisions
-        (public_id, knowledge_base_id, source_file_public_id, object_id,
-         checksum_sha256, byte_count, content_type, revision_role, expires_at)
-      VALUES ('revision-c-duplicate', 'kb-a', 'file-c', 'object-c',
-        ${"c".repeat(64)}, 1, 'text/markdown', 'candidate',
-        '2027-01-01T00:00:00.000Z')
-    `).rejects.toMatchObject({ code: "23505" });
+      UPDATE focowiki.source_revisions
+      SET checksum_sha256 = ${"d".repeat(64)}
+      WHERE public_id = 'revision-c'
+    `).rejects.toMatchObject({ code: "23514" });
   });
 
   it("rejects an oversized bounded metadata payload", async () => {
     await expect(sql`
       INSERT INTO focowiki.source_files
         (public_id, knowledge_base_id, logical_path, normalized_path, title,
-         metadata, status, revision)
+         metadata, revision)
       VALUES ('file-oversized', 'kb-a', 'large.md', 'large.md', 'Large',
-        ${sql.json({ value: "x".repeat(9_000) })}, 'ready', 1)
+        ${sql.json({ value: "x".repeat(9_000) })}, 1)
     `).rejects.toMatchObject({ code: "23514" });
   });
 });
@@ -138,9 +123,9 @@ async function createSourceGraphFixture(
 ): Promise<void> {
   await sql`
     INSERT INTO focowiki.source_files
-      (public_id, knowledge_base_id, logical_path, normalized_path, title, status, revision)
+      (public_id, knowledge_base_id, logical_path, normalized_path, title, revision)
     VALUES (${`file-${suffix}`}, ${knowledgeBaseId}, ${`${suffix}.md`},
-      ${`${suffix}.md`}, ${suffix.toUpperCase()}, 'ready', 1)
+      ${`${suffix}.md`}, ${suffix.toUpperCase()}, 1)
   `;
   await sql`
     INSERT INTO focowiki.object_registrations
@@ -152,9 +137,9 @@ async function createSourceGraphFixture(
   await sql`
     INSERT INTO focowiki.source_revisions
       (public_id, knowledge_base_id, source_file_public_id, object_id,
-       checksum_sha256, byte_count, content_type, revision_role)
+       checksum_sha256, byte_count, content_type)
     VALUES (${`revision-${suffix}`}, ${knowledgeBaseId}, ${`file-${suffix}`},
-      ${`object-${suffix}`}, ${suffix.repeat(64)}, 1, 'text/markdown', 'current')
+      ${`object-${suffix}`}, ${suffix.repeat(64)}, 1, 'text/markdown')
   `;
   await sql`
     INSERT INTO focowiki.graph_nodes

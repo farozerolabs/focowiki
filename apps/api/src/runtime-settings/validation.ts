@@ -1,18 +1,17 @@
 import {
   resolveSecurityConfig,
   resolveGraphConfig,
-  resolvePublicationConfig,
+  resolveGeneratedKnowledgeBaseConfig,
   resolveWorkerConfig,
   type RuntimeConfig
 } from "../config.js";
 import {
   modelApiModeValues,
-  publicationModeValues,
   rateLimitKeys,
+  type RuntimeGeneratedSettings,
   type RuntimeGraphSettings,
   type RuntimeMaintenanceSettings,
   type RuntimeModelConfigDraft,
-  type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
   type RuntimeSemanticSettings,
   type RuntimeSearchSettings,
@@ -22,26 +21,18 @@ import {
 } from "./types.js";
 
 const MAX_WORKER_RESOURCE_CONCURRENCY = 32;
-const MAX_PUBLICATION_RESOURCE_CONCURRENCY = 32;
-const MAX_MAINTENANCE_RESOURCE_CONCURRENCY = 16;
-const DEFAULT_GENERATED_OBJECT_WRITE_CONCURRENCY = 8;
 
 export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   reconciliationEnabled: true,
-  knowledgeBaseMaintenanceMode: "manual",
-  knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
-  knowledgeBaseMaintenanceConcurrency: 1,
   scanBatchSize: 500,
-  deletionBatchSize: 100,
-  quarantineGracePeriodSeconds: 86_400,
   maxAttempts: 5,
   retryDelayMs: 30_000,
-  projectionRepairConcurrency: 4,
-  projectionRepairDatabaseBatchSize: 2_000,
-  projectionRepairObjectWriteConcurrency: 4,
-  lexicalRebuildConcurrency: 4,
-  lexicalRebuildSourceReadConcurrency: 2,
-  lexicalRebuildMaxInFlightSourceBytes: 67_108_864
+  hardDeleteConcurrency: 1,
+  hardDeleteDatabaseBatchSize: 1_000,
+  hardDeleteObjectBatchSize: 1_000,
+  hardDeleteMaxAttempts: 3,
+  hardDeleteRetryDelayMs: 60_000,
+  hardDeleteFailedRetentionDays: 30
 };
 
 export const DEFAULT_SEARCH_SETTINGS: RuntimeSearchSettings = {
@@ -56,7 +47,6 @@ export const DEFAULT_SEARCH_SETTINGS: RuntimeSearchSettings = {
   maxAttempts: 5,
   retryDelayMs: 2_000,
   cleanupBatchSize: 1_000,
-  stagingRetentionHours: 24,
   cropLength: 1_200
 };
 
@@ -64,12 +54,7 @@ export const DEFAULT_SEMANTIC_SETTINGS: RuntimeSemanticSettings = {
   maximumChunkCharacters: 8_000,
   maximumChunks: 32,
   maximumEvidenceTargets: 64,
-  maximumCommunityPartitions: 256,
-  maximumCommunityEntities: 10_000,
-  maximumCommunityRelationships: 20_000,
-  maximumCommunityBoundaryRelationships: 10_000,
-  maximumCommunitySummaryCharacters: 8_000,
-  communityAdapterTimeoutMs: 30_000,
+  graphRagAdapterTimeoutMs: 30_000,
   searchLaneCutoffMs: 2_500,
   queryEmbeddingConcurrency: 4,
   queryEmbeddingCacheEntries: 1_000
@@ -77,24 +62,30 @@ export const DEFAULT_SEMANTIC_SETTINGS: RuntimeSemanticSettings = {
 
 export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSettingsDefaults {
   const worker = resolveWorkerConfig(config);
-  const publication = resolvePublicationConfig(config);
+  const generated = resolveGeneratedKnowledgeBaseConfig(config);
   return {
     rateLimits: resolveSecurityConfig(config).rateLimits,
     worker: sanitizeWorkerSettings({
       ...worker,
       sourceObjectReadConcurrency: worker.sourceFileConcurrency
     }),
-    publication: sanitizePublicationSettings({
-      mode: publication.mode,
-      intervalSeconds: publication.intervalSeconds,
-      roleConcurrency: publication.roleConcurrency,
-      claimBatchSize: publication.claimBatchSize,
-      generatedObjectWriteConcurrency: DEFAULT_GENERATED_OBJECT_WRITE_CONCURRENCY,
-      directoryIndexMaxEntries: publication.directoryIndexMaxEntries,
-      directoryIndexMaxBytes: publication.directoryIndexMaxBytes
+    generated: sanitizeGeneratedSettings({
+      directoryIndexMaxEntries: generated.directoryIndexMaxEntries,
+      directoryIndexMaxBytes: generated.directoryIndexMaxBytes,
+      rootSummaryLimit: generated.rootSummaryLimit,
+      okfLogMaxEntries: generated.okfLogMaxEntries,
+      okfLogMaxBytes: generated.okfLogMaxBytes
     }),
     graph: sanitizeGraphSettings(resolveGraphConfig(config)),
-    maintenance: { ...DEFAULT_MAINTENANCE_SETTINGS },
+    maintenance: {
+      ...DEFAULT_MAINTENANCE_SETTINGS,
+      hardDeleteConcurrency: worker.hardDeleteConcurrency,
+      hardDeleteDatabaseBatchSize: worker.hardDeleteDatabaseBatchSize,
+      hardDeleteObjectBatchSize: worker.hardDeleteObjectBatchSize,
+      hardDeleteMaxAttempts: worker.hardDeleteMaxAttempts,
+      hardDeleteRetryDelayMs: worker.hardDeleteRetryDelayMs,
+      hardDeleteFailedRetentionDays: worker.hardDeleteFailedRetentionDays
+    },
     semantic: { ...DEFAULT_SEMANTIC_SETTINGS },
     search: { ...DEFAULT_SEARCH_SETTINGS },
     model: config.model.enabled
@@ -121,30 +112,14 @@ export function validateSemanticSettings(
 ): RuntimeSettingsValidationIssue[] {
   const issues: RuntimeSettingsValidationIssue[] = [];
   const value = objectValue(input);
+  rejectUnknownFields(value, DEFAULT_SEMANTIC_SETTINGS, issues);
   for (const field of Object.keys(DEFAULT_SEMANTIC_SETTINGS)) {
     requireInteger(value[field], field, issues);
   }
   validateIntegerRange(value, "maximumChunkCharacters", 1, 64_000, issues);
   validateIntegerRange(value, "maximumChunks", 1, 32, issues);
   validateIntegerRange(value, "maximumEvidenceTargets", 1, 256, issues);
-  validateIntegerRange(value, "maximumCommunityPartitions", 1, 256, issues);
-  validateIntegerRange(value, "maximumCommunityEntities", 1, 10_000, issues);
-  validateIntegerRange(value, "maximumCommunityRelationships", 0, 20_000, issues);
-  validateIntegerRange(
-    value,
-    "maximumCommunityBoundaryRelationships",
-    0,
-    10_000,
-    issues
-  );
-  validateIntegerRange(
-    value,
-    "maximumCommunitySummaryCharacters",
-    256,
-    65_536,
-    issues
-  );
-  validateIntegerRange(value, "communityAdapterTimeoutMs", 100, 300_000, issues);
+  validateIntegerRange(value, "graphRagAdapterTimeoutMs", 100, 300_000, issues);
   validateIntegerRange(value, "searchLaneCutoffMs", 50, 3_000, issues);
   validateIntegerRange(value, "queryEmbeddingConcurrency", 1, 32, issues);
   validateIntegerRange(value, "queryEmbeddingCacheEntries", 1, 10_000, issues);
@@ -158,13 +133,7 @@ export function sanitizeSemanticSettings(
     maximumChunkCharacters: input.maximumChunkCharacters,
     maximumChunks: input.maximumChunks,
     maximumEvidenceTargets: input.maximumEvidenceTargets,
-    maximumCommunityPartitions: input.maximumCommunityPartitions,
-    maximumCommunityEntities: input.maximumCommunityEntities,
-    maximumCommunityRelationships: input.maximumCommunityRelationships,
-    maximumCommunityBoundaryRelationships:
-      input.maximumCommunityBoundaryRelationships,
-    maximumCommunitySummaryCharacters: input.maximumCommunitySummaryCharacters,
-    communityAdapterTimeoutMs: input.communityAdapterTimeoutMs,
+    graphRagAdapterTimeoutMs: input.graphRagAdapterTimeoutMs,
     searchLaneCutoffMs: input.searchLaneCutoffMs,
     queryEmbeddingConcurrency: input.queryEmbeddingConcurrency,
     queryEmbeddingCacheEntries: input.queryEmbeddingCacheEntries
@@ -174,6 +143,7 @@ export function sanitizeSemanticSettings(
 export function validateSearchSettings(input: unknown): RuntimeSettingsValidationIssue[] {
   const issues: RuntimeSettingsValidationIssue[] = [];
   const value = objectValue(input);
+  rejectUnknownFields(value, DEFAULT_SEARCH_SETTINGS, issues);
   for (const field of Object.keys(DEFAULT_SEARCH_SETTINGS)) {
     requirePositiveInteger(value[field], field, issues);
   }
@@ -194,7 +164,6 @@ export function validateSearchSettings(input: unknown): RuntimeSettingsValidatio
   validateIntegerRange(value, "maxAttempts", 1, 20, issues);
   validateIntegerRange(value, "retryDelayMs", 100, 300_000, issues);
   validateIntegerRange(value, "cleanupBatchSize", 1, 5_000, issues);
-  validateIntegerRange(value, "stagingRetentionHours", 1, 720, issues);
   validateIntegerRange(value, "cropLength", 50, 5_000, issues);
   validateAtMost(
     value,
@@ -220,7 +189,6 @@ export function sanitizeSearchSettings(
     maxAttempts: input.maxAttempts,
     retryDelayMs: input.retryDelayMs,
     cleanupBatchSize: input.cleanupBatchSize,
-    stagingRetentionHours: input.stagingRetentionHours,
     cropLength: input.cropLength
   };
 }
@@ -259,12 +227,7 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     "heartbeatIntervalMs",
     "jobMaxAttempts",
     "jobRetryDelayMs",
-    "completedJobRetentionDays",
-    "hardDeleteConcurrency",
-    "hardDeleteDatabaseBatchSize",
-    "hardDeleteObjectBatchSize",
-    "hardDeleteMaxAttempts",
-    "hardDeleteRetryDelayMs"
+    "completedJobRetentionDays"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
   if (
@@ -307,13 +270,6 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     }
   }
 
-  if (value.hardDeleteObjectBatchSize && Number(value.hardDeleteObjectBatchSize) > 1_000) {
-    issues.push({
-      field: "hardDeleteObjectBatchSize",
-      message: "hardDeleteObjectBatchSize must be less than or equal to 1000"
-    });
-  }
-
   return issues;
 }
 
@@ -327,45 +283,24 @@ export function sanitizeWorkerSettings(input: RuntimeWorkerSettings): RuntimeWor
     heartbeatIntervalMs: input.heartbeatIntervalMs!,
     jobMaxAttempts: input.jobMaxAttempts,
     jobRetryDelayMs: input.jobRetryDelayMs,
-    completedJobRetentionDays: input.completedJobRetentionDays,
-    hardDeleteConcurrency: input.hardDeleteConcurrency,
-    hardDeleteDatabaseBatchSize: input.hardDeleteDatabaseBatchSize,
-    hardDeleteObjectBatchSize: Math.min(input.hardDeleteObjectBatchSize, 1_000),
-    hardDeleteMaxAttempts: input.hardDeleteMaxAttempts,
-    hardDeleteRetryDelayMs: input.hardDeleteRetryDelayMs
+    completedJobRetentionDays: input.completedJobRetentionDays
   };
 }
 
-export function validatePublicationSettings(input: unknown): RuntimeSettingsValidationIssue[] {
+export function validateGeneratedSettings(input: unknown): RuntimeSettingsValidationIssue[] {
   const issues: RuntimeSettingsValidationIssue[] = [];
   const value = objectValue(input);
-
-  if (!publicationModeValues().includes(value.mode as never)) {
-    issues.push({
-      field: "mode",
-      message: "mode must be batch, manual, or per_file"
-    });
-  }
-
   [
-    "intervalSeconds",
-    "roleConcurrency",
-    "claimBatchSize",
     "directoryIndexMaxEntries",
     "directoryIndexMaxBytes",
-    "generatedObjectWriteConcurrency"
-  ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+    "rootSummaryLimit",
+    "okfLogMaxEntries",
+    "okfLogMaxBytes"
+  ]
+    .forEach((field) => requirePositiveInteger(value[field], field, issues));
 
-  if (
-    Number.isInteger(value.generatedObjectWriteConcurrency)
-    && Number(value.generatedObjectWriteConcurrency) > MAX_PUBLICATION_RESOURCE_CONCURRENCY
-  ) {
-    issues.push({
-      field: "generatedObjectWriteConcurrency",
-      message: `generatedObjectWriteConcurrency must be less than or equal to ${MAX_PUBLICATION_RESOURCE_CONCURRENCY}`
-    });
-  }
-  validateAtMost(value, "roleConcurrency", "claimBatchSize", issues);
+  validateIntegerRange(value, "directoryIndexMaxEntries", 2, 10_000, issues);
+  validateIntegerRange(value, "directoryIndexMaxBytes", 1_024, 10_485_760, issues);
 
   return issues;
 }
@@ -379,6 +314,7 @@ export function validateGraphSettings(input: unknown): RuntimeSettingsValidation
     "acceptedEdgeLimit",
     "searchDefaultFanout",
     "searchMaxFanout",
+    "shardSize",
     "genericPhraseThreshold"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
@@ -404,13 +340,6 @@ export function validateGraphSettings(input: unknown): RuntimeSettingsValidation
     issues.push({
       field: "searchDefaultFanout",
       message: "searchDefaultFanout must be less than or equal to searchMaxFanout"
-    });
-  }
-
-  if (typeof value.modelReviewEnabled !== "boolean") {
-    issues.push({
-      field: "modelReviewEnabled",
-      message: "modelReviewEnabled must be true or false"
     });
   }
 
@@ -443,6 +372,7 @@ export function validateModelDraft(input: RuntimeModelConfigDraft): RuntimeSetti
 export function validateMaintenanceSettings(input: unknown): RuntimeSettingsValidationIssue[] {
   const issues: RuntimeSettingsValidationIssue[] = [];
   const value = objectValue(input);
+  rejectUnknownFields(value, DEFAULT_MAINTENANCE_SETTINGS, issues);
 
   if (typeof value.reconciliationEnabled !== "boolean") {
     issues.push({
@@ -450,71 +380,29 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
       message: "reconciliationEnabled must be true or false"
     });
   }
-  if (!["manual", "automatic"].includes(String(value.knowledgeBaseMaintenanceMode))) {
-    issues.push({
-      field: "knowledgeBaseMaintenanceMode",
-      message: "knowledgeBaseMaintenanceMode must be manual or automatic"
-    });
-  }
-
   [
-    "knowledgeBaseMaintenanceScanIntervalSeconds",
-    "knowledgeBaseMaintenanceConcurrency",
     "scanBatchSize",
-    "deletionBatchSize",
-    "quarantineGracePeriodSeconds",
     "maxAttempts",
     "retryDelayMs",
-    "projectionRepairConcurrency",
-    "projectionRepairDatabaseBatchSize",
-    "projectionRepairObjectWriteConcurrency",
-    "lexicalRebuildConcurrency",
-    "lexicalRebuildSourceReadConcurrency",
-    "lexicalRebuildMaxInFlightSourceBytes"
+    "hardDeleteConcurrency",
+    "hardDeleteDatabaseBatchSize",
+    "hardDeleteObjectBatchSize",
+    "hardDeleteMaxAttempts",
+    "hardDeleteRetryDelayMs",
+    "hardDeleteFailedRetentionDays"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
-  validateIntegerRange(
-    value,
-    "knowledgeBaseMaintenanceScanIntervalSeconds",
-    60,
-    2_592_000,
-    issues
-  );
-  validateIntegerRange(value, "knowledgeBaseMaintenanceConcurrency", 1, 16, issues);
-
-  for (const field of [
-    "projectionRepairConcurrency",
-    "lexicalRebuildConcurrency"
-  ] as const) {
-    if (
-      Number.isInteger(value[field])
-      && Number(value[field]) > MAX_MAINTENANCE_RESOURCE_CONCURRENCY
-    ) {
-      issues.push({
-        field,
-        message: `${field} must be less than or equal to ${MAX_MAINTENANCE_RESOURCE_CONCURRENCY}`
-      });
-    }
-  }
-
-  validateIntegerRange(value, "projectionRepairDatabaseBatchSize", 100, 10_000, issues);
-  validateIntegerRange(value, "projectionRepairObjectWriteConcurrency", 1, 32, issues);
-  validateIntegerRange(value, "lexicalRebuildSourceReadConcurrency", 1, 32, issues);
-  validateIntegerRange(
-    value,
-    "lexicalRebuildMaxInFlightSourceBytes",
-    1_048_576,
-    536_870_912,
-    issues
-  );
-
-  for (const field of ["scanBatchSize", "deletionBatchSize"] as const) {
-    if (Number.isInteger(value[field]) && Number(value[field]) > 1_000) {
-      issues.push({
-        field,
-        message: `${field} must be less than or equal to 1000`
-      });
-    }
+  validateIntegerRange(value, "hardDeleteConcurrency", 1, 16, issues);
+  validateIntegerRange(value, "hardDeleteDatabaseBatchSize", 1, 10_000, issues);
+  validateIntegerRange(value, "hardDeleteObjectBatchSize", 1, 1_000, issues);
+  validateIntegerRange(value, "hardDeleteMaxAttempts", 1, 20, issues);
+  validateIntegerRange(value, "hardDeleteRetryDelayMs", 100, 300_000, issues);
+  validateIntegerRange(value, "hardDeleteFailedRetentionDays", 1, 365, issues);
+  if (Number.isInteger(value.scanBatchSize) && Number(value.scanBatchSize) > 1_000) {
+    issues.push({
+      field: "scanBatchSize",
+      message: "scanBatchSize must be less than or equal to 1000"
+    });
   }
 
   return issues;
@@ -525,35 +413,27 @@ export function sanitizeMaintenanceSettings(
 ): RuntimeMaintenanceSettings {
   return {
     reconciliationEnabled: input.reconciliationEnabled,
-    knowledgeBaseMaintenanceMode: input.knowledgeBaseMaintenanceMode,
-    knowledgeBaseMaintenanceScanIntervalSeconds:
-      input.knowledgeBaseMaintenanceScanIntervalSeconds,
-    knowledgeBaseMaintenanceConcurrency: input.knowledgeBaseMaintenanceConcurrency,
     scanBatchSize: Math.min(input.scanBatchSize, 1_000),
-    deletionBatchSize: Math.min(input.deletionBatchSize, 1_000),
-    quarantineGracePeriodSeconds: input.quarantineGracePeriodSeconds,
     maxAttempts: input.maxAttempts,
     retryDelayMs: input.retryDelayMs,
-    projectionRepairConcurrency: input.projectionRepairConcurrency,
-    projectionRepairDatabaseBatchSize: input.projectionRepairDatabaseBatchSize,
-    projectionRepairObjectWriteConcurrency: input.projectionRepairObjectWriteConcurrency,
-    lexicalRebuildConcurrency: input.lexicalRebuildConcurrency,
-    lexicalRebuildSourceReadConcurrency: input.lexicalRebuildSourceReadConcurrency,
-    lexicalRebuildMaxInFlightSourceBytes: input.lexicalRebuildMaxInFlightSourceBytes
+    hardDeleteConcurrency: input.hardDeleteConcurrency,
+    hardDeleteDatabaseBatchSize: input.hardDeleteDatabaseBatchSize,
+    hardDeleteObjectBatchSize: Math.min(input.hardDeleteObjectBatchSize, 1_000),
+    hardDeleteMaxAttempts: input.hardDeleteMaxAttempts,
+    hardDeleteRetryDelayMs: input.hardDeleteRetryDelayMs,
+    hardDeleteFailedRetentionDays: input.hardDeleteFailedRetentionDays
   };
 }
 
-export function sanitizePublicationSettings(
-  input: RuntimePublicationSettings
-): RuntimePublicationSettings {
+export function sanitizeGeneratedSettings(
+  input: RuntimeGeneratedSettings
+): RuntimeGeneratedSettings {
   return {
-    mode: input.mode,
-    intervalSeconds: input.intervalSeconds,
-    roleConcurrency: input.roleConcurrency,
-    claimBatchSize: input.claimBatchSize,
     directoryIndexMaxEntries: input.directoryIndexMaxEntries,
     directoryIndexMaxBytes: input.directoryIndexMaxBytes,
-    generatedObjectWriteConcurrency: input.generatedObjectWriteConcurrency
+    rootSummaryLimit: input.rootSummaryLimit,
+    okfLogMaxEntries: input.okfLogMaxEntries,
+    okfLogMaxBytes: input.okfLogMaxBytes
   };
 }
 
@@ -565,7 +445,7 @@ export function sanitizeGraphSettings(input: RuntimeGraphSettings): RuntimeGraph
     searchMaxDepth: input.searchMaxDepth,
     searchDefaultFanout: input.searchDefaultFanout,
     searchMaxFanout: input.searchMaxFanout,
-    modelReviewEnabled: input.modelReviewEnabled,
+    shardSize: input.shardSize,
     genericPhraseThreshold: input.genericPhraseThreshold
   };
 }
@@ -575,6 +455,18 @@ function sanitizeLimit(input: { max: number; windowSeconds: number }) {
     max: input.max,
     windowSeconds: input.windowSeconds
   };
+}
+
+function rejectUnknownFields(
+  value: Record<string, unknown>,
+  expected: Readonly<Record<string, unknown>>,
+  issues: RuntimeSettingsValidationIssue[]
+): void {
+  for (const field of Object.keys(value)) {
+    if (!Object.hasOwn(expected, field)) {
+      issues.push({ field, message: `${field} is no longer supported` });
+    }
+  }
 }
 
 function objectValue(input: unknown): Record<string, unknown> {

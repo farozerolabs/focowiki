@@ -23,6 +23,10 @@ import {
 import type { DeveloperOpenApiRouteServices } from "./routes.js";
 import { readIdempotencyKey } from "./idempotency-key.js";
 import { StorageVnextAdminUploadApplicationError } from "../storage-vnext/api/admin-upload-application.js";
+import {
+  readSourceResourceCursor,
+  writeSourceResourceCursor
+} from "./source-resource-pagination.js";
 
 export function registerDeveloperOpenApiUploadSessionRoutes(
   app: Hono,
@@ -55,7 +59,14 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
           declaredByteCount
         })
       );
-      await recordUploadSessionAudit(services, context, "upload_session_created", "success");
+      await recordUploadSessionAudit(
+        services,
+        context,
+        "upload_session_created",
+        "success",
+        null,
+        session.id
+      );
       return {
         session: toSafeSession(session),
         transport: {
@@ -136,21 +147,33 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       if (context.req.query("transferState") && !state) {
         throw validationError("Upload file transferState is invalid.");
       }
+      const knowledgeBaseId = context.req.param("knowledgeBaseId");
+      const scope = uploadEntryCursorScope(knowledgeBaseId, sessionId, state);
+      const cursor = await readSourceResourceCursor<string>(
+        services.redis,
+        scope,
+        context.req.query("cursor") ?? null
+      );
       const result = await run(() => services.uploadApplication.getUploadSession({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        knowledgeBaseId,
         sessionId,
         ...(state ? { transferState: state } : {}),
         limit: readLimit(context.req.query("limit"), services.config, {
           defaultPageSize: UPLOAD_MANIFEST_PAGE_SIZE,
           maxPageSize: UPLOAD_MANIFEST_PAGE_SIZE
         }),
-        cursor: context.req.query("cursor") ?? null
+        cursor
       }));
       return {
         session: toSafeSession(result.session),
         entries: {
           items: result.entries.items.map(toSafeEntry),
-          nextCursor: result.entries.nextCursor
+          nextCursor: await writeSourceResourceCursor(
+            services.redis,
+            scope,
+            result.entries.nextCursor,
+            services.config.pagination.cursorTtlSeconds
+          )
         }
       };
     })
@@ -245,13 +268,18 @@ async function recordUploadSessionAudit(
   context: Context,
   eventType: string,
   result: "success" | "failure" | "blocked",
-  errorCode: string | null = null
+  errorCode: string | null = null,
+  targetPublicId: string | null = context.req.param("uploadSessionId") || null
 ): Promise<void> {
+  const knowledgeBaseId = context.req.param("knowledgeBaseId") || null;
   await services.auditApplication.record({
     context,
     eventType,
     result,
-    errorCode
+    errorCode,
+    knowledgeBaseId,
+    targetKind: targetPublicId ? "upload_session" : "knowledge_base",
+    targetPublicId: targetPublicId ?? knowledgeBaseId
   });
 }
 
@@ -265,27 +293,37 @@ function toSafeEntry(entry: UploadSessionEntryRecord) {
     receivedSize: entry.receivedSize,
     disposition: entry.disposition,
     transferState: entry.transferState,
-    sourceDirectoryId: entry.sourceDirectoryId,
     sourceFileId: entry.sourceFileId,
-    existingResourceRevision: entry.existingResourceRevision,
-    generatedPath: entry.generatedPath,
-    errorCode: entry.errorCode
+    existingResourceRevision: entry.existingResourceRevision
   };
 }
 
 function toSafeSession(session: UploadSessionRecord) {
+  const base = `/openapi/v2/knowledge-bases/${session.knowledgeBaseId}`;
   return {
     id: session.id,
+    operationId: session.operationId,
     knowledgeBaseId: session.knowledgeBaseId,
     state: session.state,
     declaredFileCount: session.declaredFileCount,
     declaredByteCount: session.declaredByteCount,
-    counts: session.counts,
+    counts: {
+      selected: session.counts.selected,
+      uploadRequired: session.counts.uploadRequired,
+      skippedExisting: session.counts.skippedExisting,
+      waitingReservation: session.counts.waitingReservation,
+      rejectedDeleting: session.counts.rejectedDeleting,
+      uploaded: session.counts.uploaded,
+      finalized: session.counts.finalized
+    },
     errorCode: session.errorCode,
     expiresAt: session.expiresAt,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
-    completedAt: session.completedAt
+    completedAt: session.completedAt,
+    actions: {
+      operation: `${base}/operations/${session.operationId}`
+    }
   };
 }
 
@@ -305,8 +343,16 @@ function readManifestEntry(value: unknown) {
     : null;
 }
 
-function readTransferState(value: string | undefined): "missing" | "failed" | "uploaded" | null {
-  return value === "missing" || value === "failed" || value === "uploaded" ? value : null;
+function readTransferState(value: string | undefined): "missing" | "uploaded" | null {
+  return value === "missing" || value === "uploaded" ? value : null;
+}
+
+function uploadEntryCursorScope(
+  knowledgeBaseId: string,
+  sessionId: string,
+  transferState: "missing" | "uploaded" | null
+): string {
+  return `developer-openapi:upload-entries:${knowledgeBaseId}:${sessionId}:${transferState ?? "all"}`;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

@@ -1,9 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  runDeploymentDependencyHealthcheck
+  runDeploymentDependencyHealthcheck,
+  runWorkerRuntimeHealthcheck
 } from "../src/runtime/deployment-healthcheck.js";
 
 describe("deployment dependency healthcheck", () => {
+  it("checks the worker engine without requiring user model settings", async () => {
+    const events: string[] = [];
+
+    await runWorkerRuntimeHealthcheck(() => ({
+      async start() {
+        events.push("start");
+      },
+      async close() {
+        events.push("close");
+      }
+    }));
+
+    expect(events).toEqual(["start", "close"]);
+  });
+
   it("checks usable dependencies in deterministic order and closes connections", async () => {
     const events: string[] = [];
 
@@ -39,6 +55,9 @@ describe("deployment dependency healthcheck", () => {
       async checkSearch() {
         events.push("search");
       },
+      async checkWorkerRuntime() {
+        events.push("worker-runtime");
+      },
       async checkRole() {
         events.push("role");
       }
@@ -52,6 +71,7 @@ describe("deployment dependency healthcheck", () => {
       "redis-ping",
       "storage",
       "search",
+      "worker-runtime",
       "role",
       "redis-close",
       "database-close"

@@ -1,14 +1,11 @@
 import type { StorageVnextAdminApplicationResult } from "./admin-ports.js";
 
 export type StorageVnextAdminProcessingSummary = {
-  activeVersionId: string | null;
-  pendingDispatch: Record<string, unknown>;
-  sourceFileJobs: Record<string, unknown>;
-  publicationJobs: Record<string, unknown>;
-  publicationProgress: Record<string, unknown>;
-  maintenanceProgress: Record<string, unknown>;
-  indexMaintenance: Record<string, unknown>;
-  dirtySourceFiles: Record<string, unknown>;
+  waitingCount: number;
+  processingCount: number;
+  availableCount: number;
+  errorCount: number;
+  oldestWaitingAt: string | null;
 };
 
 export type StorageVnextAdminProcessingApplication = {

@@ -10,7 +10,10 @@ loadLocalEnv();
 const knowledgeBaseIds = benchmarkKnowledgeBaseIds();
 const knowledgeBaseId = knowledgeBaseIds[0];
 const benchmarkMode = benchmarkModeEnvironment();
+const benchmarkPhase = process.env.FOCOWIKI_BENCHMARK_PHASE?.trim() || "unspecified";
 const searchQuery = process.env.FOCOWIKI_BENCHMARK_SEARCH_QUERY?.trim() || "backup";
+const representativeSourceFileId = process.env
+  .FOCOWIKI_BENCHMARK_SOURCE_FILE_ID?.trim() || null;
 const reportPath = path.resolve(
   process.env.FOCOWIKI_BENCHMARK_REPORT
     ?? "ReferenceDocs/concurrent-read-benchmark.json"
@@ -33,6 +36,7 @@ const report = {
   finishedAt: null,
   ok: false,
   mode: benchmarkMode,
+  phase: benchmarkPhase,
   knowledgeBaseIds,
   rounds,
   concurrency,
@@ -59,7 +63,12 @@ try {
   const openApiHeaders = { authorization };
   const endpointFactories = benchmarkMode === "semantic_search"
     ? semanticSearchFactories(knowledgeBaseIds, openApiHeaders, searchQuery)
-    : mixedReadFactories(knowledgeBaseId, openApiHeaders);
+    : mixedReadFactories(
+        knowledgeBaseId,
+        openApiHeaders,
+        searchQuery,
+        representativeSourceFileId
+      );
   const work = [];
   for (let round = 0; round < rounds; round += 1) {
     for (const [name, createRequest] of Object.entries(endpointFactories)) {
@@ -97,7 +106,9 @@ try {
     const summary = summarize(values);
     report.endpoints[name] = summary;
     aggregate.push(...values);
-    if (name === "content") contentTransfers.push(...values);
+    if (name === "content" || name === "originalContent") {
+      contentTransfers.push(...values);
+    }
     else metadata.push(...values);
   }
   report.requestCount = aggregate.length;
@@ -250,7 +261,12 @@ function benchmarkModeEnvironment() {
   return value;
 }
 
-function mixedReadFactories(knowledgeBaseId, openApiHeaders) {
+function mixedReadFactories(
+  knowledgeBaseId,
+  openApiHeaders,
+  query,
+  sourceFileId
+) {
   const base = `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`;
   return {
     adminTree: () => ({
@@ -259,12 +275,53 @@ function mixedReadFactories(knowledgeBaseId, openApiHeaders) {
       headers: { cookie }
     }),
     health: () => ({ url: `${openApiBaseUrl}/openapi/v2/health`, headers: openApiHeaders }),
+    adminProcessing: () => ({
+      url: `${adminBaseUrl}/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+        + "/processing-summary",
+      headers: { cookie }
+    }),
     knowledgeBase: () => ({ url: `${openApiBaseUrl}${base}`, headers: openApiHeaders }),
     sourceFiles: () => ({ url: `${openApiBaseUrl}${base}/source-files?limit=25`, headers: openApiHeaders }),
     tree: () => ({ url: `${openApiBaseUrl}${base}/tree?limit=100`, headers: openApiHeaders }),
+    ...(sourceFileId
+      ? {
+          file: () => ({
+            url: `${openApiBaseUrl}${base}/files/${encodeURIComponent(sourceFileId)}`,
+            headers: openApiHeaders
+          })
+        }
+      : {}),
     content: () => ({ url: `${openApiBaseUrl}${base}/files/content?path=index.md`, headers: openApiHeaders }),
-    search: () => ({ url: `${openApiBaseUrl}${base}/files/search?query=backup&limit=10`, headers: openApiHeaders }),
+    lexicalSearch: () => ({
+      url: `${openApiBaseUrl}${base}/files/search?query=${encodeURIComponent(query)}`
+        + "&mode=file&scope=path&limit=10&rerank=false",
+      headers: openApiHeaders
+    }),
+    vectorSearch: () => ({
+      url: `${openApiBaseUrl}${base}/files/search?query=${encodeURIComponent(query)}`
+        + "&mode=file&scope=all&limit=10&rerank=false",
+      headers: openApiHeaders
+    }),
+    hybridSearch: () => ({
+      url: `${openApiBaseUrl}${base}/files/search?query=${encodeURIComponent(query)}`
+        + "&mode=hybrid&scope=all&graphDepth=2&limit=10&rerank=false",
+      headers: openApiHeaders
+    }),
     graph: () => ({ url: `${openApiBaseUrl}${base}/graph/overview`, headers: openApiHeaders }),
+    ...(sourceFileId
+      ? {
+          related: () => ({
+            url: `${openApiBaseUrl}${base}/files/${encodeURIComponent(sourceFileId)}`
+              + "/related?limit=20",
+            headers: openApiHeaders
+          }),
+          originalContent: () => ({
+            url: `${openApiBaseUrl}${base}/source-files/${encodeURIComponent(sourceFileId)}`
+              + "/content",
+            headers: openApiHeaders
+          })
+        }
+      : {}),
     operations: () => ({ url: `${openApiBaseUrl}${base}/operations?limit=25`, headers: openApiHeaders })
   };
 }

@@ -1,9 +1,9 @@
 export const WEBHOOK_EVENT_TYPES = [
-  "source_file.accepted",
-  "source_file.progress",
-  "source_file.completed",
-  "source_file.failed",
-  "generation.activated",
+  "document.waiting",
+  "document.processing",
+  "document.available",
+  "document.error",
+  "document.deleting",
   "file.deleted",
   "knowledge_base.deleted"
 ] as const;

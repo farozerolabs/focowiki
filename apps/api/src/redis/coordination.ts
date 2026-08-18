@@ -22,6 +22,7 @@ export type RedisCommandClient = {
     script: string,
     options: { keys: string[]; arguments: string[] }
   ) => Promise<unknown>;
+  publish?: (channel: string, message: string) => Promise<number>;
   scanIterator?: (options: { MATCH?: string; COUNT?: number }) => AsyncIterable<string | string[]>;
 };
 
@@ -44,15 +45,6 @@ export type RedisCoordinator = {
     ttlSeconds: number
   ) => Promise<boolean>;
   releaseSourceFileGraphLock: (sourceFileId: string, ownerId: string) => Promise<boolean>;
-  acquireKnowledgeBasePublicationLock: (
-    knowledgeBaseId: string,
-    ownerId: string,
-    ttlSeconds: number
-  ) => Promise<boolean>;
-  releaseKnowledgeBasePublicationLock: (
-    knowledgeBaseId: string,
-    ownerId: string
-  ) => Promise<boolean>;
   setPaginationCursor: (
     scope: string,
     cursorId: string,
@@ -92,6 +84,9 @@ export type RedisCoordinator = {
     id: string,
     limit: { max: number; windowSeconds: number }
   ) => Promise<RateLimitResult>;
+  notifyWorkerWork: (
+    kind: "document" | "deletion" | "maintenance" | "cleanup"
+  ) => Promise<boolean>;
 };
 
 export type RateLimitResult = {
@@ -201,24 +196,6 @@ export function createRedisCoordinator(
     async releaseSourceFileGraphLock(sourceFileId, ownerId) {
       return releaseOwnedLock(client, buildKey("source-file-graph-locks", sourceFileId), ownerId);
     },
-    async acquireKnowledgeBasePublicationLock(knowledgeBaseId, ownerId, ttlSeconds) {
-      const result = await client.set(
-        buildKey("knowledge-base-publication-locks", knowledgeBaseId),
-        ownerId,
-        {
-          EX: ttlSeconds,
-          NX: true
-        }
-      );
-      return result === "OK";
-    },
-    async releaseKnowledgeBasePublicationLock(knowledgeBaseId, ownerId) {
-      return releaseOwnedLock(
-        client,
-        buildKey("knowledge-base-publication-locks", knowledgeBaseId),
-        ownerId
-      );
-    },
     async setPaginationCursor(scope, cursorId, value, ttlSeconds) {
       await client.set(buildKey("pagination-cursors", scope, cursorId), JSON.stringify(value), {
         EX: ttlSeconds
@@ -287,6 +264,10 @@ export function createRedisCoordinator(
     },
     async getRuntimeSettingsVersion() {
       return client.get(buildKey("runtime-settings", "version"));
+    },
+    async notifyWorkerWork(kind) {
+      if (!client.publish) return false;
+      return (await client.publish(buildKey("worker", "wakeup"), kind)) > 0;
     },
     async hitRateLimit(scope, id, limit) {
       const key = buildKey("rate-limits", scope, id);
@@ -382,7 +363,6 @@ async function clearKnowledgeBaseRuntimeKeys(
   knowledgeBaseId: string
 ): Promise<number> {
   const normalizedKnowledgeBaseId = normalizeKeyPart(knowledgeBaseId);
-  const exactKeys = [buildKey("knowledge-base-publication-locks", normalizedKnowledgeBaseId)];
   const patterns = [
     `${buildKey("pagination-cursors", "knowledge-bases")}:*`,
     `${buildKey("page-cache", "knowledge-bases")}:*`,
@@ -391,8 +371,7 @@ async function clearKnowledgeBaseRuntimeKeys(
     `${buildKey("page-cache")}:*${normalizedKnowledgeBaseId}*`
   ];
 
-  return (await deleteExactKeys(client, exactKeys))
-    + await deleteMatchingKeys(client, patterns);
+  return deleteMatchingKeys(client, patterns);
 }
 
 async function deleteExactKeys(client: RedisCommandClient, keys: string[]): Promise<number> {

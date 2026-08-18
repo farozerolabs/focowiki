@@ -7,6 +7,7 @@ const files = {
   postgres: "postgres-plane.ts",
   object: "object-plane.ts",
   search: "search-plane.ts",
+  opensearch: "opensearch-plane.ts",
   coordination: "coordination-plane.ts",
   main: "main.ts"
 } as const;
@@ -29,6 +30,7 @@ describe("storage vNext concrete run-owned reset/bootstrap planes", () => {
       "createStorageVnextPostgresPlane",
       "createStorageVnextObjectPlane",
       "createStorageVnextSearchPlane",
+      "createStorageVnextOpenSearchPlane",
       "createStorageVnextCoordinationPlane",
       "validateStorageVnextOwnedScopeProof",
       "ownerMarker",
@@ -64,5 +66,21 @@ describe("storage vNext concrete run-owned reset/bootstrap planes", () => {
     expect(source).toContain("proofChecksum");
     expect(source).toMatch(/action\s*!==\s*["']reset["']/u);
     expect(source).toMatch(/action\s*!==\s*["']bootstrap["']/u);
+  });
+
+  it("wires exact cleanup for either supported search provider", () => {
+    const source = readFileSync(resolve(sourceRoot, files.main), "utf8");
+
+    for (const required of [
+      "createStorageVnextSearchPlane",
+      "createStorageVnextOpenSearchPlane",
+      "synchronizeStorageVnextSearchReceipt",
+      "synchronizeStorageVnextOpenSearchReceipt",
+      'searchProvider === "meilisearch"',
+      'searchProvider === "opensearch"'
+    ]) {
+      expect(source, required).toContain(required);
+    }
+    expect(source).not.toContain("requires SEARCH_PROVIDER=meilisearch");
   });
 });

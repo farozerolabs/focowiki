@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AdminPageHeader } from "@/components/admin-page-header";
 import { AppSidebar, type AdminSidebarTreeNode } from "@/components/app-sidebar";
@@ -13,10 +13,6 @@ import { SourceResourceEditor } from "@/components/source-resource-editor";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import {
-  renderGeneratedTextPreview,
-  renderMarkdownPreview
-} from "@/lib/markdown-preview";
-import {
   completeCursorPageRequest,
   createInitialCursorPageState,
   moveToNextCursor,
@@ -24,23 +20,17 @@ import {
   type CursorPageState
 } from "@/lib/cursor-page-state";
 import {
+  hasProcessingBackgroundActivity,
   normalizeSourceFileRefreshAfterMs,
   rememberSourceFileRefreshSnapshots,
-  shouldRefreshGeneratedFiles,
-  type SourceFileRefreshSnapshot
+  shouldRefreshGeneratedFiles, type SourceFileRefreshSnapshot
 } from "@/lib/source-file-refresh";
 import {
-  fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBaseProcessingSummary,
-  fetchKnowledgeBasePublicUrls,
-  listSourceFiles,
-  retryKnowledgeBaseSourceFile,
-  type KnowledgeBase,
-  type KnowledgeBasePublicUrls,
-  type ProcessingSummary,
-  type SourceFilePage,
-  type SourceFileRecord
+  fetchKnowledgeBaseIndexMaintenance,
+  listSourceFiles, retryKnowledgeBaseSourceFile,
+  type IndexMaintenanceStatus, type ProcessingSummary, type SourceFilePage, type SourceFileRecord
 } from "@/lib/admin-api";
 import { deleteCurrentSourceFile } from "@/lib/resource-editing-api";
 import { useSourceDirectoryDeletion } from "@/hooks/use-source-directory-deletion";
@@ -48,6 +38,7 @@ import { useFileTreeSearch } from "@/hooks/use-file-tree-search";
 import {
   buildSidebarSearchTree,
   buildSidebarTree,
+  sourceFileEditorNode,
   type TreePageState
 } from "@/lib/sidebar-tree";
 import {
@@ -60,20 +51,13 @@ import { showAdminToast } from "@/hooks/use-admin-toast";
 import { useDetailResourceEditing } from "@/hooks/use-detail-resource-editing";
 import { useDetailPageRefresh } from "@/hooks/use-detail-page-refresh";
 import { useDetailSidebarLabels } from "@/hooks/use-detail-sidebar-labels";
-
-const ROOT_PARENT_PATH = "";
-const SOURCE_FILE_REFRESH_INTERVAL_MS = 2_000;
-const SOURCE_FILE_FILTER_DEBOUNCE_MS = 300;
-const DETAIL_SIDEBAR_MIN_WIDTH_PX = 256;
-const DETAIL_SIDEBAR_MAX_WIDTH_PX = 512;
-const DETAIL_SIDEBAR_DEFAULT_WIDTH_PX = DETAIL_SIDEBAR_MIN_WIDTH_PX;
-type KnowledgeBaseDetailPageProps = {
-  knowledgeBase: KnowledgeBase;
-  onBack: () => void;
-  onLogout: () => void;
-};
-
-type ActiveView = "file" | "processing" | "settings";
+import { useGeneratedFilePreview } from "@/hooks/use-generated-file-preview";
+import {
+  DETAIL_SIDEBAR_DEFAULT_WIDTH_PX, DETAIL_SIDEBAR_MAX_WIDTH_PX,
+  DETAIL_SIDEBAR_MIN_WIDTH_PX, ROOT_PARENT_PATH, SOURCE_FILE_FILTER_DEBOUNCE_MS,
+  SOURCE_FILE_REFRESH_INTERVAL_MS, detailSidebarStyle, readAdminErrorMessageKey,
+  type ActiveKnowledgeBaseView, type KnowledgeBaseDetailPageProps
+} from "@/lib/knowledge-base-detail-view";
 
 export function KnowledgeBaseDetailPage({
   knowledgeBase,
@@ -88,19 +72,17 @@ export function KnowledgeBaseDetailPage({
   const sourceFileRequestIdRef = useRef(0);
   const sourceFileFilterTimeoutRef = useRef<number | null>(null);
   const loadedTreeParentsRef = useRef<Set<string>>(new Set());
-  const activeViewRef = useRef<ActiveView>("processing");
+  const activeViewRef = useRef<ActiveKnowledgeBaseView>("processing");
   const sourceFilesRef = useRef<SourceFileRecord[]>([]);
   const isSourceFilePageLoadingRef = useRef(false);
   const sourceFileRefreshIntervalMsRef = useRef(SOURCE_FILE_REFRESH_INTERVAL_MS);
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
-  const [activeView, setActiveView] = useState<ActiveView>("processing");
+  const [activeView, setActiveView] = useState<ActiveKnowledgeBaseView>("processing");
   const [treePages, setTreePages] = useState<Record<string, TreePageState>>({});
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(new Set());
-  const [selectedFilePath, setSelectedFilePath] = useState("");
-  const [selectedFileTitle, setSelectedFileTitle] = useState("");
-  const [selectedSourceFileId, setSelectedSourceFileId] = useState<string | null>(null);
-  const [selectedFileRelationships, setSelectedFileRelationships] = useState<NonNullable<SourceFileRecord["graphSummary"]>["relationships"]>([]);
-  const [previewHtml, setPreviewHtml] = useState("");
+  const [fileTreeError, setFileTreeError] = useState("");
+  const [processingSummaryError, setProcessingSummaryError] = useState("");
+  const [indexMaintenanceError, setIndexMaintenanceError] = useState("");
   const [deleteFileTarget, setDeleteFileTarget] = useState<AdminSidebarTreeNode | null>(null);
   const [deleteFileError, setDeleteFileError] = useState("");
   const [isDeletingFile, setIsDeletingFile] = useState(false);
@@ -111,9 +93,24 @@ export function KnowledgeBaseDetailPage({
   const [sourceFileError, setSourceFileError] = useState("");
   const [retryingSourceFileId, setRetryingSourceFileId] = useState<string | null>(null);
   const [processingSummary, setProcessingSummary] = useState<ProcessingSummary | null>(null);
-  const [publicUrls, setPublicUrls] = useState<KnowledgeBasePublicUrls | null>(null);
-  const [copiedUrl, setCopiedUrl] = useState("");
+  const [indexMaintenance, setIndexMaintenance] = useState<IndexMaintenanceStatus | null>(null);
   const [detailSidebarWidth, setDetailSidebarWidth] = useState(DETAIL_SIDEBAR_DEFAULT_WIDTH_PX);
+  const preview = useGeneratedFilePreview(knowledgeBase.id);
+  const {
+    clearSelectedFile,
+    copiedUrl,
+    copyUrl,
+    loadPublicUrls,
+    openPreviewPath: loadPreviewPath,
+    previewError,
+    previewHtml,
+    publicUrls,
+    publicUrlsError,
+    relationships: selectedFileRelationships,
+    selectedFilePath,
+    selectedFileTitle,
+    selectedSourceFileId
+  } = preview;
   const fileTreeSearch = useFileTreeSearch(knowledgeBase.id);
   const handleDeleteSourceFileTasks = useSourceFileTaskDeletionHandler({
     knowledgeBaseId: knowledgeBase.id,
@@ -122,14 +119,6 @@ export function KnowledgeBaseDetailPage({
     loadSourceFiles,
     loadProcessingSummary
   });
-  const directoryDeletion = useSourceDirectoryDeletion({
-    knowledgeBaseId: knowledgeBase.id,
-    selectedFilePath,
-    setTreePages,
-    setExpandedDirectories,
-    clearSelectedFile,
-    refreshProcessingSummary: loadProcessingSummary
-  });
   const resourceEditing = useDetailResourceEditing({
     knowledgeBaseId: knowledgeBase.id,
     selectedSourceFileId,
@@ -137,6 +126,15 @@ export function KnowledgeBaseDetailPage({
       await Promise.all([refreshGeneratedFiles(), loadFirstSourceFilePage()]);
     },
     reopen: openPreviewPath
+  });
+  const directoryDeletion = useSourceDirectoryDeletion({
+    knowledgeBaseId: knowledgeBase.id,
+    selectedFilePath,
+    setTreePages,
+    setExpandedDirectories,
+    clearSelectedFile,
+    refreshProcessingSummary: loadProcessingSummary,
+    trackOperation: resourceEditing.track
   });
 
   const rootTreePage = treePages[ROOT_PARENT_PATH];
@@ -153,13 +151,7 @@ export function KnowledgeBaseDetailPage({
       treePages
     ]
   );
-  const sidebarProviderStyle = useMemo(
-    () =>
-      ({
-        "--sidebar-width": `${detailSidebarWidth}px`
-      }) as CSSProperties,
-    [detailSidebarWidth]
-  );
+  const sidebarProviderStyle = detailSidebarStyle(detailSidebarWidth);
 
   useEffect(() => {
     activeViewRef.current = activeView;
@@ -168,6 +160,8 @@ export function KnowledgeBaseDetailPage({
   useEffect(() => {
     sourceFilesRef.current = sourceFiles;
   }, [sourceFiles]);
+
+  const sourceProcessingActive = hasProcessingBackgroundActivity(processingSummary);
 
   useEffect(() => {
     setIsUploadDialogOpen(false);
@@ -179,6 +173,9 @@ export function KnowledgeBaseDetailPage({
     resourceEditing.setRequest(null);
     directoryDeletion.setTarget(null);
     setDeleteFileError("");
+    setFileTreeError("");
+    setProcessingSummaryError("");
+    setIndexMaintenanceError("");
     setIsDeletingFile(false);
     setSourceFiles([]);
     const emptySourceFileFilters = createEmptySourceFileListFilters();
@@ -192,8 +189,6 @@ export function KnowledgeBaseDetailPage({
     setSourceFileError("");
     setRetryingSourceFileId(null);
     setProcessingSummary(null);
-    setPublicUrls(null);
-    setCopiedUrl("");
     setDetailSidebarWidth(DETAIL_SIDEBAR_DEFAULT_WIDTH_PX);
     sourceFileRefreshSnapshotsRef.current = new Map();
     sourceFileRequestIdRef.current += 1;
@@ -205,19 +200,19 @@ export function KnowledgeBaseDetailPage({
 
     void loadFileTree({ parentPath: ROOT_PARENT_PATH, replace: true });
     void loadFirstSourceFilePage();
-    void loadPublicUrls();
   }, [knowledgeBase.id]);
 
   useDetailPageRefresh({
     knowledgeBaseId: knowledgeBase.id,
     activeViewRef,
     sourceFilesRef,
+    hasBackgroundActivity: sourceProcessingActive,
     sourceFilePageLoadingRef: isSourceFilePageLoadingRef,
     sourceFileFilterTimeoutRef,
     refreshIntervalMsRef: sourceFileRefreshIntervalMsRef,
     refreshSourceFiles: () =>
       void loadSourceFiles({ pageState: sourceFilePageStateRef.current }),
-    refreshMaintenance: () => void loadProcessingSummary()
+    refreshMaintenance: () => void loadIndexMaintenance()
   });
 
   async function loadFileTree(input: { parentPath: string; replace: boolean }) {
@@ -232,11 +227,26 @@ export function KnowledgeBaseDetailPage({
       }
     }));
 
-    const page = await fetchKnowledgeBaseFileTree({
-      knowledgeBaseId: knowledgeBase.id,
-      ...(input.parentPath ? { parentPath: input.parentPath } : {}),
-      cursor: currentCursor
-    });
+    let page;
+    try {
+      page = await fetchKnowledgeBaseFileTree({
+        knowledgeBaseId: knowledgeBase.id,
+        ...(input.parentPath ? { parentPath: input.parentPath } : {}),
+        cursor: currentCursor
+      });
+      setFileTreeError("");
+    } catch (error) {
+      setFileTreeError(readAdminErrorMessageKey(error));
+      setTreePages((current) => ({
+        ...current,
+        [input.parentPath]: {
+          items: current[input.parentPath]?.items ?? [],
+          nextCursor: current[input.parentPath]?.nextCursor ?? null,
+          isLoading: false
+        }
+      }));
+      return;
+    }
 
     setTreePages((current) => {
       const previousItems = input.replace ? [] : current[input.parentPath]?.items ?? [];
@@ -277,39 +287,7 @@ export function KnowledgeBaseDetailPage({
 
   async function openPreviewPath(logicalPath: string, title: string) {
     setActiveView("file");
-    setSelectedFilePath(logicalPath);
-    setSelectedFileTitle(title);
-
-    const detail = await fetchKnowledgeBaseFileDetail({
-      knowledgeBaseId: knowledgeBase.id,
-      path: logicalPath
-    });
-
-    if (!detail) {
-      setSelectedFileRelationships([]);
-      return;
-    }
-
-    setSelectedFileRelationships(detail.relationships);
-    setSelectedSourceFileId(detail.file.sourceFileId);
-
-    if (detail.file.contentType.includes("markdown") || logicalPath.endsWith(".md")) {
-      setPreviewHtml(renderMarkdownPreview(detail.content, logicalPath));
-      return;
-    }
-
-    setPreviewHtml(renderGeneratedTextPreview(detail.content, {
-      contentType: detail.file.contentType,
-      logicalPath
-    }));
-  }
-
-  function clearSelectedFile() {
-    setSelectedFilePath("");
-    setSelectedFileTitle("");
-    setSelectedFileRelationships([]);
-    setSelectedSourceFileId(null);
-    setPreviewHtml("");
+    await loadPreviewPath(logicalPath, title);
   }
 
   async function loadSourceFiles(input: {
@@ -330,18 +308,16 @@ export function KnowledgeBaseDetailPage({
           cursor: input.pageState.currentCursor,
           ...(hasActiveSourceFileFilters(filters) ? { filters } : {})
         });
-      } catch {
+      } catch (error) {
         if (requestId !== sourceFileRequestIdRef.current) {
           return;
         }
-        const nextPageState = createInitialCursorPageState();
-
-        sourceFilePageStateRef.current = nextPageState;
-        setSourceFilePageState(nextPageState);
-        setSourceFiles([]);
-        setSourceFileError("pagination.expired");
-
-        if (input.pageState.currentCursor) {
+        const messageKey = readAdminErrorMessageKey(error);
+        if (messageKey === "pagination.expired" && input.pageState.currentCursor) {
+          const nextPageState = createInitialCursorPageState();
+          sourceFilePageStateRef.current = nextPageState;
+          setSourceFilePageState(nextPageState);
+          setSourceFileError(messageKey);
           try {
             page = await listSourceFiles({
               knowledgeBaseId: knowledgeBase.id,
@@ -351,9 +327,11 @@ export function KnowledgeBaseDetailPage({
             if (requestId === sourceFileRequestIdRef.current) {
               await applySourceFilePage(nextPageState, page);
             }
-          } catch {
-            setSourceFiles([]);
+          } catch (retryError) {
+            setSourceFileError(readAdminErrorMessageKey(retryError));
           }
+        } else {
+          setSourceFileError(messageKey);
         }
         return;
       }
@@ -479,19 +457,28 @@ export function KnowledgeBaseDetailPage({
     }
   }
 
-  async function loadPublicUrls() {
-    setPublicUrls(await fetchKnowledgeBasePublicUrls({ knowledgeBaseId: knowledgeBase.id }));
-  }
-
   async function loadProcessingSummary() {
-    setProcessingSummary(
-      await fetchKnowledgeBaseProcessingSummary({ knowledgeBaseId: knowledgeBase.id })
-    );
+    try {
+      const summary = await fetchKnowledgeBaseProcessingSummary({
+        knowledgeBaseId: knowledgeBase.id
+      });
+      setProcessingSummary(summary);
+      setProcessingSummaryError("");
+    } catch (error) {
+      setProcessingSummaryError(readAdminErrorMessageKey(error));
+    }
   }
 
-  async function handleCopy(url: string) {
-    await navigator.clipboard.writeText(url);
-    setCopiedUrl(url);
+  async function loadIndexMaintenance() {
+    try {
+      const maintenance = await fetchKnowledgeBaseIndexMaintenance({
+        knowledgeBaseId: knowledgeBase.id
+      });
+      setIndexMaintenance(maintenance);
+      setIndexMaintenanceError("");
+    } catch (error) {
+      setIndexMaintenanceError(readAdminErrorMessageKey(error));
+    }
   }
 
   async function handleDeleteFile() {
@@ -545,12 +532,13 @@ export function KnowledgeBaseDetailPage({
         rootNextCursor={rootTreePage?.nextCursor ?? null}
         rootLoading={Boolean(rootTreePage?.isLoading)}
         sourceFiles={sourceFiles}
+        sourceProcessingActive={sourceProcessingActive}
         onBack={onBack}
         onLogout={onLogout}
         onOpenProcessing={() => setActiveView("processing")}
         onOpenSettings={() => {
           setActiveView("settings");
-          void loadProcessingSummary();
+          void loadIndexMaintenance();
         }}
         onOpenFile={(node) => void handleSelectFile(node)}
         onDeleteFile={(node) => {
@@ -569,7 +557,11 @@ export function KnowledgeBaseDetailPage({
           isActive: fileTreeSearch.isSearchActive,
           isLoading: fileTreeSearch.isLoading,
           nextCursor: fileTreeSearch.nextCursor,
-          statusMessage: fileTreeSearch.errorMessageKey ? t(fileTreeSearch.errorMessageKey) : null,
+          statusMessage: fileTreeSearch.errorMessageKey
+            ? t(fileTreeSearch.errorMessageKey)
+            : fileTreeError
+              ? t(fileTreeError)
+              : null,
           onQueryChange: fileTreeSearch.setQuery,
           onClear: fileTreeSearch.clear,
           onLoadMore: () => void fileTreeSearch.loadMore()
@@ -624,9 +616,13 @@ export function KnowledgeBaseDetailPage({
               onUpload={() => setIsUploadDialogOpen(true)}
               onFiltersChange={handleSourceFileFiltersChange}
               onClearFilters={handleClearSourceFileFilters}
-              errorMessageKey={sourceFileError}
+              errorMessageKey={sourceFileError || processingSummaryError}
               retryingSourceFileId={retryingSourceFileId}
               onRetrySourceFile={(sourceFile) => void handleRetrySourceFile(sourceFile)}
+              onReplaceSourceFile={(sourceFile) => resourceEditing.setRequest({
+                action: "replace",
+                node: sourceFileEditorNode(sourceFile)
+              })}
               onDeleteSourceFileTasks={handleDeleteSourceFileTasks}
               onOpenGeneratedFile={(sourceFile) => {
                 const generatedFilePath = sourceFile.generatedFilePath;
@@ -641,8 +637,9 @@ export function KnowledgeBaseDetailPage({
           ) : activeView === "settings" ? (
             <KnowledgeBaseMaintenancePanel
               knowledgeBaseId={knowledgeBase.id}
-              summary={processingSummary}
-              onRefresh={loadProcessingSummary}
+              maintenance={indexMaintenance}
+              errorMessageKey={indexMaintenanceError}
+              onRefresh={loadIndexMaintenance}
             />
           ) : (
             <FilePreviewPanel
@@ -652,7 +649,8 @@ export function KnowledgeBaseDetailPage({
               relationships={selectedFileRelationships}
               selectedFileTitle={selectedFileTitle}
               selectedFilePath={selectedFilePath}
-              onCopy={(url) => void handleCopy(url)}
+              errorMessageKey={previewError || publicUrlsError}
+              onCopy={(url) => void copyUrl(url)}
               onOpenPreviewPath={(path, title) => void openPreviewPath(path, title)}
             />
           )}

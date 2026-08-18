@@ -57,12 +57,18 @@ export function createPostgresActiveVectorHitRepository(sql: DatabaseClient) {
           ON source.knowledge_base_id = vector.knowledge_base_id
          AND source.public_id = vector.source_file_public_id
          AND source.deleted_at IS NULL
-         AND source.logical_path = vector.evidence_target_path
-        JOIN focowiki.source_file_current_revisions current_revision
+        JOIN focowiki.source_file_active_revisions current_revision
           ON current_revision.knowledge_base_id = source.knowledge_base_id
          AND current_revision.source_file_public_id = source.public_id
-         AND current_revision.source_revision_public_id
+         AND current_revision.active_source_revision_public_id
            = vector.source_revision_public_id
+        JOIN focowiki.source_revision_presentations presentation
+          ON presentation.knowledge_base_id = current_revision.knowledge_base_id
+         AND presentation.source_file_public_id
+           = current_revision.source_file_public_id
+         AND presentation.source_revision_public_id
+           = current_revision.active_source_revision_public_id
+         AND presentation.logical_path = vector.evidence_target_path
         WHERE vector.knowledge_base_id = ${input.knowledgeBaseId}
           AND vector.semantic_generation_public_id
             = ${input.semanticGenerationPublicId}
@@ -80,12 +86,12 @@ export function createPostgresActiveVectorHitRepository(sql: DatabaseClient) {
                 ON evidence_source.knowledge_base_id = observation.knowledge_base_id
                AND evidence_source.public_id = observation.source_file_public_id
                AND evidence_source.deleted_at IS NULL
-              JOIN focowiki.source_file_current_revisions evidence_revision
+              JOIN focowiki.source_file_active_revisions evidence_revision
                 ON evidence_revision.knowledge_base_id
                   = observation.knowledge_base_id
                AND evidence_revision.source_file_public_id
                   = observation.source_file_public_id
-               AND evidence_revision.source_revision_public_id
+               AND evidence_revision.active_source_revision_public_id
                   = observation.source_revision_public_id
               WHERE entity.knowledge_base_id = vector.knowledge_base_id
                 AND entity.semantic_generation_public_id
@@ -105,12 +111,12 @@ export function createPostgresActiveVectorHitRepository(sql: DatabaseClient) {
                 ON evidence_source.knowledge_base_id = observation.knowledge_base_id
                AND evidence_source.public_id = observation.source_file_public_id
                AND evidence_source.deleted_at IS NULL
-              JOIN focowiki.source_file_current_revisions evidence_revision
+              JOIN focowiki.source_file_active_revisions evidence_revision
                 ON evidence_revision.knowledge_base_id
                   = observation.knowledge_base_id
                AND evidence_revision.source_file_public_id
                   = observation.source_file_public_id
-               AND evidence_revision.source_revision_public_id
+               AND evidence_revision.active_source_revision_public_id
                   = observation.source_revision_public_id
               WHERE relationship.knowledge_base_id = vector.knowledge_base_id
                 AND relationship.semantic_generation_public_id

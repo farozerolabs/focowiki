@@ -17,20 +17,8 @@ export const MIGRATION_MANIFEST = [
   {
     fileName: "001_storage_vnext.sql",
     sourceGeneration: "absent",
-    targetGeneration: "storage-vnext-v1",
+    targetGeneration: "storage-vnext-v9-document-indexing-hybrid",
     safety: "clean_bootstrap"
-  },
-  {
-    fileName: "002_extension_navigation_profile.sql",
-    sourceGeneration: "storage-vnext-v1",
-    targetGeneration: "storage-vnext-v2",
-    safety: "compatible"
-  },
-  {
-    fileName: "003_general_purpose_semantic_search.sql",
-    sourceGeneration: "storage-vnext-v2",
-    targetGeneration: "storage-vnext-v3-semantic",
-    safety: "breaking_reset"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
@@ -161,20 +149,6 @@ export function createBootstrapPlan(
     return {
       pendingMigrations: [],
       pendingFiles: [],
-      targetGeneration
-    };
-  }
-
-  const nextMigrationIndex = MIGRATION_MANIFEST.findIndex((migration) =>
-    migration.sourceGeneration === currentState);
-  if (nextMigrationIndex >= 0) {
-    const pendingMigrations = MIGRATION_MANIFEST.slice(nextMigrationIndex);
-    if (pendingMigrations.some((migration) => migration.safety === "breaking_reset")) {
-      throw new UnsupportedMigrationGenerationError(currentState);
-    }
-    return {
-      pendingMigrations,
-      pendingFiles: pendingMigrations.map((migration) => migration.fileName),
       targetGeneration
     };
   }

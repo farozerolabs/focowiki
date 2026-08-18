@@ -4,6 +4,10 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { Meilisearch } from "meilisearch";
 import postgres from "postgres";
 import { createClient } from "redis";
+import { createOpenSearchClient } from "../../infrastructure/opensearch/opensearch-client.js";
+import type { OpenSearchClientPort } from
+  "../../infrastructure/opensearch/opensearch-client-port.js";
+import { parseSearchStartupConfig } from "../../runtime/search-config.js";
 import {
   bootstrapStorageVnextOwnedScope,
   resetStorageVnextOwnedScope
@@ -11,6 +15,11 @@ import {
 import { createStorageVnextCoordinationPlane } from "./coordination-plane.js";
 import { createStorageVnextFilesystemPlane } from "./filesystem-plane.js";
 import { createStorageVnextObjectPlane } from "./object-plane.js";
+import {
+  createStorageVnextOpenSearchPlane,
+  synchronizeStorageVnextOpenSearchReceipt,
+  type StorageVnextOwnedOpenSearchClient
+} from "./opensearch-plane.js";
 import { validateStorageVnextOwnedScopeProof } from "./owned-scope.js";
 import { createStorageVnextPostgresPlane } from "./postgres-plane.js";
 import {
@@ -61,10 +70,17 @@ const objectPrefix = normalizeObjectPrefix(requireEnvironment("S3_PREFIX"));
 if (`${objectPrefix}/` !== proof.objectScope) {
   throw new Error("S3_PREFIX does not match the exact run-owned object scope");
 }
-if (requireEnvironment("SEARCH_PROVIDER") !== "meilisearch") {
-  throw new Error("Storage vNext owned-scope validation requires SEARCH_PROVIDER=meilisearch");
+const searchIssues: string[] = [];
+const searchConfig = parseSearchStartupConfig({
+  env: process.env,
+  environment: process.env.NODE_ENV === "production" ? "production" : "development",
+  issues: searchIssues
+});
+if (searchIssues.length > 0) {
+  throw new Error(`Storage vNext search configuration is invalid: ${searchIssues.join("; ")}`);
 }
-if (requireEnvironment("SEARCH_INDEX_PREFIX") !== proof.searchScope) {
+const searchProvider = searchConfig.provider;
+if (searchConfig.indexPrefix !== proof.searchScope) {
   throw new Error("SEARCH_INDEX_PREFIX does not match the exact run-owned search scope");
 }
 
@@ -82,12 +98,21 @@ const objectClient = new S3Client({
   },
   forcePathStyle: parseBooleanEnvironment("S3_FORCE_PATH_STYLE")
 });
-const searchClient = new Meilisearch({
-  host: requireEnvironment("MEILI_HOST"),
-  apiKey: requireEnvironment("MEILI_API_KEY"),
-  timeout: 10_000,
-  clientAgents: ["Focowiki storage-vNext owned reset"]
-});
+const meilisearchClient = searchProvider === "meilisearch"
+  ? new Meilisearch({
+      host: searchConfig.endpoint,
+      apiKey: searchConfig.apiKey,
+      timeout: 10_000,
+      clientAgents: ["Focowiki storage-vNext owned reset"]
+    })
+  : null;
+const opensearchClient = searchProvider === "opensearch"
+  ? createOpenSearchClient({
+      config: searchConfig,
+      requestTimeoutMs: 10_000,
+      maxAttempts: 2
+    }) as unknown as OpenSearchClientPort
+  : null;
 const coordinationClient = createClient({
   url: requireEnvironment("REDIS_URL"),
   socket: { reconnectStrategy: false }
@@ -95,18 +120,30 @@ const coordinationClient = createClient({
 
 try {
   await coordinationClient.connect();
-  const searchReceipt = action === "reset"
-    ? await synchronizeStorageVnextSearchReceipt({
-        proof,
-        receipt: manifest.search,
-        client: searchClient as unknown as StorageVnextSearchReceiptClient
+  const searchReceipt = action !== "reset"
+    ? manifest.search
+    : searchProvider === "meilisearch"
+      ? await synchronizeStorageVnextSearchReceipt({
+          proof,
+          receipt: manifest.search,
+          client: meilisearchClient as unknown as StorageVnextSearchReceiptClient
+        })
+      : await synchronizeStorageVnextOpenSearchReceipt({
+          proof,
+          receipt: manifest.search,
+          client: opensearchClient as unknown as StorageVnextOwnedOpenSearchClient
+        });
+  const searchPlane = searchProvider === "meilisearch"
+    ? createStorageVnextSearchPlane({
+        client: meilisearchClient as unknown as StorageVnextOwnedSearchClient,
+        receipt: searchReceipt
       })
-    : manifest.search;
+    : createStorageVnextOpenSearchPlane({
+        client: opensearchClient as unknown as StorageVnextOwnedOpenSearchClient,
+        receipt: searchReceipt
+      });
   const planes = [
-    createStorageVnextSearchPlane({
-      client: searchClient as unknown as StorageVnextOwnedSearchClient,
-      receipt: searchReceipt
-    }),
+    searchPlane,
     createStorageVnextObjectPlane({
       client: objectClient,
       bucket: requireEnvironment("S3_BUCKET")
@@ -124,6 +161,7 @@ try {
   await Promise.allSettled([
     coordinationClient.isOpen ? coordinationClient.quit() : Promise.resolve(),
     postgresClient.end({ timeout: 5 }),
+    opensearchClient?.close() ?? Promise.resolve(),
     objectClient.destroy()
   ]);
 }

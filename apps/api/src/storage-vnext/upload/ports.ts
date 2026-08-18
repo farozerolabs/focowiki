@@ -107,10 +107,10 @@ export type StorageVnextUploadTerminalPort = {
     knowledgeBaseId: StorageVnextKnowledgeBaseId;
     operationPublicId: StorageVnextPublicId;
     sessionPublicId: StorageVnextPublicId;
-    outcome: "completed" | "failed" | "cancelled" | "superseded" | "timed_out" | "deleted";
+    outcome: "accepted" | "completed" | "failed" | "cancelled" | "superseded" | "timed_out" | "deleted";
     resultCode: string;
     completedAt: StorageVnextTimestamp;
     temporaryObjectIds: readonly string[];
-    successorOperationPublicId: StorageVnextPublicId | null;
+    relatedOperationPublicId: StorageVnextPublicId | null;
   }): Promise<{ status: "completed" | "blocked" | "retry" }>;
 };

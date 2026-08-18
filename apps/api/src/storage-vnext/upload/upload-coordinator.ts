@@ -11,12 +11,49 @@ export type StorageVnextUploadCoordinator = ReturnType<
   typeof createStorageVnextUploadCoordinator
 >;
 
+export function createStorageVnextUploadSessionMaintenance(input: {
+  repository: StorageVnextUploadRepository;
+  terminal: StorageVnextUploadTerminalPort;
+}) {
+  return {
+    async expireSessions(request: {
+      expiredBefore: string;
+      limit: number;
+    }): Promise<number> {
+      assertPageLimit(request.limit);
+      const sessions = await input.repository.listExpiredSessions(request);
+      const failures: unknown[] = [];
+      for (const session of sessions) {
+        try {
+          await terminateKnownSession(input, session, {
+            outcome: "timed_out",
+            resultCode: "UPLOAD_EXPIRED",
+            completedAt: request.expiredBefore,
+            relatedOperationPublicId: null
+          });
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) {
+        throw new AggregateError(
+          failures,
+          "Storage vNext expired upload session convergence failed"
+        );
+      }
+      return sessions.length;
+    }
+  };
+}
+
 export function createStorageVnextUploadCoordinator(input: {
   repository: StorageVnextUploadRepository;
   bodyWriter: StorageVnextUploadBodyWriter;
   terminal: StorageVnextUploadTerminalPort;
   limits: { maximumEntries: number; maximumManifestBytes: number };
 }) {
+  const sessionMaintenance = createStorageVnextUploadSessionMaintenance(input);
   return {
     async openSession(request: {
       knowledgeBaseId: string;
@@ -114,10 +151,10 @@ export function createStorageVnextUploadCoordinator(input: {
       await converge(input.terminal, {
         ...finalized.session,
         temporaryObjectIds: [],
-        outcome: "completed",
+        outcome: "accepted",
         resultCode: "UPLOAD_ACCEPTED",
         completedAt: request.completedAt,
-        successorOperationPublicId: null
+        relatedOperationPublicId: null
       });
       return {
         outcome: finalized.outcome,
@@ -143,14 +180,14 @@ export function createStorageVnextUploadCoordinator(input: {
         outcome: "cancelled",
         resultCode: "UPLOAD_CANCELLED",
         completedAt: request.cancelledAt,
-        successorOperationPublicId: null
+        relatedOperationPublicId: null
       });
     },
 
     async supersedeSession(request: {
       knowledgeBaseId: string;
       sessionPublicId: string;
-      successorOperationPublicId: string;
+      relatedOperationPublicId: string;
       supersededAt: string;
     }): Promise<void> {
       const session = await input.repository.terminateSession({
@@ -164,26 +201,11 @@ export function createStorageVnextUploadCoordinator(input: {
         outcome: "superseded",
         resultCode: "UPLOAD_SUPERSEDED",
         completedAt: request.supersededAt,
-        successorOperationPublicId: request.successorOperationPublicId
+        relatedOperationPublicId: request.relatedOperationPublicId
       });
     },
 
-    async expireSessions(request: {
-      expiredBefore: string;
-      limit: number;
-    }): Promise<number> {
-      assertPageLimit(request.limit);
-      const sessions = await input.repository.listExpiredSessions(request);
-      for (const session of sessions) {
-        await terminateKnownSession(input, session, {
-          outcome: "timed_out",
-          resultCode: "UPLOAD_EXPIRED",
-          completedAt: request.expiredBefore,
-          successorOperationPublicId: null
-        });
-      }
-      return sessions.length;
-    },
+    expireSessions: sessionMaintenance.expireSessions,
 
     async cancelKnowledgeBaseSessions(request: {
       knowledgeBaseId: string;
@@ -201,7 +223,7 @@ export function createStorageVnextUploadCoordinator(input: {
           outcome: "deleted",
           resultCode: "KNOWLEDGE_BASE_DELETED",
           completedAt: request.deletedAt,
-          successorOperationPublicId: request.deletionOperationPublicId
+          relatedOperationPublicId: request.deletionOperationPublicId
         });
       }
       return sessions.length;
@@ -219,7 +241,7 @@ async function terminateKnownSession(
     outcome: "timed_out" | "deleted";
     resultCode: string;
     completedAt: string;
-    successorOperationPublicId: string | null;
+    relatedOperationPublicId: string | null;
   }
 ): Promise<void> {
   const current = await input.repository.terminateSession({
@@ -260,7 +282,7 @@ async function terminateAfterFailure(
       outcome: request.outcome,
       resultCode: request.resultCode,
       completedAt: request.terminatedAt,
-      successorOperationPublicId: null
+      relatedOperationPublicId: null
     });
   } catch (cleanupError) {
     throw new AggregateError(
@@ -297,7 +319,7 @@ async function terminateSessionAfterFailure(
       outcome: request.outcome,
       resultCode: request.resultCode,
       completedAt: request.completedAt,
-      successorOperationPublicId: null
+      relatedOperationPublicId: null
     });
   } catch (cleanupError) {
     throw new AggregateError(

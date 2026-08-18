@@ -149,7 +149,7 @@ test("maps one uniquely anchored runtime expansion of a dynamic SQL fragment", (
   const expandedQuery = `
     SELECT source.public_id
     FROM focowiki.source_files AS source
-    JOIN focowiki.source_file_current_revisions AS current_revision
+    JOIN focowiki.source_file_active_revisions AS current_revision
       ON current_revision.source_file_public_id = source.public_id
     WHERE source.knowledge_base_id = $1
     ORDER BY source.public_id

@@ -5,8 +5,6 @@ import { describe, expect, it } from "vitest";
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const migrationDirectory = resolve(workspaceRoot, "apps/api/migrations");
 const bootstrapFileName = "001_storage_vnext.sql";
-const extensionProfileMigration = "002_extension_navigation_profile.sql";
-const semanticSearchMigration = "003_general_purpose_semantic_search.sql";
 const bootstrapPath = resolve(migrationDirectory, bootstrapFileName);
 
 function migrationFiles(): string[] {
@@ -33,25 +31,17 @@ function findIdentifiers(source: string, identifiers: readonly string[]): string
 }
 
 describe("storage vNext clean bootstrap and reset contract", () => {
-  it("keeps the absent bootstrap and declares the reset-only semantic baseline", () => {
+  it("keeps one clean bootstrap for the destructive document-indexing baseline", () => {
     const manifest = readFileSync(
       resolve(workspaceRoot, "apps/api/src/db/migration-manifest.ts"),
       "utf8"
     );
 
-    expect(migrationFiles()).toEqual([
-      bootstrapFileName,
-      extensionProfileMigration,
-      semanticSearchMigration
-    ]);
+    expect(migrationFiles()).toEqual([bootstrapFileName]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
-    expect(manifest).toContain('targetGeneration: "storage-vnext-v1"');
-    expect(manifest).toContain(`fileName: "${extensionProfileMigration}"`);
-    expect(manifest).toContain('targetGeneration: "storage-vnext-v2"');
-    expect(manifest).toContain(`fileName: "${semanticSearchMigration}"`);
-    expect(manifest).toContain('targetGeneration: "storage-vnext-v3-semantic"');
-    expect(manifest).toContain('safety: "breaking_reset"');
+    expect(manifest).toContain('targetGeneration: "storage-vnext-v9-document-indexing-hybrid"');
+    expect(manifest).toContain('safety: "clean_bootstrap"');
     expect(manifest).not.toMatch(
       /incremental-sharded-publication|compatible_with_persisted_work|createMigrationPlan\(currentGeneration/u
     );
@@ -131,25 +121,16 @@ describe("storage vNext clean bootstrap and reset contract", () => {
     expect(found).toEqual([]);
   });
 
-  it("omits in-place compatibility and legacy Generation state", () => {
+  it("uses one final bootstrap without intermediate migration operations", () => {
     const sql = normalizedCandidateBootstrap();
 
-    const compatibilityTokens = [
-      "postgres_compatibility",
-      "legacy_readable",
-      "legacy_retained",
-      "optimized_active",
-      "_segments/legacy"
-    ];
-    const compatibilityDdl = [
-      "alter table",
-      "add column if not exists",
-      "drop column if exists",
-      "update focowiki.runtime_generation"
-    ];
-
-    expect(compatibilityTokens.filter((token) => sql.includes(token))).toEqual([]);
-    expect(compatibilityDdl.filter((token) => sql.includes(token))).toEqual([]);
+    expect(sql).not.toContain("create table focowiki.processing_stage_work_items");
+    expect(sql).not.toContain("create table focowiki.release_roots");
+    expect(sql).toContain("create table focowiki.document_processing_jobs");
+    expect(sql).toContain("storage-vnext-v9-document-indexing-hybrid");
+    expect(sql).not.toMatch(
+      /drop table|drop column|legacy_readable|dual_write|copy\s+focowiki\./u
+    );
   });
 
   it("removes commands and migration tests tied only to retired storage", () => {

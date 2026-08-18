@@ -7,9 +7,8 @@ export type KnowledgeBase = {
   id: string;
   name: string;
   description: string | null;
-  activeGenerationId: string | null;
+  activeContentRevision: number;
   resourceRevision?: number;
-  catalogGeneration?: number;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -36,7 +35,6 @@ export type OneTimePublicOpenApiKey = {
 export type PublicOpenApiKeyPage = {
   items: PublicOpenApiKey[];
   nextCursor: string | null;
-  oneTimeKey: OneTimePublicOpenApiKey | null;
 };
 
 export type GeneratedTreeEntry = {
@@ -58,7 +56,6 @@ export type GeneratedTreeEntry = {
     | "page"
     | "index"
     | "log"
-    | "schema"
     | "manifest_index"
     | "manifest_index_shard"
     | "search_index"
@@ -96,7 +93,6 @@ export type GeneratedFileDetail = {
       | "page"
       | "index"
       | "log"
-      | "schema"
       | "manifest_index"
       | "manifest_index_shard"
       | "search_index"
@@ -110,6 +106,7 @@ export type GeneratedFileDetail = {
     logicalPath: string;
     contentType: string;
     title: string | null;
+    portableScopePath?: string | null;
     deletable: boolean;
   };
   relationships: Array<{
@@ -134,71 +131,82 @@ export type SourceFileRecord = {
   name: string;
   relativePath: string;
   resourceRevision?: number;
-  state: "queued" | "running" | "pending_publication" | "visible" | "failed";
-  currentStage:
-    | "upload_storage"
-    | "metadata_resolution"
-    | "llm_suggestion"
-    | "graph_generation"
-    | "graphrag_processing"
-    | "semantic_reconciliation"
-    | "embedding_generation"
-    | "affected_projection"
-    | "search_publication"
-    | "semantic_maintenance_required"
-    | "projection_generation"
-    | "generation_validation"
-    | "generation_activation";
+  state: "waiting" | "processing" | "available" | "error" | "deleting";
+  requiredWorkCount: number;
+  completedWorkCount: number;
+  activeWorkKinds: SourceFileWorkKind[];
+  blockingWorkKind: SourceFileWorkKind | null;
+  retryingWorkKind: SourceFileWorkKind | null;
   failure: {
-    stage: SourceFileRecord["currentStage"];
+    workKind: SourceFileWorkKind;
     code: string;
     message: string;
     occurredAt: string;
-    retryKind: "source_processing" | "publication" | "none";
+    retryKind: "document_processing" | "none";
     correlationId: string;
   } | null;
   actions: Array<{
     kind:
       | "open_generated_file"
       | "view_failure_details"
-      | "retry_source_processing"
-      | "retry_publication";
-    method: "GET" | "POST" | null;
+      | "replace_source_content"
+      | "retry_document_processing";
+    method: "GET" | "POST" | "PUT" | null;
     href: string | null;
-    scope: "source_file" | "knowledge_base_publication";
+    scope: "source_file";
   }>;
   processingStartedAt?: string | null;
   processingEndedAt?: string | null;
   retryCount?: number;
-  modelInvocationStatus?: "running" | "completed" | "failed" | "skipped" | null;
+  modelInvocationStatus?: "not_required" | "running" | "completed" | "failed" | null;
   modelInvocationModelName?: string | null;
   modelInvocationStartedAt?: string | null;
   modelInvocationEndedAt?: string | null;
   modelInvocationWarningCount?: number | null;
   modelInvocationErrorCode?: string | null;
-  generatedOutputStatus?: "pending" | "visible" | "unavailable";
+  modelLayerExecutions?: Array<{
+    layer: "first_layer" | "candidate_delta" | "graphrag";
+    status: "running" | "completed" | "failed";
+    modelName: string;
+    selected: boolean | null;
+    reused: boolean;
+    providerRequestCount: number;
+    waitTimeMs: number;
+    serviceTimeMs: number;
+    providerObservations: Array<{
+      apiMode: "responses" | "chat_completions";
+      structuredOutputCapability: "native_json_schema" | "json_object_compatibility" | "unknown";
+      attempt: number;
+      repair: boolean;
+      requestId: string | null;
+      finishState: string | null;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      cachedInputTokens: number | null;
+      serviceTimeMs: number;
+      errorClass: "none" | "refusal" | "incomplete" | "schema_validation" | "transient" | "provider";
+    }>;
+    warningCount: number;
+    errorCode: string | null;
+    startedAt: string;
+    endedAt: string | null;
+  }>;
+  generatedOutputStatus?: "unavailable" | "previous_available" | "current_available";
   generatedFileAvailable?: boolean;
   generatedFilePath?: string | null;
   generatedFileId?: string | null;
-  graphSummary?: {
-    sourceFileId: string;
-    relationshipCount: number;
-    relationships: Array<{
-      fileId: string;
-      sourceFileId: string;
-      generatedFileId: string | null;
-      path: string;
-      title: string;
-      relationType: string;
-      direction: "outgoing" | "incoming";
-      weight: number;
-      reason: string;
-      source: string;
-      contentAvailable: boolean;
-    }>;
-  } | null;
   createdAt: string;
 };
+
+export type SourceFileWorkKind =
+  | "prepare"
+  | "first_layer"
+  | "content_projection"
+  | "graphrag"
+  | "relation_reconcile"
+  | "knowledge_projection"
+  | "activate"
+  | "cleanup";
 
 export type SourceFileDetail = {
   file: SourceFileRecord;
@@ -222,9 +230,7 @@ export type SourceFileTaskDeletionSkippedReason =
   | "wrong_knowledge_base"
   | "already_removed"
   | "running"
-  | "job_already_claimed"
-  | "completed_pending"
-  | "publication_owned";
+  | "job_already_claimed";
 
 export type SourceFileTaskDeletionResult = {
   sourceFileId: string;
@@ -241,153 +247,29 @@ export type SourceFileTaskDeletionResponse = {
   };
 };
 
-export type WorkerQueueSummary = {
-  queuedCount: number;
-  runningCount: number;
-  completedCount: number;
-  failedCount: number;
-  deadLetterCount: number;
-  oldestQueuedAt: string | null;
-  oldestQueuedAgeSeconds: number | null;
-};
-
 export type ProcessingSummary = {
-  activeGenerationId: string | null;
-  pendingDispatch: {
-    pendingCount: number;
-    oldestPendingAt: string | null;
-    paused: boolean;
-    pausedReason: string | null;
-  };
-  sourceFileJobs: WorkerQueueSummary;
-  publicationJobs: WorkerQueueSummary;
-  publicationProgress: {
-    generationId: string | null;
-    stage: string | null;
-    processedImpactCount: number;
-    totalImpactCount: number;
-    touchedShardCount: number;
-    throughputPerMinute: number | null;
-    oldestDirtyAt: string | null;
-    queuedAt: string | null;
-    startedAt: string | null;
-    heartbeatAt: string | null;
-    completedAt: string | null;
-    lastSuccessAt: string | null;
-    safeErrorCode: string | null;
-    safeErrorMessage: string | null;
-  };
-  maintenanceProgress: {
-    migration: {
-      state: string;
-      phase: string;
-      attemptCount: number;
-      maxAttempts: number;
-      startedAt: string | null;
-      updatedAt: string;
-      completedAt: string | null;
-      safeErrorCode: string | null;
-      safeErrorMessage: string | null;
-    } | null;
-    lexicalRebuild: {
-      state: string;
-      phase: string;
-      searchSchemaVersion: string;
-      tokenizerContractVersion: string;
-      segmentationVersion: string;
-      contentProfileVersion: string;
-      graphLexicalProjectionVersion: string;
-      processedSourceCount: number;
-      pendingSourceCount: number;
-      runningSourceCount: number;
-      retrySourceCount: number;
-      failedSourceCount: number;
-      totalSourceCount: number;
-      activeWorkerCount: number;
-      sourceReadRetryCount: number;
-      databaseRetryCount: number;
-      filesPerSecond: number | null;
-      sourceReadLatencyMs: number | null;
-      databaseBatchLatencyMs: number | null;
-      lastProgressAt: string | null;
-      lastWorkerHeartbeatAt: string | null;
-      estimatedCompletionAt: string | null;
-      attemptCount: number;
-      maxAttempts: number;
-      updatedAt: string;
-      completedAt: string | null;
-      safeErrorCode: string | null;
-      safeErrorMessage: string | null;
-    } | null;
-    projectionRepair: {
-      repairVersion: number;
-      state: string;
-      phase: string;
-      attemptCount: number;
-      requiredProjectionKinds: string[];
-      completedProjectionKinds: string[];
-      completedSubtaskCount: number;
-      totalSubtaskCount: number;
-      completedRecordCount: number;
-      totalRecordCount: number;
-      completedDirectoryCount: number;
-      totalDirectoryCount: number;
-      objectWriteCount: number;
-      objectReuseCount: number;
-      retryCount: number;
-      recordsPerSecond: number | null;
-      rollingBatchLatencyMs: number | null;
-      lastProgressAt: string | null;
-      lastHeartbeatAt: string | null;
-      estimatedCompletionAt: string | null;
-      updatedAt: string;
-      completedAt: string | null;
-      safeErrorCode: string | null;
-      safeErrorMessage: string | null;
-    } | null;
-    compaction: {
-      active: MaintenanceCompactionProgress | null;
-      latestCompleted: MaintenanceCompactionProgress | null;
-    };
-  };
-  indexMaintenance: {
-    requestId: string | null;
-    state:
-      | "idle"
-      | "queued"
-      | "planning"
-      | "running"
-      | "validating"
-      | "completed"
-      | "failed"
-      | "superseded"
-      | "canceled";
-    trigger: "manual" | "automatic" | null;
-    stage: string | null;
-    active: boolean;
-    completedCount: number;
-    expectedCount: number;
-    retryCount: number;
-    lastProgressAt: string | null;
-    lastCompletedAt: string | null;
-    maintenanceRequired: boolean;
-    safeErrorCode: string | null;
-    safeErrorMessage: string | null;
-  };
-  dirtySourceFiles: {
-    count: number;
-    oldestDirtyAt: string | null;
-  };
+  waitingCount: number;
+  processingCount: number;
+  availableCount: number;
+  errorCount: number;
+  oldestWaitingAt: string | null;
 };
 
-type MaintenanceCompactionProgress = {
-  state: string;
-  attemptCount: number;
-  maxAttempts: number;
-  queuedAt: string;
-  updatedAt: string;
-  completedAt: string | null;
+export type IndexMaintenanceStatus = {
+  requestId: string | null;
+  state: "idle" | "queued" | "planning" | "running" | "validating"
+    | "completed" | "failed" | "superseded" | "canceled";
+  trigger: "manual" | "automatic" | null;
+  stage: string | null;
+  active: boolean;
+  completedCount: number;
+  expectedCount: number;
+  retryCount: number;
+  lastProgressAt: string | null;
+  lastCompletedAt: string | null;
+  maintenanceRequired: boolean;
   safeErrorCode: string | null;
+  safeErrorMessage: string | null;
 };
 
 export type KnowledgeBasePublicUrls = {
@@ -398,6 +280,8 @@ export type KnowledgeBasePublicUrls = {
 
 export type ApiFailure = {
   messageKey: string;
+  code?: string;
+  issues?: Array<{ field: string }>;
 };
 
 export type RateLimitSettings = {
@@ -408,29 +292,17 @@ export type RateLimitSettings = {
 
 export type WorkerSettings = {
   sourceFileConcurrency: number;
-  sourceObjectReadConcurrency: number;
-  claimBatchSize: number;
-  pollIntervalMs: number;
-  lockTtlSeconds: number;
-  heartbeatIntervalMs: number;
   jobMaxAttempts: number;
   jobRetryDelayMs: number;
   completedJobRetentionDays: number;
-  hardDeleteConcurrency: number;
-  hardDeleteDatabaseBatchSize: number;
-  hardDeleteObjectBatchSize: number;
-  hardDeleteMaxAttempts: number;
-  hardDeleteRetryDelayMs: number;
 };
 
-export type PublicationSettings = {
-  mode: "batch" | "manual" | "per_file";
-  intervalSeconds: number;
-  roleConcurrency: number;
-  claimBatchSize: number;
-  generatedObjectWriteConcurrency: number;
+export type GeneratedSettings = {
   directoryIndexMaxEntries: number;
   directoryIndexMaxBytes: number;
+  rootSummaryLimit: number;
+  okfLogMaxEntries: number;
+  okfLogMaxBytes: number;
 };
 
 export type GraphSettings = {
@@ -440,26 +312,21 @@ export type GraphSettings = {
   searchMaxDepth: 0 | 1 | 2;
   searchDefaultFanout: number;
   searchMaxFanout: number;
-  modelReviewEnabled: boolean;
+  shardSize: number;
   genericPhraseThreshold: number;
 };
 
 export type MaintenanceSettings = {
-  knowledgeBaseMaintenanceMode: "manual" | "automatic";
-  knowledgeBaseMaintenanceScanIntervalSeconds: number;
-  knowledgeBaseMaintenanceConcurrency: number;
   reconciliationEnabled: boolean;
   scanBatchSize: number;
-  deletionBatchSize: number;
-  quarantineGracePeriodSeconds: number;
   maxAttempts: number;
   retryDelayMs: number;
-  projectionRepairConcurrency: number;
-  projectionRepairDatabaseBatchSize: number;
-  projectionRepairObjectWriteConcurrency: number;
-  lexicalRebuildConcurrency: number;
-  lexicalRebuildSourceReadConcurrency: number;
-  lexicalRebuildMaxInFlightSourceBytes: number;
+  hardDeleteConcurrency: number;
+  hardDeleteDatabaseBatchSize: number;
+  hardDeleteObjectBatchSize: number;
+  hardDeleteMaxAttempts: number;
+  hardDeleteRetryDelayMs: number;
+  hardDeleteFailedRetentionDays: number;
 };
 
 export type SearchSettings = {
@@ -474,7 +341,6 @@ export type SearchSettings = {
   maxAttempts: number;
   retryDelayMs: number;
   cleanupBatchSize: number;
-  stagingRetentionHours: number;
   cropLength: number;
 };
 
@@ -482,12 +348,7 @@ export type SemanticSettings = {
   maximumChunkCharacters: number;
   maximumChunks: number;
   maximumEvidenceTargets: number;
-  maximumCommunityPartitions: number;
-  maximumCommunityEntities: number;
-  maximumCommunityRelationships: number;
-  maximumCommunityBoundaryRelationships: number;
-  maximumCommunitySummaryCharacters: number;
-  communityAdapterTimeoutMs: number;
+  graphRagAdapterTimeoutMs: number;
   searchLaneCutoffMs: number;
   queryEmbeddingConcurrency: number;
   queryEmbeddingCacheEntries: number;
@@ -611,7 +472,7 @@ export type RuntimeSettingsResponse = {
   settings: {
     rateLimits: RateLimitSettings;
     worker: WorkerSettings;
-    publication: PublicationSettings;
+    generated: GeneratedSettings;
     graph: GraphSettings;
     maintenance: MaintenanceSettings;
     semantic: SemanticSettings;
@@ -619,55 +480,6 @@ export type RuntimeSettingsResponse = {
     activeModel: RuntimeModelConfig | null;
   };
   models: RuntimeModelConfig[];
-  maintenanceStatus: {
-    state: "idle" | "scanning" | "verifying" | "failed";
-    lastScanStartedAt: string | null;
-    lastScanCompletedAt: string | null;
-    listedCount: number;
-    quarantinedCount: number;
-    deletedCount: number;
-    missingCount: number;
-    retryCount: number;
-    lastErrorCode: string | null;
-    lastErrorMessage: string | null;
-    resolvedCount: number;
-    pendingCount: number;
-    databaseChunkSize: number | null;
-    recentObjectsPerSecond: number | null;
-    rollingBatchLatencyMs: number | null;
-    heartbeatAt: string | null;
-    lastProgressAt: string | null;
-  } | null;
-  objectProtectionStatus: {
-    readiness:
-      | "pending"
-      | "backfilling"
-      | "verifying"
-      | "ready"
-      | "retrying"
-      | "failed";
-    phase:
-      | "immutable_objects"
-      | "source_files"
-      | "projection_segments"
-      | "dirty_refresh"
-      | "verify_immutable_objects"
-      | "verify_source_files"
-      | "verify_projection_segments"
-      | "ready";
-    processedCount: number;
-    expectedCount: number;
-    verifiedCount: number;
-    dirtyCount: number;
-    retryCount: number;
-    recentObjectsPerSecond: number | null;
-    rollingBatchLatencyMs: number | null;
-    lastProgressAt: string | null;
-    heartbeatAt: string | null;
-    estimatedCompletionAt: string | null;
-    lastErrorCode: string | null;
-    lastErrorMessage: string | null;
-  } | null;
 };
 
 type AuthFailureHandler = () => void;
@@ -688,17 +500,49 @@ export async function checkAdminSession(): Promise<boolean> {
   }
 }
 
-export async function loginAdmin(input: { username: string; password: string }): Promise<boolean> {
-  const response = await fetch(adminApiUrl("/admin/api/login"), {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(input)
-  });
+export type AdminLoginResult =
+  | { authenticated: true; error: null; retryAfterSeconds: null }
+  | {
+      authenticated: false;
+      error: "invalid_credentials" | "rate_limited" | "request_failed";
+      retryAfterSeconds: number | null;
+    };
 
-  return response.ok;
+export async function loginAdmin(input: { username: string; password: string }): Promise<AdminLoginResult> {
+  let response: Response;
+  try {
+    response = await fetch(adminApiUrl("/admin/api/login"), {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(input)
+    });
+  } catch {
+    return { authenticated: false, error: "request_failed", retryAfterSeconds: null };
+  }
+
+  if (response.ok) {
+    return { authenticated: true, error: null, retryAfterSeconds: null };
+  }
+  if (response.status === 401) {
+    return { authenticated: false, error: "invalid_credentials", retryAfterSeconds: null };
+  }
+  if (response.status === 429) {
+    return {
+      authenticated: false,
+      error: "rate_limited",
+      retryAfterSeconds: readRetryAfterSeconds(response.headers.get("retry-after"))
+    };
+  }
+
+  return { authenticated: false, error: "request_failed", retryAfterSeconds: null };
+}
+
+function readRetryAfterSeconds(value: string | null): number | null {
+  const seconds = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
 export async function logoutAdmin(): Promise<void> {
@@ -727,10 +571,8 @@ export async function listKnowledgeBases(input: {
   const response = await adminFetch(`/admin/api/knowledge-bases${params.size ? `?${params}` : ""}`);
 
   if (!response.ok) {
-    return {
-      items: [],
-      nextCursor: null
-    };
+    const body = await response.json().catch(() => null);
+    throw new Error(readFailure(body, "errors.runtimeSettingsUnavailable").messageKey);
   }
 
   return (await response.json()) as KnowledgeBasePage;
@@ -741,8 +583,12 @@ export async function fetchKnowledgeBase(knowledgeBaseId: string): Promise<Knowl
     `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
   );
 
-  if (!response.ok) {
+  if (response.status === 404) {
     return null;
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(readFailure(body, "errors.runtimeSettingsUnavailable").messageKey);
   }
 
   const body = (await response.json()) as { knowledgeBase: KnowledgeBase };
@@ -776,7 +622,12 @@ export async function createKnowledgeBase(input: {
 
 export async function deleteKnowledgeBase(input: {
   knowledgeBaseId: string;
-}): Promise<{ deleted: true } | ApiFailure> {
+}): Promise<{
+  accepted: true;
+  operationId: string;
+  affectedDirectoryCount: number;
+  affectedFileCount: number;
+} | ApiFailure> {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}`,
     {
@@ -784,14 +635,24 @@ export async function deleteKnowledgeBase(input: {
     }
   );
   const body = (await response.json()) as
-    | { deleted: true }
+    | {
+        accepted: true;
+        operationId: string;
+        affectedDirectoryCount: number;
+        affectedFileCount: number;
+      }
     | { error?: { messageKey?: string } };
 
   if (!response.ok) {
     return readFailure(body, "errors.deleteFailed");
   }
 
-  return body as { deleted: true };
+  return body as {
+    accepted: true;
+    operationId: string;
+    affectedDirectoryCount: number;
+    affectedFileCount: number;
+  };
 }
 
 export async function listPublicOpenApiKeys(input: {
@@ -810,11 +671,8 @@ export async function listPublicOpenApiKeys(input: {
   const response = await adminFetch(`/admin/api/openapi-keys${params.size ? `?${params}` : ""}`);
 
   if (!response.ok) {
-    return {
-      items: [],
-      nextCursor: null,
-      oneTimeKey: null
-    };
+    const body = await response.json().catch(() => null);
+    throw new Error(readFailure(body, "errors.openapiKeyFailed").messageKey);
   }
 
   return (await response.json()) as PublicOpenApiKeyPage;
@@ -881,10 +739,10 @@ export async function updateWorkerSettings(
   return updateRuntimeSettings("/admin/api/settings/worker", input);
 }
 
-export async function updatePublicationSettings(
-  input: PublicationSettings
+export async function updateGeneratedSettings(
+  input: GeneratedSettings
 ): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
-  return updateRuntimeSettings("/admin/api/settings/publication", input);
+  return updateRuntimeSettings("/admin/api/settings/generated", input);
 }
 
 export async function updateGraphSettings(
@@ -1246,6 +1104,7 @@ async function postRuntimeModelAction(
 
 export type UploadSession = {
   id: string;
+  operationId: string;
   knowledgeBaseId: string;
   state:
     | "draft"
@@ -1414,8 +1273,40 @@ export async function cancelUploadSession(input: {
 
 async function uploadSessionJsonRequest<T>(path: string, init: RequestInit): Promise<T | ApiFailure> {
   const response = await adminFetch(path, init);
-  const body = (await response.json()) as T | { error?: { messageKey?: string } };
-  return response.ok ? (body as T) : readFailure(body, "errors.uploadFailed");
+  const body = (await response.json()) as T | {
+    error?: { code?: string; messageKey?: string };
+  };
+  return response.ok ? (body as T) : readUploadFailure(body);
+}
+
+function readUploadFailure(body: unknown): ApiFailure {
+  const error = body && typeof body === "object"
+    ? (body as { error?: { code?: unknown; messageKey?: unknown } }).error
+    : undefined;
+  if (typeof error?.messageKey === "string" && error.messageKey.length > 0) {
+    return { messageKey: error.messageKey };
+  }
+  const messageKeyByCode: Record<string, string> = {
+    UPLOAD_MANIFEST_DUPLICATE_PATH: "errors.uploadPathReserved",
+    UPLOAD_SESSION_NOT_FOUND: "errors.uploadSessionUnavailable",
+    UPLOAD_SESSION_STATE_CONFLICT: "errors.uploadSessionUnavailable",
+    UPLOAD_SESSION_EXPIRED: "errors.uploadSessionUnavailable",
+    UPLOAD_IDEMPOTENCY_CONFLICT: "errors.uploadSessionConflict",
+    UPLOAD_MANIFEST_TOTAL_MISMATCH: "errors.uploadSelectionChanged",
+    UPLOAD_ENTRY_NOT_FOUND: "errors.uploadSessionUnavailable",
+    UPLOAD_ENTRY_NOT_REQUIRED: "errors.uploadSessionUnavailable",
+    UPLOAD_ENTRY_SIZE_MISMATCH: "errors.uploadContentChanged",
+    UPLOAD_ENTRY_CHECKSUM_MISMATCH: "errors.uploadContentChanged",
+    UPLOAD_ENTRY_STORAGE_FAILED: "errors.uploadStorageFailed",
+    UPLOAD_SESSION_INCOMPLETE: "errors.uploadIncomplete",
+    UPLOAD_PROCESSING_CONFIGURATION_REQUIRED: "errors.uploadProcessingConfigurationRequired",
+    INVALID_UPLOAD_SESSION: "errors.uploadSelectionChanged",
+    INVALID_UPLOAD_MANIFEST_PAGE: "errors.uploadSelectionChanged",
+    INVALID_UPLOAD_MANIFEST_ENTRY: "errors.uploadSelectionChanged",
+    INVALID_MARKDOWN_CONTENT: "errors.uploadContentChanged"
+  };
+  const code = typeof error?.code === "string" ? error.code : "";
+  return { messageKey: messageKeyByCode[code] ?? "errors.uploadFailed" };
 }
 
 function uploadSessionBasePath(knowledgeBaseId: string): string {
@@ -1436,8 +1327,8 @@ export async function retryKnowledgeBaseSourceFile(input: {
 }): Promise<{
   file: SourceFileRecord;
   retry: {
-    kind: "source_processing" | "publication";
-    scope: "source_file" | "knowledge_base_publication";
+    kind: "document_processing";
+    scope: "source_file";
     coalesced: boolean;
   };
 } | ApiFailure> {
@@ -1453,8 +1344,8 @@ export async function retryKnowledgeBaseSourceFile(input: {
     | {
         file: SourceFileRecord;
         retry: {
-          kind: "source_processing" | "publication";
-          scope: "source_file" | "knowledge_base_publication";
+          kind: "document_processing";
+          scope: "source_file";
           coalesced: boolean;
         };
       }
@@ -1467,8 +1358,8 @@ export async function retryKnowledgeBaseSourceFile(input: {
   return body as {
     file: SourceFileRecord;
     retry: {
-      kind: "source_processing" | "publication";
-      scope: "source_file" | "knowledge_base_publication";
+      kind: "document_processing";
+      scope: "source_file";
       coalesced: boolean;
     };
   };
@@ -1524,10 +1415,7 @@ export async function fetchKnowledgeBaseFileTree(input: {
   );
 
   if (!response.ok) {
-    return {
-      items: [],
-      nextCursor: null
-    };
+    throw await adminReadError(response, "errors.serviceUnavailable");
   }
 
   return (await response.json()) as GeneratedTreePage;
@@ -1551,10 +1439,7 @@ export async function searchKnowledgeBaseFileTree(input: {
   );
 
   if (!response.ok) {
-    return {
-      items: [],
-      nextCursor: null
-    };
+    throw await adminReadError(response, "detail.fileTreeSearchFailed");
   }
 
   return (await response.json()) as GeneratedTreeSearchPage;
@@ -1570,34 +1455,10 @@ export async function fetchKnowledgeBaseFileDetail(input: {
     )}/files/detail?path=${encodeURIComponent(input.path)}&includeRelationships=1`
   );
 
-  if (!response.ok) {
-    return null;
-  }
+  if (response.status === 404) return null;
+  if (!response.ok) throw await adminReadError(response, "errors.serviceUnavailable");
 
   return (await response.json()) as GeneratedFileDetail;
-}
-
-export async function deleteKnowledgeBaseFile(input: {
-  knowledgeBaseId: string;
-  path: string;
-}): Promise<{ deleted: true; publicationQueued: true } | ApiFailure> {
-  const response = await adminFetch(
-    `/admin/api/knowledge-bases/${encodeURIComponent(
-      input.knowledgeBaseId
-    )}/files/detail?path=${encodeURIComponent(input.path)}`,
-    {
-      method: "DELETE"
-    }
-  );
-  const body = (await response.json()) as
-    | { deleted: true; publicationQueued: true }
-    | { error?: { messageKey?: string } };
-
-  if (!response.ok) {
-    return readFailure(body, "errors.deleteFailed");
-  }
-
-  return body as { deleted: true; publicationQueued: true };
 }
 
 export async function deleteKnowledgeBaseSourceDirectory(input: {
@@ -1607,7 +1468,7 @@ export async function deleteKnowledgeBaseSourceDirectory(input: {
 }): Promise<
   | {
       accepted: true;
-      operationId: string;
+      operation: import("@/lib/resource-editing-api").ResourceOperation;
       directoryId: string;
       affectedDirectoryCount: number;
       affectedFileCount: number;
@@ -1628,7 +1489,7 @@ export async function deleteKnowledgeBaseSourceDirectory(input: {
   const body = await response.json() as
     | {
         accepted: true;
-        operationId: string;
+        operation: import("@/lib/resource-editing-api").ResourceOperation;
         directoryId: string;
         affectedDirectoryCount: number;
         affectedFileCount: number;
@@ -1660,7 +1521,12 @@ export async function listSourceFiles(input: {
   );
 
   if (!response.ok) {
-    throw new Error("pagination.expired");
+    const body = await response.json().catch(() => null);
+    const code = body && typeof body === "object"
+      ? (body as { error?: { code?: unknown } }).error?.code
+      : null;
+    if (code === "INVALID_PAGINATION") throw new Error("pagination.expired");
+    throw new Error(readFailure(body, "errors.serviceUnavailable").messageKey);
   }
 
   return (await response.json()) as SourceFilePage;
@@ -1673,7 +1539,8 @@ export async function fetchSourceFile(input: {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/source-files/${encodeURIComponent(input.sourceFileId)}`
   );
-  if (!response.ok) return null;
+  if (response.status === 404) return null;
+  if (!response.ok) throw await adminReadError(response, "errors.serviceUnavailable");
   return ((await response.json()) as SourceFileDetail).file;
 }
 
@@ -1684,11 +1551,19 @@ export async function fetchKnowledgeBaseProcessingSummary(input: {
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/processing-summary`
   );
 
-  if (!response.ok) {
-    return null;
-  }
+  if (!response.ok) throw await adminReadError(response, "errors.serviceUnavailable");
 
   return (await response.json()) as ProcessingSummary;
+}
+
+export async function fetchKnowledgeBaseIndexMaintenance(input: {
+  knowledgeBaseId: string;
+}): Promise<IndexMaintenanceStatus> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/index-maintenance`
+  );
+  if (!response.ok) throw await adminReadError(response, "errors.serviceUnavailable");
+  return ((await response.json()) as { maintenance: IndexMaintenanceStatus }).maintenance;
 }
 
 export async function requestKnowledgeBaseIndexMaintenance(input: {
@@ -1696,7 +1571,7 @@ export async function requestKnowledgeBaseIndexMaintenance(input: {
   idempotencyKey: string;
 }): Promise<{
   result: "accepted" | "already_active";
-  maintenance: ProcessingSummary["indexMaintenance"];
+  maintenance: IndexMaintenanceStatus;
 } | ApiFailure> {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/index-maintenance`,
@@ -1712,7 +1587,7 @@ export async function requestKnowledgeBaseIndexMaintenance(input: {
   const body = (await response.json()) as
     | {
         result: "accepted" | "already_active";
-        maintenance: ProcessingSummary["indexMaintenance"];
+        maintenance: IndexMaintenanceStatus;
       }
     | { error?: { messageKey?: string } };
 
@@ -1721,7 +1596,7 @@ export async function requestKnowledgeBaseIndexMaintenance(input: {
   }
   return body as {
     result: "accepted" | "already_active";
-    maintenance: ProcessingSummary["indexMaintenance"];
+    maintenance: IndexMaintenanceStatus;
   };
 }
 
@@ -1748,9 +1623,7 @@ export async function fetchKnowledgeBasePublicUrls(input: {
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/public-urls`
   );
 
-  if (!response.ok) {
-    return null;
-  }
+  if (!response.ok) throw await adminReadError(response, "errors.serviceUnavailable");
 
   const body = (await response.json()) as { publicUrls: KnowledgeBasePublicUrls | null };
   return body.publicUrls;
@@ -1762,11 +1635,24 @@ function readFailure(
 ): ApiFailure {
   const candidate =
     body && typeof body === "object"
-      ? (body as { error?: { messageKey?: string } })
+      ? (body as { error?: { messageKey?: string; issues?: unknown } })
       : {};
+  const issues = Array.isArray(candidate.error?.issues)
+    ? candidate.error.issues.flatMap((issue) => {
+      if (!issue || typeof issue !== "object") return [];
+      const field = (issue as { field?: unknown }).field;
+      return typeof field === "string" && field.length > 0 ? [{ field }] : [];
+    })
+    : [];
   return {
-    messageKey: candidate.error?.messageKey ?? fallbackMessageKey
+    messageKey: candidate.error?.messageKey ?? fallbackMessageKey,
+    ...(issues.length > 0 ? { issues } : {})
   };
+}
+
+async function adminReadError(response: Response, fallbackMessageKey: string): Promise<Error> {
+  const body = await response.json().catch(() => null);
+  return new Error(readFailure(body, fallbackMessageKey).messageKey);
 }
 
 export async function adminFetch(path: string, init: RequestInit = {}): Promise<Response> {

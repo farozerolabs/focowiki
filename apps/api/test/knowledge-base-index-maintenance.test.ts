@@ -211,6 +211,26 @@ function createRouteApp(options: {
     app,
     {
       application: {
+        getMaintenanceStatus: async () => ({
+          available: true as const,
+          status: {
+            requestId: null,
+            state: "idle" as const,
+            trigger: null,
+            stage: null,
+            active: false,
+            completedCount: 0,
+            expectedCount: 0,
+            retryCount: 0,
+            lastProgressAt: null,
+            lastCompletedAt: null,
+            maintenanceRequired: false,
+            safeErrorCode: null,
+            safeErrorMessage: null,
+            throughputPerSecond: 0,
+            estimatedCompletionAt: null
+          }
+        }),
         requestMaintenance: options.request ?? (async () => acceptedResult()),
         cancelMaintenance: options.cancel ?? (async () => ({
           available: true as const,

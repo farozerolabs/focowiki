@@ -8,6 +8,7 @@ export type StorageVnextActiveSearchProjection = {
   providerIndexUid: string;
   schemaChecksum: string;
   settingsChecksum: string;
+  activeContractRevision?: number;
   documentChecksum: string;
   documentCount: number;
 };

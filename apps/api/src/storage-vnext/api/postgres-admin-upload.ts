@@ -1,7 +1,10 @@
 import type { S3Client } from "@aws-sdk/client-s3";
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
-import { UploadSessionError } from "../../domain/upload-session.js";
+import {
+  UploadSessionError,
+  type UploadSessionRecord
+} from "../../domain/upload-session.js";
 import { normalizeSourceRelativePath } from "../../domain/source-path.js";
 import type { RuntimeSettingsService } from "../../runtime-settings/service.js";
 import type { StorageVnextVerifiedSourceBody } from "../catalog/s3-source-body-store.js";
@@ -14,7 +17,6 @@ import type { StorageVnextAdminUploadApplication } from "./admin-upload-applicat
 import { StorageVnextAdminUploadApplicationError } from "./admin-upload-application.js";
 import { writeStorageVnextUploadBody } from "./admin-upload-body-writer.js";
 import {
-  assertUploadPathsAvailable,
   findIdempotentUploadSession,
   listUploadEntries,
   lockUploadSession,
@@ -143,17 +145,18 @@ export function createPostgresStorageVnextAdminUpload(input: {
           normalized_path: string;
           revision: number | string;
           object_id: string;
+          checksum_sha256: string;
         }>>`
           SELECT source.public_id, source.normalized_path, source.revision,
-                 revision.object_id
+                 revision.object_id, revision.checksum_sha256
           FROM focowiki.source_files source
-          JOIN focowiki.source_file_current_revisions current_revision
-            ON current_revision.knowledge_base_id = source.knowledge_base_id
-           AND current_revision.source_file_public_id = source.public_id
+          JOIN focowiki.source_file_active_revisions active_revision
+            ON active_revision.knowledge_base_id = source.knowledge_base_id
+           AND active_revision.source_file_public_id = source.public_id
           JOIN focowiki.source_revisions revision
-            ON revision.knowledge_base_id = current_revision.knowledge_base_id
-           AND revision.source_file_public_id = current_revision.source_file_public_id
-           AND revision.public_id = current_revision.source_revision_public_id
+            ON revision.knowledge_base_id = active_revision.knowledge_base_id
+           AND revision.source_file_public_id = active_revision.source_file_public_id
+           AND revision.public_id = active_revision.current_source_revision_public_id
           WHERE source.knowledge_base_id = ${request.knowledgeBaseId}
             AND source.normalized_path = ANY(${normalized.map((entry) =>
               entry.normalizedPath)})
@@ -161,6 +164,20 @@ export function createPostgresStorageVnextAdminUpload(input: {
         `;
         const existingByPath = new Map(existingRows.map((row) =>
           [row.normalized_path, row]));
+        const deletingRows = await transaction<Array<{ normalized_path: string }>>`
+          SELECT normalized_path
+          FROM focowiki.source_files
+          WHERE knowledge_base_id = ${request.knowledgeBaseId}
+            AND normalized_path = ANY(${normalized.map((entry) => entry.normalizedPath)})
+            AND deleted_at IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.source_files current_source
+              WHERE current_source.knowledge_base_id = source_files.knowledge_base_id
+                AND current_source.normalized_path = source_files.normalized_path
+                AND current_source.deleted_at IS NULL
+            )
+        `;
+        const deletingPaths = new Set(deletingRows.map((row) => row.normalized_path));
         const classified = normalized.map((entry) => {
           const existing = existingByPath.get(entry.normalizedPath);
           return existing
@@ -168,6 +185,7 @@ export function createPostgresStorageVnextAdminUpload(input: {
                 ...entry,
                 sourceFilePublicId: existing.public_id,
                 objectId: existing.object_id,
+                checksum: existing.checksum_sha256,
                 state: "verified" as const,
                 existingResourceRevision: Number(existing.revision)
               }
@@ -193,9 +211,6 @@ export function createPostgresStorageVnextAdminUpload(input: {
           || nextBytes > uploadCount(session.expected_byte_count)
         ) throw new UploadSessionError("UPLOAD_MANIFEST_TOTAL_MISMATCH");
         if (normalized.length > 0) {
-          await assertUploadPathsAvailable(transaction, request.knowledgeBaseId, uploadRequired.map(
-            (entry) => entry.normalizedPath
-          ));
           try {
             await transaction`
               INSERT INTO focowiki.upload_entries ${transaction(
@@ -217,10 +232,12 @@ export function createPostgresStorageVnextAdminUpload(input: {
                 "checksum_sha256", "byte_count", "content_type", "object_id", "state"
               )}
             `;
-            if (uploadRequired.length > 0) {
+            const reservable = uploadRequired.filter((entry) =>
+              !deletingPaths.has(entry.normalizedPath));
+            if (reservable.length > 0) {
               await transaction`
                 INSERT INTO focowiki.upload_path_reservations ${transaction(
-                  uploadRequired.map((entry) => ({
+                  reservable.map((entry) => ({
                   knowledge_base_id: request.knowledgeBaseId,
                   normalized_path: entry.normalizedPath,
                   upload_session_public_id: request.sessionId,
@@ -230,10 +247,14 @@ export function createPostgresStorageVnextAdminUpload(input: {
                 "knowledge_base_id", "normalized_path", "upload_session_public_id",
                   "upload_entry_public_id", "expires_at"
                 )}
+                ON CONFLICT (knowledge_base_id, normalized_path) DO NOTHING
               `;
             }
-          } catch {
-            throw new UploadSessionError("UPLOAD_MANIFEST_DUPLICATE_PATH");
+          } catch (error) {
+            if (isUploadManifestDatabaseConflict(error)) {
+              throw new UploadSessionError("UPLOAD_MANIFEST_DUPLICATE_PATH");
+            }
+            throw error;
           }
           await transaction`
             UPDATE focowiki.upload_sessions SET updated_at = now()
@@ -332,6 +353,66 @@ export function createPostgresStorageVnextAdminUpload(input: {
     },
 
     async reconcileUploadSession(request) {
+      await input.sql.begin(async (transaction) => {
+        const session = await lockUploadSession(
+          transaction,
+          request.knowledgeBaseId,
+          request.sessionId
+        );
+        if (session.state !== "uploading") {
+          throw new UploadSessionError("UPLOAD_SESSION_STATE_CONFLICT");
+        }
+        await transaction`
+          UPDATE focowiki.upload_entries entry
+          SET source_file_public_id = source.public_id,
+              object_id = revision.object_id,
+              checksum_sha256 = revision.checksum_sha256,
+              state = 'verified', updated_at = now()
+          FROM focowiki.source_files source
+          JOIN focowiki.source_file_active_revisions current_revision
+            ON current_revision.knowledge_base_id = source.knowledge_base_id
+           AND current_revision.source_file_public_id = source.public_id
+          JOIN focowiki.source_revisions revision
+            ON revision.knowledge_base_id = current_revision.knowledge_base_id
+           AND revision.source_file_public_id = current_revision.source_file_public_id
+           AND revision.public_id = current_revision.current_source_revision_public_id
+          WHERE entry.knowledge_base_id = ${request.knowledgeBaseId}
+            AND entry.upload_session_public_id = ${request.sessionId}
+            AND entry.state = 'pending'
+            AND source.knowledge_base_id = entry.knowledge_base_id
+            AND source.normalized_path = entry.normalized_path
+            AND source.deleted_at IS NULL
+        `;
+        await transaction`
+          INSERT INTO focowiki.upload_path_reservations (
+            knowledge_base_id, normalized_path, upload_session_public_id,
+            upload_entry_public_id, expires_at
+          )
+          SELECT entry.knowledge_base_id, entry.normalized_path,
+                 entry.upload_session_public_id, entry.entry_public_id,
+                 current_session.expires_at
+          FROM focowiki.upload_entries entry
+          JOIN focowiki.upload_sessions current_session
+            ON current_session.knowledge_base_id = entry.knowledge_base_id
+           AND current_session.public_id = entry.upload_session_public_id
+          WHERE entry.knowledge_base_id = ${request.knowledgeBaseId}
+            AND entry.upload_session_public_id = ${request.sessionId}
+            AND entry.state = 'pending'
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.source_files deleting
+              WHERE deleting.knowledge_base_id = entry.knowledge_base_id
+                AND deleting.normalized_path = entry.normalized_path
+                AND deleting.deleted_at IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM focowiki.source_files current_source
+                  WHERE current_source.knowledge_base_id = deleting.knowledge_base_id
+                    AND current_source.normalized_path = deleting.normalized_path
+                    AND current_source.deleted_at IS NULL
+                )
+            )
+          ON CONFLICT (knowledge_base_id, normalized_path) DO NOTHING
+        `;
+      });
       return requireUploadSession(input.sql, request.knowledgeBaseId, request.sessionId);
     },
 
@@ -341,6 +422,8 @@ export function createPostgresStorageVnextAdminUpload(input: {
         request.knowledgeBaseId,
         request.sessionId
       );
+      const finalization = assertUploadSessionFinalizable(session);
+      if (finalization === "replayed") return session;
       const completedAt = new Date().toISOString();
       const finalized = await input.uploads.finalizeSession({
         knowledgeBaseId: request.knowledgeBaseId,
@@ -350,25 +433,20 @@ export function createPostgresStorageVnextAdminUpload(input: {
       await input.terminal.converge({
         ...finalized.session,
         temporaryObjectIds: [],
-        outcome: "completed",
+        outcome: "accepted",
         resultCode: "UPLOAD_ACCEPTED",
         completedAt,
-        successorOperationPublicId: null
+        relatedOperationPublicId: null
       });
-      return {
-        ...session,
-        state: "completed",
-        counts: {
-          ...session.counts,
-          finalized: finalized.acceptedRevisionCount
-        },
-        updatedAt: completedAt,
-        completedAt
-      };
+      return requireUploadSession(
+        input.sql,
+        request.knowledgeBaseId,
+        request.sessionId
+      );
     },
 
     async cancelUploadSession(request) {
-      const session = await requireUploadSession(
+      await requireUploadSession(
         input.sql,
         request.knowledgeBaseId,
         request.sessionId
@@ -385,11 +463,37 @@ export function createPostgresStorageVnextAdminUpload(input: {
         outcome: "cancelled",
         resultCode: "UPLOAD_CANCELLED",
         completedAt,
-        successorOperationPublicId: null
+        relatedOperationPublicId: null
       });
-      return { ...session, state: "cancelled", updatedAt: completedAt, completedAt };
+      return requireUploadSession(
+        input.sql,
+        request.knowledgeBaseId,
+        request.sessionId
+      );
     }
   };
+}
+
+export function assertUploadSessionFinalizable(
+  session: Pick<UploadSessionRecord, "state" | "counts">
+): "proceed" | "replayed" {
+  if (session.state === "completed" || session.state === "finalizing") {
+    return "replayed";
+  }
+  if (session.state !== "uploading") {
+    throw new UploadSessionError("UPLOAD_SESSION_STATE_CONFLICT");
+  }
+  if (
+    session.state === "uploading"
+    && (
+      session.counts.uploaded !== session.counts.uploadRequired
+      || session.counts.waitingReservation > 0
+      || session.counts.rejectedDeleting > 0
+    )
+  ) {
+    throw new UploadSessionError("UPLOAD_SESSION_INCOMPLETE");
+  }
+  return "proceed";
 }
 
 export function mapUploadContentCommitError(error: unknown): Error {
@@ -404,6 +508,15 @@ export function mapUploadContentCommitError(error: unknown): Error {
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+function isUploadManifestDatabaseConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const constraintName = "constraint_name" in error
+    ? error.constraint_name
+    : null;
+  return constraintName === "upload_entries_path_key"
+    || constraintName === "upload_entries_source_file_key";
 }
 
 async function requireKnowledgeBase(
