@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
+import { areContentTypesEquivalent } from "../../storage/content-type.js";
 import {
   assertStorageVnextImmutableObjectDescriptor,
   describeStorageVnextImmutableObject,
@@ -75,44 +76,18 @@ export function createS3StorageVnextImmutableBodyStore(input: {
     async putVerified(request) {
       assertWriteRequest(request);
       const startedAt = performance.now();
-      try {
-        await input.client.send(new PutObjectCommand({
-          Bucket: bucket,
-          Key: request.descriptor.storageKey,
-          Body: Readable.from([request.bytes]),
-          ContentLength: request.descriptor.byteCount,
-          ContentType: request.descriptor.contentType,
-          IfNoneMatch: "*",
-          Metadata: {
-            "checksum-sha256": request.descriptor.checksum,
-            "object-format": request.descriptor.objectFormat
-          },
-          ...(request.signal ? { AbortSignal: request.signal } : {})
-        }));
-      } catch (error) {
-        if (!isPreconditionFailure(error)) throw error;
-        const existing = await readMetadata(
-          input.client,
-          bucket,
-          request.descriptor.storageKey
-        );
-        if (!existing) {
-          throw new StorageVnextImmutableBodyStoreError("object_missing");
-        }
-        assertMetadata(existing, request.descriptor);
-        return {
-          ...request.descriptor,
-          outcome: "reused",
-          requests: {
-            put: 1,
-            head: 1,
-            verification: 1,
-            attemptedBytes: request.descriptor.byteCount,
-            retries: 0,
-            latencyMilliseconds: Math.max(0, performance.now() - startedAt)
-          }
-        };
-      }
+      await input.client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: request.descriptor.storageKey,
+        Body: Readable.from([request.bytes]),
+        ContentLength: request.descriptor.byteCount,
+        ContentType: request.descriptor.contentType,
+        Metadata: {
+          "checksum-sha256": request.descriptor.checksum,
+          "object-format": request.descriptor.objectFormat
+        },
+        ...(request.signal ? { AbortSignal: request.signal } : {})
+      }));
       return {
         ...request.descriptor,
         outcome: "stored",
@@ -197,7 +172,7 @@ function assertMetadata(
 ): void {
   if (
     Number(metadata.ContentLength ?? -1) !== descriptor.byteCount
-    || metadata.ContentType !== descriptor.contentType
+    || !areContentTypesEquivalent(metadata.ContentType, descriptor.contentType)
     || metadata.Metadata?.["checksum-sha256"] !== descriptor.checksum
     || metadata.Metadata?.["object-format"] !== descriptor.objectFormat
   ) {
@@ -219,12 +194,4 @@ function isMissingObject(error: unknown): boolean {
     ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
     : undefined;
   return error.name === "NotFound" || error.name === "NoSuchKey" || status === 404;
-}
-
-function isPreconditionFailure(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const status = "$metadata" in error
-    ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
-    : undefined;
-  return error.name === "PreconditionFailed" || status === 412;
 }

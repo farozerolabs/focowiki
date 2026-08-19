@@ -7,6 +7,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { UploadSessionError } from "../../domain/upload-session.js";
+import { areContentTypesEquivalent } from "../../storage/content-type.js";
 import type { StorageVnextVerifiedSourceBody } from "../catalog/s3-source-body-store.js";
 import type { StorageVnextFailedWriteCompensation } from "../ownership/failed-write-compensation.js";
 import type { StorageVnextOwnershipRepository } from "../ownership/ports.js";
@@ -213,7 +214,7 @@ async function verifyObject(
   }));
   if (
     head.ContentLength !== descriptor.byteCount
-    || head.ContentType !== descriptor.contentType
+    || !areContentTypesEquivalent(head.ContentType, descriptor.contentType)
     || head.Metadata?.["checksum-sha256"] !== descriptor.checksum
     || head.Metadata?.["object-format"] !== descriptor.objectFormat
   ) throw new Error("Storage vNext upload object verification failed");

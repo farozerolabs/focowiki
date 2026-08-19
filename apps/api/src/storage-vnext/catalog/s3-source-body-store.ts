@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
+import { areContentTypesEquivalent } from "../../storage/content-type.js";
 
 const SOURCE_CONTENT_TYPE = "text/markdown; charset=utf-8";
 const SOURCE_OBJECT_FORMAT = "source-markdown-v1";
@@ -102,23 +103,16 @@ export function createS3StorageVnextSourceBodyStore(input: {
         return descriptor(identity, request.bytes.byteLength, "reused");
       }
 
-      let outcome: StorageVnextVerifiedSourceBody["outcome"] = "stored";
-      try {
-        await input.client.send(new PutObjectCommand({
-          Bucket: bucket,
-          Key: identity.storageKey,
-          Body: request.bytes,
-          ContentType: SOURCE_CONTENT_TYPE,
-          IfNoneMatch: "*",
-          Metadata: {
-            "checksum-sha256": checksum,
-            "object-format": SOURCE_OBJECT_FORMAT
-          }
-        }));
-      } catch (error) {
-        if (!isPreconditionFailure(error)) throw error;
-        outcome = "reused";
-      }
+      await input.client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: identity.storageKey,
+        Body: request.bytes,
+        ContentType: SOURCE_CONTENT_TYPE,
+        Metadata: {
+          "checksum-sha256": checksum,
+          "object-format": SOURCE_OBJECT_FORMAT
+        }
+      }));
 
       const verified = await headObject(input.client, bucket, identity.storageKey);
       if (!verified) throw new StorageVnextSourceBodyStoreError("object_missing");
@@ -127,7 +121,7 @@ export function createS3StorageVnextSourceBodyStore(input: {
         byteCount: request.bytes.byteLength,
         contentType: SOURCE_CONTENT_TYPE
       });
-      return descriptor(identity, request.bytes.byteLength, outcome);
+      return descriptor(identity, request.bytes.byteLength, "stored");
     },
 
     async putVerifiedStream(
@@ -147,28 +141,21 @@ export function createS3StorageVnextSourceBodyStore(input: {
         return descriptor(identity, request.byteCount, "reused");
       }
 
-      let outcome: StorageVnextVerifiedSourceBody["outcome"] = "stored";
-      try {
-        await input.client.send(new PutObjectCommand({
-          Bucket: bucket,
-          Key: identity.storageKey,
-          Body: Readable.from(verifyUploadStream(request)),
-          ContentLength: request.byteCount,
-          ContentType: SOURCE_CONTENT_TYPE,
-          IfNoneMatch: "*",
-          Metadata: {
-            "checksum-sha256": request.checksum,
-            "object-format": SOURCE_OBJECT_FORMAT
-          }
-        }));
-      } catch (error) {
-        if (!isPreconditionFailure(error)) throw error;
-        outcome = "reused";
-      }
+      await input.client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: identity.storageKey,
+        Body: Readable.from(verifyUploadStream(request)),
+        ContentLength: request.byteCount,
+        ContentType: SOURCE_CONTENT_TYPE,
+        Metadata: {
+          "checksum-sha256": request.checksum,
+          "object-format": SOURCE_OBJECT_FORMAT
+        }
+      }));
       const verified = await headObject(input.client, bucket, identity.storageKey);
       if (!verified) throw new StorageVnextSourceBodyStoreError("object_missing");
       assertVerifiedMetadata(verified, expected);
-      return descriptor(identity, request.byteCount, outcome);
+      return descriptor(identity, request.byteCount, "stored");
     },
 
     async readVerified(request: StorageVnextSourceBodyReadRequest): Promise<Uint8Array> {
@@ -369,7 +356,7 @@ function assertVerifiedMetadata(
 ): void {
   if (
     Number(metadata.ContentLength ?? -1) !== expected.byteCount
-    || metadata.ContentType !== expected.contentType
+    || !areContentTypesEquivalent(metadata.ContentType, expected.contentType)
     || metadata.Metadata?.["checksum-sha256"] !== expected.checksum
     || metadata.Metadata?.["object-format"] !== SOURCE_OBJECT_FORMAT
   ) {
@@ -425,11 +412,6 @@ function isMissingObject(error: unknown): boolean {
   return error instanceof Error
     && (error.name === "NotFound" || error.name === "NoSuchKey"
       || readHttpStatus(error) === 404);
-}
-
-function isPreconditionFailure(error: unknown): boolean {
-  return error instanceof Error
-    && (error.name === "PreconditionFailed" || readHttpStatus(error) === 412);
 }
 
 function readHttpStatus(error: Error): number | null {
