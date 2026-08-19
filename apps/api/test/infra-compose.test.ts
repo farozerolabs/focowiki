@@ -136,6 +136,12 @@ describe("Docker Compose infrastructure", () => {
     expect(release).toContain('test -w /app/opensearch-data');
   });
 
+  it("bounds documentation-browser setup and uses the stable Ubuntu archive", () => {
+    const ci = read(".github/workflows/ci.yml");
+    expect(ci).toContain("timeout-minutes: 10");
+    expect(ci).toContain("https://archive.ubuntu.com/ubuntu");
+  });
+
   it("pins maintained infrastructure versions", () => {
     const compose = read("docker-compose.local.yml.example");
     expect(compose).toContain("postgres:18-alpine");
