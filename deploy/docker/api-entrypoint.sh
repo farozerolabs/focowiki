@@ -26,4 +26,14 @@ if [ -n "${OPENSEARCH_SECURITY_DIR:-}" ]; then
   chmod 700 "${OPENSEARCH_SECURITY_DIR}"
 fi
 
+if [ -n "${OPENSEARCH_DATA_DIR:-}" ]; then
+  mkdir -p "${OPENSEARCH_DATA_DIR}"
+  node_owner="$(id -u node):$(id -g node)"
+  data_owner="$(stat -c "%u:%g" "${OPENSEARCH_DATA_DIR}")"
+  if [ "${data_owner}" != "${node_owner}" ]; then
+    chown -R node:node "${OPENSEARCH_DATA_DIR}"
+  fi
+  chmod 700 "${OPENSEARCH_DATA_DIR}"
+fi
+
 exec gosu node:node "$@"

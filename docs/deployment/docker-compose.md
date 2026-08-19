@@ -49,7 +49,7 @@ Set one strong administrator password in `.env`:
 OPENSEARCH_ADMIN_PASSWORD=<generate-an-opensearch-admin-password>
 ```
 
-No TLS files need to be prepared. Before bundled OpenSearch starts, `search-init` creates a deployment-unique private CA and certificates, a complete OpenSearch Security configuration, and exactly two internal identities: the configured administrator and a generated runtime identity limited to `SEARCH_INDEX_PREFIX`. It stores the private security state in `./opensearch-security` and the runtime password and trusted CA in `./runtime-secrets`. A complete valid set is reused without changes on every restart. Missing, partial, corrupt, unsafe, near-expiry, or configuration-mismatched state stops startup instead of replacing the deployment identity. The OpenSearch demo security installer remains disabled for the entire startup.
+No TLS files need to be prepared. Before bundled OpenSearch starts, `search-init` makes `./data/opensearch` writable by the bundled container, creates a deployment-unique private CA and certificates, a complete OpenSearch Security configuration, and exactly two internal identities: the configured administrator and a generated runtime identity limited to `SEARCH_INDEX_PREFIX`. It stores the private security state in `./opensearch-security` and the runtime password and trusted CA in `./runtime-secrets`. A complete valid set is reused without changes on every restart. Missing, partial, corrupt, unsafe, near-expiry, or configuration-mismatched state stops startup instead of replacing the deployment identity. The OpenSearch demo security installer remains disabled for the entire startup. No manual `chown` is required for the template-managed data directory.
 
 API and worker containers receive only the generated runtime identity and trusted CA; they do not receive the administrator password or private keys. The same `search-init` service prepares Meilisearch runtime access when the Meilisearch profile is selected.
 
@@ -73,7 +73,7 @@ To use an external service, leave `COMPOSE_PROFILES` empty and set the selected 
 | `migrate` | Checks and updates the database before application services start. |
 | `postgres` | PostgreSQL database. |
 | `redis` | Redis service. |
-| `search-init` | Prepares the selected bundled search service; for OpenSearch it generates or validates TLS, internal identities, and prefix-scoped authorization before OpenSearch starts. |
+| `search-init` | Prepares the selected bundled search service; for OpenSearch it prepares the data directory and generates or validates TLS, internal identities, and prefix-scoped authorization before OpenSearch starts. |
 | `opensearch` | Bundled OpenSearch 3.8.0, enabled by `COMPOSE_PROFILES=opensearch`. |
 | `meilisearch` | Bundled Meilisearch alternative, enabled by `COMPOSE_PROFILES=meilisearch`. |
 

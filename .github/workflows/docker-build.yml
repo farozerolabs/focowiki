@@ -280,6 +280,7 @@ jobs:
           runtime_secret_volume="focowiki-build-runtime-secrets-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           search_security_volume="focowiki-build-search-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           search_secret_volume="focowiki-build-search-secrets-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          search_data_volume="focowiki-build-search-data-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           api_container=""
           docker volume create "${runtime_secret_volume}" >/dev/null
           cleanup() {
@@ -289,6 +290,7 @@ jobs:
             docker volume rm -f "${runtime_secret_volume}" >/dev/null 2>&1 || true
             docker volume rm -f "${search_security_volume}" >/dev/null 2>&1 || true
             docker volume rm -f "${search_secret_volume}" >/dev/null 2>&1 || true
+            docker volume rm -f "${search_data_volume}" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           for platform in linux/amd64 linux/arm64; do
@@ -297,10 +299,12 @@ jobs:
             docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --entrypoint node "${image}" -e "const fs=require('node:fs'); const secret=require('node:crypto').randomBytes(32).toString('base64url'); fs.writeFileSync('/app/runtime-secrets/deployment.key', secret + '\n', { mode: 0o600 });"
             docker volume create "${search_security_volume}" >/dev/null
             docker volume create "${search_secret_volume}" >/dev/null
+            docker volume create "${search_data_volume}" >/dev/null
             search_init=(
               docker run --rm --platform "${platform}"
               --mount "type=volume,source=${search_security_volume},target=/app/opensearch-security"
               --mount "type=volume,source=${search_secret_volume},target=/app/runtime-secrets"
+              --mount "type=volume,source=${search_data_volume},target=/app/opensearch-data"
               -e SEARCH_PROVIDER=opensearch
               -e SEARCH_INDEX_PREFIX=focowiki_release
               -e BUNDLED_OPENSEARCH_SECURITY_ENABLED=true
@@ -308,14 +312,20 @@ jobs:
               -e OPENSEARCH_RUNTIME_USERNAME=focowiki-runtime
               -e OPENSEARCH_SECURITY_DIR=/app/opensearch-security
               -e OPENSEARCH_SECRET_DIR=/app/runtime-secrets
+              -e OPENSEARCH_DATA_DIR=/app/opensearch-data
               "${image}" node apps/api/runtime/search-init.mjs
             )
             first="$("${search_init[@]}")"
             second="$("${search_init[@]}")"
             grep -F '"source":"generated"' <<< "${first}"
             grep -F '"source":"reused"' <<< "${second}"
+            docker run --rm --platform "${platform}" \
+              --mount "type=volume,source=${search_data_volume},target=/app/opensearch-data" \
+              -e OPENSEARCH_DATA_DIR=/app/opensearch-data \
+              "${image}" sh -lc 'test "$(id -u)" = "1000" && test -w /app/opensearch-data && touch /app/opensearch-data/write-check'
             docker volume rm "${search_security_volume}" >/dev/null
             docker volume rm "${search_secret_volume}" >/dev/null
+            docker volume rm "${search_data_volume}" >/dev/null
             docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migrate.mjs
             docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migration-preflight.mjs
             docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/worker.mjs --healthcheck
