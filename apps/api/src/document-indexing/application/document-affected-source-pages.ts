@@ -76,6 +76,24 @@ export function renderAffectedDocumentSourcePages(input: {
     }));
 }
 
+export function documentSourcePathRewrites(
+  sources: readonly AffectedDocumentSource[]
+): SourcePathRewrite[] {
+  return sources.flatMap((source) => {
+    const prior = source.sourceLinkBaseLogicalPath ?? source.logicalPath;
+    return prior === source.logicalPath ? [] : [{
+      sourceFilePublicId: source.sourceFilePublicId,
+      sourceLinkBase: {
+        sourceFilePublicId: source.sourceFilePublicId,
+        logicalPath: prior
+      },
+      from: `pages/${prior}`,
+      to: `pages/${source.logicalPath}`,
+      includeDescendants: false
+    }];
+  });
+}
+
 function relatedForSource(
   sourceFilePublicId: string,
   sources: ReadonlyMap<string, AffectedDocumentSource>,

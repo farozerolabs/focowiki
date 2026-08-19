@@ -87,7 +87,8 @@ export async function readDocumentProjectionPersistenceState(input: {
   });
   validateDocumentPortableCandidate({
     pages: input.desiredPages,
-    activeReadablePagePaths: activeLogicalPaths
+    activeReadablePagePaths: activeLogicalPaths,
+    removedReadablePagePaths: input.removedPaths
   });
   return { affectedPaths, currentHeads };
 }
@@ -99,8 +100,6 @@ export function buildDocumentProjectionFact(input: {
   source: {
     normalizedPath: string;
     contentType: string;
-    checksumSha256: string;
-    byteCount: number;
   };
   base: {
     logicalPath: string;
@@ -108,6 +107,11 @@ export function buildDocumentProjectionFact(input: {
     body: string;
     metadata: Readonly<Record<string, unknown>>;
     semanticEntities: readonly { label: string }[];
+  };
+  generatedPage: {
+    logicalPath: string;
+    checksumSha256: string;
+    byteCount: number;
   };
   tokenizer: LexicalTokenizer;
   relationPublicIds: readonly string[];
@@ -135,6 +139,12 @@ export function buildDocumentProjectionFact(input: {
     input.relations.some((relation) => relation.publicId === publicId
       && relation.evidence.sourceFilePublicId === input.sourceFilePublicId));
   const pagePath = documentSourcePagePath(input.base.logicalPath);
+  if (input.generatedPage.logicalPath !== pagePath
+    || !/^[0-9a-f]{64}$/u.test(input.generatedPage.checksumSha256)
+    || !Number.isSafeInteger(input.generatedPage.byteCount)
+    || input.generatedPage.byteCount < 0) {
+    throw new Error("document_projection_generated_page_invalid");
+  }
   return {
     knowledgeBaseId: input.knowledgeBaseId,
     sourceFilePublicId: input.sourceFilePublicId,
@@ -148,8 +158,8 @@ export function buildDocumentProjectionFact(input: {
     headings: markdownHeadings(input.base.body),
     entities: input.base.semanticEntities.map((entity) => entity.label),
     contentType: input.source.contentType,
-    checksumSha256: input.source.checksumSha256,
-    byteCount: input.source.byteCount,
+    checksumSha256: input.generatedPage.checksumSha256,
+    byteCount: input.generatedPage.byteCount,
     tokenizerContractVersion: input.tokenizer.contractVersion,
     navigationTermFingerprintSha256: navigationTerms.fingerprint,
     navigationTerms: navigationTerms.terms,

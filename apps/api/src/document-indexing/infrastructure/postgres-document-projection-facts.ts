@@ -182,6 +182,61 @@ export function createPostgresDocumentProjectionFacts(sql: DatabaseClient) {
       });
     },
 
+    async replaceGeneratedPageIntegrity(input: {
+      knowledgeBaseId: string;
+      pages: readonly {
+        sourceRevisionPublicId: string;
+        checksumSha256: string;
+        byteCount: number;
+      }[];
+    }): Promise<void> {
+      assertRepositoryIdentity(input.knowledgeBaseId, "knowledge_base_id");
+      if (input.pages.length < 1 || input.pages.length > 10_000) {
+        throw repositoryContractError("generated_page_integrity_count_invalid");
+      }
+      const pages = input.pages.map((page) => ({
+        source_revision_public_id: assertRepositoryIdentity(
+          page.sourceRevisionPublicId,
+          "source_revision_public_id"
+        ),
+        checksum_sha256: assertRepositorySha256(
+          page.checksumSha256,
+          "generated_page_checksum"
+        ),
+        byte_count: validateByteCount(page.byteCount)
+      }));
+      await sql`
+        UPDATE focowiki.document_projection_records record
+        SET checksum_sha256 = desired.checksum_sha256,
+            byte_count = desired.byte_count
+        FROM jsonb_to_recordset(${sql.json(pages as never)}::jsonb) AS desired(
+          source_revision_public_id text,
+          checksum_sha256 text,
+          byte_count bigint
+        )
+        WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+          AND record.source_revision_public_id
+            = desired.source_revision_public_id
+          AND ROW(record.checksum_sha256, record.byte_count)
+            IS DISTINCT FROM ROW(desired.checksum_sha256, desired.byte_count)
+      `;
+      const unchanged = await sql<Array<{ count: number | string }>>`
+        SELECT count(*) AS count
+        FROM focowiki.document_projection_records record
+        JOIN jsonb_to_recordset(${sql.json(pages as never)}::jsonb) AS desired(
+          source_revision_public_id text,
+          checksum_sha256 text,
+          byte_count bigint
+        ) ON desired.source_revision_public_id = record.source_revision_public_id
+        WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+          AND record.checksum_sha256 = desired.checksum_sha256
+          AND record.byte_count = desired.byte_count
+      `;
+      if (Number(unchanged[0]?.count ?? 0) !== pages.length) {
+        throw repositoryContractError("generated_page_integrity_fact_missing");
+      }
+    },
+
     async activateRevision(input: {
       knowledgeBaseId: string;
       sourceFilePublicId: string;
@@ -200,6 +255,13 @@ export function createPostgresDocumentProjectionFacts(sql: DatabaseClient) {
       `;
     }
   };
+}
+
+function validateByteCount(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw repositoryContractError("generated_page_byte_count_invalid");
+  }
+  return value;
 }
 
 function validateInput(input: DocumentProjectionFactInput): void {

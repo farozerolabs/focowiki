@@ -11,7 +11,6 @@ import type { DocumentProjectionScopeClaim } from
   "../application/document-scope-projector-runtime.js";
 import {
   buildDocumentNavigationTermBucketResources,
-  buildDocumentPageDirectoryScopeResources,
   buildDocumentTermCatalogPage
 } from
   "../application/document-page-term-projection.js";
@@ -41,6 +40,10 @@ import {
   projectPerFileGraph,
   projectPerFileGraphDirectory
 } from "./production-document-scope-graph.js";
+import {
+  projectDocumentPageDirectoryScope,
+  type DocumentPageIntegrityOverride
+} from "./production-document-page-directory-scope.js";
 import {
   canonicalJson,
   graphDirectoryScope,
@@ -102,7 +105,10 @@ export function createProductionDocumentScopeRenderer(input: {
   const clock = input.now ?? (() => new Date().toISOString());
   async function project(
     scope: DocumentProjectionScopeClaim,
-    signal = new AbortController().signal
+    signal: AbortSignal,
+    options: Readonly<{
+      pageIntegrityOverrides?: readonly DocumentPageIntegrityOverride[];
+    }> = {}
   ) {
     const sourceFile = sourceFileScope(scope);
     const bucket = termBucket(scope);
@@ -140,12 +146,15 @@ export function createProductionDocumentScopeRenderer(input: {
           signal
         })
       : pageDirectory
-      ? await projectPageDirectory({
-          input,
+      ? await projectDocumentPageDirectoryScope({
+          machineProjection: input.machineProjection,
           knowledgeBaseId: scope.knowledgeBaseId,
           scopePath: pageDirectory,
           includedSourceRevisionPublicIds,
-          excludedActiveSourceFilePublicIds
+          excludedActiveSourceFilePublicIds,
+          pageIntegrityOverrides: options.pageIntegrityOverrides ?? [],
+          maximumRecordsPerShard: input.maximumRecordsPerShard,
+          maximumShardBytes: input.maximumShardBytes
         })
       : semanticDirectory
         ? await projectSemanticDirectory({
@@ -283,8 +292,14 @@ export function createProductionDocumentScopeRenderer(input: {
     };
   }
   return {
-    async project(scope: DocumentProjectionScopeClaim) {
-      const projected = await project(scope);
+    async project(scope: DocumentProjectionScopeClaim, options: Readonly<{
+      pageIntegrityOverrides?: readonly DocumentPageIntegrityOverride[];
+    }> = {}) {
+      const projected = await project(
+        scope,
+        new AbortController().signal,
+        options
+      );
       if (!projected) throw scopeRenderError("projection_scope_not_materialized");
       return projected;
     },
@@ -438,32 +453,6 @@ async function projectTermCatalog(input: {
       path: `_index/terms/${bucket}/index.json`
     })),
     factCount: state.buckets.length
-  };
-}
-async function projectPageDirectory(input: {
-  input: Parameters<typeof createProductionDocumentScopeRenderer>[0];
-  knowledgeBaseId: string;
-  scopePath: string;
-  includedSourceRevisionPublicIds: readonly string[];
-  excludedActiveSourceFilePublicIds: readonly string[];
-}) {
-  const state = await input.input.machineProjection.readDocumentDirectoryState({
-    knowledgeBaseId: input.knowledgeBaseId,
-    scopePath: input.scopePath,
-    includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
-    excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
-  });
-  return {
-    ...buildDocumentPageDirectoryScopeResources({
-      scopePath: input.scopePath,
-      records: state.records,
-      childDirectories: state.childDirectories,
-      previousPaths: state.resourcePaths,
-      maximumRecordsPerShard: input.input.maximumRecordsPerShard,
-      maximumShardBytes: input.input.maximumShardBytes
-    }),
-    records: state.records,
-    childDirectories: state.childDirectories
   };
 }
 async function projectTermBucket(input: {

@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
+import { buildDocumentGraphDirectoryScopeResources } from
+  "../src/document-indexing/application/document-graph-projection.js";
+import { parseDocumentPortableRecords } from
+  "../src/document-indexing/application/document-portable-record-parser.js";
 import { createPostgresDocumentProjectionFacts } from
   "../src/document-indexing/infrastructure/postgres-document-projection-facts.js";
 import { createPostgresDocumentMachineProjectionReader } from
@@ -43,6 +47,7 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
     `;
     await seedSource(sql, "first", "a");
     await seedSource(sql, "second", "b");
+    await seedSource(sql, "third", "c");
   }, 120_000);
 
   afterAll(async () => {
@@ -185,6 +190,36 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       }]
     });
 
+  });
+
+  it("updates generated page integrity against the migrated projection schema", async () => {
+    const repository = createPostgresDocumentProjectionFacts(
+      sql as unknown as DatabaseClient
+    );
+    await repository.replaceRevision(fact("third", {
+      pagePath: "pages/guides/third.md",
+      terms: [{ term: "alpha", fields: ["title"] }],
+      directories: ["pages", "pages/guides"]
+    }));
+
+    await repository.replaceGeneratedPageIntegrity({
+      knowledgeBaseId: "kb-projection-facts",
+      pages: [{
+        sourceRevisionPublicId: "source-revision-projection-third",
+        checksumSha256: "9".repeat(64),
+        byteCount: 321
+      }]
+    });
+
+    await expect(sql<Array<{ checksum_sha256: string; byte_count: string }>>`
+      SELECT checksum_sha256, byte_count
+      FROM focowiki.document_projection_records
+      WHERE knowledge_base_id = 'kb-projection-facts'
+        AND source_revision_public_id = 'source-revision-projection-third'
+    `).resolves.toEqual([{
+      checksum_sha256: "9".repeat(64),
+      byte_count: "321"
+    }]);
   });
 
   it("reads active directory projection state directly from PostgreSQL facts", async () => {
@@ -345,6 +380,35 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
     const reader = createPostgresDocumentMachineProjectionReader(
       sql as unknown as DatabaseClient
     );
+    await sql`
+      UPDATE focowiki.document_projection_records
+      SET active = false
+      WHERE knowledge_base_id = 'kb-projection-facts'
+        AND source_revision_public_id = 'source-revision-projection-second'
+    `;
+    await expect(reader.readGraphDirectoryState({
+      knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages/moved",
+      includedSourceRevisionPublicIds: [
+        "source-revision-projection-first"
+      ],
+      excludedActiveSourceFilePublicIds: [
+        "source-file-projection-first"
+      ]
+    })).resolves.toMatchObject({
+      records: [{
+        from: "pages/moved/renamed.md",
+        to: "pages/reference/second.md",
+        direction: "outgoing",
+        relationType: "references"
+      }]
+    });
+    await sql`
+      UPDATE focowiki.document_projection_records
+      SET active = true
+      WHERE knowledge_base_id = 'kb-projection-facts'
+        AND source_revision_public_id = 'source-revision-projection-second'
+    `;
     await expect(reader.readGraphDirectoryState({
       knowledgeBaseId: "kb-projection-facts",
       scopePath: "pages/moved",
@@ -364,6 +428,39 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         relationType: "references"
       }]
     });
+    const referenceGraphState = await reader.readGraphDirectoryState({
+      knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages/reference",
+      includedSourceRevisionPublicIds: [
+        "source-revision-projection-first",
+        "source-revision-projection-second"
+      ],
+      excludedActiveSourceFilePublicIds: [
+        "source-file-projection-first",
+        "source-file-projection-second"
+      ]
+    });
+    expect(referenceGraphState).toMatchObject({
+      records: [{
+        from: "pages/reference/second.md",
+        to: "pages/moved/renamed.md",
+        direction: "incoming",
+        relationType: "references"
+      }]
+    });
+    const referenceGraphPages = buildDocumentGraphDirectoryScopeResources({
+      scopePath: "pages/reference",
+      records: referenceGraphState.records,
+      childDirectories: referenceGraphState.childDirectories,
+      previousPaths: referenceGraphState.resourcePaths,
+      maximumRecordsPerShard: 100,
+      maximumShardBytes: 1_048_576
+    }).pages;
+    expect(referenceGraphPages.length).toBeGreaterThan(0);
+    for (const page of referenceGraphPages) {
+      expect(() => parseDocumentPortableRecords(page.bytes, page.logicalPath))
+        .not.toThrow();
+    }
     await expect(reader.readGraphCatalogState({
       knowledgeBaseId: "kb-projection-facts",
       includedSourceRevisionPublicIds: [
@@ -496,6 +593,19 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
     });
     await expect(reader.readGraphDirectoryState({
       knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages/reference"
+    })).resolves.toMatchObject({
+      records: [{
+        from: "pages/reference/second.md",
+        to: "pages/moved/renamed.md",
+        direction: "incoming",
+        relationType: "references"
+      }],
+      childDirectories: [],
+      resourcePaths: []
+    });
+    await expect(reader.readGraphDirectoryState({
+      knowledgeBaseId: "kb-projection-facts",
       scopePath: "pages"
     })).resolves.toMatchObject({
       records: [],
@@ -503,6 +613,10 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         title: "moved",
         scopePath: "pages/moved",
         path: "_graph/by-directory/moved/index.json"
+      }, {
+        title: "reference",
+        scopePath: "pages/reference",
+        path: "_graph/by-directory/reference/index.json"
       }]
     });
     await expect(reader.readRootProjectionState({

@@ -105,7 +105,8 @@ export function createProductionDocumentDeletionPageStaging(input: {
     });
     validateDocumentPortableCandidate({
       pages: desiredPages,
-      activeReadablePagePaths: activeLogicalPaths
+      activeReadablePagePaths: activeLogicalPaths,
+      removedReadablePagePaths: [...removed]
     });
     const staged = await createDocumentGeneratedPageStaging({
       writeConcurrency: input.writeConcurrency,

@@ -182,8 +182,13 @@ export function createProductionDocumentDeletionProjection(input: {
         affectedSurvivors: rendered.generatedSources.filter((source) =>
           affectedSurvivorIds.has(source.sourceFilePublicId)).map((source) => ({
             sourceFilePublicId: source.sourceFilePublicId,
-            logicalPath: source.logicalPath
-          })),
+          logicalPath: source.logicalPath
+        })),
+        affectedPageIntegrity: rendered.renderedPages.map((page) => ({
+          path: page.logicalPath,
+          checksumSha256: page.checksumSha256,
+          byteCount: page.byteCount
+        })),
         obsoleteRelationPublicIds:
           rendered.projection.obsoleteRelationPublicIds,
         baseRevision,
