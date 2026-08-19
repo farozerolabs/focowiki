@@ -114,9 +114,11 @@ services:
       OPENSEARCH_RUNTIME_USERNAME: ${OPENSEARCH_USERNAME-focowiki-runtime}
       OPENSEARCH_SECURITY_DIR: /app/opensearch-security
       OPENSEARCH_SECRET_DIR: /app/runtime-secrets
+      OPENSEARCH_DATA_DIR: /app/opensearch-data
     volumes:
       - ./opensearch-security:/app/opensearch-security
       - ./runtime-secrets:/app/runtime-secrets
+      - ./data/opensearch:/app/opensearch-data
     logging: *docker-logging
     restart: "no"
 

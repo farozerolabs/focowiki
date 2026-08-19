@@ -151,17 +151,21 @@ jobs:
         run: |
           security_volume="focowiki-ci-opensearch-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           secret_volume="focowiki-ci-search-secrets-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          data_volume="focowiki-ci-opensearch-data-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker volume create "${security_volume}" >/dev/null
           docker volume create "${secret_volume}" >/dev/null
+          docker volume create "${data_volume}" >/dev/null
           cleanup() {
             docker volume rm -f "${security_volume}" >/dev/null 2>&1 || true
             docker volume rm -f "${secret_volume}" >/dev/null 2>&1 || true
+            docker volume rm -f "${data_volume}" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
           search_init=(
             docker run --rm
             --mount "type=volume,source=${security_volume},target=/app/opensearch-security"
             --mount "type=volume,source=${secret_volume},target=/app/runtime-secrets"
+            --mount "type=volume,source=${data_volume},target=/app/opensearch-data"
             -e SEARCH_PROVIDER=opensearch
             -e SEARCH_INDEX_PREFIX=focowiki_ci
             -e BUNDLED_OPENSEARCH_SECURITY_ENABLED=true
@@ -169,12 +173,17 @@ jobs:
             -e OPENSEARCH_RUNTIME_USERNAME=focowiki-runtime
             -e OPENSEARCH_SECURITY_DIR=/app/opensearch-security
             -e OPENSEARCH_SECRET_DIR=/app/runtime-secrets
+            -e OPENSEARCH_DATA_DIR=/app/opensearch-data
             focowiki-api:ci node apps/api/runtime/search-init.mjs
           )
           first="$("${search_init[@]}")"
           second="$("${search_init[@]}")"
           grep -F '"source":"generated"' <<< "${first}"
           grep -F '"source":"reused"' <<< "${second}"
+          docker run --rm \
+            --mount "type=volume,source=${data_volume},target=/app/opensearch-data" \
+            -e OPENSEARCH_DATA_DIR=/app/opensearch-data \
+            focowiki-api:ci sh -lc 'test "$(id -u)" = "1000" && test -w /app/opensearch-data && touch /app/opensearch-data/write-check'
           cleanup
           trap - EXIT
 
@@ -314,7 +323,10 @@ jobs:
         run: pnpm docs:validate
 
       - name: Install documentation browser
-        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 10
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          pnpm exec playwright install --with-deps chromium
 
       - name: Validate documentation browser
         run: pnpm docs:validate:browser

@@ -128,8 +128,10 @@ services:
       MEILI_METRICS_API_KEY: ""
       MEILI_SECRET_DIR: /app/runtime-secrets
       BUNDLED_OPENSEARCH_SECURITY_ENABLED: "false"
+      OPENSEARCH_DATA_DIR: /app/opensearch-data
     volumes:
       - ./runtime-secrets:/app/runtime-secrets
+      - ./data/opensearch:/app/opensearch-data
     logging: *docker-logging
     restart: "no"
 

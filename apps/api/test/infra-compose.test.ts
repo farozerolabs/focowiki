@@ -71,6 +71,14 @@ describe("Docker Compose infrastructure", () => {
     expect(service(compose, "migrate")).toContain("search-init:");
   });
 
+  it.each(composePaths)("prepares the OpenSearch bind-mounted data directory in %s", (path) => {
+    const searchInit = service(read(path), "search-init");
+    expect(searchInit).toContain("OPENSEARCH_DATA_DIR: /app/opensearch-data");
+    expect(searchInit).toContain(
+      "./data/opensearch:/app/opensearch-data"
+    );
+  });
+
   it("builds API, worker, migration, and search initialization in one image", () => {
     const dockerfile = read("Dockerfile");
     const build = read("apps/api/scripts/build-runtime.mjs");
@@ -89,6 +97,10 @@ describe("Docker Compose infrastructure", () => {
     expect(entrypoint).toContain('mkdir -p "${resolved_log_dir}"');
     expect(entrypoint).toContain("chown -R node:node");
     expect(entrypoint).toContain('chmod 700 "${runtime_secret_dir}"');
+    expect(entrypoint).toContain('if [ -n "${OPENSEARCH_DATA_DIR:-}" ]');
+    expect(entrypoint).toContain('stat -c "%u:%g" "${OPENSEARCH_DATA_DIR}"');
+    expect(entrypoint).toContain('chown -R node:node "${OPENSEARCH_DATA_DIR}"');
+    expect(entrypoint).toContain('chmod 700 "${OPENSEARCH_DATA_DIR}"');
     expect(entrypoint).toContain('exec gosu node:node "$@"');
   });
 
@@ -113,6 +125,21 @@ describe("Docker Compose infrastructure", () => {
     expect(workflows).not.toMatch(
       /SOURCE_WORKER_IMAGE|target: source-worker|(?:source|publication|maintenance)-worker\.mjs/u
     );
+  });
+
+  it("validates OpenSearch data-directory ownership with built API images", () => {
+    const ci = read(".github/workflows/ci.yml");
+    const release = read(".github/workflows/docker-build.yml");
+    expect(ci).toContain('OPENSEARCH_DATA_DIR=/app/opensearch-data');
+    expect(ci).toContain('test -w /app/opensearch-data');
+    expect(release).toContain('OPENSEARCH_DATA_DIR=/app/opensearch-data');
+    expect(release).toContain('test -w /app/opensearch-data');
+  });
+
+  it("bounds documentation-browser setup and uses the stable Ubuntu archive", () => {
+    const ci = read(".github/workflows/ci.yml");
+    expect(ci).toContain("timeout-minutes: 10");
+    expect(ci).toContain("https://archive.ubuntu.com/ubuntu");
   });
 
   it("pins maintained infrastructure versions", () => {
