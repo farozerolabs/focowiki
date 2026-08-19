@@ -48,4 +48,33 @@ describe("production generation model client", () => {
     await paced.chat.completions.create({} as never);
     expect(create).toHaveBeenCalledOnce();
   });
+
+  it.each(["responses", "chat_completions"] as const)(
+    "forwards %s request options through the pacing boundary",
+    async (apiMode) => {
+      const create = vi.fn(async () => ({ status: "completed" }));
+      const client = apiMode === "responses"
+        ? { apiMode, responses: { create } }
+        : { apiMode, chat: { completions: { create } } };
+      const paced = createPacedModelClient(
+        client as OpenAIModelClient,
+        { concurrency: 1, minStartIntervalMs: 0 }
+      );
+      const controller = new AbortController();
+      if (paced.apiMode === "chat_completions") {
+        await paced.chat.completions.create({} as never, {
+          signal: controller.signal
+        });
+      } else {
+        await paced.responses.create({} as never, {
+          signal: controller.signal
+        });
+      }
+
+      expect(create).toHaveBeenCalledWith(
+        expect.anything(),
+        { signal: controller.signal }
+      );
+    }
+  );
 });

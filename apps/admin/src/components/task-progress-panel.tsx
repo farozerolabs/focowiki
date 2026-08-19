@@ -147,7 +147,7 @@ export function SourceFileProgressPanel({
 
   return (
     <>
-      <Card className="min-h-[calc(100svh-5.5rem)] min-w-0" data-testid="source-file-progress-panel">
+      <Card className="h-full min-h-0 min-w-0" data-testid="source-file-progress-panel">
         <CardHeader>
           <CardTitle>{t("tasks.title")}</CardTitle>
           <CardAction className="flex gap-2">
@@ -161,7 +161,7 @@ export function SourceFileProgressPanel({
             </Button>
           </CardAction>
         </CardHeader>
-        <CardContent className="min-w-0">
+        <CardContent className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <div className="flex flex-col gap-3">
             {errorMessageKey ? (
               <Alert variant="destructive">

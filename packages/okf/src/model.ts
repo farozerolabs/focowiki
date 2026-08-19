@@ -254,11 +254,16 @@ export type StructuredOutputCapability =
   | "native_json_schema"
   | "json_object_compatibility";
 
+export type ModelRequestOptions = {
+  signal?: AbortSignal;
+};
+
 export type OpenAIResponsesClient = {
   apiMode?: "responses";
   responses: {
     create: (
-      request: GraphRelationshipConfirmationRequest | ModelGraphAnalysisRequest
+      request: GraphRelationshipConfirmationRequest | ModelGraphAnalysisRequest,
+      options?: ModelRequestOptions
     ) => Promise<unknown>;
   };
 };
@@ -289,7 +294,10 @@ export type OpenAIChatCompletionsClient = {
   readonly structuredOutputCapability?: StructuredOutputCapability;
   chat: {
     completions: {
-      create: (request: ChatCompletionsJsonRequest) => Promise<unknown>;
+      create: (
+        request: ChatCompletionsJsonRequest,
+        options?: ModelRequestOptions
+      ) => Promise<unknown>;
     };
   };
 };
@@ -376,7 +384,10 @@ export function createOpenAIModelClient(
 
   if (config.apiMode === "chat_completions") {
     return createRevisionScopedChatCompletionsClient(
-      (request) => client.chat.completions.create(request as never)
+      (request, options) => client.chat.completions.create(
+        request as never,
+        options
+      )
     );
   }
 
@@ -387,7 +398,10 @@ export function createOpenAIModelClient(
 }
 
 export function createRevisionScopedChatCompletionsClient(
-  create: (request: ChatCompletionsJsonRequest) => Promise<unknown>
+  create: (
+    request: ChatCompletionsJsonRequest,
+    options?: ModelRequestOptions
+  ) => Promise<unknown>
 ): OpenAIChatCompletionsClient {
   let capability: StructuredOutputCapability = "auto";
   return {
@@ -397,25 +411,27 @@ export function createRevisionScopedChatCompletionsClient(
     },
     chat: {
       completions: {
-        async create(request) {
+        async create(request, options) {
+          const usesJsonSchema = request.response_format?.type === "json_schema";
           const effectiveRequest = capability === "json_object_compatibility"
+            && usesJsonSchema
             ? toJsonObjectCompatibilityRequest(request)
             : request;
           try {
-            const response = await create(effectiveRequest);
+            const response = await create(effectiveRequest, options);
             if (capability === "auto"
-              && effectiveRequest.response_format.type === "json_schema") {
+              && usesJsonSchema) {
               capability = "native_json_schema";
             }
             return response;
           } catch (error) {
             if (capability !== "auto"
-              || effectiveRequest.response_format.type !== "json_schema"
+              || !usesJsonSchema
               || !isExplicitUnsupportedJsonSchemaError(error)) {
               throw error;
             }
             capability = "json_object_compatibility";
-            return create(toJsonObjectCompatibilityRequest(request));
+            return create(toJsonObjectCompatibilityRequest(request), options);
           }
         }
       }

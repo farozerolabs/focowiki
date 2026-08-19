@@ -108,6 +108,20 @@ describe("semantic GraphRAG extraction gateway", () => {
     }));
   });
 
+  it("never lets a newline boundary exceed the configured chunk size", () => {
+    for (const markdown of ["1234567890\nrest", "123456789\n\nrest"]) {
+      const chunks = createSemanticSourceChunks({
+        sourceRevisionPublicId: "revision-boundary",
+        markdown,
+        maximumChunkCharacters: 10,
+        maximumChunks: 2
+      });
+
+      expect(chunks.every((chunk) => chunk.text.length <= 10)).toBe(true);
+      expect(chunks.map((chunk) => chunk.text).join("")).toBe(markdown);
+    }
+  });
+
   it("rejects reordered prompt manifests before any model call", async () => {
     let modelCalls = 0;
     const gateway = createGraphRagExtractionGateway({

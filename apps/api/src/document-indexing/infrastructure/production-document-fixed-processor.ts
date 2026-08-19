@@ -82,7 +82,7 @@ import {
   createProductionDocumentFixedLoaders,
   createProductionDocumentFixedRepositories
 } from "./production-document-fixed-components.js";
-import { safeErrorCode, isRetryable } from
+import { isAutomaticallyRetryable, isRetryable, safeErrorCode } from
   "./production-document-error-diagnostic.js";
 import {
   createDocumentCleanupReceiptHandler,
@@ -290,7 +290,12 @@ export function createProductionDocumentFixedProcessor(input: {
     wait: waitForDocumentWork,
     classifyError(error) {
       const code = safeErrorCode(error);
-      return { code, safeMessage: null, retryable: isRetryable(code) };
+      return {
+        code,
+        safeMessage: null,
+        retryable: isRetryable(code),
+        automaticRetry: isAutomaticallyRetryable(error, code)
+      };
     },
     retryDelayMs: (attempt) => input.workerConfig.jobRetryDelayMs * attempt,
     onWorkEvent(event) {

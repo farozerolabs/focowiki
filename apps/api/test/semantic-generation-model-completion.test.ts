@@ -268,7 +268,10 @@ describe("GraphRAG generation-model completion", () => {
 
 function modelAssistance(
   apiMode: "responses" | "chat_completions",
-  create: (request: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>
+  create: (
+    request: unknown,
+    options?: { signal?: AbortSignal }
+  ) => Promise<unknown>
 ): ModelAssistanceOptions {
   const client = apiMode === "responses"
     ? { apiMode: "responses" as const, responses: { create } }

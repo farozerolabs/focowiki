@@ -66,4 +66,18 @@ describe("document worker error diagnostic", () => {
       nowMilliseconds: Date.parse("2026-08-14T16:50:53.000Z")
     })).toEqual({ retryable: true, nextAttemptAt: null });
   });
+
+  it.each([
+    "semantic_generation_request_rejected",
+    "semantic_generation_request_forbidden",
+    "semantic_generation_configuration_invalid",
+    "semantic_generation_output_invalid",
+    "INVALID_CHUNK_TEXT"
+  ])("keeps manual retry but does not repeat permanent semantic failure %s", (code) => {
+    expect(planDocumentFailureRetry({
+      error: Object.assign(new Error("permanent semantic failure"), { code }),
+      attemptCount: 1,
+      nowMilliseconds: Date.parse("2026-08-14T16:50:53.000Z")
+    })).toEqual({ retryable: true, nextAttemptAt: null });
+  });
 });
