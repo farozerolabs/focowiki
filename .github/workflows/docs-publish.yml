@@ -89,7 +89,10 @@ jobs:
         run: pnpm docs:validate
 
       - name: Install documentation browser
-        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 10
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          pnpm exec playwright install --with-deps chromium
 
       - name: Validate documentation browser
         run: pnpm docs:validate:browser
