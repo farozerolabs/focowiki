@@ -5,10 +5,15 @@ import {
   createS3StorageAdapter,
   createS3ClientConfig
 } from "../src/storage/s3.js";
+import { areContentTypesEquivalent } from "../src/storage/content-type.js";
+import { writeStorageVnextUploadBody } from
+  "../src/storage-vnext/api/admin-upload-body-writer.js";
 import { createS3StorageVnextSourceBodyStore } from
   "../src/storage-vnext/catalog/s3-source-body-store.js";
 import { createS3StorageVnextObjectInventory } from
   "../src/storage-vnext/ownership/s3-object-inventory.js";
+import type { StorageVnextOwnershipRepository } from
+  "../src/storage-vnext/ownership/ports.js";
 import { createS3StorageVnextVersionAwareDeletionProvider } from
   "../src/storage-vnext/ownership/version-aware-deletion.js";
 
@@ -64,12 +69,16 @@ describeExternal("external S3-compatible storage contract", () => {
       metadata: { "contract-state": "created" }
     });
     await expect(storage.getObjectText(objectKey)).resolves.toBe("first body");
-    await expect(storage.headObjectMetadata(objectKey)).resolves.toMatchObject({
+    const createdMetadata = await storage.headObjectMetadata(objectKey);
+    expect(createdMetadata).toMatchObject({
       key: objectKey,
       sizeBytes: 10,
-      contentType: "text/markdown; charset=utf-8",
       metadata: { "contract-state": "created" }
     });
+    expect(areContentTypesEquivalent(
+      createdMetadata?.contentType,
+      "text/markdown; charset=utf-8"
+    )).toBe(true);
     await expect(storage.listObjectKeys({
       prefix: `${prefix}/crud/`,
       limit: 10
@@ -145,6 +154,91 @@ describeExternal("external S3-compatible storage contract", () => {
       abortedMultipartUploads: 0
     });
     await expect(storage.headObjectMetadata(first.storageKey)).resolves.toBeNull();
+  }, 60_000);
+
+  it("streams an admin upload through copy, verification, and temporary cleanup", async () => {
+    const body = Buffer.from("# External admin upload compatibility\n", "utf8");
+    const checksum = createHash("sha256").update(body).digest("hex");
+    const storageKey = `${prefix}/admin-upload/${checksum}.md`;
+    const result = await writeStorageVnextUploadBody({
+      s3: client,
+      bucket: storageConfig.bucket,
+      prefix,
+      registrations: {
+        async reserve(
+          reservation: Parameters<StorageVnextOwnershipRepository["reserve"]>[0]
+        ) {
+          return {
+            outcome: "reserved" as const,
+            registration: {
+              ...reservation,
+              state: "reserved" as const,
+              verifiedAt: null,
+              zeroOwnerSince: null
+            }
+          };
+        },
+        async markVerified(
+          verified: Parameters<StorageVnextOwnershipRepository["markVerified"]>[0]
+        ) {
+          return {
+            objectId: verified.objectId,
+            storageKey,
+            checksum,
+            byteCount: body.byteLength,
+            contentType: "text/markdown; charset=utf-8",
+            format: "source-markdown-v1",
+            state: "verified" as const,
+            writeAttemptPublicId: verified.writeAttemptPublicId,
+            verifiedAt: verified.verifiedAt,
+            zeroOwnerSince: verified.verifiedAt,
+            createdAt: verified.verifiedAt
+          };
+        }
+      } as never,
+      compensation: { async compensate() { return "deleted" as const; } },
+      describeSource: () => ({
+        objectId: `source-sha256:${checksum}`,
+        storageKey,
+        checksum,
+        byteCount: body.byteLength,
+        contentType: "text/markdown; charset=utf-8",
+        objectFormat: "source-markdown-v1"
+      }),
+      request: {
+        knowledgeBaseId: "knowledge-base-external-s3",
+        sessionId: `upload-session-${suffix}`,
+        entryId: `upload-entry-${suffix}`,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(body);
+            controller.close();
+          }
+        })
+      },
+      entry: {
+        upload_session_public_id: `upload-session-${suffix}`,
+        entry_public_id: `upload-entry-${suffix}`,
+        source_file_public_id: `source-file-${suffix}`,
+        logical_path: "external-upload.md",
+        normalized_path: "external-upload.md",
+        checksum_sha256: checksum,
+        byte_count: body.byteLength,
+        object_id: null,
+        state: "pending",
+        existing_resource_revision: null
+      }
+    });
+
+    expect(result).toMatchObject({ storageKey, checksum, byteCount: body.byteLength });
+    await expect(storage.getObjectText(storageKey)).resolves.toBe(body.toString("utf8"));
+    await expect(createS3StorageVnextVersionAwareDeletionProvider({
+      client,
+      bucket: storageConfig.bucket,
+      prefix
+    }).purge(storageKey)).resolves.toMatchObject({
+      abortedMultipartUploads: 0
+    });
   }, 60_000);
 
   it("inventories current objects even when version inventory is unavailable", async () => {

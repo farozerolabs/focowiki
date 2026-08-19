@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
+import { areContentTypesEquivalent } from "../../storage/content-type.js";
 import type {
   EmbeddingArtifactDescriptor,
   EmbeddingArtifactStorePort
@@ -55,29 +56,22 @@ export function createS3EmbeddingArtifactStore(input: {
         assertMetadata(existing, request.descriptor);
         return "reused";
       }
-      let outcome: "stored" | "reused" = "stored";
-      try {
-        await input.client.send(new PutObjectCommand({
-          Bucket: bucket,
-          Key: request.descriptor.storageKey,
-          Body: Readable.from([request.bytes]),
-          ContentLength: request.descriptor.byteCount,
-          ContentType: CONTENT_TYPE,
-          IfNoneMatch: "*",
-          Metadata: {
-            "checksum-sha256": request.descriptor.checksumSha256,
-            "object-format": OBJECT_FORMAT
-          },
-          ...(request.signal ? { AbortSignal: request.signal } : {})
-        }));
-      } catch (error) {
-        if (!isPreconditionFailure(error)) throw error;
-        outcome = "reused";
-      }
+      await input.client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: request.descriptor.storageKey,
+        Body: Readable.from([request.bytes]),
+        ContentLength: request.descriptor.byteCount,
+        ContentType: CONTENT_TYPE,
+        Metadata: {
+          "checksum-sha256": request.descriptor.checksumSha256,
+          "object-format": OBJECT_FORMAT
+        },
+        ...(request.signal ? { AbortSignal: request.signal } : {})
+      }));
       const verified = await head(input.client, bucket, request.descriptor.storageKey);
       if (!verified) throw new Error("Embedding artifact object is unavailable after write");
       assertMetadata(verified, request.descriptor);
-      return outcome;
+      return "stored";
     },
     async readVerified(request) {
       assertDescriptor(request.descriptor);
@@ -185,7 +179,7 @@ function assertMetadata(
 ): void {
   if (
     Number(metadata.ContentLength ?? -1) !== descriptor.byteCount
-    || metadata.ContentType !== descriptor.contentType
+    || !areContentTypesEquivalent(metadata.ContentType, descriptor.contentType)
     || metadata.Metadata?.["checksum-sha256"] !== descriptor.checksumSha256
     || metadata.Metadata?.["object-format"] !== descriptor.objectFormat
   ) throw new Error("Embedding artifact metadata verification failed");
@@ -226,12 +220,4 @@ function isMissing(error: unknown): boolean {
     ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
     : undefined;
   return ["NotFound", "NoSuchKey"].includes(error.name) || status === 404;
-}
-
-function isPreconditionFailure(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const status = "$metadata" in error
-    ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
-    : undefined;
-  return error.name === "PreconditionFailed" || status === 412;
 }

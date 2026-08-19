@@ -69,6 +69,7 @@ class MemoryS3Client {
     }
     if (command instanceof PutObjectCommand) {
       const key = command.input.Key!;
+      expect(command.input.IfNoneMatch).toBeUndefined();
       if (this.objects.has(key)) {
         const error = new Error("precondition");
         error.name = "PreconditionFailed";

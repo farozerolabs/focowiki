@@ -13,7 +13,7 @@ import {
 } from "../src/storage-vnext/catalog/s3-source-body-store.js";
 
 describe("storage vNext S3 source body store", () => {
-  it("stores Markdown at one content-addressed key with a conditional verified write", async () => {
+  it("stores Markdown at one provider-compatible content-addressed key", async () => {
     const bytes = new TextEncoder().encode("# Current source\n");
     const checksum = createHash("sha256").update(bytes).digest("hex");
     let stored = false;
@@ -22,7 +22,7 @@ describe("storage vNext S3 source body store", () => {
         if (!stored) throw missingObject();
         return {
           ContentLength: bytes.byteLength,
-          ContentType: "text/markdown; charset=utf-8",
+          ContentType: "text/markdown;charset=utf-8",
           Metadata: {
             "checksum-sha256": checksum,
             "object-format": "source-markdown-v1"
@@ -59,12 +59,12 @@ describe("storage vNext S3 source body store", () => {
       Key: `runs/svnext-catalog01/source-objects/sha256/${checksum.slice(0, 2)}/${checksum}.md`,
       Body: bytes,
       ContentType: "text/markdown; charset=utf-8",
-      IfNoneMatch: "*",
       Metadata: {
         "checksum-sha256": checksum,
         "object-format": "source-markdown-v1"
       }
     });
+    expect(put.input.IfNoneMatch).toBeUndefined();
   });
 
   it("reuses verified identical bytes without issuing another object write", async () => {
@@ -73,7 +73,6 @@ describe("storage vNext S3 source body store", () => {
     let stored = false;
     const send = vi.fn(async (command: HeadObjectCommand | PutObjectCommand) => {
       if (command instanceof PutObjectCommand) {
-        if (stored) throw preconditionFailed();
         stored = true;
         return {};
       }
@@ -109,7 +108,7 @@ describe("storage vNext S3 source body store", () => {
       .toHaveLength(1);
   });
 
-  it("streams upload bytes through one conditional content-addressed write", async () => {
+  it("streams upload bytes through one provider-compatible content-addressed write", async () => {
     const bytes = new TextEncoder().encode("# Streamed upload\n中文 body");
     const checksum = createHash("sha256").update(bytes).digest("hex");
     let stored = false;
@@ -155,10 +154,8 @@ describe("storage vNext S3 source body store", () => {
     const put = send.mock.calls.map(([command]) => command)
       .find((command) => command instanceof PutObjectCommand) as PutObjectCommand;
     expect(put.input.Body).not.toBeInstanceOf(Uint8Array);
-    expect(put.input).toMatchObject({
-      ContentLength: bytes.byteLength,
-      IfNoneMatch: "*"
-    });
+    expect(put.input.ContentLength).toBe(bytes.byteLength);
+    expect(put.input.IfNoneMatch).toBeUndefined();
   });
 
   it("consumes and verifies a replay stream while reusing the existing object", async () => {
@@ -356,12 +353,6 @@ function missingObject(): Error {
   });
 }
 
-function preconditionFailed(): Error {
-  return Object.assign(new Error("exists"), {
-    name: "PreconditionFailed",
-    $metadata: { httpStatusCode: 412 }
-  });
-}
 
 async function* chunks(bytes: Uint8Array, size: number): AsyncGenerator<Uint8Array> {
   for (let offset = 0; offset < bytes.byteLength; offset += size) {

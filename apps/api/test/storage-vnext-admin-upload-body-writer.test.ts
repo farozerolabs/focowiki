@@ -13,7 +13,7 @@ import { writeStorageVnextUploadBody } from
   "../src/storage-vnext/api/admin-upload-body-writer.js";
 
 describe("storage vNext admin upload body writer", () => {
-  it("purges every temporary-object version after copying the source body", async () => {
+  it("accepts provider-normalized content types and purges every temporary-object version", async () => {
     const body = Buffer.from("# Temporary upload\n", "utf8");
     const checksum = createHash("sha256").update(body).digest("hex");
     const storageKey = `runs/upload/source-objects/${checksum}.md`;
@@ -32,7 +32,7 @@ describe("storage vNext admin upload body writer", () => {
         if (command.input.Key === storageKey) {
           return {
             ContentLength: body.byteLength,
-            ContentType: "text/markdown; charset=utf-8",
+            ContentType: "text/markdown;charset=utf-8",
             Metadata: {
               "checksum-sha256": checksum,
               "object-format": "source-markdown-v1"
