@@ -5,12 +5,12 @@
     "compatibility-fallback": 5,
     "environment-field": 82,
     "external-dependency": 48,
-    "generated-output": 213,
+    "generated-output": 214,
     "port": 19,
     "postgres-table": 93,
     "runtime-field": 88,
-    "source": 752,
-    "surface-item": 19717,
+    "source": 753,
+    "surface-item": 19731,
     "ui-control": 181,
     "worker-role": 4
   },
@@ -21,10 +21,10 @@
     "consumes-setting": 1531,
     "declares-fallback": 5,
     "defines-route": 68,
-    "implemented-by": 12394,
-    "imports": 2605,
+    "implemented-by": 12408,
+    "imports": 2610,
     "presents": 181,
-    "produces-output": 213,
+    "produces-output": 214,
     "queries-table": 512,
     "starts-role": 4,
     "verified-by-test": 5
@@ -47,7 +47,7 @@
     "ui-placeholder-presentation": 8,
     "validation-only-module": 14
   },
-  "nodeHash": "96a69b2ebdfe2e0702ac45a292802bc17810e182e5dd3d5c2ed2abcd27444829",
-  "edgeHash": "edd521ec0058a15e8d64dd99577e216634e34e74514f8e7fad1aeff3de45c00b",
-  "findingHash": "7325458a91dd42834edb7664f65b92d221f66df7312d62dd27dfa81b1e327e03"
+  "nodeHash": "5c9ba32d78083b878898134db586d76a8c9fc3b04fac7a27937b1608936ce953",
+  "edgeHash": "2b6c929b2a6fb8e5a51a5c4d22897989a975744736c3b3f701e4e68c4f30feb5",
+  "findingHash": "b044af9146b2777e960d32b743dc25651008ba5238e695b93000c68c0f5d8f36"
 }

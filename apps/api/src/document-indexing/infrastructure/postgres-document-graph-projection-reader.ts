@@ -42,22 +42,15 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
     }) {
       const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
       const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds ?? []);
-      const rows = await sql<Array<{
-        first_path: string;
-        first_title: string;
-        second_path: string;
-        second_title: string;
-        first_source_file_public_id: string;
-        evidence_source_file_public_id: string;
-        relation_kind: "references" | "related";
-        evidence_kind: PerFileGraphRow["evidence_kind"];
-        evidence: Record<string, unknown>;
-      }>>`
-        SELECT first_page.page_path AS first_path,
+      const rows = await sql<PerFileGraphRow[]>`
+        SELECT relation.public_id AS relation_public_id,
+               evidence.public_id AS evidence_public_id,
+               first_page.page_path AS first_path,
                first_record.title AS first_title,
                second_page.page_path AS second_path,
                second_record.title AS second_title,
                relation.first_source_file_public_id,
+               relation.second_source_file_public_id,
                evidence.source_file_public_id AS evidence_source_file_public_id,
                relation.relation_kind, evidence.evidence_kind, evidence.evidence
         FROM focowiki.canonical_file_relations relation
@@ -93,15 +86,20 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
           ORDER BY char_length(membership.directory_path) DESC
           LIMIT 1
         ) second_page ON true
-        JOIN focowiki.document_semantic_directory_memberships membership
-          ON membership.knowledge_base_id = evidence.knowledge_base_id
-         AND membership.source_revision_public_id
-           = evidence.source_revision_public_id
-         AND membership.directory_path = ${input.scopePath}
         WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
           AND (${visibleRelation(sql, included, excluded)})
-          AND position('/' in substring(membership.page_path
-                from char_length(${input.scopePath}) + 2)) = 0
+          AND EXISTS (
+            SELECT 1
+            FROM focowiki.document_semantic_directory_memberships membership
+            WHERE membership.knowledge_base_id = relation.knowledge_base_id
+              AND membership.source_revision_public_id IN (
+                first_record.source_revision_public_id,
+                second_record.source_revision_public_id
+              )
+              AND membership.directory_path = ${input.scopePath}
+              AND position('/' in substring(membership.page_path
+                    from char_length(${input.scopePath}) + 2)) = 0
+          )
         ORDER BY relation.public_id COLLATE "C", evidence.public_id COLLATE "C"
         LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
       `;
@@ -114,21 +112,7 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
         excludedActiveSourceFilePublicIds: excluded
       });
       return {
-        records: rows.map((row) => {
-          const evidenceFromFirst = row.evidence_source_file_public_id
-            === row.first_source_file_public_id;
-          return documentRelationProjectionRecord({
-            fromPath: sourceLogicalPath(evidenceFromFirst
-              ? row.first_path : row.second_path),
-            toPath: sourceLogicalPath(evidenceFromFirst
-              ? row.second_path : row.first_path),
-            fromTitle: evidenceFromFirst ? row.first_title : row.second_title,
-            toTitle: evidenceFromFirst ? row.second_title : row.first_title,
-            relationType: row.relation_kind,
-            evidenceKind: machineEvidenceKind(row.evidence_kind),
-            evidenceValue: row.evidence
-          });
-        }),
+        records: directoryRelationships(rows, input.scopePath),
         childDirectories: childScopes.map((scopePath) => ({
           title: posix.basename(scopePath),
           scopePath,
@@ -282,6 +266,80 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
   };
 }
 
+function directoryRelationships(
+  rows: readonly PerFileGraphRow[],
+  scopePath: string
+): Record<string, unknown>[] {
+  const grouped = new Map<string, {
+    record: Record<string, unknown>;
+    directions: Set<"incoming" | "outgoing">;
+    evidence: Record<string, unknown>[];
+    evidenceKeys: Set<string>;
+  }>();
+  for (const row of rows) {
+    const firstInScope = posix.dirname(row.first_path) === scopePath;
+    const secondInScope = posix.dirname(row.second_path) === scopePath;
+    if (!firstInScope && !secondInScope) {
+      throw graphReaderError("graph_directory_endpoint_missing");
+    }
+    const localIsFirst = firstInScope;
+    const evidenceFromFirst = row.evidence_source_file_public_id
+      === row.first_source_file_public_id;
+    const evidenceRecord = documentRelationProjectionRecord({
+      fromPath: sourceLogicalPath(evidenceFromFirst
+        ? row.first_path : row.second_path),
+      toPath: sourceLogicalPath(evidenceFromFirst
+        ? row.second_path : row.first_path),
+      fromTitle: evidenceFromFirst ? row.first_title : row.second_title,
+      toTitle: evidenceFromFirst ? row.second_title : row.first_title,
+      relationType: row.relation_kind,
+      evidenceKind: machineEvidenceKind(row.evidence_kind),
+      evidenceValue: row.evidence
+    });
+    const direction = row.evidence_source_file_public_id
+      === (localIsFirst
+        ? row.first_source_file_public_id
+        : row.second_source_file_public_id)
+      ? "outgoing" as const : "incoming" as const;
+    const key = `${row.relation_public_id}\0${localIsFirst
+      ? row.first_source_file_public_id : row.second_source_file_public_id}`;
+    const current = grouped.get(key) ?? {
+      record: {
+        ...evidenceRecord,
+        from: localIsFirst ? row.first_path : row.second_path,
+        to: localIsFirst ? row.second_path : row.first_path,
+        fromTitle: localIsFirst ? row.first_title : row.second_title,
+        toTitle: localIsFirst ? row.second_title : row.first_title,
+        direction
+      },
+      directions: new Set<"incoming" | "outgoing">(),
+      evidence: [],
+      evidenceKeys: new Set<string>()
+    };
+    current.directions.add(direction);
+    for (const item of Array.isArray(evidenceRecord.evidence)
+      ? evidenceRecord.evidence : []) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const evidence = item as Record<string, unknown>;
+      const evidenceKey = JSON.stringify(evidence);
+      if (current.evidenceKeys.has(evidenceKey)) continue;
+      current.evidenceKeys.add(evidenceKey);
+      current.evidence.push(evidence);
+    }
+    grouped.set(key, current);
+  }
+  return [...grouped.values()].map((item): Record<string, unknown> => ({
+    ...item.record,
+    direction: item.directions.size === 2 ? "bidirectional"
+      : item.directions.has("outgoing") ? "outgoing" : "incoming",
+    evidence: item.evidence
+  })).sort((left, right) =>
+    String(left.from).localeCompare(String(right.from), "en-US")
+    || String(left.to).localeCompare(String(right.to), "en-US")
+    || String(left.relationType).localeCompare(
+      String(right.relationType), "en-US"));
+}
+
 export function perFileRelationships(
   rows: readonly PerFileGraphRow[],
   sourceFilePublicId: string
@@ -342,14 +400,25 @@ async function readGraphChildScopes(sql: DatabaseClient, input: {
       ON evidence.knowledge_base_id = relation.knowledge_base_id
      AND evidence.pair_public_id = relation.pair_public_id
      AND (${visibleEvidence(sql, included, excluded)})
-    JOIN focowiki.document_projection_records source_record
-      ON source_record.knowledge_base_id = evidence.knowledge_base_id
-     AND source_record.source_revision_public_id
-       = evidence.source_revision_public_id
-     AND (${visibleRecord(sql, "source_record", included, excluded)})
-    JOIN focowiki.document_semantic_directory_memberships membership
-      ON membership.knowledge_base_id = evidence.knowledge_base_id
-     AND membership.source_revision_public_id = evidence.source_revision_public_id
+    JOIN focowiki.document_projection_records first_record
+      ON first_record.knowledge_base_id = relation.knowledge_base_id
+     AND first_record.source_revision_public_id
+       = relation.first_source_revision_public_id
+     AND (${visibleRecord(sql, "first_record", included, excluded)})
+    JOIN focowiki.document_projection_records second_record
+      ON second_record.knowledge_base_id = relation.knowledge_base_id
+     AND second_record.source_revision_public_id
+       = relation.second_source_revision_public_id
+     AND (${visibleRecord(sql, "second_record", included, excluded)})
+    JOIN LATERAL (
+      SELECT endpoint.directory_path
+      FROM focowiki.document_semantic_directory_memberships endpoint
+      WHERE endpoint.knowledge_base_id = relation.knowledge_base_id
+        AND endpoint.source_revision_public_id IN (
+          first_record.source_revision_public_id,
+          second_record.source_revision_public_id
+        )
+    ) membership ON true
     WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
       AND (${visibleRelation(sql, included, excluded)})
       AND left(membership.directory_path, char_length(${input.scopePath}) + 1)
