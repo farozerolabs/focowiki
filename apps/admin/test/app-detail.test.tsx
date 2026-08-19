@@ -579,6 +579,12 @@ describe("Admin knowledge base detail", () => {
     expect(within(table).getAllByText("Prepare")).toHaveLength(2);
     expect(within(table).getAllByText("Pending").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
+    const panel = screen.getByTestId("source-file-progress-panel");
+    const content = panel.querySelector('[data-slot="card-content"]');
+    expect(panel.className).toContain("h-full");
+    expect(panel.className).toContain("min-h-0");
+    expect(content?.className).toContain("min-h-0");
+    expect(content?.className).toContain("overflow-y-auto");
   });
 
   it("renders only the four document lifecycle summary cards", async () => {

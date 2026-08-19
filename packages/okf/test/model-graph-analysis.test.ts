@@ -365,6 +365,62 @@ describe("combined model graph analysis", () => {
     expect(client.structuredOutputCapability).toBe("json_object_compatibility");
   });
 
+  it("keeps plain Chat completions unstructured and forwards request options", async () => {
+    const formats: Array<string | null> = [];
+    const options: unknown[] = [];
+    const rawCreate = vi.fn(async (
+      request: { response_format?: { type: string } },
+      requestOptions?: { signal?: AbortSignal }
+    ) => {
+      formats.push(request.response_format?.type ?? null);
+      options.push(requestOptions ?? null);
+      if (request.response_format?.type === "json_schema") {
+        throw Object.assign(new Error(
+          "Invalid value for response_format: json_schema. Supported values are text and json_object"
+        ), { status: 400, code: "invalid_request_error" });
+      }
+      return { choices: [{ finish_reason: "stop", message: { content: "ok" } }] };
+    });
+    const client = createRevisionScopedChatCompletionsClient(rawCreate as never);
+    const structuredRequest = {
+      model: "model-a",
+      messages: [{ role: "user", content: "Return JSON" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "test",
+          description: "test",
+          strict: true,
+          schema: { type: "object" }
+        }
+      },
+      max_tokens: 100,
+      stream: false
+    } as const;
+    await client.chat.completions.create(structuredRequest as never);
+    const controller = new AbortController();
+    const createPlain = client.chat.completions.create as unknown as (
+      request: {
+        model: string;
+        messages: Array<{ role: "system" | "user"; content: string }>;
+        stream: true;
+      },
+      options?: { signal?: AbortSignal }
+    ) => Promise<unknown>;
+    await createPlain({
+      model: "model-a",
+      messages: [
+        { role: "system", content: "Return tuple records" },
+        { role: "user", content: "Extract relationships" }
+      ],
+      stream: true
+    }, { signal: controller.signal });
+
+    expect(formats).toEqual(["json_schema", "json_object", null]);
+    expect(options[2]).toEqual({ signal: controller.signal });
+    expect(client.structuredOutputCapability).toBe("json_object_compatibility");
+  });
+
   it("pins an explicitly unavailable Chat response format to JSON-object compatibility", async () => {
     const formats: string[] = [];
     const rawCreate = vi.fn(async (request: { response_format: { type: string } }) => {

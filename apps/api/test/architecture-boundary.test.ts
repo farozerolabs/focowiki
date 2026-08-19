@@ -464,7 +464,9 @@ describe("lightweight architecture boundaries", () => {
     expect(workerRuntime).toContain("createDocumentFixedDagRuntime");
     expect(workerRuntime).toContain("recoverExpired");
     expect(workerRuntime).toContain("const DOCUMENT_WORK_CLAIM_ORDER");
-    expect(workerRuntime).toContain("for (const kind of DOCUMENT_WORK_CLAIM_ORDER)");
+    expect(workerRuntime).toContain("let claimOrderOffset = 0");
+    expect(workerRuntime).toContain("(claimOrderOffset + index)");
+    expect(workerRuntime).toContain("claimOrderOffset = (claimOrderOffset + 1)");
     expect(workerMain).toContain("runUnifiedWorkerProduction");
     expect(productionRuntime).toContain("createProductionDocumentFixedProcessor");
     expect(productionRuntime).toContain("createProductionBackgroundRuntime");

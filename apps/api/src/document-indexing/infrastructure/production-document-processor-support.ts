@@ -195,8 +195,8 @@ export function createPacedModelClient(
       },
       chat: {
         completions: {
-          create: (request) => runner.run(
-            () => client.chat.completions.create(request)
+          create: (request, options) => runner.run(
+            () => client.chat.completions.create(request, options)
           )
         }
       }
@@ -205,7 +205,9 @@ export function createPacedModelClient(
   return {
     apiMode: "responses",
     responses: {
-      create: (request) => runner.run(() => client.responses.create(request))
+      create: (request, options) => runner.run(
+        () => client.responses.create(request, options)
+      )
     }
   };
 }
