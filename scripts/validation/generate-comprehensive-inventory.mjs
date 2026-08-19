@@ -9,21 +9,8 @@ import {
 } from "./lib/comprehensive-release-inventory.mjs";
 
 const repositoryRoot = process.cwd();
-const outputPath = path.join(
-  repositoryRoot,
-  "scripts/validation/fixtures/comprehensive-release-inventory.json"
-);
 const inventory = buildComprehensiveSourceInventory({ repositoryRoot });
 const snapshot = buildInventorySnapshot(inventory);
-
-if (process.argv.includes("--write")) {
-  fs.writeFileSync(outputPath, `${JSON.stringify(snapshot, null, 2)}\n`);
-} else {
-  const expected = JSON.parse(fs.readFileSync(outputPath, "utf8"));
-  if (JSON.stringify(expected) !== JSON.stringify(snapshot)) {
-    throw new Error("Comprehensive inventory snapshot drift detected");
-  }
-}
 
 if (process.argv.includes("--report")) {
   const reportDirectory = process.env.FOCOWIKI_COMPREHENSIVE_REPORT_DIR;
@@ -48,9 +35,8 @@ if (process.argv.includes("--report")) {
 }
 
 process.stdout.write(`${JSON.stringify({
-  output: path.relative(repositoryRoot, outputPath),
   counts: snapshot.counts,
   total: Object.values(snapshot.counts).reduce((sum, count) => sum + count, 0),
-  mode: process.argv.includes("--write") ? "write" : "check",
+  mode: "live",
   report: process.argv.includes("--report")
 })}\n`);

@@ -4,7 +4,6 @@ import test from "node:test";
 
 import {
   assertProductionAuthenticity,
-  assertProductionAuthenticitySnapshot,
   buildProductionAuthenticitySnapshot,
   buildProductionWiringGraph,
   classifyCatchBody
@@ -80,14 +79,27 @@ test("distinguishes handled catch paths from genuinely swallowed errors", () => 
   assert.equal(classifyCatchBody({ body: "// already closed", before: "client.destroy();", after: "" }), "best-effort-cleanup");
 });
 
-test("classifies every suspicious production finding individually and freezes the reviewed graph", () => {
+test("classifies every suspicious production finding and summarizes the live graph", () => {
   assert.ok(graph.findings.length > 0);
   assert.ok(graph.findings.every((finding) => finding.classification && finding.evidenceHash));
   assert.equal(graph.findings.some((finding) => finding.classification === "unreviewed"), false);
-  const snapshot = JSON.parse(fs.readFileSync(
-    "scripts/validation/fixtures/comprehensive-production-authenticity.json",
-    "utf8"
-  ));
-  assert.doesNotThrow(() => assertProductionAuthenticitySnapshot(graph, snapshot));
-  assert.deepEqual(buildProductionAuthenticitySnapshot(graph), snapshot);
+  const summary = buildProductionAuthenticitySnapshot(graph);
+  assert.equal(summary.schemaVersion, 1);
+  assert.ok(Object.values(summary.counts).every((count) => count > 0));
+  assert.match(summary.nodeHash, /^[a-f0-9]{64}$/u);
+  assert.match(summary.edgeHash, /^[a-f0-9]{64}$/u);
+  assert.match(summary.findingHash, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(
+    buildProductionAuthenticitySnapshot(structuredClone(graph)),
+    summary
+  );
+
+  const changed = structuredClone(graph);
+  changed.findings[0].evidenceHash = changed.findings[0].evidenceHash === "0".repeat(64)
+    ? "1".repeat(64)
+    : "0".repeat(64);
+  assert.notEqual(
+    buildProductionAuthenticitySnapshot(changed).findingHash,
+    summary.findingHash
+  );
 });

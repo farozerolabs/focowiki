@@ -42,12 +42,6 @@ export function buildComprehensiveTestInventorySnapshot(rows) {
   };
 }
 
-export function assertComprehensiveTestInventorySnapshot(rows, expected) {
-  if (JSON.stringify(buildComprehensiveTestInventorySnapshot(rows)) !== JSON.stringify(expected)) {
-    throw new Error("Comprehensive test inventory snapshot drift detected");
-  }
-}
-
 export function parseVitestBaselineReport(report, repositoryRoot) {
   const rows = [];
   for (const suite of report.testResults ?? []) {

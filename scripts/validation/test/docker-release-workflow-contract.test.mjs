@@ -7,7 +7,7 @@ const workflow = fs.readFileSync(
   "utf8"
 );
 
-test("keeps source snapshot validation independent from the release version", () => {
+test("keeps live source contract validation independent from the release version", () => {
   const sourceValidation = workflow.match(
     /      - name: Validate source contracts\n(?<body>(?:        .*\n|\n)+?)(?=      - name:)/u
   )?.groups?.body;
