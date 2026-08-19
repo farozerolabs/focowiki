@@ -138,8 +138,11 @@ describe("Docker Compose infrastructure", () => {
 
   it("bounds documentation-browser setup and uses the stable Ubuntu archive", () => {
     const ci = read(".github/workflows/ci.yml");
+    const release = read(".github/workflows/docs-publish.yml");
     expect(ci).toContain("timeout-minutes: 10");
     expect(ci).toContain("https://archive.ubuntu.com/ubuntu");
+    expect(release).toContain("timeout-minutes: 10");
+    expect(release).toContain("https://archive.ubuntu.com/ubuntu");
   });
 
   it("pins maintained infrastructure versions", () => {
