@@ -121,6 +121,7 @@ describe("bundled OpenSearch security assets", () => {
     const roles = readFileSync(join(configDirectory, "roles.yml"), "utf8");
     expect(roles).toContain("focowiki-runtime_role:");
     expect(roles).toContain('- "focowiki_*"');
+    expect(roles).toContain('- "focowiki-semantic-*"');
     expect(roles).toContain('- "cluster_monitor"');
     expect(roles).toContain('- "cluster_composite_ops"');
     expect(roles).toContain('- "crud"');
