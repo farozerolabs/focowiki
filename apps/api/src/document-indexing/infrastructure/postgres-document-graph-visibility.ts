@@ -20,15 +20,21 @@ export function visibleDocumentGraphRecord(
   included: readonly string[],
   excluded: readonly string[]
 ) {
+  const candidateRelation = sql`relation.retired_at IS NULL AND (
+    relation.first_source_revision_public_id = ANY(${included}::text[])
+    OR relation.second_source_revision_public_id = ANY(${included}::text[])
+  )`;
   if (alias === "first_record") {
-    return sql`first_record.source_revision_public_id = ANY(${included}::text[])
+    return sql`(first_record.source_revision_public_id = ANY(${included}::text[])
       OR (first_record.active
-        AND first_record.source_file_public_id <> ALL(${excluded}::text[]))`;
+        AND first_record.source_file_public_id <> ALL(${excluded}::text[]))
+      OR (${candidateRelation}))`;
   }
   if (alias === "second_record") {
-    return sql`second_record.source_revision_public_id = ANY(${included}::text[])
+    return sql`(second_record.source_revision_public_id = ANY(${included}::text[])
       OR (second_record.active
-        AND second_record.source_file_public_id <> ALL(${excluded}::text[]))`;
+        AND second_record.source_file_public_id <> ALL(${excluded}::text[]))
+      OR (${candidateRelation}))`;
   }
   return sql`source_record.source_revision_public_id = ANY(${included}::text[])
     OR (source_record.active

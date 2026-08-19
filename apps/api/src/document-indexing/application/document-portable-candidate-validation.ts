@@ -30,10 +30,14 @@ export function collectDocumentPortableReferencedPagePaths(
 export function validateDocumentPortableCandidate(input: Readonly<{
   pages: readonly CandidatePage[];
   activeReadablePagePaths: readonly string[];
+  removedReadablePagePaths?: readonly string[];
 }>): void {
   const pageByPath = new Map(input.pages.map((page) => [page.logicalPath, page]));
+  const removedPaths = new Set((input.removedReadablePagePaths ?? [])
+    .map(normalizeCandidatePath));
   const availablePaths = new Set([
-    ...input.activeReadablePagePaths,
+    ...input.activeReadablePagePaths.filter((path) =>
+      !removedPaths.has(normalizeCandidatePath(path))),
     ...input.pages.map((page) => page.logicalPath)
   ]);
   const readablePages = new Set([...availablePaths]
@@ -66,6 +70,10 @@ export function validateDocumentPortableCandidate(input: Readonly<{
       }
     }
   }
+}
+
+function normalizeCandidatePath(path: string): string {
+  return path.normalize("NFKC").toLocaleLowerCase("en-US");
 }
 
 function portableRecords(page: CandidatePage): Record<string, unknown>[] {

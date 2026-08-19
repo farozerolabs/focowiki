@@ -42,6 +42,10 @@ import { buildDocumentProjectionFact } from
   "./document-projection-persistence-plan.js";
 import { classifyDocumentNavigationTerm } from
   "../application/document-term-routing.js";
+import {
+  documentSourcePathRewrites,
+  renderAffectedDocumentSourcePages
+} from "../application/document-affected-source-pages.js";
 import { posix } from "node:path";
 
 export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
@@ -155,6 +159,7 @@ export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
         projection,
         semanticSearch,
         relationPlan,
+        sources,
         currentBase: currentBase.snapshot,
         completedAt: clock()
       }), request.signal);
@@ -172,6 +177,11 @@ export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
       async apply(transaction) {
         await createPostgresDocumentProjectionFacts(transaction)
           .replaceRevision(persisted.projectionFact);
+        await createPostgresDocumentProjectionFacts(transaction)
+          .replaceGeneratedPageIntegrity({
+            knowledgeBaseId: request.claimed.knowledgeBaseId,
+            pages: persisted.generatedPageFacts
+          });
         const dirtyScopes = createPostgresProjectionDirtyScopeRepository(transaction);
         const scopeRows = [];
         for (const scope of persisted.scopes) {
@@ -257,15 +267,29 @@ async function persistProjection(input: {
     typeof createProductionDocumentSemanticSearchProjection
   >>>;
   relationPlan: DocumentRelationPlan;
+  sources: Awaited<ReturnType<ReturnType<typeof createDocumentPageBaseLoader>>>[];
   currentBase: Awaited<ReturnType<ReturnType<typeof createDocumentPageBaseLoader>>>;
   completedAt: string;
 }) {
+  const generatedPages = renderAffectedDocumentSourcePages({
+    sources: input.sources,
+    renderSourceFilePublicIds: input.sources.map((source) =>
+      source.sourceFilePublicId),
+    relations: input.projection.relations,
+    sourcePathRewrites: documentSourcePathRewrites(input.sources)
+  });
+  const currentGeneratedPage = generatedPages.find((page) =>
+    page.sourceFilePublicId === input.request.claimed.sourceFilePublicId);
+  if (!currentGeneratedPage) {
+    throw projectionError("document_projection_generated_page_missing");
+  }
   const projectionFact = buildDocumentProjectionFact({
     knowledgeBaseId: input.request.claimed.knowledgeBaseId,
     sourceFilePublicId: input.request.claimed.sourceFilePublicId,
     sourceRevisionPublicId: input.request.claimed.sourceRevisionPublicId,
     source: input.context.source,
     base: input.currentBase,
+    generatedPage: currentGeneratedPage,
     tokenizer: input.input.tokenizer,
     relationPublicIds: input.projection.relationPublicIds,
     relations: input.projection.relations
@@ -350,7 +374,16 @@ async function persistProjection(input: {
     ownership: input.input.ownership,
     signal: input.request.signal
   });
-  return { receipt, scopes, projectionFact };
+  const sourceRevisionByFileId = new Map(input.sources.map((source) => [
+    source.sourceFilePublicId,
+    source.sourceRevisionPublicId
+  ]));
+  const generatedPageFacts = generatedPages.map((page) => ({
+    sourceRevisionPublicId: sourceRevisionByFileId.get(page.sourceFilePublicId)!,
+    checksumSha256: page.checksumSha256,
+    byteCount: page.byteCount
+  }));
+  return { receipt, scopes, projectionFact, generatedPageFacts };
 }
 
 function pageDirectoryAncestors(pagePath: string): string[] {

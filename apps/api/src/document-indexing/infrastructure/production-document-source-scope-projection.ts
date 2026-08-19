@@ -1,6 +1,9 @@
 import { boundedConcurrentMap } from
   "../application/bounded-concurrent-map.js";
-import { renderAffectedDocumentSourcePages } from
+import {
+  documentSourcePathRewrites,
+  renderAffectedDocumentSourcePages
+} from
   "../application/document-affected-source-pages.js";
 import type { createDocumentPageBaseLoader } from
   "./document-page-base-loader.js";
@@ -91,19 +94,7 @@ export function createProductionDocumentSourceScopeProjection(input: {
           signal: request.signal
         })
       });
-      const sourcePathRewrites = sources.flatMap((source) => {
-        const prior = source.sourceLinkBaseLogicalPath ?? source.logicalPath;
-        return prior === source.logicalPath ? [] : [{
-          sourceFilePublicId: source.sourceFilePublicId,
-          sourceLinkBase: {
-            sourceFilePublicId: source.sourceFilePublicId,
-            logicalPath: prior
-          },
-          from: `pages/${prior}`,
-          to: `pages/${source.logicalPath}`,
-          includeDescendants: false
-        }];
-      });
+      const sourcePathRewrites = documentSourcePathRewrites(sources);
       const page = renderAffectedDocumentSourcePages({
         sources,
         renderSourceFilePublicIds: [request.sourceFilePublicId],

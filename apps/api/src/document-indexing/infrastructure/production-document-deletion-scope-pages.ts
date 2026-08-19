@@ -22,6 +22,11 @@ export function createProductionDocumentDeletionScopePages(input: {
       sourceFilePublicId: string;
       logicalPath: string;
     }[];
+    affectedPageIntegrity: readonly {
+      path: string;
+      checksumSha256: string;
+      byteCount: number;
+    }[];
     obsoleteRelationPublicIds: readonly string[];
     baseRevision: number;
     signal: AbortSignal;
@@ -50,6 +55,8 @@ export function createProductionDocumentDeletionScopePages(input: {
         key: scope.key,
         requiredSequence: request.baseRevision,
         renderedSequence: request.baseRevision
+      }, {
+        pageIntegrityOverrides: request.affectedPageIntegrity
       }));
     }
     const pages = uniquePages(rendered.flatMap((item) => item.pages));

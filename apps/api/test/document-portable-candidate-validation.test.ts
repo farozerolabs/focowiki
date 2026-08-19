@@ -101,6 +101,31 @@ describe("document portable candidate validation", () => {
     }));
   });
 
+  it("does not let a removed active route satisfy a current link", () => {
+    const byFile = jsonPage("_graph/by-file/guides/a.json", {
+      formatVersion: 2,
+      title: "A relationships",
+      path: "pages/guides/a.md",
+      indexPath: "_index/pages/guides/index.json",
+      directoryGraphPath: "_graph/by-directory/guides/index.json",
+      relationships: []
+    });
+    expect(() => validateDocumentPortableCandidate({
+      pages: [byFile],
+      activeReadablePagePaths: [
+        "pages/guides/a.md",
+        "_index/pages/guides/index.json",
+        "_graph/by-directory/guides/index.json"
+      ],
+      removedReadablePagePaths: [
+        "_graph/by-directory/guides/index.json"
+      ]
+    })).toThrow(expect.objectContaining({
+      code: "portable_route_unreadable",
+      targetPath: "_graph/by-directory/guides/index.json"
+    }));
+  });
+
   it("blocks duplicate document paths in one semantic packet", () => {
     const source = page("pages/a.md", "# A\n");
     const packet = documentPacket(source);

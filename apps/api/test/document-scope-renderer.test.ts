@@ -7,6 +7,8 @@ import {
   "../src/document-indexing/application/document-machine-record.js";
 import { buildDocumentNavigationTermBucketResources } from
   "../src/document-indexing/application/document-page-term-projection.js";
+import { parseDocumentPortableRecords } from
+  "../src/document-indexing/application/document-portable-record-parser.js";
 import { createProductionDocumentScopeRenderer } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer.js";
 
@@ -342,6 +344,32 @@ describe("production document scope renderer", () => {
       maximumShardBytes: 1_048_576,
       now: () => "2026-08-17T12:00:00.000Z"
     });
+
+    const projected = await renderer.project({
+      publicId: "scope-pages-guides",
+      knowledgeBaseId: "kb-1",
+      kind: "_index",
+      key: "pages:pages/guides",
+      requiredSequence: 8,
+      renderedSequence: 8
+    }, {
+      pageIntegrityOverrides: [{
+        path: "pages/guides/overview.md",
+        checksumSha256: "9".repeat(64),
+        byteCount: 99
+      }]
+    });
+    const documentResource = projected.pages.find((page) =>
+      page.logicalPath.endsWith("-documents.json"));
+    expect(documentResource).toBeDefined();
+    expect(parseDocumentPortableRecords(
+      documentResource!.bytes,
+      documentResource!.logicalPath
+    )).toEqual([expect.objectContaining({
+      path: "pages/guides/overview.md",
+      checksumSha256: "9".repeat(64),
+      byteCount: 99
+    })]);
 
     const result = await renderer.render({
       publicId: "scope-pages-guides",
