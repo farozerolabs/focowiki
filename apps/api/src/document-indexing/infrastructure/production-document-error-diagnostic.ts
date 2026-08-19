@@ -44,6 +44,23 @@ export function isRetryable(code: string): boolean {
   ].includes(code);
 }
 
+export function isAutomaticallyRetryable(
+  error: unknown,
+  code: string
+): boolean {
+  if (typeof error === "object" && error !== null && "retryable" in error
+    && typeof error.retryable === "boolean") {
+    return error.retryable;
+  }
+  return ![
+    "semantic_generation_request_rejected",
+    "semantic_generation_request_forbidden",
+    "semantic_generation_configuration_invalid",
+    "semantic_generation_output_invalid",
+    "INVALID_CHUNK_TEXT"
+  ].includes(code);
+}
+
 export function planDocumentFailureRetry(input: {
   error: unknown;
   attemptCount: number;
@@ -51,7 +68,8 @@ export function planDocumentFailureRetry(input: {
 }): { retryable: boolean; nextAttemptAt: string | null } {
   const code = safeErrorCode(input.error);
   const retryable = isRetryable(code);
-  const automaticRetry = retryable && ![
+  const automaticRetry = retryable
+    && isAutomaticallyRetryable(input.error, code) && ![
     "generated_root",
     "immutable_bundle_conflict"
   ].includes(code);

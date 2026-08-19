@@ -59,11 +59,14 @@ export function semanticChunkManifestHash(
 
 function selectBoundary(markdown: string, start: number, hardEnd: number): number {
   const minimum = start + Math.floor((hardEnd - start) * 0.6);
-  const paragraph = markdown.lastIndexOf("\n\n", hardEnd);
+  const paragraph = markdown.lastIndexOf("\n\n", hardEnd - 2);
   if (paragraph >= minimum) return paragraph + 2;
-  const line = markdown.lastIndexOf("\n", hardEnd);
+  const line = markdown.lastIndexOf("\n", hardEnd - 1);
   if (line >= minimum) return line + 1;
-  if (isHighSurrogate(markdown.charCodeAt(hardEnd - 1))) return hardEnd - 1;
+  if (hardEnd - 1 > start
+    && isHighSurrogate(markdown.charCodeAt(hardEnd - 1))) {
+    return hardEnd - 1;
+  }
   return hardEnd;
 }
 

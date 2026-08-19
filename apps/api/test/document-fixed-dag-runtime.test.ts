@@ -170,6 +170,62 @@ describe("fixed document DAG runtime", () => {
     expect(maximumConcurrentClaims).toBe(1);
   });
 
+  it("rotates claim priority so a shared resource lane cannot starve", async () => {
+    const controller = new AbortController();
+    const claimedKinds: string[] = [];
+    const noWorkHandler = async () => ({
+      key: "source",
+      outputFingerprintSha256: "b".repeat(64),
+      value: {},
+      serviceEndedAt: "2026-08-15T00:00:01.000Z"
+    });
+    const runtime = createDocumentFixedDagRuntime({
+      workerId: "worker-1",
+      leaseDurationMs: 60_000,
+      heartbeatIntervalMs: 10_000,
+      scheduler: {
+        async claimOne(request) {
+          claimedKinds.push(request.kind);
+          if (claimedKinds.length === 16) controller.abort();
+          return null;
+        },
+        release() {}
+      },
+      work: {
+        async complete() { return true; },
+        async heartbeat() { return true; },
+        async fail() { return "error"; },
+        async recoverExpired() { return 0; }
+      },
+      handlers: {
+        prepare: noWorkHandler,
+        first_layer: noWorkHandler,
+        content_projection: noWorkHandler,
+        graphrag: noWorkHandler,
+        relation_reconcile: noWorkHandler,
+        knowledge_projection: noWorkHandler,
+        activate: noWorkHandler,
+        cleanup: noWorkHandler
+      },
+      now: () => "2026-08-15T00:00:01.000Z",
+      wait: async () => undefined,
+      classifyError() {
+        return { code: "UNEXPECTED", safeMessage: null, retryable: false };
+      }
+    });
+
+    await runtime.run(controller.signal);
+
+    expect(claimedKinds.slice(0, 8)).toEqual([
+      "prepare", "first_layer", "content_projection", "graphrag",
+      "relation_reconcile", "activate", "knowledge_projection", "cleanup"
+    ]);
+    expect(claimedKinds.slice(8, 16)).toEqual([
+      "first_layer", "content_projection", "graphrag", "relation_reconcile",
+      "activate", "knowledge_projection", "cleanup", "prepare"
+    ]);
+  });
+
   it("drains activation before admitting another knowledge projection", async () => {
     const controller = new AbortController();
     const claimedKinds: string[] = [];
@@ -405,6 +461,46 @@ describe("fixed document DAG runtime", () => {
           code: "GENERATION_PROVIDER_UNAVAILABLE",
           safeMessage: null,
           retryable: true
+        };
+      },
+      retryDelayMs: () => 2_000
+    });
+
+    await expect(runtime.runOne("first_layer", new AbortController().signal))
+      .resolves.toBe(true);
+    expect(fail).toHaveBeenCalledWith(expect.objectContaining({
+      retryable: true,
+      nextEligibleAt: null
+    }));
+  });
+
+  it("keeps manual retry without scheduling a permanent provider failure", async () => {
+    const fail = vi.fn(async () => "error" as const);
+    const runtime = createDocumentFixedDagRuntime({
+      workerId: "worker-1",
+      leaseDurationMs: 60_000,
+      heartbeatIntervalMs: 10_000,
+      scheduler: {
+        async claimOne() { return work; },
+        release() {}
+      },
+      work: {
+        async complete() { return true; },
+        async heartbeat() { return true; },
+        fail,
+        async recoverExpired() { return 0; }
+      },
+      handlers: {
+        async first_layer() { throw new Error("permanent provider failure"); }
+      },
+      now: () => "2026-08-15T00:00:01.000Z",
+      wait: async () => undefined,
+      classifyError() {
+        return {
+          code: "semantic_generation_request_rejected",
+          safeMessage: null,
+          retryable: true,
+          automaticRetry: false
         };
       },
       retryDelayMs: () => 2_000

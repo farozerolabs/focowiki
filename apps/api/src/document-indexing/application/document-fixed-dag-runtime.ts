@@ -74,6 +74,7 @@ export function createDocumentFixedDagRuntime(input: {
     code: string;
     safeMessage: string | null;
     retryable: boolean;
+    automaticRetry?: boolean;
   };
   retryDelayMs?(attemptCount: number): number;
   idlePollIntervalMs?: number;
@@ -92,6 +93,7 @@ export function createDocumentFixedDagRuntime(input: {
 }) {
   validateRuntimeInput(input);
   const active = new Set<Promise<void>>();
+  let claimOrderOffset = 0;
 
   async function runOne(
     kind: DocumentWorkKind,
@@ -220,7 +222,7 @@ export function createDocumentFixedDagRuntime(input: {
         return;
       }
       releasePrimaryLane(adaptiveOutcome(diagnostic.code));
-      const automaticRetry = diagnostic.retryable
+      const automaticRetry = (diagnostic.automaticRetry ?? diagnostic.retryable)
         && claimed.attemptCount < claimed.maximumAttempts;
       const delay = automaticRetry
         ? (input.retryDelayMs?.(claimed.attemptCount) ?? 1_000)
@@ -271,10 +273,14 @@ export function createDocumentFixedDagRuntime(input: {
           nextRecoveryAt = now + recoveryIntervalMs;
         }
         let launched = false;
-        for (const kind of DOCUMENT_WORK_CLAIM_ORDER) {
+        for (let index = 0; index < DOCUMENT_WORK_CLAIM_ORDER.length; index += 1) {
+          const kind = DOCUMENT_WORK_CLAIM_ORDER[
+            (claimOrderOffset + index) % DOCUMENT_WORK_CLAIM_ORDER.length
+          ]!;
           const result = await claimAndLaunch(kind, signal);
           launched ||= result !== null;
         }
+        claimOrderOffset = (claimOrderOffset + 1) % DOCUMENT_WORK_CLAIM_ORDER.length;
         if (!launched && !signal.aborted) {
           await input.wait(idlePollIntervalMs, signal);
         }
