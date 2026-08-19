@@ -49,7 +49,7 @@ OPENSEARCH_AUTH_MODE=basic
 OPENSEARCH_ADMIN_PASSWORD=<generate-an-opensearch-admin-password>
 ```
 
-无需手工准备 TLS 文件。模板附带的 OpenSearch 启动前，`search-init` 会创建当前部署独有的私有 CA 和证书、完整的 OpenSearch Security 配置，以及恰好两个内部身份：配置的管理员和一个只允许访问 `SEARCH_INDEX_PREFIX` 的随机运行身份。私有安全状态保存在 `./opensearch-security`，运行密码和可信 CA 保存在 `./runtime-secrets`。以后每次重启都会原样复用完整且有效的文件。文件缺失、残缺、损坏、权限不安全、接近到期或与当前配置不匹配时，服务会拒绝启动，不会替换部署身份。OpenSearch 的演示安装程序在整个启动过程中始终关闭。
+无需手工准备 TLS 文件。模板附带的 OpenSearch 启动前，`search-init` 会把 `./data/opensearch` 调整为容器可写，创建当前部署独有的私有 CA 和证书、完整的 OpenSearch Security 配置，以及恰好两个内部身份：配置的管理员和一个只允许访问 `SEARCH_INDEX_PREFIX` 的随机运行身份。私有安全状态保存在 `./opensearch-security`，运行密码和可信 CA 保存在 `./runtime-secrets`。以后每次重启都会原样复用完整且有效的文件。文件缺失、残缺、损坏、权限不安全、接近到期或与当前配置不匹配时，服务会拒绝启动，不会替换部署身份。OpenSearch 的演示安装程序在整个启动过程中始终关闭。模板管理的数据目录无需手工执行 `chown`。
 
 API 和工作进程只会收到生成的运行身份和可信 CA，不会收到管理员密码或私钥。选择 Meilisearch Compose 配置组时，同一个 `search-init` 服务会准备 Meilisearch 的运行访问。
 
@@ -73,7 +73,7 @@ MEILI_HOST=http://meilisearch:7700
 | `migrate` | 在应用服务启动前检查并更新数据库。 |
 | `postgres` | PostgreSQL 数据库。 |
 | `redis` | Redis 服务。 |
-| `search-init` | 准备选中的模板附带搜索服务；使用 OpenSearch 时，会在其启动前生成或校验 TLS、内部身份和受前缀限制的权限。 |
+| `search-init` | 准备选中的模板附带搜索服务；使用 OpenSearch 时，会在其启动前准备数据目录，并生成或校验 TLS、内部身份和受前缀限制的权限。 |
 | `opensearch` | 模板附带的 OpenSearch 3.8.0，通过 `COMPOSE_PROFILES=opensearch` 启用。 |
 | `meilisearch` | 模板附带的 Meilisearch 备选服务，通过 `COMPOSE_PROFILES=meilisearch` 启用。 |
 
