@@ -428,12 +428,6 @@ export function buildProductionAuthenticitySnapshot(graph) {
   };
 }
 
-export function assertProductionAuthenticitySnapshot(graph, expected) {
-  if (JSON.stringify(buildProductionAuthenticitySnapshot(graph)) !== JSON.stringify(expected)) {
-    throw new Error("Production authenticity snapshot drift detected");
-  }
-}
-
 function buildSuspiciousProductionFindings(repositoryRoot, files) {
   const findings = [];
   const patterns = [

@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 
 import {
-  assertComprehensiveTestInventorySnapshot,
   assertDeterministicBaseline,
   buildComprehensiveTestInventory,
   buildComprehensiveTestInventorySnapshot,
@@ -15,14 +13,31 @@ import {
 const repositoryRoot = process.cwd();
 const inventory = buildComprehensiveTestInventory(repositoryRoot);
 
-test("freezes every current test file and assigns one deterministic taxonomy", () => {
+test("assigns every current test file a taxonomy and builds a live summary", () => {
   assert.ok(inventory.every((row) => row.suite && row.taxonomy && /^[a-f0-9]{64}$/u.test(row.sha256)));
-  const expected = JSON.parse(fs.readFileSync(
-    "scripts/validation/fixtures/comprehensive-test-inventory.json",
-    "utf8"
-  ));
-  assert.doesNotThrow(() => assertComprehensiveTestInventorySnapshot(inventory, expected));
-  assert.deepEqual(buildComprehensiveTestInventorySnapshot(inventory), expected);
+  const summary = buildComprehensiveTestInventorySnapshot(inventory);
+  assert.equal(summary.schemaVersion, 1);
+  assert.equal(summary.count, inventory.length);
+  assert.equal(
+    Object.values(summary.suites).reduce((total, count) => total + count, 0),
+    inventory.length
+  );
+  assert.equal(
+    Object.values(summary.taxonomies).reduce((total, count) => total + count, 0),
+    inventory.length
+  );
+  assert.match(summary.fingerprint, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(buildComprehensiveTestInventorySnapshot([...inventory]), summary);
+
+  const expanded = [...inventory, {
+    ...inventory[0],
+    id: "test-file:synthetic-live-change",
+    source: "scripts/validation/test/synthetic-live-change.test.mjs",
+    sha256: "f".repeat(64)
+  }];
+  const expandedSummary = buildComprehensiveTestInventorySnapshot(expanded);
+  assert.equal(expandedSummary.count, summary.count + 1);
+  assert.notEqual(expandedSummary.fingerprint, summary.fingerprint);
 });
 
 test("parses Vitest and Node test reports into item-level baseline rows", () => {

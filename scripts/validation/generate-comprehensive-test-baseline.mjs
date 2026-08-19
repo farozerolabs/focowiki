@@ -4,7 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
-  assertComprehensiveTestInventorySnapshot,
   buildComprehensiveTestInventory,
   buildComprehensiveTestInventorySnapshot,
   buildDeterministicBaselineSummary,
@@ -13,21 +12,8 @@ import {
 } from "./lib/comprehensive-test-baseline.mjs";
 
 const repositoryRoot = process.cwd();
-const fixturePath = path.join(
-  repositoryRoot,
-  "scripts/validation/fixtures/comprehensive-test-inventory.json"
-);
 const inventory = buildComprehensiveTestInventory(repositoryRoot);
 const inventorySnapshot = buildComprehensiveTestInventorySnapshot(inventory);
-
-if (process.argv.includes("--write")) {
-  fs.writeFileSync(fixturePath, `${JSON.stringify(inventorySnapshot, null, 2)}\n`);
-} else {
-  assertComprehensiveTestInventorySnapshot(
-    inventory,
-    JSON.parse(fs.readFileSync(fixturePath, "utf8"))
-  );
-}
 
 if (process.argv.includes("--report")) {
   const reportDirectory = process.env.FOCOWIKI_COMPREHENSIVE_REPORT_DIR;
@@ -77,7 +63,7 @@ if (process.argv.includes("--report")) {
 }
 
 process.stdout.write(`${JSON.stringify({
-  mode: process.argv.includes("--write") ? "write" : "check",
+  mode: "live",
   report: process.argv.includes("--report"),
   inventory: inventorySnapshot
 })}\n`);

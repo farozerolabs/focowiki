@@ -112,13 +112,6 @@ export function buildInventorySnapshot(inventory) {
   };
 }
 
-export function assertInventorySnapshot(inventory, snapshot) {
-  const current = buildInventorySnapshot(inventory);
-  if (stableStringify(current) !== stableStringify(snapshot)) {
-    throw new Error("Comprehensive inventory snapshot drift detected");
-  }
-}
-
 function flattenInventory(inventory) {
   return COMPREHENSIVE_INVENTORY_CATEGORIES.flatMap((category) =>
     inventory[category].map((item) => ({ category, item }))

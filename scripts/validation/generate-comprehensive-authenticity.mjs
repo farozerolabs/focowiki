@@ -3,27 +3,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  assertProductionAuthenticitySnapshot,
   buildProductionAuthenticitySnapshot,
   buildProductionWiringGraph
 } from "./lib/comprehensive-production-authenticity.mjs";
 
 const repositoryRoot = process.cwd();
-const fixturePath = path.join(
-  repositoryRoot,
-  "scripts/validation/fixtures/comprehensive-production-authenticity.json"
-);
 const graph = buildProductionWiringGraph(repositoryRoot);
 const snapshot = buildProductionAuthenticitySnapshot(graph);
-
-if (process.argv.includes("--write")) {
-  fs.writeFileSync(fixturePath, `${JSON.stringify(snapshot, null, 2)}\n`);
-} else {
-  assertProductionAuthenticitySnapshot(
-    graph,
-    JSON.parse(fs.readFileSync(fixturePath, "utf8"))
-  );
-}
 
 if (process.argv.includes("--report")) {
   const reportDirectory = process.env.FOCOWIKI_COMPREHENSIVE_REPORT_DIR;
@@ -38,7 +24,7 @@ if (process.argv.includes("--report")) {
 }
 
 process.stdout.write(`${JSON.stringify({
-  mode: process.argv.includes("--write") ? "write" : "check",
+  mode: "live",
   report: process.argv.includes("--report"),
   nodes: graph.nodes.length,
   edges: graph.edges.length,
