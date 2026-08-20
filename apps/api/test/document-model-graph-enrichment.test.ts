@@ -120,7 +120,7 @@ describe("document model and file-graph enrichment", () => {
         target: "01_constitution/constitution.md",
         targetSourceFilePublicId: "source-file-constitution",
         relationType: "version_relation",
-        confidence: 0.94,
+        confidence: 0.9,
         source: "model_confirmed"
       })
     ]);
@@ -276,7 +276,7 @@ describe("document model and file-graph enrichment", () => {
       targetSourceFilePublicId: "source-file-constitution",
       relationType: "version_relation",
       source: "model_confirmed",
-      confidence: 0.96
+      confidence: 0.9
     })]);
     expect(confirm).toHaveBeenCalledOnce();
     expect(confirm.mock.calls[0]![0].candidates).toHaveLength(1);

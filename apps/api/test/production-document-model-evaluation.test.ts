@@ -10,6 +10,8 @@ import { createDocumentResourcePermits } from
 import { buildSourceContentProfile } from "../src/graph/content-profile.js";
 import { createProductionDocumentModelEvaluation } from
   "../src/document-indexing/infrastructure/production-document-model-evaluation.js";
+import { assertRelationshipConfirmationSucceeded } from
+  "../src/document-indexing/infrastructure/document-model-evaluation-validation.js";
 import {
   documentCandidateTokenMap,
   resolveDocumentCandidateConfirmations
@@ -17,16 +19,28 @@ import {
 import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
 
 describe("production document model evaluation reuse", () => {
-  it("reuses one combined analysis and an evidence-accurate relationship refinement", async () => {
+  it("does not treat provider warnings as a successful empty relationship set", () => {
+    expect(() => assertRelationshipConfirmationSucceeded({
+      warnings: ["Model response idle timeout reached"],
+      providerRequestCount: 1
+    })).toThrow(expect.objectContaining({
+      code: "MODEL_RELATIONSHIP_CONFIRMATION_FAILED"
+    }));
+    expect(() => assertRelationshipConfirmationSucceeded({
+      warnings: [],
+      providerRequestCount: 1
+    })).not.toThrow();
+  });
+
+  it("reuses source analysis and evidence-accurate relationship refinement", async () => {
     const repository = memoryRepository();
     const create = vi.fn(async (request: ChatCompletionsJsonRequest): Promise<unknown> => ({
       id: "provider-request-a",
       choices: [{ finish_reason: "stop", message: { content: JSON.stringify(
-        request.messages[0]?.content.includes("relationship reviewer")
+        request.messages[0]?.content.includes("Review relationships")
           ? { relationships: [{
               candidateId: "candidate-0001",
               relationType: "direct_reference",
-              confidence: 0.92,
               reason: "The maintenance guide is visibly referenced."
             }] }
           : {
@@ -37,7 +51,6 @@ describe("production document model evaluation reuse", () => {
           tags: ["climate"],
           keywords: ["maintenance"]
         },
-        relationships: []
       }) } }],
       usage: { prompt_tokens: 120, completion_tokens: 24 }
     }));
@@ -140,12 +153,12 @@ describe("production document model evaluation reuse", () => {
     expect(revisedRelationshipRequest).not.toContain("FIRST_LAYER_BODY_ONLY_SENTINEL");
   });
 
-  it("evaluates every relationship candidate in bounded provider batches", async () => {
+  it("evaluates only the ten highest-ranked relationship candidates", async () => {
     const repository = memoryRepository();
     const create = vi.fn(async (request: ChatCompletionsJsonRequest): Promise<unknown> => ({
       id: `provider-request-${create.mock.calls.length}`,
       choices: [{ finish_reason: "stop", message: { content: JSON.stringify(
-        request.messages[0]?.content.includes("relationship reviewer")
+        request.messages[0]?.content.includes("Review relationships")
           ? { relationships: [] }
           : {
               suggestions: {
@@ -154,8 +167,7 @@ describe("production document model evaluation reuse", () => {
                 description: "Operations guidance.",
                 tags: ["climate"],
                 keywords: ["maintenance"]
-              },
-              relationships: []
+              }
             }
       ) } }],
       usage: { prompt_tokens: 120, completion_tokens: 24 }
@@ -195,11 +207,14 @@ describe("production document model evaluation reuse", () => {
       firstLayer: { providerRequestCount: 1 },
       candidateDelta: {
         providerRequestCount: 1,
-        evaluatedDecisionCount: 33
+        evaluatedDecisionCount: 10
       }
     });
-    expect(result.confirmations).toHaveLength(33);
+    expect(result.confirmations).toHaveLength(10);
     expect(result.confirmations.every((item) => item.accepted === false)).toBe(true);
+    const relationshipRequest = JSON.stringify(create.mock.calls[1]![0]);
+    expect(relationshipRequest).toContain("candidate-0010");
+    expect(relationshipRequest).not.toContain("candidate-0011");
   });
 
   it("maps model-selected candidate ids without using titles as identity", () => {
