@@ -170,7 +170,7 @@ export function validateStorageVnextRuntimeSettingsCandidate(input: {
     "search",
     issues
   );
-  integerRange(search, "maxInFlightTasks", 1, 32, "search", issues);
+  positiveInteger(search, "maxInFlightTasks", "search", issues);
   integerRange(search, "cleanupBatchSize", 1, 5_000, "search", issues);
   integerRange(
     semantic,

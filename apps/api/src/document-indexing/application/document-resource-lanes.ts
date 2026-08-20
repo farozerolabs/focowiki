@@ -67,7 +67,13 @@ export function createDocumentResourceLanes(input: {
       return releaseOnce(kind);
     }
     if (lane.waiters.length >= input.maximumWaitersPerLane) {
-      throw new Error(`DOCUMENT_RESOURCE_WAITER_LIMIT_EXCEEDED:${kind}`);
+      throw Object.assign(
+        new Error(`Document resource lane is saturated: ${kind}`),
+        {
+          code: "DOCUMENT_RESOURCE_LANE_SATURATED",
+          resourceLane: kind
+        }
+      );
     }
     return new Promise((resolve, reject) => {
       const waiter: LaneWaiter = { resolve, reject, signal, abort: null };

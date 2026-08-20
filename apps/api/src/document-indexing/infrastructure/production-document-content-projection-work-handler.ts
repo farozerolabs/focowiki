@@ -125,7 +125,6 @@ export function createProductionDocumentContentProjectionWorkHandler(input: {
         signal: request.signal
       }))
     );
-    request.releasePrimaryLane();
     const searchConfig = input.config.search;
     if (!searchConfig) throw processorError("search_configuration_missing");
     const projection = await readSearchProjection(input.sql, {

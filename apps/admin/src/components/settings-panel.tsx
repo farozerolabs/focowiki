@@ -1373,7 +1373,6 @@ function buildSearchSettings(input: EditableSearchSettings): SearchSettings | nu
     || settings.indexBatchDocumentCount > 10_000
     || settings.indexBatchCompressedBytes < 65_536
     || settings.indexBatchCompressedBytes > 33_554_432
-    || settings.maxInFlightTasks > 32
     || settings.taskPollIntervalMs < 100
     || settings.taskPollIntervalMs > 30_000
     || settings.taskTimeoutMs < 10_000
@@ -1521,7 +1520,9 @@ function buildNumberRecord<TField extends string>(
 }
 
 function readRequiredInteger(value: EditableNumber, min = 1): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= min ? value : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= min
+    ? value
+    : null;
 }
 
 function createEmptyModelForm(): EditableModelForm {

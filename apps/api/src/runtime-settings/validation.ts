@@ -158,7 +158,6 @@ export function validateSearchSettings(input: unknown): RuntimeSettingsValidatio
     33_554_432,
     issues
   );
-  validateIntegerRange(value, "maxInFlightTasks", 1, 32, issues);
   validateIntegerRange(value, "taskPollIntervalMs", 100, 30_000, issues);
   validateIntegerRange(value, "taskTimeoutMs", 10_000, 3_600_000, issues);
   validateIntegerRange(value, "maxAttempts", 1, 20, issues);
@@ -552,7 +551,7 @@ function requirePositiveInteger(
   field: string,
   issues: RuntimeSettingsValidationIssue[]
 ) {
-  if (!Number.isInteger(value) || Number(value) <= 0) {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
     issues.push({ field, message: `${field} must be a positive integer` });
   }
 }
@@ -562,7 +561,7 @@ function requireNonNegativeInteger(
   field: string,
   issues: RuntimeSettingsValidationIssue[]
 ) {
-  if (!Number.isInteger(value) || Number(value) < 0) {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
     issues.push({ field, message: `${field} must be a non-negative integer` });
   }
 }
@@ -572,7 +571,7 @@ function requireInteger(
   field: string,
   issues: RuntimeSettingsValidationIssue[]
 ) {
-  if (!Number.isInteger(value)) {
+  if (!Number.isSafeInteger(value)) {
     issues.push({ field, message: `${field} must be an integer` });
   }
 }

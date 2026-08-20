@@ -38,9 +38,7 @@ describe("storage vNext runtime settings aggregate capacity", () => {
 
   it.each([
     ["database", { maintenance: { hardDeleteConcurrency: 4 } }, "databaseCapacity"],
-    ["search", { search: { maxInFlightTasks: 4 } }, "searchCapacity"],
     ["object-store", { maintenance: { hardDeleteConcurrency: 4 } }, "objectStoreCapacity"],
-    ["memory", { search: { indexBatchCompressedBytes: 101 } }, "memoryCapacity"],
     ["CPU", { maintenance: { hardDeleteConcurrency: 5 } }, "cpuCapacity"]
   ] as const)("rejects aggregate %s pressure", (_plane, overrides, field) => {
     expect(validateCapacity).toBeTypeOf("function");
@@ -50,6 +48,15 @@ describe("storage vNext runtime settings aggregate capacity", () => {
       capacity: capacity()
     });
     expect(issues).toContainEqual(expect.objectContaining({ field }));
+  });
+
+  it("does not impose a static deployment ceiling on search concurrency", () => {
+    expect(validateCapacity).toBeTypeOf("function");
+    if (!validateCapacity) return;
+    expect(validateCapacity({
+      snapshot: merge(snapshot(), { search: { maxInFlightTasks: 128 } }),
+      capacity: capacity()
+    })).toEqual([]);
   });
 
   it("keeps the active document window independent from phase resource capacity", () => {
@@ -113,9 +120,7 @@ function snapshot(): Record<string, unknown> {
 function capacity(): Record<string, number> {
   return {
     databaseConnections: 4,
-    searchTasks: 3,
     objectStoreRequests: 4,
-    memoryBytes: 300,
     cpuConcurrency: 5
   };
 }

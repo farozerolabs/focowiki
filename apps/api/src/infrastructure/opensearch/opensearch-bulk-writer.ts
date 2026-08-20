@@ -242,7 +242,6 @@ function assertLimits(limits: BulkLimits): void {
   }
   if (
     limits.maximumDocuments > 10_000
-    || limits.maximumInFlight > 100
     || limits.maximumAttempts > 20
     || limits.maximumBytes > 100_000_000
     || limits.deadlineMs > 3_600_000

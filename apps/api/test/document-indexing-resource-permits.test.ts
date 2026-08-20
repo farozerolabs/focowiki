@@ -6,7 +6,8 @@ import { createDocumentResourcePermits } from
 import {
   deriveDocumentResourceCapacities,
   resolveDocumentFinalizationCapacity,
-  resolveDocumentProjectionCapacities
+  resolveDocumentProjectionCapacities,
+  resolveDocumentResourceLaneCapacities
 } from
   "../src/document-indexing/application/document-resource-capacity.js";
 
@@ -40,6 +41,23 @@ describe("document resource permits", () => {
     expect(resolveDocumentProjectionCapacities({ documentConcurrency: 1 }))
       .toEqual({ documentPreparation: 1, scopeProjection: 1 });
   });
+
+  it("bounds configured search concurrency by the active document window", () => {
+    const input = {
+      documentConcurrency: 24,
+      sourceObjectReadConcurrency: 16,
+      generationModelConcurrency: 10,
+      graphRagConcurrency: 2,
+      embeddingConcurrency: 6,
+      databaseConnectionLimit: 12,
+      searchConcurrency: 128
+    };
+    expect(resolveDocumentResourceLaneCapacities(input).search_transport)
+      .toBe(24);
+    expect(deriveDocumentResourceCapacities(input).capacities.search_provider)
+      .toBe(24);
+  });
+
   it("bounds the same provider while independent resources continue", async () => {
     const permits = createDocumentResourcePermits({
       capacities: {
@@ -167,6 +185,11 @@ describe("document resource permits", () => {
     ]) {
       expect(`${resourceMap}\n${nestedHandlers}`, lane).toContain(`"${lane}"`);
     }
+    const contentProjection = readFileSync(resolve(
+      import.meta.dirname,
+      "../src/document-indexing/infrastructure/production-document-content-projection-work-handler.ts"
+    ), "utf8");
+    expect(contentProjection).not.toContain("request.releasePrimaryLane();");
   });
 });
 

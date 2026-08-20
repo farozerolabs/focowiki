@@ -66,7 +66,10 @@ export function resolveDocumentResourceLaneCapacities(
     generation_model: input.generationModelConcurrency,
     graphrag_adapter: input.graphRagConcurrency,
     embedding: input.embeddingConcurrency,
-    search_transport: input.searchConcurrency,
+    search_transport: Math.min(
+      input.searchConcurrency,
+      input.documentConcurrency
+    ),
     projection: projection.documentPreparation,
     activation: resolveDocumentFinalizationCapacity(input),
     cleanup: 1
@@ -79,10 +82,14 @@ export function deriveDocumentResourceCapacities(
   capacities: Record<DocumentResourceKind, number>;
   maximumWaitersPerResource: number;
 } {
-  for (const [name, value] of Object.entries(input)) {
+  const { searchConcurrency, ...boundedInput } = input;
+  for (const [name, value] of Object.entries(boundedInput)) {
     if (!Number.isSafeInteger(value) || value < 1 || value > 1_000) {
       throw new Error(`Document resource capacity input is invalid: ${name}`);
     }
+  }
+  if (!Number.isSafeInteger(searchConcurrency) || searchConcurrency < 1) {
+    throw new Error("Document resource capacity input is invalid: searchConcurrency");
   }
   const foregroundDatabaseConnections = Math.max(
     1,
@@ -95,7 +102,10 @@ export function deriveDocumentResourceCapacities(
       embedding: input.embeddingConcurrency,
       database_mutation: foregroundDatabaseConnections,
       generated_object_write: input.sourceObjectReadConcurrency,
-      search_provider: input.searchConcurrency
+      search_provider: Math.min(
+        searchConcurrency,
+        input.documentConcurrency
+      )
     },
     maximumWaitersPerResource: input.documentConcurrency * 4
   };

@@ -9,6 +9,16 @@ import { createStorageVnextContentDocument } from
   "../src/storage-vnext/search/documents.js";
 
 describe("OpenSearch bulk writer", () => {
+  it("accepts configured concurrency without a fixed product ceiling", async () => {
+    const client = createClient();
+    const write = createWriter(client, { maximumInFlight: 128 });
+    await expect(write({
+      indexUid: "owned_candidate",
+      documents: documents(1),
+      correlation: "unbounded-concurrency"
+    })).resolves.toEqual({ state: "completed" });
+  });
+
   it("partitions writes by both document count and NDJSON bytes", async () => {
     const countClient = createClient();
     const countWriter = createWriter(countClient, {
