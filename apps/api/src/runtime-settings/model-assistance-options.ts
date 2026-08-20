@@ -3,6 +3,8 @@ import type {
   OpenAIModelClient
 } from "@focowiki/okf";
 import type { BoundedTaskRunner } from "../runtime/task-runner.js";
+import type { ProviderRequestFailureReporter } from
+  "../semantic/provider-request-failure.js";
 import type { ModelApiMode } from "./types.js";
 
 export type ModelAssistanceOptions = {
@@ -15,4 +17,5 @@ export type ModelAssistanceOptions = {
   suggestionConcurrency: number;
   transientRetryDelayMs: number;
   requestRunner?: BoundedTaskRunner | undefined;
+  onProviderFailure?: ProviderRequestFailureReporter | undefined;
 };

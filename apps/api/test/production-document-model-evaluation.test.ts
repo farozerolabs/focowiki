@@ -190,11 +190,11 @@ describe("production document model evaluation reuse", () => {
 
     const result = await evaluation.analyze(request);
 
-    expect(create).toHaveBeenCalledTimes(4);
+    expect(create).toHaveBeenCalledTimes(2);
     expect(result.execution).toMatchObject({
       firstLayer: { providerRequestCount: 1 },
       candidateDelta: {
-        providerRequestCount: 3,
+        providerRequestCount: 1,
         evaluatedDecisionCount: 33
       }
     });

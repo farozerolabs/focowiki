@@ -40,6 +40,8 @@ import { metadataAliases } from "./production-document-metadata.js";
 import { documentJobContextFromWork } from "./production-document-first-layer-work-handler.js";
 import { isDocumentPathOnlyOperation } from "./production-document-prepared-source-reuse.js";
 import { resolvePinnedModelAssistance } from "./production-document-processor-support.js";
+import type { ProviderRequestFailureReporter } from
+  "../../semantic/provider-request-failure.js";
 
 export function createProductionDocumentRelationReconcileWorkHandler(input: {
   contexts: ReturnType<typeof createPostgresDocumentWorkContext>;
@@ -53,6 +55,7 @@ export function createProductionDocumentRelationReconcileWorkHandler(input: {
   modelEvaluations: ReturnType<typeof createPostgresDocumentModelEvaluationRepository>;
   generation: WeightedGenerationTaskRunner;
   deploymentSecret: string;
+  onProviderFailure?: ProviderRequestFailureReporter;
   pairs: ReturnType<typeof createPostgresRelationPairRepository>;
   now?: () => string;
 }) {
@@ -199,6 +202,7 @@ export function createProductionDocumentRelationReconcileWorkHandler(input: {
           limit: settings.graph.acceptedEdgeLimit
         }) : [];
     const pairs = new Set<string>();
+    const relations = new Set<string>();
     const affectedSources = new Set([request.claimed.sourceFilePublicId, ...priorActiveNeighbors]);
     const stageRelation = async (relation: StagedRelation) => {
       if (relation.sourceFilePublicId === relation.targetSourceFilePublicId) return;
@@ -216,12 +220,13 @@ export function createProductionDocumentRelationReconcileWorkHandler(input: {
         pairPublicId,
         ...relation
       });
-      await input.pairs.stageCanonical({
+      const relationPublicId = await input.pairs.stageCanonical({
         pairPublicId,
         relationKind: relation.relationKind,
         now: clock()
       });
       pairs.add(pairPublicId);
+      relations.add(relationPublicId);
       affectedSources.add(relation.sourceFilePublicId);
       affectedSources.add(relation.targetSourceFilePublicId);
     };
@@ -257,6 +262,7 @@ export function createProductionDocumentRelationReconcileWorkHandler(input: {
       value: {
         schemaVersion: "document-relation-reconciliation-receipt-v1",
         pairPublicIds: [...pairs].sort(),
+        relationPublicIds: [...relations].sort(),
         affectedSourceFilePublicIds: [...affectedSources].sort(),
         dirtyScopeCount: 0,
         unresolvedCount,
@@ -312,7 +318,10 @@ async function evaluateHybridRelationshipDelta(input: {
   const assistance = await resolvePinnedModelAssistance({
     repository: input.dependencies.modelRevisions,
     deploymentSecret: input.dependencies.deploymentSecret,
-    job
+    job,
+    ...(input.dependencies.onProviderFailure
+      ? { onProviderFailure: input.dependencies.onProviderFailure }
+      : {})
   });
   const source = {
     fileId: request.claimed.sourceFilePublicId,

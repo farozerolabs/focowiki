@@ -14,6 +14,7 @@ export function runDocumentGeneration<TResult>(
   operation: () => Promise<TResult>,
   options: {
     signal?: AbortSignal;
+    ownerKey?: string;
     onMetric(metric: { waitTimeMs: number; serviceTimeMs: number }): void;
   }
 ): Promise<TResult> {

@@ -26,6 +26,8 @@ cp .env.example .env
 
 Focowiki 会把运行日志写入 `./logs`，同时继续向容器的标准输出和标准错误流写入日志。每个 Compose 服务的 Docker 日志单文件上限为 `10m`，最多保留 `3` 个文件。
 
+上传或文档入库阶段失败时会记录 `ingestion.stage_failed`。生成模型、嵌入模型和重排模型请求失败时还会记录 `provider.request_failed`；可用字段包括服务类型、请求模式、模型名称、HTTP 状态、服务商请求 ID、重试提示和经过清洗的标准错误字段。日志不会记录凭据、Markdown 正文、Prompt、向量或未经处理的服务商原始响应。
+
 生产 Compose 模板把 PostgreSQL 数据保存在 `./data/postgres`，Redis 数据保存在 `./data/redis`，模板附带的 OpenSearch 数据保存在 `./data/opensearch`，OpenSearch TLS 状态保存在 `./opensearch-security`，模板附带的 Meilisearch 数据保存在 `./data/meilisearch`，Meilisearch 备份保存在 `./data/meilisearch-snapshots` 和 `./data/meilisearch-dumps`，运行凭据保存在 `./runtime-secrets`。迁移或备份部署时需要保留所选搜索服务使用的目录。
 
 ## 部署镜像

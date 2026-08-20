@@ -1,4 +1,10 @@
 import type { RerankerAuthenticationMode } from "./configuration.js";
+import {
+  providerFailureFromError,
+  providerFailureFromResponse,
+  reportProviderFailureOnce,
+  type ProviderRequestFailureReporter
+} from "../provider-request-failure.js";
 
 const DEFAULT_MAXIMUM_PAYLOAD_BYTES = 262_144;
 const DEFAULT_MAXIMUM_RESPONSE_BYTES = 262_144;
@@ -37,6 +43,7 @@ export function createOpenAiCompatibleRerankerTransport(input: {
   fetchImpl?: typeof fetch;
   maximumPayloadBytes?: number;
   maximumResponseBytes?: number;
+  onFailure?: ProviderRequestFailureReporter;
 } = {}): RerankerTransport {
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
   const maximumPayloadBytes = input.maximumPayloadBytes
@@ -48,6 +55,9 @@ export function createOpenAiCompatibleRerankerTransport(input: {
   return {
     async rerank(request) {
       assertRequest(request);
+      const endpoint = rerankUrl(request.baseUrl);
+      let providerResponse: Response | null = null;
+      let failureReported = false;
       const body = JSON.stringify({
         model: request.modelName,
         query: request.query,
@@ -75,7 +85,7 @@ export function createOpenAiCompatibleRerankerTransport(input: {
           headers.authorization = `Bearer ${request.apiKey}`;
         }
         const response = await fetchImpl(
-          rerankUrl(request.baseUrl),
+          endpoint,
           {
             method: "POST",
             headers,
@@ -83,7 +93,21 @@ export function createOpenAiCompatibleRerankerTransport(input: {
             signal
           }
         );
-        if (!response.ok) throw httpError(response.status);
+        providerResponse = response;
+        if (!response.ok) {
+          reportProviderFailureOnce(
+            input.onFailure,
+            await providerFailureFromResponse({
+              providerKind: "reranker",
+              apiMode: "rerank",
+              baseUrl: endpoint.href,
+              modelName: request.modelName
+            }, response),
+            response
+          );
+          failureReported = true;
+          throw httpError(response.status);
+        }
         const declaredBytes = Number(response.headers.get("content-length"));
         if (Number.isFinite(declaredBytes) && declaredBytes > maximumResponseBytes) {
           throw transportError("response_too_large", false);
@@ -100,11 +124,40 @@ export function createOpenAiCompatibleRerankerTransport(input: {
         }
         return { scores: parseScores(payload, request.documents.length) };
       } catch (error) {
-        if (error instanceof RerankerTransportError) throw error;
-        if (signal.aborted) {
-          throw transportError(request.signal?.aborted ? "aborted" : "timeout", false);
+        if (error instanceof RerankerTransportError) {
+          if (!failureReported && error.code !== "aborted") {
+            reportProviderFailureOnce(input.onFailure, providerFailureFromError({
+              providerKind: "reranker",
+              apiMode: "rerank",
+              baseUrl: endpoint.href,
+              modelName: request.modelName
+            }, error, providerResponse), error);
+          }
+          throw error;
         }
-        throw transportError("provider_unavailable", true);
+        if (signal.aborted) {
+          const normalized = transportError(
+            request.signal?.aborted ? "aborted" : "timeout",
+            false
+          );
+          if (normalized.code !== "aborted") {
+            reportProviderFailureOnce(input.onFailure, providerFailureFromError({
+              providerKind: "reranker",
+              apiMode: "rerank",
+              baseUrl: endpoint.href,
+              modelName: request.modelName
+            }, normalized), error);
+          }
+          throw normalized;
+        }
+        const normalized = transportError("provider_unavailable", true);
+        reportProviderFailureOnce(input.onFailure, providerFailureFromError({
+          providerKind: "reranker",
+          apiMode: "rerank",
+          baseUrl: endpoint.href,
+          modelName: request.modelName
+        }, error), error);
+        throw normalized;
       } finally {
         clearTimeout(timer);
       }

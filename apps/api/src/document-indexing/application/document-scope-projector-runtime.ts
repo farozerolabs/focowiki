@@ -70,6 +70,12 @@ export function createDocumentScopeProjectorRuntime<
   now(): string;
   wait(milliseconds: number, signal: AbortSignal): Promise<void>;
   classifyError(error: unknown): { code: string; retryable: boolean };
+  onFailure?(input: {
+    scope: DocumentProjectionScopeClaim;
+    error: unknown;
+    errorCode: string;
+    retryable: boolean;
+  }): void;
   retryDelayMs?(attempt: number): number;
   maximumConcurrency?: number;
   idlePollIntervalMs?: number;
@@ -77,7 +83,7 @@ export function createDocumentScopeProjectorRuntime<
   recoveryLimit?: number;
 }) {
   validateInput(input);
-  const maximumConcurrency = input.maximumConcurrency ?? 4;
+  let maximumConcurrency = input.maximumConcurrency ?? 4;
   const active = new Set<Promise<void>>();
 
   async function runOne(signal: AbortSignal): Promise<boolean> {
@@ -150,11 +156,26 @@ export function createDocumentScopeProjectorRuntime<
           ? null
           : new Date(Date.parse(now) + delay).toISOString()
       });
+      input.onFailure?.({
+        scope,
+        error,
+        errorCode: diagnostic.code,
+        retryable: diagnostic.retryable
+      });
     }
   }
 
   return {
     runOne,
+    maximumConcurrency(): number {
+      return maximumConcurrency;
+    },
+    updateMaximumConcurrency(value: number): void {
+      if (!Number.isSafeInteger(value) || value < 1 || value > 64) {
+        throw projectorError("projection_scope_runtime_configuration_invalid");
+      }
+      maximumConcurrency = value;
+    },
     async run(signal: AbortSignal): Promise<void> {
       const idlePollIntervalMs = input.idlePollIntervalMs ?? 100;
       const recoveryIntervalMs = input.recoveryIntervalMs ?? 5_000;

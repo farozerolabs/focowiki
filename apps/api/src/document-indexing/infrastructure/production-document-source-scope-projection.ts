@@ -20,12 +20,9 @@ export function createProductionDocumentSourceScopeProjection(input: {
   bases: ReturnType<typeof createPostgresGeneratedPageBaseRepository>;
   relations: ReturnType<typeof createPostgresCandidateFileRelationRepository>;
   loadBase: ReturnType<typeof createDocumentPageBaseLoader>;
-  readConcurrency: number;
+  readConcurrency: number | (() => number);
 }): DocumentSourceScopeProjection {
-  if (!Number.isSafeInteger(input.readConcurrency)
-    || input.readConcurrency < 1 || input.readConcurrency > 1_000) {
-    throw sourceProjectionError("source_scope_read_concurrency_invalid");
-  }
+  resolveReadConcurrency(input.readConcurrency);
   return {
     async project(request) {
       const [sourceBase] = await input.bases.listVisibleForSources({
@@ -87,7 +84,7 @@ export function createProductionDocumentSourceScopeProjection(input: {
       ])].sort((left, right) => left.localeCompare(right, "en-US"));
       const sources = await boundedConcurrentMap({
         values: renderableSourceFilePublicIds,
-        concurrency: input.readConcurrency,
+        concurrency: resolveReadConcurrency(input.readConcurrency),
         signal: request.signal,
         map: (sourceFilePublicId) => input.loadBase({
           base: baseBySource.get(sourceFilePublicId)!,
@@ -116,6 +113,14 @@ export function createProductionDocumentSourceScopeProjection(input: {
       };
     }
   };
+}
+
+function resolveReadConcurrency(value: number | (() => number)): number {
+  const resolved = typeof value === "function" ? value() : value;
+  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > 1_000) {
+    throw sourceProjectionError("source_scope_read_concurrency_invalid");
+  }
+  return resolved;
 }
 
 function sourceProjectionError(code: string): Error & { code: string } {

@@ -26,6 +26,18 @@ type DocumentWorkHandler = (input: {
 type RuntimeWorkRepository = Pick<DocumentArtifactWorkRepository,
 "complete" | "heartbeat" | "fail" | "defer" | "recoverExpired">;
 
+export type DocumentWorkRuntimeEvent = {
+  event: "claimed" | "completed" | "waiting_on_projection"
+    | "deferred" | "failed";
+  work: ClaimedDocumentArtifactWork;
+  errorCode: string | null;
+  errorConstraint?: string | null;
+  errorResource?: string | null;
+  errorTarget?: string | null;
+  error?: unknown;
+  retryable?: boolean;
+};
+
 const RECEIPT_KIND_BY_WORK: Record<DocumentWorkKind, DocumentReceiptKind> = {
   prepare: "parsed_source",
   first_layer: "first_layer",
@@ -53,6 +65,14 @@ export function createDocumentFixedDagRuntime(input: {
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   scheduler: {
+    claimAvailable?(request: {
+      kind: DocumentWorkKind;
+      resourceLane: ReturnType<typeof documentWorkResourceLane>;
+      workerId: string;
+      now: string;
+      leaseDurationMs: number;
+      signal?: AbortSignal;
+    }): Promise<readonly ClaimedDocumentArtifactWork[]>;
     claimOne(request: {
       kind: DocumentWorkKind;
       resourceLane: ReturnType<typeof documentWorkResourceLane>;
@@ -69,6 +89,7 @@ export function createDocumentFixedDagRuntime(input: {
   work: RuntimeWorkRepository;
   handlers: Partial<Record<DocumentWorkKind, DocumentWorkHandler>>;
   now(): string;
+  clockMs?(): number;
   wait(milliseconds: number, signal: AbortSignal): Promise<void>;
   classifyError(error: unknown): {
     code: string;
@@ -81,19 +102,13 @@ export function createDocumentFixedDagRuntime(input: {
   recoveryIntervalMs?: number;
   recoveryLimit?: number;
   onError?(error: unknown, work: ClaimedDocumentArtifactWork): void;
-  onWorkEvent?(event: {
-    event: "claimed" | "completed" | "waiting_on_projection"
-      | "deferred" | "failed";
-    work: ClaimedDocumentArtifactWork;
-    errorCode: string | null;
-    errorConstraint?: string | null;
-    errorResource?: string | null;
-    errorTarget?: string | null;
-  }): void;
+  onWorkEvent?(event: DocumentWorkRuntimeEvent): void;
 }) {
   validateRuntimeInput(input);
   const active = new Set<Promise<void>>();
   let claimOrderOffset = 0;
+  const nextClaimAt = new Map<DocumentWorkKind, number>();
+  const clockMs = input.clockMs ?? Date.now;
 
   async function runOne(
     kind: DocumentWorkKind,
@@ -120,6 +135,41 @@ export function createDocumentFixedDagRuntime(input: {
       signal
     });
     if (!claimed) return null;
+    return launchClaimed(claimed, handler, signal);
+  }
+
+  async function claimAndLaunchAvailable(
+    kind: DocumentWorkKind,
+    signal: AbortSignal
+  ): Promise<number> {
+    const handler = input.handlers[kind];
+    if (!handler || signal.aborted) return 0;
+    const claimed = input.scheduler.claimAvailable
+      ? await input.scheduler.claimAvailable({
+          kind,
+          resourceLane: documentWorkResourceLane(kind),
+          workerId: input.workerId,
+          now: input.now(),
+          leaseDurationMs: input.leaseDurationMs,
+          signal
+        })
+      : await input.scheduler.claimOne({
+          kind,
+          resourceLane: documentWorkResourceLane(kind),
+          workerId: input.workerId,
+          now: input.now(),
+          leaseDurationMs: input.leaseDurationMs,
+          signal
+        }).then((work) => work ? [work] : []);
+    claimed.forEach((work) => launchClaimed(work, handler, signal));
+    return claimed.length;
+  }
+
+  function launchClaimed(
+    claimed: ClaimedDocumentArtifactWork,
+    handler: DocumentWorkHandler,
+    signal: AbortSignal
+  ): { completion: Promise<void> } {
     input.onWorkEvent?.({ event: "claimed", work: claimed, errorCode: null });
     let laneReleased = false;
     const releasePrimaryLane = (
@@ -242,6 +292,8 @@ export function createDocumentFixedDagRuntime(input: {
         event: "failed",
         work: claimed,
         errorCode: diagnostic.code,
+        error,
+        retryable: diagnostic.retryable,
         errorConstraint: safeErrorConstraint(error),
         errorResource: safeErrorPath(error, "resourcePath"),
         errorTarget: safeErrorPath(error, "targetPath")
@@ -277,12 +329,19 @@ export function createDocumentFixedDagRuntime(input: {
           const kind = DOCUMENT_WORK_CLAIM_ORDER[
             (claimOrderOffset + index) % DOCUMENT_WORK_CLAIM_ORDER.length
           ]!;
-          const result = await claimAndLaunch(kind, signal);
-          launched ||= result !== null;
+          if ((nextClaimAt.get(kind) ?? 0) > clockMs()) continue;
+          const claimedCount = await claimAndLaunchAvailable(kind, signal);
+          if (claimedCount === 0) {
+            nextClaimAt.set(kind, clockMs() + idlePollIntervalMs);
+          } else {
+            nextClaimAt.delete(kind);
+          }
+          launched ||= claimedCount > 0;
         }
         claimOrderOffset = (claimOrderOffset + 1) % DOCUMENT_WORK_CLAIM_ORDER.length;
         if (!launched && !signal.aborted) {
           await input.wait(idlePollIntervalMs, signal);
+          nextClaimAt.clear();
         }
       }
       await Promise.allSettled([...active]);

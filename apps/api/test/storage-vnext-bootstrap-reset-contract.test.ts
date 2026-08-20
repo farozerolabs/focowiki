@@ -31,20 +31,24 @@ function findIdentifiers(source: string, identifiers: readonly string[]): string
 }
 
 describe("storage vNext clean bootstrap and reset contract", () => {
-  it("keeps one clean bootstrap for the destructive document-indexing baseline", () => {
+  it("keeps the destructive bootstrap immutable and adds one compatible successor", () => {
     const manifest = readFileSync(
       resolve(workspaceRoot, "apps/api/src/db/migration-manifest.ts"),
       "utf8"
     );
 
-    expect(migrationFiles()).toEqual([bootstrapFileName]);
+    expect(migrationFiles()).toEqual([
+      bootstrapFileName,
+      "002_document_queue_throughput.sql"
+    ]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
     expect(manifest).toContain('targetGeneration: "storage-vnext-v9-document-indexing-hybrid"');
     expect(manifest).toContain('safety: "clean_bootstrap"');
-    expect(manifest).not.toMatch(
-      /incremental-sharded-publication|compatible_with_persisted_work|createMigrationPlan\(currentGeneration/u
-    );
+    expect(manifest).toContain('fileName: "002_document_queue_throughput.sql"');
+    expect(manifest).toContain('targetGeneration: "storage-vnext-v10-document-indexing-throughput"');
+    expect(manifest).toContain('safety: "compatible"');
+    expect(manifest).not.toMatch(/incremental-sharded-publication|compatible_with_persisted_work/u);
   });
 
   it("omits replaced legacy tables from the clean schema", () => {

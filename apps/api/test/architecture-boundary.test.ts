@@ -460,7 +460,7 @@ describe("lightweight architecture boundaries", () => {
     expect(repository).toContain("async recoverExpired");
     expect(claimRepository).toContain("fixedPrerequisiteSql");
     expect(scheduler).toContain("tryAcquire(request.resourceLane)");
-    expect(scheduler).toContain("limit: 1");
+    expect(scheduler).toContain("limit: admitted.length");
     expect(workerRuntime).toContain("createDocumentFixedDagRuntime");
     expect(workerRuntime).toContain("recoverExpired");
     expect(workerRuntime).toContain("const DOCUMENT_WORK_CLAIM_ORDER");

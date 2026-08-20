@@ -2,6 +2,10 @@ import { receiveWithProgressTimeout } from "@focowiki/okf";
 import type { ModelAssistanceOptions } from
   "../../runtime-settings/model-assistance-options.js";
 import type { GraphRagModelCompletionPort } from "./extraction-gateway.js";
+import {
+  providerFailureFromError,
+  reportProviderFailureOnce
+} from "../provider-request-failure.js";
 
 type RequestOptions = { signal?: AbortSignal };
 
@@ -93,6 +97,15 @@ export function createSemanticTextModelCompletion(
           return output;
         } catch (error) {
           requestController.abort(error);
+          reportProviderFailureOnce(
+            assistance.onProviderFailure,
+            providerFailureFromError({
+              providerKind: "generation",
+              apiMode: assistance.apiMode,
+              modelName: assistance.modelName
+            }, error),
+            error
+          );
           if (attempt === 0 && !input.signal.aborted && isTransient(error)) {
             await waitForRetry(assistance.transientRetryDelayMs, input.signal);
             continue;

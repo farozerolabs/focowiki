@@ -64,7 +64,7 @@ describe("document relation reconciliation work handler", () => {
       pairs: {
         async enqueue() { return "pair-a"; },
         addEvidence,
-        async stageCanonical() { return undefined; }
+        async stageCanonical() { return "canonical-relation-a"; }
       } as never,
       now: () => "2026-08-16T00:00:00.000Z"
     });
@@ -128,7 +128,7 @@ describe("document relation reconciliation work handler", () => {
       pairs: {
         async enqueue() { return "pair-a"; },
         addEvidence,
-        async stageCanonical() { return undefined; }
+        async stageCanonical() { return "canonical-relation-a"; }
       } as never,
       now: () => "2026-08-16T00:00:00.000Z"
     });

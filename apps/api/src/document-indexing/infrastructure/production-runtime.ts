@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RuntimeConfig } from "../../config.js";
+import type { RuntimeConfig, WorkerRuntimeConfig } from "../../config.js";
 import { resolveWorkerConfig } from "../../config.js";
 import { closeDatabaseClient, createDatabaseClient } from "../../db/client.js";
 import { assertRuntimeSchemaGeneration } from "../../db/migrations.js";
@@ -170,6 +170,7 @@ export async function runUnifiedWorkerProduction(config: RuntimeConfig): Promise
     });
     let processor: ReturnType<typeof createProductionDocumentFixedProcessor> | null = null;
     let backgroundRuntime: ReturnType<typeof createProductionBackgroundRuntime> | null = null;
+    let runtimeRefresh: Promise<void> | null = null;
     try {
       processor = createProductionDocumentFixedProcessor({
         sql,
@@ -193,6 +194,41 @@ export async function runUnifiedWorkerProduction(config: RuntimeConfig): Promise
         observability
       });
       await processor.start();
+      runtimeRefresh = watchDocumentWorkerRuntime({
+        initial: { workerConfig: settings, resourceCapacity },
+        async read() {
+          const workerConfig = await readWorkerSettings(sql, defaults);
+          const nextCapacity = await readDocumentResourceCapacity(
+            sql,
+            config,
+            workerConfig
+          );
+          return nextCapacity
+            ? { workerConfig, resourceCapacity: nextCapacity }
+            : null;
+        },
+        async apply(next) {
+          await processor!.updateRuntime(next);
+          Object.assign(settings, next.workerConfig);
+          console.info(JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "info",
+            event: "worker.runtime_configuration_applied",
+            fields: { resourceCapacity: next.resourceCapacity }
+          }));
+        },
+        wait: waitForWork,
+        signal: controller.signal,
+        pollIntervalMs: settings.pollIntervalMs,
+        onError(error) {
+          console.error(JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "error",
+            event: "worker.runtime_configuration_refresh_failed",
+            fields: safeWorkerErrorDiagnostic(error)
+          }));
+        }
+      });
       const background = createUnifiedMaintenanceLane({
         schedule: {
           mutation: 100,
@@ -232,10 +268,12 @@ export async function runUnifiedWorkerProduction(config: RuntimeConfig): Promise
       await Promise.all([
         processor.run(controller.signal),
         backgroundWindow.run(controller.signal),
-        webhookDeliveryLoop
+        webhookDeliveryLoop,
+        runtimeRefresh
       ]);
     } finally {
       await Promise.allSettled([
+        runtimeRefresh,
         processor?.close(),
         backgroundRuntime?.close(),
         searchProvider.close(),
@@ -255,6 +293,44 @@ export async function runUnifiedWorkerProduction(config: RuntimeConfig): Promise
     await redis.close().catch(() => undefined);
     await closeDatabaseClient(sql);
   }
+}
+
+type DocumentWorkerRuntimeState = {
+  workerConfig: Required<WorkerRuntimeConfig>;
+  resourceCapacity: DocumentResourceCapacityInput;
+};
+
+export async function watchDocumentWorkerRuntime(input: {
+  initial: DocumentWorkerRuntimeState;
+  read(): Promise<DocumentWorkerRuntimeState | null>;
+  apply(state: DocumentWorkerRuntimeState): Promise<void>;
+  wait(milliseconds: number, signal: AbortSignal): Promise<void>;
+  signal: AbortSignal;
+  pollIntervalMs: number;
+  onError?(error: unknown): void;
+}): Promise<void> {
+  let fingerprint = runtimeStateFingerprint(input.initial);
+  while (!input.signal.aborted) {
+    await input.wait(input.pollIntervalMs, input.signal);
+    if (input.signal.aborted) break;
+    try {
+      const next = await input.read();
+      if (!next) continue;
+      const nextFingerprint = runtimeStateFingerprint(next);
+      if (nextFingerprint === fingerprint) continue;
+      await input.apply(next);
+      fingerprint = nextFingerprint;
+    } catch (error) {
+      input.onError?.(error);
+    }
+  }
+}
+
+function runtimeStateFingerprint(state: DocumentWorkerRuntimeState): string {
+  return JSON.stringify({
+    workerConfig: state.workerConfig,
+    resourceCapacity: state.resourceCapacity
+  });
 }
 
 async function readDocumentResourceCapacity(

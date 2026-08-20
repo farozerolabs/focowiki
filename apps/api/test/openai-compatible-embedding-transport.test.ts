@@ -6,6 +6,7 @@ import {
 
 describe("OpenAI-compatible embedding transport", () => {
   it("sends bounded authenticated batches and validates finite dimensions", async () => {
+    const onFailure = vi.fn();
     const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("authorization"))
         .toBe("Bearer embedding-secret");
@@ -23,7 +24,7 @@ describe("OpenAI-compatible embedding transport", () => {
         usage: { prompt_tokens: 2, total_tokens: 2 }
       });
     });
-    const transport = createOpenAiCompatibleEmbeddingTransport({ fetch });
+    const transport = createOpenAiCompatibleEmbeddingTransport({ fetch, onFailure });
     await expect(transport.embed({
       baseUrl: "https://embedding.example/v1",
       authenticationMode: "api_key",
@@ -39,6 +40,7 @@ describe("OpenAI-compatible embedding transport", () => {
       dimension: 3,
       vectors: [[1, 0, 0], [0, 1, 0]]
     });
+    expect(onFailure).not.toHaveBeenCalled();
   });
 
   it("omits credentials and dimensions for an unauthenticated endpoint", async () => {
@@ -193,14 +195,76 @@ describe("OpenAI-compatible embedding transport", () => {
     });
   });
 
-  it("classifies embedding HTTP 400 as a non-retryable invalid request", async () => {
+  it("distinguishes provider HTTP rejection from local request validation", async () => {
     const transport = createOpenAiCompatibleEmbeddingTransport({
       fetch: vi.fn(async () => new Response(null, { status: 400 }))
     });
     await expect(transport.embed(transportRequest())).rejects.toMatchObject({
-      code: "invalid_request",
+      code: "provider_request_rejected",
       retryable: false
     });
+  });
+
+  it("reports a sanitized embedding provider failure response", async () => {
+    const onFailure = vi.fn();
+    const transport = createOpenAiCompatibleEmbeddingTransport({
+      fetch: vi.fn(async () => new Response(JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          code: "invalid_dimensions",
+          param: "dimensions",
+          message: "Invalid dimensions; Authorization: Bearer embedding-secret"
+        }
+      }), {
+        status: 400,
+        headers: {
+          "content-type": "application/json",
+          "x-request-id": "embedding-request-123"
+        }
+      })),
+      onFailure
+    });
+
+    await expect(transport.embed(transportRequest())).rejects.toMatchObject({
+      code: "provider_request_rejected"
+    });
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      providerKind: "embedding",
+      apiMode: "embeddings",
+      providerHost: "embedding.example",
+      providerRoute: "/v1/embeddings",
+      modelName: "embedding-model",
+      httpStatusCode: 400,
+      providerRequestId: "embedding-request-123",
+      providerErrorType: "invalid_request_error",
+      providerErrorCode: "invalid_dimensions",
+      providerErrorParam: "dimensions",
+      errorMessage: "Invalid dimensions; Authorization=<redacted>"
+    }));
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain("embedding-secret");
+  });
+
+  it("reports an invalid successful embedding response without logging vectors", async () => {
+    const onFailure = vi.fn();
+    const transport = createOpenAiCompatibleEmbeddingTransport({
+      fetch: vi.fn(async () => Response.json({
+        data: [{ index: 0, embedding: [1, "not-a-number"] }]
+      }, { headers: { "x-request-id": "embedding-invalid-123" } })),
+      onFailure
+    });
+
+    await expect(transport.embed(transportRequest())).rejects.toMatchObject({
+      code: "non_finite_vector"
+    });
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      httpStatusCode: 200,
+      providerRequestId: "embedding-invalid-123",
+      errorClass: "EmbeddingTransportError",
+      errorMessage: "Embedding transport failed: non_finite_vector"
+    }));
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain("not-a-number");
   });
 });
 

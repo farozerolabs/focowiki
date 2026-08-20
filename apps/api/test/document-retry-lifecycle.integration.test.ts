@@ -277,6 +277,45 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     })).resolves.toEqual({ outcome: "not_allowed" });
   });
 
+  it("preserves the first terminal stage when concurrent work fails later", async () => {
+    const [row] = await sql<Array<{ public_id: string }>>`
+      UPDATE focowiki.document_artifact_work
+      SET state = 'running', lease_owner = 'late-worker',
+          lease_expires_at = '2026-08-14T10:05:00.000Z',
+          started_at = '2026-08-14T10:00:00.000Z'
+      WHERE document_job_public_id = 'document-job-deterministic'
+        AND work_kind = 'content_projection'
+      RETURNING public_id
+    `;
+    const work = createPostgresDocumentArtifactWorkRepository(
+      sql as unknown as DatabaseClient
+    );
+
+    await expect(work.fail({
+      publicId: row!.public_id,
+      workerId: "late-worker",
+      now: "2026-08-14T10:00:01.000Z",
+      errorCode: "provider_request_rejected",
+      safeMessage: null,
+      retryable: true,
+      nextEligibleAt: null
+    })).resolves.toBe("error");
+
+    await expect(sql<Array<{
+      blocking_work_kind: string;
+      safe_error_code: string;
+      failure_count: number;
+    }>>`
+      SELECT blocking_work_kind, safe_error_code, failure_count
+      FROM focowiki.document_processing_jobs
+      WHERE public_id = 'document-job-deterministic'
+    `).resolves.toEqual([{
+      blocking_work_kind: "first_layer",
+      safe_error_code: "DOCUMENT_BODY_INVALID",
+      failure_count: 3
+    }]);
+  });
+
   it("keeps the terminal upload operation intact when retrying one document", async () => {
     await expect(retry({
       knowledgeBaseId: "knowledge-base-retry",

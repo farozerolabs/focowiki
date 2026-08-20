@@ -13,12 +13,15 @@ import {
   StorageVnextAdminUploadApplicationError,
   type StorageVnextAdminUploadApplication
 } from "../storage-vnext/api/admin-upload-application.js";
+import type { RuntimeLogger } from "../logger.js";
+import { createIngestionFailureFields } from "../runtime/ingestion-failure.js";
 
 export function registerAdminUploadSessionRoutes(
   app: Hono,
   services: {
     application: StorageVnextAdminUploadApplication;
     audit: StorageVnextAdminAuditApplication;
+    logger?: Pick<RuntimeLogger, "error">;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
@@ -64,7 +67,7 @@ export function registerAdminUploadSessionRoutes(
         201
       );
     } catch (error) {
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 
@@ -90,7 +93,7 @@ export function registerAdminUploadSessionRoutes(
       if (error instanceof SourcePathValidationError) {
         await recordUploadAudit(services, context, "upload_session_invalid_path", "failure", error.code);
       }
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 
@@ -107,7 +110,7 @@ export function registerAdminUploadSessionRoutes(
         nextCursor: result.entries.nextCursor
       });
     } catch (error) {
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 
@@ -125,7 +128,7 @@ export function registerAdminUploadSessionRoutes(
       });
       return context.json({ entry: toSafeEntry(entry) });
     } catch (error) {
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 
@@ -150,7 +153,7 @@ export function registerAdminUploadSessionRoutes(
         }
       });
     } catch (error) {
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 
@@ -162,7 +165,7 @@ export function registerAdminUploadSessionRoutes(
       });
       return context.json({ session });
     } catch (error) {
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 
@@ -175,7 +178,7 @@ export function registerAdminUploadSessionRoutes(
       await recordUploadAudit(services, context, "upload_session_finalized", "success");
       return context.json({ session });
     } catch (error) {
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 
@@ -188,7 +191,7 @@ export function registerAdminUploadSessionRoutes(
       await recordUploadAudit(services, context, "upload_session_cancelled", "success");
       return context.json({ session });
     } catch (error) {
-      return uploadSessionFailure(context, error);
+      return uploadSessionFailure(services, context, error);
     }
   });
 }
@@ -232,9 +235,16 @@ function toSafeEntry(entry: UploadSessionEntryRecord) {
 }
 
 function uploadSessionFailure(
+  services: Parameters<typeof registerAdminUploadSessionRoutes>[1],
   context: Context,
   error: unknown
 ) {
+  services.logger?.error("ingestion.stage_failed", createIngestionFailureFields({
+    stage: uploadStage(context),
+    error,
+    knowledgeBaseId: context.req.param("knowledgeBaseId") ?? null,
+    uploadSessionId: context.req.param("sessionId") ?? null
+  }));
   if (error instanceof SourcePathValidationError) {
     return context.json({ error: { code: error.code } }, 400);
   }
@@ -253,6 +263,18 @@ function uploadSessionFailure(
     );
   }
   throw error;
+}
+
+function uploadStage(context: Context): string {
+  const route = context.req.routePath;
+  if (route.endsWith("/entries/:entryId/content")) return "upload_content";
+  if (route.endsWith("/entries")) return "upload_manifest";
+  if (route.endsWith("/seal")) return "upload_seal";
+  if (route.endsWith("/reconcile")) return "upload_reconcile";
+  if (route.endsWith("/finalize")) return "upload_finalize";
+  if (context.req.method === "DELETE") return "upload_cancel";
+  if (context.req.method === "GET") return "upload_status";
+  return "upload_create";
 }
 
 async function recordUploadAudit(

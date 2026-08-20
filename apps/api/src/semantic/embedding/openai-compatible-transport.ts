@@ -1,4 +1,10 @@
 import type { EmbeddingAuthenticationMode } from "./configuration.js";
+import {
+  providerFailureFromError,
+  providerFailureFromResponse,
+  reportProviderFailureOnce,
+  type ProviderRequestFailureReporter
+} from "../provider-request-failure.js";
 
 export type EmbeddingTransportRequest = {
   baseUrl: string;
@@ -32,6 +38,7 @@ export type EmbeddingTransportErrorCode =
   | "invalid_request"
   | "invalid_response"
   | "non_finite_vector"
+  | "provider_request_rejected"
   | "provider_unavailable"
   | "rate_limited"
   | "response_mismatch"
@@ -50,11 +57,15 @@ export class EmbeddingTransportError extends Error {
 
 export function createOpenAiCompatibleEmbeddingTransport(input: {
   fetch?: typeof fetch;
+  onFailure?: ProviderRequestFailureReporter;
 } = {}): EmbeddingTransport {
   const request = input.fetch ?? globalThis.fetch;
   return {
     async embed(transportInput) {
       assertRequest(transportInput);
+      const endpoint = new URL("embeddings", withTrailingSlash(transportInput.baseUrl));
+      let providerResponse: Response | null = null;
+      let failureReported = false;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort("timeout"), transportInput.timeoutMs);
       const signal = transportInput.signal
@@ -76,10 +87,24 @@ export function createOpenAiCompatibleEmbeddingTransport(input: {
             : { dimensions: transportInput.requestedDimension })
         };
         const response = await request(
-          new URL("embeddings", withTrailingSlash(transportInput.baseUrl)),
+          endpoint,
           { method: "POST", headers, body: JSON.stringify(body), signal }
         );
-        if (!response.ok) throw httpError(response.status);
+        providerResponse = response;
+        if (!response.ok) {
+          reportProviderFailureOnce(
+            input.onFailure,
+            await providerFailureFromResponse({
+              providerKind: "embedding",
+              apiMode: "embeddings",
+              baseUrl: endpoint.href,
+              modelName: transportInput.modelName
+            }, response),
+            response
+          );
+          failureReported = true;
+          throw httpError(response.status);
+        }
         const declaredBytes = Number(response.headers.get("content-length"));
         if (Number.isFinite(declaredBytes) && declaredBytes > transportInput.maximumResponseBytes) {
           throw transportError("response_too_large", false);
@@ -96,14 +121,40 @@ export function createOpenAiCompatibleEmbeddingTransport(input: {
         }
         return parseResponse(payload, transportInput);
       } catch (error) {
-        if (error instanceof EmbeddingTransportError) throw error;
+        if (error instanceof EmbeddingTransportError) {
+          if (!failureReported && error.code !== "aborted") {
+            reportProviderFailureOnce(input.onFailure, providerFailureFromError({
+              providerKind: "embedding",
+              apiMode: "embeddings",
+              baseUrl: endpoint.href,
+              modelName: transportInput.modelName
+            }, error, providerResponse), error);
+          }
+          throw error;
+        }
         if (signal.aborted) {
-          throw transportError(
+          const normalized = transportError(
             transportInput.signal?.aborted ? "aborted" : "timeout",
             false
           );
+          if (normalized.code !== "aborted") {
+            reportProviderFailureOnce(input.onFailure, providerFailureFromError({
+              providerKind: "embedding",
+              apiMode: "embeddings",
+              baseUrl: endpoint.href,
+              modelName: transportInput.modelName
+            }, normalized), error);
+          }
+          throw normalized;
         }
-        throw transportError("provider_unavailable", true);
+        const normalized = transportError("provider_unavailable", true);
+        reportProviderFailureOnce(input.onFailure, providerFailureFromError({
+          providerKind: "embedding",
+          apiMode: "embeddings",
+          baseUrl: endpoint.href,
+          modelName: transportInput.modelName
+        }, error), error);
+        throw normalized;
       } finally {
         clearTimeout(timer);
       }
@@ -186,7 +237,7 @@ function httpError(status: number): EmbeddingTransportError {
   if (status === 401 || status === 403) return transportError("authentication_failed", false);
   if (status === 429) return transportError("rate_limited", true);
   if (status >= 500) return transportError("provider_unavailable", true);
-  return transportError("invalid_request", false);
+  return transportError("provider_request_rejected", false);
 }
 
 function transportError(

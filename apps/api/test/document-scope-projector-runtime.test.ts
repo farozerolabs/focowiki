@@ -3,6 +3,38 @@ import { createDocumentScopeProjectorRuntime } from
   "../src/document-indexing/application/document-scope-projector-runtime.js";
 
 describe("document scope projector runtime", () => {
+  it("hot-applies the concurrency limit for subsequent claims", () => {
+    const runtime = createDocumentScopeProjectorRuntime({
+      workerId: "scope-worker",
+      leaseDurationMs: 30_000,
+      maximumConcurrency: 1,
+      scopes: {
+        async claim() { return []; },
+        async fail() { return "error" as const; },
+        async recoverExpired() { return 0; }
+      },
+      async commit() { return "completed" as const; },
+      async persist() {},
+      async render() {
+        return {
+          outputFingerprintSha256: "f".repeat(64),
+          storageRequests: {
+            put: 0, head: 0, verification: 0, attemptedBytes: 0,
+            retries: 0, latencyMilliseconds: 0
+          }
+        };
+      },
+      async finalize() { return 0; },
+      now: () => "2026-08-20T00:00:00.000Z",
+      wait: async () => undefined,
+      classifyError: () => ({ code: "UNEXPECTED", retryable: false })
+    });
+
+    expect(runtime.maximumConcurrency()).toBe(1);
+    runtime.updateMaximumConcurrency(8);
+    expect(runtime.maximumConcurrency()).toBe(8);
+  });
+
   it("renders a fixed scope sequence and acknowledges every covered contributor", async () => {
     const calls: string[] = [];
     const commit = vi.fn(async () => "completed" as const);
@@ -77,6 +109,8 @@ describe("document scope projector runtime", () => {
   it("records a bounded retry without acknowledging a failed render", async () => {
     const commit = vi.fn(async () => "completed" as const);
     const fail = vi.fn(async () => "waiting" as const);
+    const onFailure = vi.fn();
+    const renderFailure = new Error("temporary storage failure");
     const runtime = createDocumentScopeProjectorRuntime({
       workerId: "scope-worker",
       leaseDurationMs: 30_000,
@@ -96,13 +130,14 @@ describe("document scope projector runtime", () => {
       },
       commit,
       async persist() {},
-      async render() { throw new Error("temporary storage failure"); },
+      async render() { throw renderFailure; },
       async finalize() { return 0; },
       now: () => "2026-08-17T10:00:00.000Z",
       wait: async () => undefined,
       classifyError() {
         return { code: "SCOPE_STORAGE_UNAVAILABLE", retryable: true };
       },
+      onFailure,
       retryDelayMs: () => 2_000
     });
 
@@ -113,6 +148,12 @@ describe("document scope projector runtime", () => {
       nextEligibleAt: "2026-08-17T10:00:02.000Z"
     }));
     expect(commit).not.toHaveBeenCalled();
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      scope: expect.objectContaining({ publicId: "scope-2" }),
+      error: renderFailure,
+      errorCode: "SCOPE_STORAGE_UNAVAILABLE",
+      retryable: true
+    }));
   });
 
   it("retries after immutable output is written but candidate persistence fails",

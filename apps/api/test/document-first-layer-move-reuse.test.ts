@@ -29,7 +29,7 @@ describe("document first-layer move reuse", () => {
   });
 
   it("does not serialize deterministic relation reconciliation behind model work", () => {
-    expect(documentWorkResourceLane("relation_reconcile")).toBe("postgres_s3");
+    expect(documentWorkResourceLane("relation_reconcile")).toBe("coordination");
   });
 
   it("separates concurrent knowledge projection from short activation", () => {

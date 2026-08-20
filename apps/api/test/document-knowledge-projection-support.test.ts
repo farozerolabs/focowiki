@@ -6,7 +6,9 @@ import {
   documentProjectionActivationOwnerVersions,
   documentProjectionHeadLookupPaths,
   documentProjectionScopes,
+  documentProjectionRenderableSourceFileIds,
   documentProjectionSourceFileIds,
+  readDocumentRelationPlan,
   shouldProjectDocumentGraphDirectories
 } from
   "../src/document-indexing/infrastructure/document-knowledge-projection-support.js";
@@ -222,9 +224,37 @@ describe("document knowledge projection support", () => {
   it("loads affected files even when their prior relationship was removed", () => {
     expect(documentProjectionSourceFileIds({
       currentSourceFilePublicId: "source-current",
-      affectedSourceFilePublicIds: ["source-prior-neighbor", "source-current"],
-      relations: []
+      affectedSourceFilePublicIds: ["source-prior-neighbor", "source-current"]
     })).toEqual(["source-current", "source-prior-neighbor"]);
+  });
+
+  it("keeps dirty source scopes exact while loading dense neighbors only as render inputs", () => {
+    const relations = Array.from({ length: 300 }, (_, index) => ({
+      firstSourceFilePublicId: "source-affected",
+      secondSourceFilePublicId: `source-neighbor-${index}`
+    }));
+
+    expect(documentProjectionSourceFileIds({
+      currentSourceFilePublicId: "source-current",
+      affectedSourceFilePublicIds: ["source-affected"]
+    })).toEqual(["source-affected", "source-current"]);
+    expect(documentProjectionRenderableSourceFileIds({
+      currentSourceFilePublicId: "source-current",
+      affectedSourceFilePublicIds: ["source-affected"],
+      relations
+    })).toHaveLength(302);
+  });
+
+  it("accepts deployed v9 relation receipts for exact database resolution", () => {
+    expect(readDocumentRelationPlan({
+      schemaVersion: "document-relation-reconciliation-receipt-v1",
+      pairPublicIds: ["pair-a"],
+      affectedSourceFilePublicIds: ["source-a"]
+    })).toEqual({
+      pairPublicIds: ["pair-a"],
+      relationPublicIds: null,
+      affectedSourceFilePublicIds: ["source-a"]
+    });
   });
 
   it("renders only the current source and affected sources with active bases", () => {

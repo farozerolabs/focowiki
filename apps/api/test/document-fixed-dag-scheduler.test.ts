@@ -9,6 +9,9 @@ import {
   createWeightedGenerationQueue
 } from "../src/document-indexing/application/weighted-generation-queue.js";
 import {
+  createWeightedGenerationTaskRunner
+} from "../src/document-indexing/application/weighted-generation-task-runner.js";
+import {
   createDocumentResourceLanes
 } from "../src/document-indexing/application/document-resource-lanes.js";
 
@@ -93,6 +96,79 @@ describe("fixed DAG scheduler", () => {
       memoryPressure: 0.8
     });
   });
+
+  it("claims one indexed transport batch up to currently admitted capacity", async () => {
+    const releases = Array.from({ length: 4 }, () => vi.fn());
+    let admitted = 0;
+    const claim = vi.fn(async ({ kind, limit, resourceLane }) =>
+      Array.from({ length: limit }, (_, index) => ({
+        publicId: `work-${index + 1}`,
+        kind,
+        resourceLane
+      })));
+    const scheduler = createDocumentFixedDagScheduler({
+      claimLimit: 4,
+      work: { claim },
+      lanes: {
+        async acquire() { throw new Error("unexpected blocking admission"); },
+        tryAcquire() {
+          const release = releases[admitted];
+          admitted += 1;
+          return release ?? null;
+        }
+      }
+    });
+
+    const claimed = await scheduler.claimAvailable({
+      kind: "prepare",
+      resourceLane: "postgres_s3",
+      workerId: "worker-1",
+      now: "2026-08-15T00:00:00.000Z",
+      leaseDurationMs: 30_000
+    });
+
+    expect(claim).toHaveBeenCalledWith(expect.objectContaining({ limit: 4 }));
+    expect(claimed).toHaveLength(4);
+    for (const work of claimed) scheduler.release(work.publicId);
+    expect(releases.every((release) => release.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("claims exactly one durable work item through the single-item API", async () => {
+    const releases = Array.from({ length: 4 }, () => vi.fn());
+    let admitted = 0;
+    const claim = vi.fn(async ({ kind, limit, resourceLane }) =>
+      Array.from({ length: limit }, (_, index) => ({
+        publicId: `single-work-${index + 1}`,
+        kind,
+        resourceLane
+      })));
+    const scheduler = createDocumentFixedDagScheduler({
+      claimLimit: 4,
+      work: { claim },
+      lanes: {
+        async acquire() { throw new Error("unexpected blocking admission"); },
+        tryAcquire() {
+          const release = releases[admitted];
+          admitted += 1;
+          return release ?? null;
+        }
+      }
+    });
+
+    const claimed = await scheduler.claimOne({
+      kind: "prepare",
+      resourceLane: "postgres_s3",
+      workerId: "worker-1",
+      now: "2026-08-15T00:00:00.000Z",
+      leaseDurationMs: 30_000
+    });
+
+    expect(claim).toHaveBeenCalledWith(expect.objectContaining({ limit: 1 }));
+    expect(claimed).toMatchObject({ publicId: "single-work-1" });
+    scheduler.release(claimed!.publicId);
+    expect(releases[0]).toHaveBeenCalledOnce();
+    expect(releases.slice(1).every((release) => release.mock.calls.length === 0)).toBe(true);
+  });
 });
 
 describe("weighted generation queue", () => {
@@ -119,7 +195,52 @@ describe("weighted generation queue", () => {
   });
 });
 
+describe("revision-scoped generation admission", () => {
+  it("keeps another model revision work-conserving after one revision is rate limited", async () => {
+    const runner = createWeightedGenerationTaskRunner({
+      configuredMaximum: 2,
+      maximumWaiters: 8,
+      weights: { first_layer: 4, graphrag: 2, candidate_delta: 1, slow_retry: 1 },
+      pressure: () => ({ cpuPressure: 0.1, memoryPressure: 0.1 })
+    });
+    const releases: Array<() => void> = [];
+    const starts: string[] = [];
+    const first = runner.run("first_layer", async () => {
+      starts.push("revision-a-rate-limit");
+      throw Object.assign(new Error("rate limited"), { code: "HTTP_429" });
+    }, { ownerKey: "model-a:1" });
+    const second = runner.run("first_layer", async () => {
+      starts.push("revision-a-running");
+      await new Promise<void>((resolve) => releases.push(resolve));
+    }, { ownerKey: "model-a:1" });
+    await expect(first).rejects.toMatchObject({ code: "HTTP_429" });
+    const blockedSameRevision = runner.run("first_layer", async () => {
+      starts.push("revision-a-blocked");
+    }, { ownerKey: "model-a:1" });
+    const independentRevision = runner.run("first_layer", async () => {
+      starts.push("revision-b-started");
+    }, { ownerKey: "model-b:1" });
+
+    await vi.waitFor(() => expect(starts).toContain("revision-b-started"));
+    expect(starts).not.toContain("revision-a-blocked");
+    releases.forEach((release) => release());
+    await Promise.all([second, blockedSameRevision, independentRevision]);
+  });
+});
+
 describe("adaptive resource controller", () => {
+  it("applies an operator concurrency change immediately", () => {
+    const controller = createAdaptiveResourceController({
+      configuredMaximum: 2
+    });
+
+    expect(controller.updateConfiguredMaximum(18)).toBe(18);
+    expect(controller.capacity()).toBe(18);
+    expect(controller.configuredMaximum()).toBe(18);
+    expect(controller.updateConfiguredMaximum(3)).toBe(3);
+    expect(controller.capacity()).toBe(3);
+  });
+
   it("never exceeds the configured limit and reacts only to sustained pressure", () => {
     const controller = createAdaptiveResourceController({
       configuredMaximum: 8,
@@ -163,10 +284,47 @@ describe("adaptive resource controller", () => {
 });
 
 describe("independent document resource lanes", () => {
+  it("hot-applies resource capacities to newly admitted work", () => {
+    const lanes = createDocumentResourceLanes({
+      capacities: {
+        postgres_s3: 2,
+        coordination: 2,
+        generation_model: 2,
+        graphrag_adapter: 2,
+        embedding: 2,
+        search_transport: 2,
+        projection: 2,
+        activation: 2,
+        cleanup: 1
+      },
+      maximumWaitersPerLane: 16
+    });
+
+    lanes.updateCapacities({
+      postgres_s3: 8,
+      coordination: 18,
+      generation_model: 12,
+      graphrag_adapter: 3,
+      embedding: 10,
+      search_transport: 8,
+      projection: 18,
+      activation: 7,
+      cleanup: 1
+    });
+
+    expect(lanes.snapshot()).toMatchObject({
+      postgres_s3: { capacity: 8, configuredMaximum: 8 },
+      coordination: { capacity: 18, configuredMaximum: 18 },
+      graphrag_adapter: { capacity: 3, configuredMaximum: 3 },
+      projection: { capacity: 18, configuredMaximum: 18 }
+    });
+  });
+
   it("fills and releases each lane independently", async () => {
     const lanes = createDocumentResourceLanes({
       capacities: {
         postgres_s3: 2,
+        coordination: 2,
         generation_model: 1,
         graphrag_adapter: 1,
         embedding: 2,
@@ -194,6 +352,7 @@ describe("independent document resource lanes", () => {
     const lanes = createDocumentResourceLanes({
       capacities: {
         postgres_s3: 2,
+        coordination: 2,
         generation_model: 2,
         graphrag_adapter: 2,
         embedding: 4,
@@ -217,7 +376,12 @@ describe("independent document resource lanes", () => {
       active: 0,
       waiting: 0,
       capacity: 2,
-      configuredMaximum: 4
+      configuredMaximum: 4,
+      pressure: {
+        cpuPressure: 0.1,
+        memoryPressure: 0.2,
+        pressureSource: null
+      }
     });
   });
 
@@ -225,6 +389,7 @@ describe("independent document resource lanes", () => {
     const lanes = createDocumentResourceLanes({
       capacities: {
         postgres_s3: 2,
+        coordination: 2,
         generation_model: 1,
         graphrag_adapter: 1,
         embedding: 2,

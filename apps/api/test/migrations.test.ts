@@ -53,6 +53,24 @@ describe("storage vNext runtime schema guard", () => {
     expect(database.beginCalls).toBe(1);
   });
 
+  it("upgrades the deployed v9 generation without replaying the bootstrap", async () => {
+    const database = createGenerationDatabase(
+      "storage-vnext-v9-document-indexing-hybrid"
+    );
+
+    await expect(preflightMigrations(database.sql)).resolves.toEqual({
+      currentGeneration: "storage-vnext-v9-document-indexing-hybrid",
+      pendingFiles: ["002_document_queue_throughput.sql"]
+    });
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(1);
+    expect(database.beginCalls).toBe(1);
+    await expect(preflightMigrations(database.sql)).resolves.toEqual({
+      currentGeneration: RUNTIME_SCHEMA_GENERATION,
+      pendingFiles: []
+    });
+  });
+
   it("leaves an absent schema retryable when the bootstrap fails", async () => {
     const database = createGenerationDatabase("absent", { failUnsafeAt: 1 });
 
@@ -133,6 +151,11 @@ function createGenerationDatabase(
       schemaSignatureSql.push(statement);
       return [{
         runtime_schema_compatible: options.providerSchemaCompatible ?? true
+      }];
+    }
+    if (statement.includes("upgrade_source_compatible")) {
+      return [{
+        upgrade_source_compatible: options.providerSchemaCompatible ?? true
       }];
     }
     if (statement.includes("to_regclass")) {

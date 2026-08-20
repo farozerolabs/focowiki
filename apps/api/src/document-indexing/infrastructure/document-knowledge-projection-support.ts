@@ -4,7 +4,15 @@ import { normalizeLogicalPath } from "./production-document-processor-support.js
 
 export type DocumentRelationPlan = {
   pairPublicIds: readonly string[];
+  relationPublicIds: readonly string[];
   affectedSourceFilePublicIds: readonly string[];
+};
+
+export type ParsedDocumentRelationPlan = Omit<
+  DocumentRelationPlan,
+  "relationPublicIds"
+> & {
+  relationPublicIds: readonly string[] | null;
 };
 
 export function documentProjectionHeadLookupPaths(paths: readonly string[]): string[] {
@@ -14,14 +22,26 @@ export function documentProjectionHeadLookupPaths(paths: readonly string[]): str
 export function documentProjectionSourceFileIds(input: {
   currentSourceFilePublicId: string;
   affectedSourceFilePublicIds: readonly string[];
+}): string[] {
+  return [...new Set([
+    input.currentSourceFilePublicId,
+    ...input.affectedSourceFilePublicIds
+  ])].sort();
+}
+
+export function documentProjectionRenderableSourceFileIds(input: {
+  currentSourceFilePublicId: string;
+  affectedSourceFilePublicIds: readonly string[];
   relations: readonly {
     firstSourceFilePublicId: string;
     secondSourceFilePublicId: string;
   }[];
 }): string[] {
   return [...new Set([
-    input.currentSourceFilePublicId,
-    ...input.affectedSourceFilePublicIds,
+    ...documentProjectionSourceFileIds({
+      currentSourceFilePublicId: input.currentSourceFilePublicId,
+      affectedSourceFilePublicIds: input.affectedSourceFilePublicIds
+    }),
     ...input.relations.flatMap((relation) => [
       relation.firstSourceFilePublicId,
       relation.secondSourceFilePublicId
@@ -78,12 +98,15 @@ export function shouldProjectDocumentGraphDirectories(input: {
 
 export function readDocumentRelationPlan(
   value: Readonly<Record<string, unknown>> | undefined
-): DocumentRelationPlan {
+): ParsedDocumentRelationPlan {
   if (!value
     || value.schemaVersion !== "document-relation-reconciliation-receipt-v1"
     || !Array.isArray(value.pairPublicIds)
     || !Array.isArray(value.affectedSourceFilePublicIds)
     || value.pairPublicIds.some((item) => typeof item !== "string")
+    || (value.relationPublicIds !== undefined
+      && (!Array.isArray(value.relationPublicIds)
+        || value.relationPublicIds.some((item) => typeof item !== "string")))
     || value.affectedSourceFilePublicIds.some(
       (item) => typeof item !== "string"
     )) {
@@ -91,6 +114,8 @@ export function readDocumentRelationPlan(
   }
   return {
     pairPublicIds: value.pairPublicIds as string[],
+    relationPublicIds: value.relationPublicIds === undefined
+      ? null : value.relationPublicIds as string[],
     affectedSourceFilePublicIds: value.affectedSourceFilePublicIds as string[]
   };
 }

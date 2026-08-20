@@ -5,6 +5,7 @@ import { readProcessResourcePressure } from "./process-resource-pressure.js";
 
 export const DOCUMENT_RESOURCE_LANES = [
   "postgres_s3",
+  "coordination",
   "generation_model",
   "graphrag_adapter",
   "embedding",
@@ -22,7 +23,17 @@ export type ClaimedDocumentWork = {
   resourceLane: DocumentResourceLane;
 };
 
+type DocumentWorkClaimRequest = {
+  kind: DocumentWorkKind;
+  resourceLane: DocumentResourceLane;
+  workerId: string;
+  now: string;
+  leaseDurationMs: number;
+  signal?: AbortSignal;
+};
+
 export function createDocumentFixedDagScheduler<TWork extends ClaimedDocumentWork>(input: {
+  claimLimit?: number;
   work: {
     claim(request: {
       kind: DocumentWorkKind;
@@ -46,58 +57,76 @@ export function createDocumentFixedDagScheduler<TWork extends ClaimedDocumentWor
 }) {
   const clockMs = input.clockMs ?? Date.now;
   const pressure = input.pressure ?? readProcessResourcePressure;
+  let claimLimit = input.claimLimit ?? 1;
+  if (!Number.isSafeInteger(claimLimit) || claimLimit < 1 || claimLimit > 1_000) {
+    throw new Error("DOCUMENT_WORK_CLAIM_LIMIT_INVALID");
+  }
   const releases = new Map<string, {
     release(): void;
     lane: DocumentResourceLane;
     startedAt: number;
   }>();
-  return {
-    async claimOne(request: {
-      kind: DocumentWorkKind;
-      resourceLane: DocumentResourceLane;
-      workerId: string;
-      now: string;
-      leaseDurationMs: number;
-      signal?: AbortSignal;
-    }): Promise<TWork | null> {
-      const release = input.lanes.tryAcquire
-        ? input.lanes.tryAcquire(request.resourceLane)
-        : await input.lanes.acquire(request.resourceLane, request.signal);
-      if (!release) return null;
-      let retained = false;
-      try {
-        const rows = await input.work.claim({
-          kind: request.kind,
-          limit: 1,
-          workerId: request.workerId,
-          now: request.now,
-          leaseDurationMs: request.leaseDurationMs,
-          resourceLane: request.resourceLane
-        });
-        const work = rows[0] ?? null;
-        if (!work) {
-          release();
-          retained = true;
-          return null;
-        }
-        if (rows.length !== 1 || work.kind !== request.kind
-          || work.resourceLane !== request.resourceLane
-          || releases.has(work.publicId)) {
-          release();
-          retained = true;
-          throw new Error("DOCUMENT_WORK_CLAIM_CONTRACT_INVALID");
-        }
-        releases.set(work.publicId, {
-          release,
-          lane: request.resourceLane,
-          startedAt: clockMs()
-        });
-        retained = true;
-        return work;
-      } catch (error) {
-        if (!retained) release();
-        throw error;
+  async function claimWithLimit(
+    request: DocumentWorkClaimRequest,
+    maximumClaims: number
+  ): Promise<readonly TWork[]> {
+    const admitted: Array<() => void> = [];
+    if (input.lanes.tryAcquire) {
+      while (admitted.length < maximumClaims) {
+        const release = input.lanes.tryAcquire(request.resourceLane);
+        if (!release) break;
+        admitted.push(release);
       }
+    } else {
+      admitted.push(await input.lanes.acquire(
+        request.resourceLane,
+        request.signal
+      ));
+    }
+    if (admitted.length === 0) return [];
+    try {
+      const rows = await input.work.claim({
+        kind: request.kind,
+        limit: admitted.length,
+        workerId: request.workerId,
+        now: request.now,
+        leaseDurationMs: request.leaseDurationMs,
+        resourceLane: request.resourceLane
+      });
+      if (rows.length > admitted.length || rows.some((work) =>
+        work.kind !== request.kind
+        || work.resourceLane !== request.resourceLane
+        || releases.has(work.publicId))) {
+        throw new Error("DOCUMENT_WORK_CLAIM_CONTRACT_INVALID");
+      }
+      rows.forEach((work, index) => releases.set(work.publicId, {
+        release: admitted[index]!,
+        lane: request.resourceLane,
+        startedAt: clockMs()
+      }));
+      admitted.slice(rows.length).forEach((release) => release());
+      return rows;
+    } catch (error) {
+      admitted.forEach((release) => release());
+      throw error;
+    }
+  }
+  async function claimAvailable(
+    request: DocumentWorkClaimRequest
+  ): Promise<readonly TWork[]> {
+    return claimWithLimit(request, claimLimit);
+  }
+  return {
+    claimAvailable,
+    updateClaimLimit(value: number): void {
+      if (!Number.isSafeInteger(value) || value < 1 || value > 1_000) {
+        throw new Error("DOCUMENT_WORK_CLAIM_LIMIT_INVALID");
+      }
+      claimLimit = value;
+    },
+    async claimOne(request: DocumentWorkClaimRequest): Promise<TWork | null> {
+      const rows = await claimWithLimit(request, 1);
+      return rows[0] ?? null;
     },
     release(
       publicId: string,
