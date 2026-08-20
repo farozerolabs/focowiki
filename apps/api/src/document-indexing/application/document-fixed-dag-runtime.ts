@@ -261,7 +261,9 @@ export function createDocumentFixedDagRuntime(input: {
           publicId: claimed.publicId,
           workerId: input.workerId,
           now: input.now(),
-          nextEligibleAt: new Date(Date.parse(input.now()) + 250).toISOString()
+          nextEligibleAt: new Date(
+            Date.parse(input.now()) + deferralDelayMs(diagnostic.code)
+          ).toISOString()
         });
         if (!deferred) throw workRuntimeError("DOCUMENT_WORK_LEASE_LOST");
         input.onWorkEvent?.({
@@ -365,7 +367,13 @@ function safeErrorPath(
 
 function isNonAttemptingDeferral(code: string): boolean {
   return code === "GENERATION_WAITER_LIMIT_EXCEEDED"
+    || code === "DOCUMENT_RESOURCE_LANE_SATURATED"
+    || code === "SEARCH_ENGINE_OVERLOADED"
     || code === "document_activation_rebase_required";
+}
+
+function deferralDelayMs(code: string): number {
+  return code === "SEARCH_ENGINE_OVERLOADED" ? 2_000 : 250;
 }
 
 function safeErrorConstraint(error: unknown): string | null {

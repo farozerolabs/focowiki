@@ -448,7 +448,7 @@ describe("SettingsPanel", () => {
       .toBeTruthy();
   });
 
-  it("shows and saves bounded search settings", async () => {
+  it("shows and saves configurable search concurrency", async () => {
     render(<SettingsPanel />);
 
     expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
@@ -479,11 +479,12 @@ describe("SettingsPanel", () => {
     expect(overfetchFactor.value).toBe("3");
     expect(document.getElementById("search-stagingRetentionHours")).toBeNull();
     expect(cropLength.value).toBe("1200");
+    expect(screen.getByText("Search concurrency")).toBeTruthy();
     expect(screen.getByText(/Maximum end-to-end time for one search request/)).toBeTruthy();
 
     fireEvent.change(requestTimeout, { target: { value: "4000" } });
     fireEvent.change(engineCutoff, { target: { value: "1200" } });
-    fireEvent.change(inFlightTasks, { target: { value: "6" } });
+    fireEvent.change(inFlightTasks, { target: { value: "128" } });
     fireEvent.change(overfetchFactor, { target: { value: "4" } });
     fireEvent.change(cropLength, { target: { value: "1500" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -492,7 +493,7 @@ describe("SettingsPanel", () => {
       expect(updateSearchSettings).toHaveBeenCalledWith(expect.objectContaining({
         requestTimeoutMs: 4000,
         engineSearchCutoffMs: 1200,
-        maxInFlightTasks: 6,
+        maxInFlightTasks: 128,
         overfetchFactor: 4,
         cropLength: 1500,
         indexBatchDocumentCount: 500,

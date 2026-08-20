@@ -16,6 +16,22 @@ import {
 } from "../src/document-indexing/application/document-resource-lanes.js";
 
 describe("fixed DAG scheduler", () => {
+  it("reports lane saturation as a typed retry-safe diagnostic", async () => {
+    const lanes = createDocumentResourceLanes({
+      capacities: Object.fromEntries([
+        "postgres_s3", "coordination", "generation_model", "graphrag_adapter",
+        "embedding", "search_transport", "projection", "activation", "cleanup"
+      ].map((lane) => [lane, 1])) as never,
+      maximumWaitersPerLane: 0
+    });
+    const release = await lanes.acquire("search_transport");
+    await expect(lanes.acquire("search_transport")).rejects.toMatchObject({
+      code: "DOCUMENT_RESOURCE_LANE_SATURATED",
+      resourceLane: "search_transport"
+    });
+    release();
+  });
+
   it("admits lane capacity before claiming durable work", async () => {
     const events: string[] = [];
     const release = vi.fn();

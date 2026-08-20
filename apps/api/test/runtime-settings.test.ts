@@ -247,7 +247,7 @@ describe("runtime settings service", () => {
     }
   });
 
-  it("validates and persists bounded search settings", async () => {
+  it("validates and persists configurable search concurrency", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
     const service = createRuntimeSettingsService({
       config: createConfig({ modelEnabled: false }),
@@ -272,14 +272,19 @@ describe("runtime settings service", () => {
       cropLength: 1_500,
       maxInFlightTasks: 7,
     });
+    const expanded = await service.updateSearch({
+      actor: "admin",
+      value: { ...updated.search, maxInFlightTasks: 128 }
+    });
+    expect(expanded.search.maxInFlightTasks).toBe(128);
     await expect(service.updateSearch({
       actor: "admin",
-      value: { ...updated.search, maxInFlightTasks: 9 }
+      value: {
+        ...expanded.search,
+        maxInFlightTasks: Number.MAX_SAFE_INTEGER + 1
+      }
     })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
-      issues: expect.arrayContaining([
-        expect.objectContaining({ field: "memoryCapacity" })
-      ])
     });
     await expect(service.updateSearch({
       actor: "admin",
@@ -471,9 +476,7 @@ describe("runtime settings service", () => {
       deploymentSecretDirectory: createRuntimeSecretDirectory(),
       resourceCapacity: {
         databaseConnections: 128,
-        searchTasks: 64,
         objectStoreRequests: 128,
-        memoryBytes: 1_073_741_824,
         cpuConcurrency: 256
       }
     });
@@ -1341,9 +1344,7 @@ function createRuntimeSecretDirectory(): string {
 function createTestResourceCapacity() {
   return {
     databaseConnections: 128,
-    searchTasks: 64,
     objectStoreRequests: 128,
-    memoryBytes: 1_073_741_824,
     cpuConcurrency: 256
   };
 }

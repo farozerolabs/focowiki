@@ -565,6 +565,52 @@ describe("fixed document DAG runtime", () => {
     expect(fail).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["DOCUMENT_RESOURCE_LANE_SATURATED", "2026-08-15T00:00:01.250Z"],
+    ["SEARCH_ENGINE_OVERLOADED", "2026-08-15T00:00:03.000Z"]
+  ])("defers %s without consuming a failure", async (
+    errorCode,
+    nextEligibleAt
+  ) => {
+    const fail = vi.fn(async () => "error" as const);
+    const defer = vi.fn(async () => true);
+    const runtime = createDocumentFixedDagRuntime({
+      workerId: "worker-1",
+      leaseDurationMs: 60_000,
+      heartbeatIntervalMs: 10_000,
+      scheduler: {
+        async claimOne() { return work; },
+        release() {}
+      },
+      work: {
+        async complete() { return true; },
+        async heartbeat() { return true; },
+        fail,
+        defer,
+        async recoverExpired() { return 0; }
+      },
+      handlers: {
+        async first_layer() {
+          throw Object.assign(new Error("Temporary downstream pressure"), {
+            code: errorCode
+          });
+        }
+      },
+      now: () => "2026-08-15T00:00:01.000Z",
+      wait: async () => undefined,
+      classifyError() {
+        return { code: errorCode, safeMessage: null, retryable: true };
+      }
+    });
+
+    await expect(runtime.runOne("first_layer", new AbortController().signal))
+      .resolves.toBe(true);
+    expect(defer).toHaveBeenCalledWith(expect.objectContaining({
+      nextEligibleAt
+    }));
+    expect(fail).not.toHaveBeenCalled();
+  });
+
   it("defers an activation rebase without returning to knowledge projection", async () => {
     const fail = vi.fn(async () => "error" as const);
     const defer = vi.fn(async () => true);
