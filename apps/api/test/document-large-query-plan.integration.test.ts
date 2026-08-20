@@ -114,6 +114,44 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       `
     },
     {
+      name: "terminal page candidate release",
+      expectedIndexes: [
+        "generated_page_candidates_work_state_idx",
+        "generated_page_candidates_active_idx"
+      ],
+      query: `
+        WITH job_work AS (
+          SELECT public_id
+          FROM focowiki.document_artifact_work
+          WHERE knowledge_base_id = 'knowledge-base-plan'
+            AND document_job_public_id = 'document-job-plan'
+        ), releasable AS (
+          SELECT candidate.public_id, candidate.object_id
+          FROM job_work
+          JOIN focowiki.generated_page_candidates candidate
+            ON candidate.knowledge_base_id = 'knowledge-base-plan'
+           AND candidate.source_work_public_id = job_work.public_id
+          WHERE NOT EXISTS (
+            SELECT 1 FROM focowiki.generated_page_heads head
+            WHERE head.knowledge_base_id = candidate.knowledge_base_id
+              AND head.page_candidate_public_id = candidate.public_id
+          )
+          UNION
+          SELECT candidate.public_id, candidate.object_id
+          FROM focowiki.generated_page_candidates candidate
+          WHERE candidate.knowledge_base_id = 'knowledge-base-plan'
+            AND candidate.state = 'active'
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.generated_page_heads head
+              WHERE head.knowledge_base_id = candidate.knowledge_base_id
+                AND head.page_candidate_public_id = candidate.public_id
+            )
+        )
+        SELECT public_id, object_id FROM releasable ORDER BY public_id
+        LIMIT 501
+      `
+    },
+    {
       name: "semantic page-directory scope",
       expectedIndexes: [
         "generated_page_heads_semantic_scope_idx",
@@ -198,6 +236,44 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
           AND second_source_file_public_id = 'source-file-plan'
           AND active AND retired_at IS NULL
         ORDER BY first_source_file_public_id, relation_kind
+        LIMIT 501
+      `
+    },
+    {
+      name: "current-revision relationship projection closure",
+      expectedIndexes: [
+        "canonical_file_relations_first_active_idx",
+        "canonical_file_relations_second_active_idx",
+        "canonical_file_relations_first_pending_projection_idx",
+        "canonical_file_relations_second_pending_projection_idx"
+      ],
+      query: `
+        WITH closure AS (
+          SELECT public_id
+          FROM focowiki.canonical_file_relations
+          WHERE knowledge_base_id = 'knowledge-base-plan'
+            AND active AND retired_at IS NULL
+            AND (
+              (first_source_file_public_id = 'source-file-plan'
+                AND first_source_revision_public_id = 'source-revision-plan')
+              OR
+              (second_source_file_public_id = 'source-file-plan'
+                AND second_source_revision_public_id = 'source-revision-plan')
+            )
+          UNION ALL
+          SELECT public_id
+          FROM focowiki.canonical_file_relations
+          WHERE knowledge_base_id = 'knowledge-base-plan'
+            AND NOT active AND retired_at IS NULL
+            AND (
+              (first_source_file_public_id = 'source-file-plan'
+                AND first_source_revision_public_id = 'source-revision-plan')
+              OR
+              (second_source_file_public_id = 'source-file-plan'
+                AND second_source_revision_public_id = 'source-revision-plan')
+            )
+        )
+        SELECT public_id FROM closure ORDER BY public_id
         LIMIT 501
       `
     }

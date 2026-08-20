@@ -62,6 +62,7 @@ describe("document relation reconciliation work handler", () => {
       } as never,
       ...modelDeltaDependencies(),
       pairs: {
+        async listProjectionClosureForRevision() { return []; },
         async enqueue() { return "pair-a"; },
         addEvidence,
         async stageCanonical() { return "canonical-relation-a"; }
@@ -126,6 +127,7 @@ describe("document relation reconciliation work handler", () => {
       } as never,
       ...modelDeltaDependencies(),
       pairs: {
+        async listProjectionClosureForRevision() { return []; },
         async enqueue() { return "pair-a"; },
         addEvidence,
         async stageCanonical() { return "canonical-relation-a"; }
@@ -140,6 +142,58 @@ describe("document relation reconciliation work handler", () => {
 
     expect(findTargetsByIdentityKeys).not.toHaveBeenCalled();
     expect(addEvidence).not.toHaveBeenCalled();
+  });
+
+  it("includes pre-staged current-revision relations in the projection closure", async () => {
+    const listProjectionClosureForRevision = vi.fn(async () => [{
+      pairPublicId: "pair-existing",
+      relationPublicId: "relation-existing",
+      neighborSourceFilePublicId: "source-b"
+    }]);
+    const handler = createProductionDocumentRelationReconcileWorkHandler({
+      contexts: { read: async () => context() } as never,
+      preparedSources: (async () => ({
+        body: "Standalone source.",
+        parsedMetadata: {},
+        resolvedMetadata: { title: "Source A" },
+        referenceProfile: { references: [] }
+      })) as never,
+      firstLayers: (async () => firstLayer()) as never,
+      semanticFacts: (async () => ({
+        entities: [], evidence: [], mentions: [], relationships: [], communities: [],
+        communityReports: []
+      })) as never,
+      referenceFacts: {
+        async findTargetsByIdentityKeys() { return []; },
+        async findReferencingIdentityKeys() { return []; }
+      } as never,
+      ...modelDeltaDependencies(),
+      pairs: {
+        listProjectionClosureForRevision,
+        async enqueue() { throw new Error("unexpected relation"); },
+        async addEvidence() { throw new Error("unexpected evidence"); },
+        async stageCanonical() { throw new Error("unexpected canonical relation"); }
+      } as never,
+      now: () => "2026-08-16T00:00:00.000Z"
+    });
+
+    const result = await handler({
+      claimed: claimedWork(),
+      signal: new AbortController().signal
+    });
+
+    expect(listProjectionClosureForRevision).toHaveBeenCalledWith({
+      knowledgeBaseId: "knowledge-base-a",
+      sourceFilePublicId: "source-a",
+      sourceRevisionPublicId: "revision-a",
+      limit: 10_000
+    });
+    expect(result.value.pairPublicIds).toEqual(["pair-existing"]);
+    expect(result.value.relationPublicIds).toEqual(["relation-existing"]);
+    expect(result.value.affectedSourceFilePublicIds).toEqual([
+      "source-a",
+      "source-b"
+    ]);
   });
 
   it("carries source-grounded incoming evidence across a path-only revision", async () => {
@@ -182,6 +236,7 @@ describe("document relation reconciliation work handler", () => {
       } as never,
       ...modelDeltaDependencies(),
       pairs: {
+        async listProjectionClosureForRevision() { return []; },
         listReusableEvidence,
         async listActiveNeighborSourceFilePublicIds() { return ["source-b"]; },
         async enqueue() { return "pair-carried"; },
@@ -243,6 +298,7 @@ describe("document relation reconciliation work handler", () => {
       } as never,
       ...modelDeltaDependencies(),
       pairs: {
+        async listProjectionClosureForRevision() { return []; },
         listActiveNeighborSourceFilePublicIds,
         async enqueue() { throw new Error("unexpected relation"); },
         async addEvidence() { throw new Error("unexpected evidence"); },

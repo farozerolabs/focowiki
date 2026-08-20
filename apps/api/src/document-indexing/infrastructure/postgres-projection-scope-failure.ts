@@ -1,9 +1,12 @@
 import type { TransactionSql } from "postgres";
+import type { DatabaseClient } from "../../db/client.js";
 import { convergePostgresUploadDocumentOperation,
   failPostgresDocumentOperation } from
   "./postgres-upload-operation-aggregation.js";
 import { enqueuePostgresDocumentWebhookEvent } from
   "./postgres-document-webhook-event.js";
+import { releasePostgresDocumentPageCandidates } from
+  "./postgres-document-page-candidate-release.js";
 
 type BlockedProjectionRow = {
   work_public_id: string;
@@ -94,6 +97,14 @@ export async function failPostgresDocumentsBlockedByProjectionScopes(input: {
   for (const row of blocked) {
     const revision = revisions.get(row.document_job_public_id);
     if (revision === undefined) continue;
+    await releasePostgresDocumentPageCandidates({
+      transaction: tx as unknown as DatabaseClient,
+      knowledgeBaseId: row.knowledge_base_id,
+      documentJobPublicId: row.document_job_public_id,
+      operationPublicId: row.operation_public_id,
+      retainedCandidatePublicIds: [],
+      releasedAt: input.now
+    });
     await failPostgresDocumentOperation(tx, {
       knowledgeBaseId: row.knowledge_base_id,
       operationPublicId: row.operation_public_id,
