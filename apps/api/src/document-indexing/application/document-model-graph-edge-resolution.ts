@@ -81,7 +81,7 @@ export function resolveAcceptedDocumentModelEdges(input: {
     return [{
       ...edge,
       relationType: item.relationType,
-      weight: Math.max(edge.weight, item.weight),
+      weight: edge.weight,
       reason: item.reason.trim().slice(0, 1_024),
       source: "model_confirmed" as const
     }];

@@ -133,6 +133,7 @@ function sendTextRequest(
     const client = assistance.client as unknown as ChatTextClient;
     return client.chat.completions.create({
       model: assistance.modelName,
+      reasoning_effort: "none",
       messages: [{
         role: "system",
         content: instructions
@@ -149,6 +150,7 @@ function sendTextRequest(
   const client = assistance.client as unknown as ResponsesTextClient;
   return client.responses.create({
     model: assistance.modelName,
+    reasoning: { effort: "none" },
     instructions,
     input: prompt,
     text: { format: { type: "text" } },

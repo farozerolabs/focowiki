@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { GRAPH_RELATIONSHIP_MAX_ITEMS } from "@focowiki/okf";
 import type { createRuntimeSettingsRepository } from "../../runtime-settings/repository.js";
 import type { ClaimedDocumentArtifactWork } from "../application/document-work-port.js";
 import { buildDocumentIdentityKeys, buildDocumentRelationCandidates } from
@@ -35,6 +36,8 @@ import type { createProductionDocumentInternalHybridCandidateSearch } from
   "./production-document-internal-hybrid-candidate-search.js";
 import { createProductionDocumentModelEvaluation } from
   "./production-document-model-evaluation.js";
+import { assertRelationshipConfirmationSucceeded } from
+  "./document-model-evaluation-validation.js";
 import { recordCandidateDeltaLayer } from "./production-document-model-layer-traces.js";
 import { metadataAliases } from "./production-document-metadata.js";
 import { documentJobContextFromWork } from "./production-document-first-layer-work-handler.js";
@@ -308,16 +311,19 @@ async function evaluateHybridRelationshipDelta(input: {
     throw new Error("Semantic projection configuration is unavailable");
   }
   const candidates = isDocumentPathOnlyOperation(context.job.operationKind) ? []
-    : await input.dependencies.internalCandidates.find({
+    : (await input.dependencies.internalCandidates.find({
         knowledgeBaseId: request.claimed.knowledgeBaseId,
         sourceFilePublicId: request.claimed.sourceFilePublicId,
         sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
         semanticGenerationPublicId,
         embeddingConfigurationRevisionPublicId,
         terms: documentGraphCandidateTerms(prepared.resolvedMetadata.title, firstLayer.contentProfile),
-        limit: input.settings.graph.candidateLimit,
+        limit: Math.min(
+          input.settings.graph.candidateLimit,
+          GRAPH_RELATIONSHIP_MAX_ITEMS
+        ),
         signal: request.signal
-      });
+      })).slice(0, GRAPH_RELATIONSHIP_MAX_ITEMS);
   if (candidates.length === 0) {
     return {
       relations: [],
@@ -356,7 +362,7 @@ async function evaluateHybridRelationshipDelta(input: {
       metadata: prepared.parsedMetadata,
       contentProfile: firstLayer.contentProfile,
       modelName: assistance.modelName,
-      candidateLimit: input.settings.graph.candidateLimit,
+      candidateLimit: GRAPH_RELATIONSHIP_MAX_ITEMS,
       acceptedEdgeLimit: input.settings.graph.acceptedEdgeLimit,
       genericPhraseThreshold: input.settings.graph.genericPhraseThreshold,
       signal: request.signal
@@ -384,6 +390,10 @@ async function evaluateHybridRelationshipDelta(input: {
     modelName: assistance.modelName,
     execution: delta.execution,
     warningCount: delta.warnings.length
+  });
+  assertRelationshipConfirmationSucceeded({
+    warnings: delta.warnings,
+    providerRequestCount: delta.execution.providerRequestCount
   });
   return {
     relations: documentModelRelationCandidates(resolveAcceptedDocumentModelEdges({

@@ -23,3 +23,12 @@ export function modelEvaluationError(
     { code }
   );
 }
+
+export function assertRelationshipConfirmationSucceeded(input: {
+  warnings: readonly string[];
+  providerRequestCount: number;
+}): void {
+  if (input.warnings.length > 0 && input.providerRequestCount > 0) {
+    throw modelEvaluationError("MODEL_RELATIONSHIP_CONFIRMATION_FAILED");
+  }
+}

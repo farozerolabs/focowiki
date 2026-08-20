@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildGraphRelationshipConfirmationRequest,
   buildModelGraphAnalysisRequest,
   createRevisionScopedChatCompletionsClient,
+  requestGraphRelationshipConfirmations,
   requestModelGraphAnalysis,
   validateModelGraphAnalysis
 } from "../src/model.js";
@@ -33,52 +35,138 @@ const input = {
   contextWindowTokens: 32_000
 };
 
-describe("combined model graph analysis", () => {
-  it("builds one strict response containing suggestions and relationships", () => {
+describe("model graph analysis", () => {
+  it("builds one compact strict response containing only suggestions", () => {
     const request = buildModelGraphAnalysisRequest(input);
+    expect(request.instructions).toContain("# Task");
+    expect(request.instructions).toContain("## Output contract");
+    expect(request.instructions).toContain("```json");
     expect(request.text.format.name).toBe("portable_model_graph_analysis");
-    expect(request.text.format.schema.required).toEqual([
-      "suggestions", "relationships"
-    ]);
+    expect(request.text.format.schema.required).toEqual(["suggestions"]);
     const prompt = request.input[0]!.content[0]!.text;
-    expect(prompt).toContain("source-b");
-    expect(prompt).toContain(
-      "The guide describes maintenance procedures."
-    );
+    expect(prompt).toContain("# Current document");
+    expect(prompt).toContain("# Source Markdown");
+    expect(prompt).not.toContain("source-b");
+    expect(prompt).not.toContain("Candidate relationships:");
+    expect(prompt).not.toContain("The guide describes maintenance procedures.");
     expect(prompt.split(input.body)).toHaveLength(2);
     expect(request.instructions).toContain("Return one JSON object");
-    expect(request.instructions).toContain("same uniquely identifiable entity");
-    expect(request.instructions).toContain("direction-neutral durable fact");
-    expect(request.instructions).toContain("preliminary proposal");
-    expect(request.instructions).toContain("return the evidence-accurate relationType");
+    expect(request.instructions).not.toContain("relationship reviewer");
+    expect(request.instructions).not.toContain("candidateId");
     expect(request.instructions).toContain(
       "Each tag and keyword must be at most 128 UTF-8 bytes"
     );
     expect(request.instructions).toContain(
       "Return at most 16 tags and at most 32 keywords"
     );
-    expect(request.instructions).toContain(
-      "Return at most 50 accepted relationships"
-    );
-    expect(request.instructions).toContain(
-      "Keep description within 600 characters and each relationship reason within 240 characters"
-    );
-    expect(request.max_output_tokens).toBe(8_192);
+    expect(request).not.toHaveProperty("max_output_tokens");
+    expect(request.reasoning).toEqual({ effort: "none" });
     expect(request.text.format.schema.properties.suggestions.properties.tags)
       .toMatchObject({ maxItems: 16, items: { maxLength: 128 } });
     expect(request.text.format.schema.properties.suggestions.properties.keywords)
       .toMatchObject({ maxItems: 32, items: { maxLength: 128 } });
     expect(request.text.format.schema.properties.suggestions.properties)
       .not.toHaveProperty("related_links");
-    expect(request.text.format.schema.properties.relationships.items.required)
-      .toEqual(["candidateId", "relationType", "confidence", "reason"]);
+    expect(request.text.format.schema.properties).not.toHaveProperty("relationships");
+  });
+
+  it("builds a minimal top-ten relationship request and output contract", () => {
+    const candidates = Array.from({ length: 12 }, (_, index) => ({
+      ...input.candidates[0]!,
+      toFileId: `candidate-${String(index + 1).padStart(4, "0")}`,
+      reason: `Internal preliminary reason ${index + 1}`,
+      evidence: {
+        sourceExcerpt: `Source evidence ${index + 1}`,
+        internalScore: 0.9
+      }
+    }));
+    const candidateFiles = candidates.map((candidate, index) => ({
+      ...input.candidateFiles[0]!,
+      fileId: candidate.toFileId,
+      path: `pages/private-${index + 1}.md`,
+      title: `Candidate ${index + 1}`,
+      type: "private-type",
+      summary: `Private summary ${index + 1}`,
+      tags: ["private-tag"],
+      entities: ["private-entity"],
+      evidenceExcerpt: `Target evidence ${index + 1}`
+    }));
+
+    const request = buildGraphRelationshipConfirmationRequest({
+      ...input,
+      body: "FULL_CURRENT_BODY_MUST_NOT_APPEAR",
+      candidates,
+      candidateFiles
+    });
+    const prompt = request.input[0]!.content[0]!.text;
+
+    expect(request.instructions).toContain("# Task");
+    expect(request.instructions).toContain("## Output contract");
+    expect(request.instructions).toContain("### Supported relationship");
+    expect(request.instructions).toContain("### No supported relationship");
+    expect(request.instructions).toContain("```json");
     expect(request.instructions).toContain(
-      "candidateId is the only authoritative target identity"
+      "Write reason in the primary natural language of the supplied title and evidence"
     );
+    expect(request.instructions).toContain(
+      "Output the JSON object immediately without restating or analyzing candidates"
+    );
+    expect(prompt).toContain("# Current document");
+    expect(prompt).toContain("# Candidate documents");
+    expect(request).not.toHaveProperty("max_output_tokens");
+    expect(request.reasoning).toEqual({ effort: "none" });
     expect(request.text.format.schema.properties.relationships)
-      .toMatchObject({ maxItems: 50 });
+      .toMatchObject({ maxItems: 10 });
+    expect(request.text.format.schema.properties.relationships.items.required)
+      .toEqual(["candidateId", "relationType", "reason"]);
+    expect(request.text.format.schema.properties.relationships.items.properties)
+      .not.toHaveProperty("confidence");
     expect(request.text.format.schema.properties.relationships.items.properties.reason)
-      .toMatchObject({ maxLength: 240 });
+      .toMatchObject({ maxLength: 120 });
+    expect(request.instructions).toContain(
+      '{"relationships":[{"candidateId":"candidate-0001","relationType":"same_specific_subject","reason":"Both documents address the same specific subject."}]}'
+    );
+    expect(request.instructions).toContain('{"relationships":[]}');
+    expect(prompt).toContain("candidate-0010");
+    expect(prompt).not.toContain("candidate-0011");
+    expect(prompt).toContain("Source evidence 1");
+    expect(prompt).toContain("Target evidence 1");
+    expect(prompt).not.toContain("FULL_CURRENT_BODY_MUST_NOT_APPEAR");
+    expect(prompt).not.toContain("private-1.md");
+    expect(prompt).not.toContain("private-type");
+    expect(prompt).not.toContain("Private summary");
+    expect(prompt).not.toContain("private-tag");
+    expect(prompt).not.toContain("private-entity");
+    expect(prompt).not.toContain("Internal preliminary reason");
+  });
+
+  it("accepts the minimal relationship output without model confidence", async () => {
+    const create = vi.fn(async () => ({
+      choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+        relationships: [{
+          candidateId: "source-b",
+          relationType: "direct_reference",
+          reason: "Climate Operations explicitly names Maintenance Guide."
+        }]
+      }) } }]
+    }));
+
+    await expect(requestGraphRelationshipConfirmations({
+      ...input,
+      receiveTimeouts: { maxMs: 5_000, idleMs: 5_000 },
+      client: {
+        apiMode: "chat_completions",
+        structuredOutputCapability: "native_json_schema",
+        chat: { completions: { create } }
+      }
+    })).resolves.toMatchObject({
+      confirmations: [{
+        targetFileId: "source-b",
+        accepted: true,
+        relationType: "direct_reference"
+      }],
+      warnings: []
+    });
   });
 
   it("rejects suggestion terms that exceed the structured-output contract", () => {
@@ -89,8 +177,7 @@ describe("combined model graph analysis", () => {
         description: "Operations guidance.",
         tags: ["x".repeat(129)],
         keywords: []
-      },
-      relationships: []
+      }
     })).toThrow();
   });
 
@@ -105,7 +192,7 @@ describe("combined model graph analysis", () => {
       body: "# Habitat Operations\n\nSee the restoration field guide.",
       excerpt: "The field guide covers habitat restoration."
     }
-  ])("keeps multilingual source and bounded candidate evidence distinct for $title", (fixture) => {
+  ])("keeps multilingual source independent from relationship candidates for $title", (fixture) => {
     const candidateBodySentinel = "FULL_CANDIDATE_BODY_MUST_NOT_APPEAR";
     const request = buildModelGraphAnalysisRequest({
       ...input,
@@ -119,7 +206,7 @@ describe("combined model graph analysis", () => {
     const prompt = request.input[0]!.content[0]!.text;
     expect(prompt).toContain(fixture.body);
     expect(prompt.split(fixture.body)).toHaveLength(2);
-    expect(prompt).toContain(fixture.excerpt);
+    expect(prompt).not.toContain(fixture.excerpt);
     expect(prompt).not.toContain(candidateBodySentinel);
   });
 
@@ -179,8 +266,7 @@ describe("combined model graph analysis", () => {
           description: "Operations guidance.",
           tags: ["climate"],
           keywords: ["maintenance"]
-        },
-        relationships: []
+        }
       }) } }] };
     });
 
@@ -201,11 +287,11 @@ describe("combined model graph analysis", () => {
     expect(requests[1]?.messages[0]?.content).toContain("Return one JSON object");
   });
 
-  it("returns suggestions and relationship decisions from one provider call", async () => {
+  it("returns source suggestions from one provider call", async () => {
     const observations: unknown[] = [];
     const create = vi.fn(async (_request: {
       response_format: unknown;
-      max_tokens: number;
+      reasoning_effort: "none";
     }) => ({
       id: "chat-request-1",
       choices: [{
@@ -218,13 +304,7 @@ describe("combined model graph analysis", () => {
               description: "Operations guidance.",
               tags: ["climate"],
               keywords: ["maintenance"]
-            },
-            relationships: [{
-              candidateId: "source-b",
-              relationType: "direct_reference",
-              confidence: 0.94,
-              reason: "The maintenance guide is visibly referenced."
-            }]
+            }
           })
         }
       }],
@@ -246,7 +326,7 @@ describe("combined model graph analysis", () => {
       }
     })).resolves.toMatchObject({
       suggestions: { title: "Climate Operations" },
-      confirmations: [{ targetFileId: "source-b", accepted: true }],
+      confirmations: [],
       warnings: []
     });
     expect(create).toHaveBeenCalledOnce();
@@ -257,7 +337,8 @@ describe("combined model graph analysis", () => {
         strict: true
       }
     });
-    expect(create.mock.calls[0]?.[0].max_tokens).toBe(8_192);
+    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("max_tokens");
+    expect(create.mock.calls[0]?.[0].reasoning_effort).toBe("none");
     expect(observations).toEqual([expect.objectContaining({
       apiMode: "chat_completions",
       structuredOutputCapability: "native_json_schema",
@@ -283,8 +364,7 @@ describe("combined model graph analysis", () => {
           description: "Operations guidance.",
           tags: ["climate"],
           keywords: ["maintenance"]
-        },
-        relationships: []
+        }
       }),
       usage: {
         input_tokens: 280,
@@ -312,7 +392,8 @@ describe("combined model graph analysis", () => {
       name: "portable_model_graph_analysis",
       strict: true
     });
-    expect(sent.max_output_tokens).toBe(8_192);
+    expect(sent).not.toHaveProperty("max_output_tokens");
+    expect(sent.reasoning).toEqual({ effort: "none" });
     expect(observations).toEqual([expect.objectContaining({
       apiMode: "responses",
       structuredOutputCapability: "native_json_schema",
@@ -344,8 +425,7 @@ describe("combined model graph analysis", () => {
           description: "Operations guidance.",
           tags: ["climate"],
           keywords: ["maintenance"]
-        },
-        relationships: []
+        }
       }) } }] };
     });
     const client = createRevisionScopedChatCompletionsClient(rawCreate);
@@ -438,8 +518,7 @@ describe("combined model graph analysis", () => {
           description: "Operations guidance.",
           tags: ["climate"],
           keywords: ["maintenance"]
-        },
-        relationships: []
+        }
       }) } }] };
     });
     const client = createRevisionScopedChatCompletionsClient(rawCreate);
@@ -529,8 +608,7 @@ describe("combined model graph analysis", () => {
             description: "Operations guidance.",
             tags: ["climate"],
             keywords: ["maintenance"]
-          },
-          relationships: []
+          }
         }) } }]
       });
     const client = createRevisionScopedChatCompletionsClient(create);
