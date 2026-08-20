@@ -90,7 +90,7 @@ The same settings remain visible for both providers; changing `SEARCH_PROVIDER` 
 | Result refill factor | Overfetches candidates before hydration. | Overfetches collapsed candidates before hydration. | `3` |
 | Index update document count | Maximum documents in one indexing task. | Maximum documents in one Bulk request. | `10000` |
 | Index update compressed bytes | Maximum serialized indexing batch bytes. | Maximum serialized Bulk request bytes. | `8388608` |
-| In-flight search tasks | Concurrent pending indexing tasks. | Concurrent Bulk or provider operations. | `8` |
+| Search concurrency | Concurrent search indexing requests. This field has no fixed product ceiling; actual activity is limited by document concurrency and pauses automatically when the search service is busy. | Concurrent Bulk or provider operations. Increase only after measuring the search service. | `8` |
 | Search task poll interval milliseconds | Delay between task-status checks. | Delay between retry or final visibility checks. | `500` |
 | Search task timeout milliseconds | Total indexing-task deadline. | Total Bulk, indexing, and visibility deadline. | `600000` |
 | Search task maximum attempts | Maximum task and request retries. | Maximum transient request and item retries. | `5` |

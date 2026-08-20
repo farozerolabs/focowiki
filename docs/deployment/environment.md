@@ -125,10 +125,10 @@ OPENSEARCH_CA_FILE=/app/runtime-secrets/opensearch-ca.pem
 OPENSEARCH_AWS_REGION=
 OPENSEARCH_AWS_SERVICE=es
 OPENSEARCH_ADMIN_PASSWORD=<replace-with-a-strong-administrator-password>
-OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
 ```
 
-On first start, the Docker template automatically generates TLS assets and a random runtime password for `focowiki-runtime`, storing them under `opensearch-security` and `runtime-secrets`. Do not prepare certificates manually, put the administrator password in `OPENSEARCH_PASSWORD`, or change the password-file and CA-file paths above. `OPENSEARCH_JAVA_OPTS` bounds the OpenSearch heap at 512 MiB by default; change it only after measuring the deployment workload and available memory.
+On first start, the Docker template automatically generates TLS assets and a random runtime password for `focowiki-runtime`, storing them under `opensearch-security` and `runtime-secrets`. Do not prepare certificates manually, put the administrator password in `OPENSEARCH_PASSWORD`, or change the password-file and CA-file paths above. `OPENSEARCH_JAVA_OPTS` sets a 2 GiB OpenSearch heap by default. Measure the deployment workload and available memory before increasing it.
 
 ### Bundled Meilisearch
 

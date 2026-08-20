@@ -125,10 +125,10 @@ OPENSEARCH_CA_FILE=/app/runtime-secrets/opensearch-ca.pem
 OPENSEARCH_AWS_REGION=
 OPENSEARCH_AWS_SERVICE=es
 OPENSEARCH_ADMIN_PASSWORD=<替换为强管理员密码>
-OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
 ```
 
-第一次启动时，Docker 模板会自动生成 TLS 文件和 `focowiki-runtime` 的随机运行密码，并写入 `opensearch-security` 和 `runtime-secrets`。不要手工创建证书，不要把 `OPENSEARCH_PASSWORD` 填成管理员密码，也不要修改上面的密码文件和 CA 文件路径。`OPENSEARCH_JAVA_OPTS` 用于设置 OpenSearch Java 堆内存，模板默认占用 512 MiB；根据实际负载和服务器内存测量后再调整。
+第一次启动时，Docker 模板会自动生成 TLS 文件和 `focowiki-runtime` 的随机运行密码，并写入 `opensearch-security` 和 `runtime-secrets`。不要手工创建证书，不要把 `OPENSEARCH_PASSWORD` 填成管理员密码，也不要修改上面的密码文件和 CA 文件路径。`OPENSEARCH_JAVA_OPTS` 默认设置 2 GiB OpenSearch Java 堆内存；提高前应先测量部署负载和可用内存。
 
 ### 使用 Docker 模板内置 Meilisearch
 

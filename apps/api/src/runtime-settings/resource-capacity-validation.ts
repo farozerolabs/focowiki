@@ -7,17 +7,14 @@ import type {
 
 export type RuntimeSettingsResourceCapacity = {
   databaseConnections: number;
-  searchTasks: number;
   objectStoreRequests: number;
-  memoryBytes: number;
   cpuConcurrency: number;
 };
 
 type CapacitySnapshot = Pick<RuntimeSettingsSnapshot, "activeModel"> & {
   worker: Pick<
     RuntimeSettingsSnapshot["worker"],
-    | "sourceFileConcurrency"
-    | "sourceObjectReadConcurrency"
+    "sourceFileConcurrency" | "sourceObjectReadConcurrency"
   >;
   maintenance: Pick<
     RuntimeSettingsSnapshot["maintenance"],
@@ -43,12 +40,10 @@ export function createRuntimeSettingsResourceCapacity(input: {
   const databaseConnections = input.config.database.workerPoolMax ?? 8;
   return {
     databaseConnections,
-    searchTasks: input.defaults.search.maxInFlightTasks,
     objectStoreRequests: Math.max(
       demand.objectStoreRequests,
       databaseConnections
     ),
-    memoryBytes: demand.memoryBytes,
     cpuConcurrency: Math.max(
       demand.cpuConcurrency,
       databaseConnections
@@ -78,22 +73,10 @@ export function validateRuntimeSettingsResourceCapacity(input: {
       "Aggregate worker database concurrency exceeds deployment capacity"
     ));
   }
-  if (demand.searchTasks > input.capacity.searchTasks) {
-    issues.push(issue(
-      "searchCapacity",
-      "Aggregate search concurrency exceeds deployment capacity"
-    ));
-  }
   if (demand.objectStoreRequests > input.capacity.objectStoreRequests) {
     issues.push(issue(
       "objectStoreCapacity",
       "Aggregate object-store concurrency exceeds deployment capacity"
-    ));
-  }
-  if (demand.memoryBytes > input.capacity.memoryBytes) {
-    issues.push(issue(
-      "memoryCapacity",
-      "Aggregate worker buffers exceed deployment memory capacity"
     ));
   }
   if (demand.cpuConcurrency > input.capacity.cpuConcurrency) {
@@ -111,27 +94,17 @@ function calculateDemand(snapshot: CapacitySnapshot): RuntimeSettingsResourceCap
     maintenanceConcurrency,
     snapshot.maintenance.hardDeleteConcurrency
   ]);
-  const searchTasks = Math.max(
-    snapshot.search.maxInFlightTasks,
-    maintenanceConcurrency
-  );
   const objectStoreRequests = sum([
     maintenanceConcurrency,
     snapshot.maintenance.hardDeleteConcurrency
   ]);
-  const memoryBytes = multiply(
-    snapshot.search.maxInFlightTasks,
-    snapshot.search.indexBatchCompressedBytes
-  );
   const cpuConcurrency = sum([
     maintenanceConcurrency,
     snapshot.maintenance.hardDeleteConcurrency
   ]);
   return {
     databaseConnections,
-    searchTasks,
     objectStoreRequests,
-    memoryBytes,
     cpuConcurrency
   };
 }
@@ -144,14 +117,6 @@ function sum(values: readonly number[]): number {
     if (!Number.isSafeInteger(total)) throw new Error("unsafe resource sum");
   }
   return total;
-}
-
-function multiply(left: number, right: number): number {
-  assertNonnegative(left);
-  assertNonnegative(right);
-  const value = left * right;
-  if (!Number.isSafeInteger(value)) throw new Error("unsafe resource product");
-  return value;
 }
 
 function assertNonnegative(value: number): void {

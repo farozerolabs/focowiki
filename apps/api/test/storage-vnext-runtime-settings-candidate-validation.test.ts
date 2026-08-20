@@ -39,14 +39,11 @@ describe("storage vNext complete runtime settings candidate validation", () => {
     }));
   });
 
-  it("rejects aggregate resource demand before persistence", () => {
+  it("does not reject search concurrency against a static default capacity", () => {
     expect(validateCandidate).toBeTypeOf("function");
     if (!validateCandidate) return;
-    const input = candidate({ search: { maxInFlightTasks: 9 } });
-    expect(validateCandidate(input)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "searchCapacity" }),
-      expect.objectContaining({ field: "memoryCapacity" })
-    ]));
+    const input = candidate({ search: { maxInFlightTasks: 128 } });
+    expect(validateCandidate(input)).toEqual([]);
   });
 
   it("rejects removed retention fields", () => {
@@ -195,9 +192,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
     value,
     capacity: {
       databaseConnections: 4,
-      searchTasks: 3,
       objectStoreRequests: 4,
-      memoryBytes: 196_608,
       cpuConcurrency: 4
     },
     backendLimits: {
