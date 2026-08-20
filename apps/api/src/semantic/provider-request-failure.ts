@@ -77,6 +77,7 @@ export function reportProviderFailureOnce(
     reporter(diagnostic);
   } catch {
     // Diagnostic logging must never change provider request behavior.
+    return;
   }
 }
 
