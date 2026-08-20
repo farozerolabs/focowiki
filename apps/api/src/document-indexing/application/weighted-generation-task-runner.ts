@@ -17,6 +17,7 @@ export type GenerationTaskMetric = {
 
 type QueuedTask = {
   workClass: GenerationWorkClass;
+  ownerKey: string;
   operation(): Promise<unknown>;
   signal: AbortSignal | undefined;
   enqueuedAt: number;
@@ -46,20 +47,32 @@ export function createWeightedGenerationTaskRunner(input: {
   const controller = createAdaptiveResourceController({
     configuredMaximum: input.configuredMaximum
   });
+  const providerControllers = new Map<string, ReturnType<
+    typeof createAdaptiveResourceController
+  >>();
+  const activeByOwner = new Map<string, number>();
   const queue = createWeightedGenerationQueue<QueuedTask>({
     weights: input.weights
   });
   let active = 0;
+  let maximumWaiters = input.maximumWaiters;
+  let lastPressure: null | {
+    cpuPressure: number;
+    memoryPressure: number;
+    pressureSource: string | null;
+  } = null;
 
   function drain(): void {
     while (active < controller.capacity()) {
-      const next = queue.dequeue();
+      const next = queue.dequeue((item) => ownerActive(item.ownerKey)
+        < ownerController(item.ownerKey).capacity());
       if (!next) return;
       if (next.item.signal?.aborted) {
         next.item.reject(abortError(next.item.signal));
         continue;
       }
       active += 1;
+      activeByOwner.set(next.item.ownerKey, ownerActive(next.item.ownerKey) + 1);
       const serviceStartedAt = clockMs();
       const workClass = next.workClass;
       void execute(next.item, workClass);
@@ -79,16 +92,32 @@ export function createWeightedGenerationTaskRunner(input: {
         } finally {
         const finishedAt = clockMs();
         active -= 1;
+        activeByOwner.set(item.ownerKey, Math.max(0, ownerActive(item.ownerKey) - 1));
         const metric = {
           workClass: taskWorkClass,
           waitTimeMs: elapsed(item.enqueuedAt, serviceStartedAt),
           serviceTimeMs: elapsed(serviceStartedAt, finishedAt),
           outcome
         };
-        controller.observe({
+        const observation: AdaptiveResourceObservation = {
           outcome: adaptiveOutcome(failure),
           latencyMs: metric.serviceTimeMs,
           ...pressure()
+        };
+        lastPressure = pressureSnapshot(observation);
+        controller.observe({
+          ...observation,
+          outcome: observation.outcome === "rate_limited"
+            || observation.outcome === "timeout"
+            ? "failure"
+            : observation.outcome
+        });
+        ownerController(item.ownerKey).observe({
+          outcome: observation.outcome,
+          latencyMs: observation.latencyMs,
+          cpuPressure: 0,
+          memoryPressure: 0,
+          pressureSource: "model_revision_provider"
         });
         input.onMetric?.(metric);
         item.onMetric?.(metric);
@@ -106,20 +135,23 @@ export function createWeightedGenerationTaskRunner(input: {
       operation: () => Promise<TResult>,
       options: {
         signal?: AbortSignal;
+        ownerKey?: string;
         onMetric?(metric: GenerationTaskMetric): void;
       } = {}
     ): Promise<TResult> {
       if (options.signal?.aborted) {
         return Promise.reject(abortError(options.signal));
       }
-      if (queue.size() >= input.maximumWaiters) {
+      if (queue.size() >= maximumWaiters) {
         return Promise.reject(generationRunnerError(
           "GENERATION_WAITER_LIMIT_EXCEEDED"
         ));
       }
       return new Promise<TResult>((resolve, reject) => {
+        const ownerKey = options.ownerKey?.trim() || "default";
         queue.enqueue(workClass, {
           workClass,
+          ownerKey,
           operation,
           signal: options.signal,
           enqueuedAt: clockMs(),
@@ -131,18 +163,66 @@ export function createWeightedGenerationTaskRunner(input: {
       });
     },
     observe(observation: AdaptiveResourceObservation): number {
+      lastPressure = pressureSnapshot(observation);
       const capacity = controller.observe(observation);
       drain();
       return capacity;
     },
+    updateLimits(configuredMaximum: number, nextMaximumWaiters: number): void {
+      if (!Number.isSafeInteger(nextMaximumWaiters)
+        || nextMaximumWaiters < 0 || nextMaximumWaiters > 100_000) {
+        throw new Error("GENERATION_WAITER_LIMIT_INVALID");
+      }
+      maximumWaiters = nextMaximumWaiters;
+      controller.updateConfiguredMaximum(configuredMaximum);
+      for (const owner of providerControllers.values()) {
+        owner.updateConfiguredMaximum(configuredMaximum);
+      }
+      drain();
+    },
     snapshot() {
+      const globalCapacity = controller.capacity();
+      const ownerCapacities = [...providerControllers.values()].map(
+        (owner) => owner.capacity()
+      );
       return {
         active,
         waiting: queue.size(),
-        capacity: controller.capacity(),
-        configuredMaximum: input.configuredMaximum
+        capacity: ownerCapacities.length === 0
+          ? globalCapacity
+          : Math.min(globalCapacity, Math.max(...ownerCapacities)),
+        globalCapacity,
+        configuredMaximum: controller.configuredMaximum(),
+        pressure: lastPressure,
+        owners: Object.fromEntries([...providerControllers].map(([ownerKey, owner]) => [
+          ownerKey,
+          { active: ownerActive(ownerKey), capacity: owner.capacity() }
+        ]))
       };
     }
+  };
+
+  function ownerController(ownerKey: string) {
+    let owner = providerControllers.get(ownerKey);
+    if (!owner) {
+      owner = createAdaptiveResourceController({
+        configuredMaximum: controller.configuredMaximum()
+      });
+      providerControllers.set(ownerKey, owner);
+    }
+    return owner;
+  }
+
+  function ownerActive(ownerKey: string): number {
+    return activeByOwner.get(ownerKey) ?? 0;
+  }
+}
+
+function pressureSnapshot(observation: AdaptiveResourceObservation) {
+  return {
+    cpuPressure: observation.cpuPressure,
+    memoryPressure: observation.memoryPressure,
+    pressureSource: observation.pressureSource ?? null
   };
 }
 

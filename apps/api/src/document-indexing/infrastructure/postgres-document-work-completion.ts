@@ -91,9 +91,12 @@ export async function updatePostgresDocumentJobSummary(
     UPDATE focowiki.document_processing_jobs job
     SET completed_work_count = summary.completed_count,
         service_time_milliseconds = summary.service_time_milliseconds,
-        active_work_kinds = summary.active_kinds,
-        blocking_work_kind = summary.blocking_kind,
-        retrying_work_kind = summary.retrying_kind,
+        active_work_kinds = CASE WHEN job.state = 'error'
+          THEN job.active_work_kinds ELSE summary.active_kinds END,
+        blocking_work_kind = CASE WHEN job.state = 'error'
+          THEN job.blocking_work_kind ELSE summary.blocking_kind END,
+        retrying_work_kind = CASE WHEN job.state = 'error'
+          THEN job.retrying_work_kind ELSE summary.retrying_kind END,
         state = CASE
           WHEN job.state = 'error' THEN job.state
           WHEN summary.activation_completed THEN 'available'

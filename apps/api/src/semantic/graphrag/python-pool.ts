@@ -20,11 +20,13 @@ type Slot = {
   busy: boolean;
   ready: boolean;
   completed: number;
+  retiring: boolean;
   cancelCurrent?: (error: Error) => void;
 };
 
 export type GraphRagPythonPool = {
   start(): Promise<void>;
+  resize(size: number): Promise<void>;
   run(request: GraphRagAdapterRequest, options: { timeoutMs: number; signal?: AbortSignal }): Promise<GraphRagAdapterResponse>;
   close(): Promise<void>;
   stats(): { size: number; busy: number; queued: number; restarts: number };
@@ -52,6 +54,8 @@ export function createGraphRagPythonPool(input: {
   const refillTimers = new Set<ReturnType<typeof setTimeout>>();
   const childTerminations = new Set<Promise<void>>();
   let closed = false;
+  let started = false;
+  let desiredSize = input.size;
   let restarts = 0;
 
   function healthRequest(): GraphRagAdapterRequest {
@@ -64,6 +68,10 @@ export function createGraphRagPythonPool(input: {
 
   function replace(slot: Slot): void {
     void terminateChild(slot.child);
+    if (slot.retiring) {
+      removeSlot(slot);
+      return;
+    }
     slot.completed = 0;
     slot.ready = false;
     slot.busy = false;
@@ -79,7 +87,7 @@ export function createGraphRagPythonPool(input: {
   }
 
   function refill(slot: Slot): void {
-    if (closed) return;
+    if (closed || slot.retiring) return;
     try {
       slot.child = input.createChild();
     } catch {
@@ -117,7 +125,7 @@ export function createGraphRagPythonPool(input: {
   function dispatch(): void {
     if (closed) return;
     for (const slot of slots) {
-      if (slot.busy || !slot.ready) continue;
+      if (slot.busy || !slot.ready || slot.retiring) continue;
       let work = queue.shift();
       while (work?.signal?.aborted) {
         work.reject(abortedError());
@@ -140,6 +148,10 @@ export function createGraphRagPythonPool(input: {
       delete slot.cancelCurrent;
       if (error) work.reject(error);
       else work.resolve(value as GraphRagAdapterResponse);
+      if (slot.retiring && slots.includes(slot)) {
+        void terminateChild(slot.child);
+        removeSlot(slot);
+      }
       dispatch();
     };
     const recycle = (error: Error): void => {
@@ -169,8 +181,11 @@ export function createGraphRagPythonPool(input: {
     async start() {
       if (closed) throw new GraphRagAdapterError("ADAPTER_POOL_CLOSED", "Adapter pool is closed");
       if (slots.length > 0) return;
-      for (let index = 0; index < input.size; index += 1) {
-        slots.push({ child: input.createChild(), busy: false, ready: false, completed: 0 });
+      for (let index = 0; index < desiredSize; index += 1) {
+        slots.push({
+          child: input.createChild(), busy: false, ready: false,
+          completed: 0, retiring: false
+        });
       }
       let health: GraphRagAdapterResponse[];
       try {
@@ -184,6 +199,56 @@ export function createGraphRagPythonPool(input: {
         throw new GraphRagAdapterError("ADAPTER_HEALTH_FAILED", "Adapter compatibility health check failed");
       }
       for (const slot of slots) slot.ready = true;
+      started = true;
+    },
+    async resize(size) {
+      requirePositive(size, "size");
+      if (closed) {
+        throw new GraphRagAdapterError(
+          "ADAPTER_POOL_CLOSED",
+          "Adapter pool is closed"
+        );
+      }
+      desiredSize = size;
+      if (!started) return;
+      const retained = slots.filter((slot) => !slot.retiring);
+      if (retained.length < size) {
+        const added = Array.from({ length: size - retained.length }, () => ({
+          child: input.createChild(), busy: false, ready: false,
+          completed: 0, retiring: false
+        }));
+        slots.push(...added);
+        let health: GraphRagAdapterResponse[];
+        try {
+          health = await Promise.all(added.map((slot) =>
+            slot.child.request(healthRequest())));
+        } catch {
+          await Promise.all(added.map((slot) => terminateChild(slot.child)));
+          added.forEach(removeSlot);
+          throw new GraphRagAdapterError(
+            "ADAPTER_HEALTH_FAILED",
+            "Adapter compatibility health check failed"
+          );
+        }
+        if (health.some((response) => !response.ok)) {
+          await Promise.all(added.map((slot) => terminateChild(slot.child)));
+          added.forEach(removeSlot);
+          throw new GraphRagAdapterError(
+            "ADAPTER_HEALTH_FAILED",
+            "Adapter compatibility health check failed"
+          );
+        }
+        added.forEach((slot) => { slot.ready = true; });
+      } else if (retained.length > size) {
+        for (const slot of retained.slice(size)) {
+          slot.retiring = true;
+          if (!slot.busy) {
+            await terminateChild(slot.child);
+            removeSlot(slot);
+          }
+        }
+      }
+      dispatch();
     },
     run(request, options) {
       if (closed) return Promise.reject(new GraphRagAdapterError("ADAPTER_POOL_CLOSED", "Adapter pool is closed"));
@@ -208,6 +273,7 @@ export function createGraphRagPythonPool(input: {
     async close() {
       if (closed) return;
       closed = true;
+      started = false;
       for (const timer of refillTimers) clearTimeout(timer);
       refillTimers.clear();
       for (const work of queue.splice(0)) {
@@ -232,6 +298,11 @@ export function createGraphRagPythonPool(input: {
       };
     }
   };
+
+  function removeSlot(slot: Slot): void {
+    const index = slots.indexOf(slot);
+    if (index >= 0) slots.splice(index, 1);
+  }
 }
 
 function requirePositive(value: number, field: string): void {

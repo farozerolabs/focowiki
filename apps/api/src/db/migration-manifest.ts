@@ -19,6 +19,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "absent",
     targetGeneration: "storage-vnext-v9-document-indexing-hybrid",
     safety: "clean_bootstrap"
+  },
+  {
+    fileName: "002_document_queue_throughput.sql",
+    sourceGeneration: "storage-vnext-v9-document-indexing-hybrid",
+    targetGeneration: "storage-vnext-v10-document-indexing-throughput",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
@@ -151,6 +157,20 @@ export function createBootstrapPlan(
       pendingFiles: [],
       targetGeneration
     };
+  }
+
+  const sourceIndex = MIGRATION_MANIFEST.findIndex(
+    (migration) => migration.sourceGeneration === currentState
+  );
+  if (sourceIndex >= 0) {
+    const pendingMigrations = MIGRATION_MANIFEST.slice(sourceIndex);
+    if (pendingMigrations.every((migration) => migration.safety === "compatible")) {
+      return {
+        pendingMigrations,
+        pendingFiles: pendingMigrations.map((migration) => migration.fileName),
+        targetGeneration
+      };
+    }
   }
 
   throw new UnsupportedMigrationGenerationError(currentState);

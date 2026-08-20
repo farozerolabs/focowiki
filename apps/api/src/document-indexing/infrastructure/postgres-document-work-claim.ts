@@ -156,6 +156,7 @@ function hasReceipt(sql: TransactionSql, prerequisiteKind: string) {
       JOIN focowiki.document_artifact_receipts receipt
         ON receipt.work_public_id = prerequisite.public_id
       WHERE prerequisite.knowledge_base_id = work.knowledge_base_id
+        AND prerequisite.document_job_public_id = work.document_job_public_id
         AND prerequisite.source_revision_public_id = work.source_revision_public_id
         AND prerequisite.work_kind = ${prerequisiteKind}
         AND prerequisite.state = 'completed'

@@ -29,6 +29,39 @@ type RelationRow = {
 
 export function createPostgresCandidateFileRelationRepository(sql: DatabaseClient) {
   return {
+    async listPublicIdsForPairs(input: {
+      knowledgeBaseId: string;
+      pairPublicIds: readonly string[];
+      limit: number;
+    }): Promise<readonly string[]> {
+      const pairPublicIds = uniqueBoundedStrings(
+        input.pairPublicIds,
+        "pair_public_ids",
+        input.limit,
+        255
+      );
+      if (pairPublicIds.length === 0) return [];
+      const rows = await sql<Array<{ public_id: string }>>`
+        SELECT DISTINCT relation.public_id COLLATE "C" AS public_id
+        FROM focowiki.relation_candidate_pairs pair
+        JOIN focowiki.canonical_file_relations relation
+          ON relation.knowledge_base_id = pair.knowledge_base_id
+         AND relation.first_source_revision_public_id
+           = pair.first_source_revision_public_id
+         AND relation.second_source_revision_public_id
+           = pair.second_source_revision_public_id
+         AND relation.retired_at IS NULL
+        WHERE pair.knowledge_base_id = ${assertRepositoryIdentity(input.knowledgeBaseId, "knowledge_base_id")}
+          AND pair.public_id IN ${sql(pairPublicIds)}
+        ORDER BY public_id
+        LIMIT ${input.limit + 1}
+      `;
+      if (rows.length > input.limit) {
+        throw relationRepositoryError("candidate_relation_limit_exceeded");
+      }
+      return rows.map((row) => row.public_id);
+    },
+
     async listActivePublicIds(input: {
       knowledgeBaseId: string;
       affectedSourceFilePublicIds: readonly string[];

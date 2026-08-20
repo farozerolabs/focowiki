@@ -47,7 +47,7 @@ import {
 } from "./production-document-model-evaluation-inputs.js";
 import { findOrCopyDocumentModelAnalysis } from
   "./production-document-model-reuse.js";
-
+import { createModelObservationCollector } from "../../semantic/provider-request-failure.js";
 type EvaluationRequest = {
   knowledgeBaseId: string;
   sourceRevisionPublicId: string;
@@ -60,8 +60,7 @@ type EvaluationRequest = {
   edges: readonly DocumentProposedGraphEdge[];
   signal: AbortSignal;
 };
-
-const RELATIONSHIP_MODEL_BATCH_SIZE = 16;
+const RELATIONSHIP_MODEL_BATCH_SIZE = 64;
 
 export function createProductionDocumentModelEvaluation(input: {
   repository: DocumentModelEvaluationRepository;
@@ -128,11 +127,13 @@ export function createProductionDocumentModelEvaluation(input: {
             onProviderRequest: () => {
               providerRequestCount += 1;
             },
-            onProviderObservation: (observation) => {
-              providerObservations.push(observation);
-            }
+            onProviderObservation: createModelObservationCollector(providerObservations,
+              request.assistance.onProviderFailure,
+              request.assistance.modelName
+            )
           }), {
             signal: request.signal,
+            ownerKey: `${request.modelConfigurationPublicId}:${request.modelConfigurationRevision}`,
             onMetric(metric) {
               waitTimeMs += metric.waitTimeMs;
               serviceTimeMs += metric.serviceTimeMs;
@@ -333,11 +334,13 @@ export function createProductionDocumentModelEvaluation(input: {
                 onProviderRequest: () => {
                   providerRequestCount += 1;
                 },
-                onProviderObservation: (observation) => {
-                  providerObservations.push(observation);
-                }
+                onProviderObservation: createModelObservationCollector(providerObservations,
+                  request.assistance.onProviderFailure,
+                  request.assistance.modelName
+                )
               }), {
                 signal: request.signal,
+                ownerKey: `${request.modelConfigurationPublicId}:${request.modelConfigurationRevision}`,
                 onMetric(metric) {
                   waitTimeMs += metric.waitTimeMs;
                   serviceTimeMs += metric.serviceTimeMs;

@@ -70,7 +70,6 @@ export async function preflightMigrations(
   if (state !== "absent" && typeof state !== "string") {
     throw new RuntimeSchemaGenerationError(state);
   }
-  if (state !== "absent") await assertDocumentIndexingSchemaSignature(sql);
   let plan;
   try {
     plan = createBootstrapPlan(state);
@@ -80,11 +79,48 @@ export async function preflightMigrations(
     }
     throw error;
   }
+  if (state !== "absent") {
+    if (plan.pendingFiles.length === 0) {
+      await assertDocumentIndexingSchemaSignature(sql);
+    } else {
+      await assertDocumentIndexingUpgradeSourceSignature(sql);
+    }
+  }
 
   return {
     currentGeneration: state,
     pendingFiles: plan.pendingFiles
   };
+}
+
+async function assertDocumentIndexingUpgradeSourceSignature(
+  sql: DatabaseClient
+): Promise<void> {
+  const rows = await sql<Array<{ upgrade_source_compatible: boolean }>>`
+    SELECT (
+      to_regclass('focowiki.document_processing_jobs') IS NOT NULL
+      AND to_regclass('focowiki.document_artifact_work') IS NOT NULL
+      AND to_regclass('focowiki.document_artifact_receipts') IS NOT NULL
+      AND to_regclass('focowiki.document_artifact_work_claim_idx') IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns actual
+        WHERE actual.table_schema = 'focowiki'
+          AND actual.table_name = 'document_artifact_work'
+          AND actual.column_name = 'work_kind'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns actual
+        WHERE actual.table_schema = 'focowiki'
+          AND actual.table_name = 'document_artifact_receipts'
+          AND actual.column_name = 'work_public_id'
+      )
+    ) AS upgrade_source_compatible
+  `;
+  if (rows[0]?.upgrade_source_compatible !== true) {
+    throw new RuntimeSchemaSignatureError();
+  }
 }
 
 export async function assertRuntimeSchemaGeneration(sql: DatabaseClient): Promise<void> {
@@ -204,6 +240,7 @@ async function assertDocumentIndexingSchemaSignature(
           'document_artifact_work_lease_idx',
           'document_artifact_work_job_idx',
           'document_artifact_receipts_source_revision_idx',
+          'document_artifact_receipts_work_idx',
           'relation_candidate_pairs_claim_idx',
           'search_family_receipts_flush_idx',
           'projection_dirty_scopes_claim_idx',

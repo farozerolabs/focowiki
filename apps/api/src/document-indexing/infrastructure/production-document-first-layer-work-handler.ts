@@ -47,6 +47,8 @@ import type { DocumentJobContext } from
 import type { SemanticDocument } from "./production-document-types.js";
 import { isDocumentPathOnlyOperation } from
   "./production-document-prepared-source-reuse.js";
+import type { ProviderRequestFailureReporter } from
+  "../../semantic/provider-request-failure.js";
 
 export type DocumentFirstLayerSnapshot = {
   schemaVersion: "document-first-layer-source-v1";
@@ -80,6 +82,7 @@ export function createProductionDocumentFirstLayerWorkHandler(input: {
   objectWriter: StorageVnextImmutableObjectWriter;
   ownership: StorageVnextOwnershipRepository;
   deploymentSecret: string;
+  onProviderFailure?: ProviderRequestFailureReporter;
   now?: () => string;
 }) {
   const clock = input.now ?? (() => new Date().toISOString());
@@ -107,7 +110,10 @@ export function createProductionDocumentFirstLayerWorkHandler(input: {
     const assistance = await resolvePinnedModelAssistance({
       repository: input.modelRevisions,
       deploymentSecret: input.deploymentSecret,
-      job
+      job,
+      ...(input.onProviderFailure
+        ? { onProviderFailure: input.onProviderFailure }
+        : {})
     });
     const outputSettings = resolvePinnedDocumentOutputSettings(
       context.runtimeSettings as never

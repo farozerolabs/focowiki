@@ -26,16 +26,23 @@ type ErrorMetadata = {
 
 export function createRuntimeErrorDiagnostics(error: unknown): RuntimeErrorDiagnostics {
   const record = isRecord(error) ? error : {};
+  const providerError = isRecord(record.error) ? record.error : {};
   const metadata = isRecord(record.$metadata) ? record.$metadata as ErrorMetadata : {};
   const cause = isRecord(record.cause) ? record.cause : null;
   const errorClass = safeIdentifier(
     error instanceof Error ? error.name : record.name,
     "UnknownError"
   );
-  const errorCode = safeIdentifier(record.code ?? record.reason, null);
-  const errorMessage = sanitizeDiagnosticText(
-    error instanceof Error ? error.message : String(error)
+  const errorCode = safeIdentifier(
+    providerError.code ?? record.code ?? record.reason,
+    null
   );
+  const errorMessage = sanitizeDiagnosticText(
+    typeof providerError.message === "string"
+      ? providerError.message
+      : error instanceof Error ? error.message : String(error)
+  );
+  const headers = readHeaders(record.headers);
 
   return {
     errorClass,
@@ -44,8 +51,19 @@ export function createRuntimeErrorDiagnostics(error: unknown): RuntimeErrorDiagn
     stack: error instanceof Error && error.stack
       ? sanitizeDiagnosticText(error.stack)
       : null,
-    httpStatusCode: safeInteger(metadata.httpStatusCode, 100, 599),
-    requestId: safeIdentifier(metadata.requestId, null),
+    httpStatusCode: safeInteger(
+      metadata.httpStatusCode ?? record.status ?? record.statusCode,
+      100,
+      599
+    ),
+    requestId: safeIdentifier(
+      metadata.requestId
+        ?? record.request_id
+        ?? record.requestId
+        ?? headers?.get("x-request-id")
+        ?? headers?.get("request-id"),
+      null
+    ),
     extendedRequestId: safeIdentifier(metadata.extendedRequestId ?? metadata.cfId, null),
     sdkAttempts: safeInteger(metadata.attempts, 0, 1_000),
     sdkRetryDelayMs: safeInteger(metadata.totalRetryDelay, 0, 86_400_000),
@@ -57,6 +75,16 @@ export function createRuntimeErrorDiagnostics(error: unknown): RuntimeErrorDiagn
       )
       : null
   };
+}
+
+function readHeaders(value: unknown): Headers | null {
+  if (value instanceof Headers) return value;
+  if (!value || typeof value !== "object") return null;
+  try {
+    return new Headers(value as HeadersInit);
+  } catch {
+    return null;
+  }
 }
 
 export function sanitizeDiagnosticText(value: string): string {

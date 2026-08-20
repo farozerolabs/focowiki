@@ -480,6 +480,7 @@ function fakePool(
 ): GraphRagPythonPool {
   return {
     start: async () => undefined,
+    resize: async () => undefined,
     run: async (request) => run(request),
     close: async () => undefined,
     stats: () => ({ size: 1, busy: 0, queued: 0, restarts: 0 })

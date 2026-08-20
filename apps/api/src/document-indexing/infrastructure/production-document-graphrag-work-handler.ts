@@ -41,6 +41,8 @@ import type { createPostgresDocumentWorkContext } from
   "./postgres-document-work-context.js";
 import { isDocumentPathOnlyOperation } from
   "./production-document-prepared-source-reuse.js";
+import type { ProviderRequestFailureReporter } from
+  "../../semantic/provider-request-failure.js";
 import {
   modelLayerErrorCode,
   recordGraphRagLayer
@@ -72,6 +74,7 @@ export function createProductionDocumentGraphRagWorkHandler(input: {
   bodies: StorageVnextImmutableBodyStore;
   ownership: StorageVnextOwnershipRepository;
   deploymentSecret: string;
+  onProviderFailure?: ProviderRequestFailureReporter;
   chunkLeaseDurationMs: number;
   now?: () => string;
 }) {
@@ -101,7 +104,10 @@ export function createProductionDocumentGraphRagWorkHandler(input: {
     const assistance = await resolvePinnedModelAssistance({
       repository: input.modelRevisions,
       deploymentSecret: input.deploymentSecret,
-      job
+      job,
+      ...(input.onProviderFailure
+        ? { onProviderFailure: input.onProviderFailure }
+        : {})
     });
     const plannedSelection = firstLayer.plan.graphragSelection;
     const startedAt = clock();
@@ -159,6 +165,7 @@ export function createProductionDocumentGraphRagWorkHandler(input: {
             requestRunner: {
               run: (operation) => input.generation.run("graphrag", operation, {
                 signal: request.signal,
+                ownerKey: `${modelConfigurationPublicId}:${modelConfigurationRevision}`,
                 onMetric(metric) {
                   waitTimeMs += metric.waitTimeMs;
                   serviceTimeMs += metric.serviceTimeMs;

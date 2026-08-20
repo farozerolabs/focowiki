@@ -238,6 +238,38 @@ describe("PostgreSQL storage vNext Admin core", () => {
     ]);
   });
 
+  it("returns a readable Admin action for an available generated file", async () => {
+    const fixture = createFixture({
+      processingStatus: "available",
+      blockingWorkKind: null,
+      requiredWorkCount: 8,
+      completedWorkCount: 8,
+      generatedOutputStatus: "current_available",
+      generatedPath: "pages/guides/page.md"
+    });
+
+    const result = await fixture.application.listFiles({
+      knowledgeBaseId: "kb-filter",
+      limit: 10,
+      cursor: null,
+      filters: {}
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        items: [{
+          state: "available",
+          actions: [{
+            kind: "open_generated_file",
+            method: "GET",
+            href: "/admin/api/knowledge-bases/kb-filter/files/detail?path=pages%2Fguides%2Fpage.md&includeRelationships=1"
+          }]
+        }]
+      }
+    });
+  });
+
   it("returns processing timestamps that match the values used by the list", async () => {
     const fixture = createFixture({
       processingStatus: "available",

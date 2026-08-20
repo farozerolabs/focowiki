@@ -30,9 +30,11 @@ export function createWeightedGenerationQueue<TItem>(input: {
     enqueue(workClass: GenerationWorkClass, item: TItem): void {
       queues[workClass].push(item);
     },
-    dequeue(): { workClass: GenerationWorkClass; item: TItem } | null {
+    dequeue(
+      canRun: (item: TItem) => boolean = () => true
+    ): { workClass: GenerationWorkClass; item: TItem } | null {
       const available = GENERATION_WORK_CLASSES.filter(
-        (kind) => queues[kind].length > 0
+        (kind) => queues[kind].some(canRun)
       );
       if (available.length === 0) return null;
       for (const kind of GENERATION_WORK_CLASSES) {
@@ -45,7 +47,8 @@ export function createWeightedGenerationQueue<TItem>(input: {
         credits[kind] > credits[selected] ? kind : selected
       );
       credits[workClass] -= totalWeight;
-      return { workClass, item: queues[workClass].shift()! };
+      const index = queues[workClass].findIndex(canRun);
+      return { workClass, item: queues[workClass].splice(index, 1)[0]! };
     },
     size(): number {
       return GENERATION_WORK_CLASSES.reduce(

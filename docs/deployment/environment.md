@@ -26,6 +26,8 @@ Use long random values for passwords and service credentials. Settings that can 
 
 Focowiki writes runtime logs to `./logs` and also writes container logs to stdout and stderr. Every Compose service limits Docker-managed logs to `10m` per file and keeps `3` files.
 
+Failed upload and document-indexing stages emit `ingestion.stage_failed`. Failed generation, embedding, and reranker requests also emit `provider.request_failed` with the provider kind, request mode, model name, HTTP status, provider request ID, retry hint, and sanitized standard error fields when available. Credentials, Markdown bodies, prompts, vectors, and raw provider responses are not logged.
+
 The production Compose template stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, bundled OpenSearch data in `./data/opensearch`, bundled OpenSearch TLS state in `./opensearch-security`, bundled Meilisearch data in `./data/meilisearch`, Meilisearch backups in `./data/meilisearch-snapshots` and `./data/meilisearch-dumps`, and runtime credentials in `./runtime-secrets`. Preserve the directories used by your selected provider when moving or backing up a deployment.
 
 ## Deployment Images

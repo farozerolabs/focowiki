@@ -30,6 +30,7 @@ describe("fixed document DAG runtime", () => {
     const lanes = createDocumentResourceLanes({
       capacities: {
         postgres_s3: 2,
+        coordination: 2,
         generation_model: 1,
         graphrag_adapter: 1,
         embedding: 2,
@@ -383,6 +384,11 @@ describe("fixed document DAG runtime", () => {
     const release = vi.fn();
     const fail = vi.fn(async () => "error" as const);
     const onWorkEvent = vi.fn();
+    const failure = Object.assign(new Error("provider rejected request"), {
+      constraint_name: "generated_page_heads_path_key",
+      resourcePath: "_graph/by-file/guides/index.md",
+      targetPath: "pages/孤立/无关系.md"
+    });
     const runtime = createDocumentFixedDagRuntime({
       workerId: "worker-1",
       leaseDurationMs: 60_000,
@@ -399,11 +405,7 @@ describe("fixed document DAG runtime", () => {
       },
       handlers: {
         async first_layer() {
-          throw Object.assign(new Error("provider rejected request"), {
-            constraint_name: "generated_page_heads_path_key",
-            resourcePath: "_graph/by-file/guides/index.md",
-            targetPath: "pages/孤立/无关系.md"
-          });
+          throw failure;
         }
       },
       now: () => "2026-08-15T00:00:01.000Z",
@@ -429,6 +431,8 @@ describe("fixed document DAG runtime", () => {
     expect(release).toHaveBeenCalledWith("work-1", "failure");
     expect(onWorkEvent).toHaveBeenLastCalledWith(expect.objectContaining({
       event: "failed",
+      error: failure,
+      retryable: false,
       errorConstraint: "generated_page_heads_path_key",
       errorResource: "_graph/by-file/guides/index.md",
       errorTarget: "pages/%E5%AD%A4%E7%AB%8B/%E6%97%A0%E5%85%B3%E7%B3%BB.md"

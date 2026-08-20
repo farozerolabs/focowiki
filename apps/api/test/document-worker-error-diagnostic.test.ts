@@ -65,6 +65,13 @@ describe("document worker error diagnostic", () => {
       attemptCount: 1,
       nowMilliseconds: Date.parse("2026-08-14T16:50:53.000Z")
     })).toEqual({ retryable: true, nextAttemptAt: null });
+    expect(planDocumentFailureRetry({
+      error: Object.assign(new Error("projection scope contract invalid"), {
+        code: "projection_scope_contribution_count_invalid"
+      }),
+      attemptCount: 1,
+      nowMilliseconds: Date.parse("2026-08-14T16:50:53.000Z")
+    })).toEqual({ retryable: false, nextAttemptAt: null });
   });
 
   it.each([

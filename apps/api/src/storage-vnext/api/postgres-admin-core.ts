@@ -497,7 +497,8 @@ function adminSourceFile(
       href: kind === "view_failure_details" ? null
         : kind === "open_generated_file" && file.generatedPath
           ? `/admin/api/knowledge-bases/${encodeURIComponent(file.knowledgeBaseId)}`
-            + `/files/content?path=${encodeURIComponent(file.generatedPath)}`
+            + `/files/detail?path=${encodeURIComponent(file.generatedPath)}`
+            + "&includeRelationships=1"
           : kind === "replace_source_content"
             ? `/admin/api/knowledge-bases/${encodeURIComponent(file.knowledgeBaseId)}`
               + `/source-files/${encodeURIComponent(file.id)}/content`

@@ -40,7 +40,8 @@ export function isRetryable(code: string): boolean {
   return ![
     "source_body_empty", "source_frontmatter_invalid", "source_utf8_invalid",
     "source_size_limit", "invalid_source_contract", "metadata_too_large",
-    "document_revision_superseded"
+    "document_revision_superseded",
+    "projection_scope_contribution_count_invalid"
   ].includes(code);
 }
 

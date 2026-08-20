@@ -41,6 +41,10 @@ import {
   processorError
 } from "./production-document-identities.js";
 import { abortableWait } from "./document-abortable-wait.js";
+import {
+  withProviderFailureReporting,
+  type ProviderRequestFailureReporter
+} from "../../semantic/provider-request-failure.js";
 
 export { abortableWait } from "./document-abortable-wait.js";
 export { metadataAliases } from "./production-document-metadata.js";
@@ -136,6 +140,7 @@ export async function resolvePinnedModelAssistance(input: {
   repository: ReturnType<typeof createRuntimeSettingsRepository>;
   deploymentSecret: string;
   job: DocumentJobContext;
+  onProviderFailure?: ProviderRequestFailureReporter;
 }): Promise<ModelAssistanceOptions> {
   const publicId = requireIdentity(
     input.job.generationModelConfigurationPublicId,
@@ -165,10 +170,15 @@ export async function resolvePinnedModelAssistance(input: {
       modelClientCache.delete(modelClientCache.keys().next().value!);
     }
   }
+  const reportedClient = withProviderFailureReporting(client, {
+    apiMode: model.apiMode,
+    baseUrl: model.baseUrl,
+    modelName: model.modelName
+  }, input.onProviderFailure);
   return {
     modelConfigId: model.id,
     apiMode: model.apiMode,
-    client,
+    client: reportedClient,
     modelName: model.modelName,
     contextWindowTokens: model.contextWindowTokens,
     receiveTimeouts: {
@@ -176,7 +186,10 @@ export async function resolvePinnedModelAssistance(input: {
       idleMs: model.requestIdleTimeoutMs
     },
     suggestionConcurrency: model.suggestionConcurrency,
-    transientRetryDelayMs: model.transientRetryDelayMs
+    transientRetryDelayMs: model.transientRetryDelayMs,
+    ...(input.onProviderFailure
+      ? { onProviderFailure: input.onProviderFailure }
+      : {})
   };
 }
 

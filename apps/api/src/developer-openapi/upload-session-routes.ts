@@ -27,6 +27,7 @@ import {
   readSourceResourceCursor,
   writeSourceResourceCursor
 } from "./source-resource-pagination.js";
+import { createIngestionFailureFields } from "../runtime/ingestion-failure.js";
 
 export function registerDeveloperOpenApiUploadSessionRoutes(
   app: Hono,
@@ -51,7 +52,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       }
       const declaredFileCount = body.declaredFileCount;
       const declaredByteCount = body.declaredByteCount;
-      const session = await run(() =>
+      const session = await run(services, context, () =>
         services.uploadApplication.createUploadSession({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           idempotencyKey,
@@ -96,6 +97,8 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       return {
         session: toSafeSession(
           await run(
+            services,
+            context,
             () => services.uploadApplication.addUploadEntries({
               knowledgeBaseId: context.req.param("knowledgeBaseId"),
               sessionId: context.req.param("uploadSessionId"),
@@ -110,7 +113,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.post(`${prefix}/:uploadSessionId/seal`, async (context) =>
     safe(context, async () => {
-      const result = await run(() =>
+      const result = await run(services, context, () =>
         services.uploadApplication.sealUploadSession({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sessionId: context.req.param("uploadSessionId")
@@ -128,7 +131,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       if (!body || !hasNonEmptyMarkdownBody(request)) {
         throw validationError("A text/markdown request body is required.");
       }
-      const entry = await run(() =>
+      const entry = await run(services, context, () =>
         services.uploadApplication.writeUploadContent({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sessionId: context.req.param("uploadSessionId"),
@@ -154,7 +157,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
         scope,
         context.req.query("cursor") ?? null
       );
-      const result = await run(() => services.uploadApplication.getUploadSession({
+      const result = await run(services, context, () => services.uploadApplication.getUploadSession({
         knowledgeBaseId,
         sessionId,
         ...(state ? { transferState: state } : {}),
@@ -183,7 +186,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
     safe(context, async () => {
       return {
         session: toSafeSession(
-          await run(() => services.uploadApplication.reconcileUploadSession({
+          await run(services, context, () => services.uploadApplication.reconcileUploadSession({
             knowledgeBaseId: context.req.param("knowledgeBaseId"),
             sessionId: context.req.param("uploadSessionId")
           }))
@@ -194,7 +197,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.post(`${prefix}/:uploadSessionId/finalize`, async (context) =>
     safe(context, async () => {
-      const session = await run(() => services.uploadApplication.finalizeUploadSession({
+      const session = await run(services, context, () => services.uploadApplication.finalizeUploadSession({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("uploadSessionId")
       }));
@@ -209,7 +212,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.delete(`${prefix}/:uploadSessionId`, async (context) =>
     safe(context, async () => {
-      const session = await run(() => services.uploadApplication.cancelUploadSession({
+      const session = await run(services, context, () => services.uploadApplication.cancelUploadSession({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("uploadSessionId")
       }));
@@ -236,10 +239,21 @@ export function hasNonEmptyMarkdownBody(request: Request): boolean {
   );
 }
 
-async function run<T>(operation: () => Promise<T>, onInvalidPath?: () => Promise<void>): Promise<T> {
+async function run<T>(
+  services: DeveloperOpenApiRouteServices,
+  context: Context,
+  operation: () => Promise<T>,
+  onInvalidPath?: () => Promise<void>
+): Promise<T> {
   try {
     return await operation();
   } catch (error) {
+    services.logger.error("ingestion.stage_failed", createIngestionFailureFields({
+      stage: uploadStage(context),
+      error,
+      knowledgeBaseId: context.req.param("knowledgeBaseId") || null,
+      uploadSessionId: context.req.param("uploadSessionId") || null
+    }));
     if (error instanceof SourcePathValidationError) {
       await onInvalidPath?.();
       throw validationError("The upload file list contains an invalid relative path.", {
@@ -261,6 +275,18 @@ async function run<T>(operation: () => Promise<T>, onInvalidPath?: () => Promise
     }
     throw error;
   }
+}
+
+function uploadStage(context: Context): string {
+  const route = context.req.routePath;
+  if (route.endsWith("/entries/:entryId/content")) return "upload_content";
+  if (route.endsWith("/entries")) return "upload_manifest";
+  if (route.endsWith("/seal")) return "upload_seal";
+  if (route.endsWith("/reconcile")) return "upload_reconcile";
+  if (route.endsWith("/finalize")) return "upload_finalize";
+  if (context.req.method === "DELETE") return "upload_cancel";
+  if (context.req.method === "GET") return "upload_status";
+  return "upload_create";
 }
 
 async function recordUploadSessionAudit(

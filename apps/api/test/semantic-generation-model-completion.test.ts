@@ -13,6 +13,7 @@ describe("GraphRAG generation-model completion", () => {
         ? { status: "completed", output_text: "tuples<|COMPLETE|>" }
         : { choices: [{ message: { content: "tuples<|COMPLETE|>" } }] });
       const assistance = modelAssistance(apiMode, create);
+      assistance.onProviderFailure = vi.fn();
       const completion = createGraphRagGenerationModelCompletion(assistance);
       await expect(completion.complete({
         prompt: "Extract the bounded text.",
@@ -23,6 +24,7 @@ describe("GraphRAG generation-model completion", () => {
       expect(JSON.stringify(request)).not.toContain("json_schema");
       expect(request.model).toBe("test-model");
       expect(request.stream).toBe(true);
+      expect(assistance.onProviderFailure).not.toHaveBeenCalled();
     }
   );
 
@@ -164,6 +166,44 @@ describe("GraphRAG generation-model completion", () => {
       retryable: false
     });
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("reports a sanitized generation provider failure once", async () => {
+    const failure = Object.assign(
+      new Error("Invalid request; Authorization: Bearer generation-secret"),
+      {
+        status: 400,
+        request_id: "generation-request-123",
+        type: "invalid_request_error",
+        code: "invalid_schema",
+        param: "response_format"
+      }
+    );
+    const create = vi.fn().mockRejectedValue(failure);
+    const assistance = modelAssistance("responses", create);
+    assistance.onProviderFailure = vi.fn();
+    const completion = createGraphRagGenerationModelCompletion(assistance);
+
+    await expect(completion.complete({
+      prompt: "Extract.",
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      code: "semantic_generation_request_rejected"
+    });
+    expect(assistance.onProviderFailure).toHaveBeenCalledOnce();
+    expect(assistance.onProviderFailure).toHaveBeenCalledWith(expect.objectContaining({
+      providerKind: "generation",
+      apiMode: "responses",
+      modelName: "test-model",
+      httpStatusCode: 400,
+      providerRequestId: "generation-request-123",
+      providerErrorType: "invalid_request_error",
+      providerErrorCode: "invalid_schema",
+      providerErrorParam: "response_format",
+      errorMessage: "Invalid request; Authorization=<redacted>"
+    }));
+    expect(JSON.stringify((assistance.onProviderFailure as ReturnType<typeof vi.fn>)
+      .mock.calls)).not.toContain("generation-secret");
   });
 
   it("distinguishes a forbidden provider request from invalid credentials", async () => {

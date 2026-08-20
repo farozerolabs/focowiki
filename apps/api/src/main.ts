@@ -89,6 +89,8 @@ import { createRerankerConfigurationAuditAdapter } from
 import { createRerankerGateway } from "./semantic/reranker/gateway.js";
 import { createSemanticSearchProductionRuntime } from
   "./semantic/search/production-runtime.js";
+import type { ProviderRequestFailureReporter } from
+  "./semantic/provider-request-failure.js";
 import { createPostgresSemanticGenerationRepository } from
   "./semantic/infrastructure/postgres-generation-repository.js";
 import { createStorageVnextSemanticSearch } from
@@ -186,8 +188,15 @@ async function runApi(): Promise<void> {
     createPostgresEmbeddingConfigurationRepository(sql);
   const rerankerConfigurationRepository =
     createPostgresRerankerConfigurationRepository(sql);
-  const embeddingTransport = createOpenAiCompatibleEmbeddingTransport();
-  const rerankerTransport = createOpenAiCompatibleRerankerTransport();
+  const onProviderFailure: ProviderRequestFailureReporter = (failure) => {
+    logger.error("provider.request_failed", failure);
+  };
+  const embeddingTransport = createOpenAiCompatibleEmbeddingTransport({
+    onFailure: onProviderFailure
+  });
+  const rerankerTransport = createOpenAiCompatibleRerankerTransport({
+    onFailure: onProviderFailure
+  });
   const rerankerGateway = createRerankerGateway({
     resolveActiveConfiguration: () => rerankerConfigurationRepository.getActive(),
     transport: rerankerTransport,

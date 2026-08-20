@@ -41,6 +41,38 @@ export function resolveDocumentProjectionCapacities(input: {
   };
 }
 
+export function resolveDocumentResourceLaneCapacities(
+  input: DocumentResourceCapacityInput
+): {
+  postgres_s3: number;
+  coordination: number;
+  generation_model: number;
+  graphrag_adapter: number;
+  embedding: number;
+  search_transport: number;
+  projection: number;
+  activation: number;
+  cleanup: number;
+} {
+  const projection = resolveDocumentProjectionCapacities({
+    documentConcurrency: input.documentConcurrency
+  });
+  return {
+    postgres_s3: Math.min(
+      input.sourceObjectReadConcurrency,
+      Math.max(1, input.databaseConnectionLimit - 1)
+    ),
+    coordination: input.documentConcurrency,
+    generation_model: input.generationModelConcurrency,
+    graphrag_adapter: input.graphRagConcurrency,
+    embedding: input.embeddingConcurrency,
+    search_transport: input.searchConcurrency,
+    projection: projection.documentPreparation,
+    activation: resolveDocumentFinalizationCapacity(input),
+    cleanup: 1
+  };
+}
+
 export function deriveDocumentResourceCapacities(
   input: DocumentResourceCapacityInput
 ): {

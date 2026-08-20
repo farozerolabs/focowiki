@@ -18,7 +18,22 @@ describe("createBoundedTaskRunner", () => {
       )
     );
 
-    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(maxActive).toBe(2);
+  });
+
+  it("fills every free slot before any active task completes", async () => {
+    const runner = createBoundedTaskRunner(3);
+    const releases: Array<() => void> = [];
+    let started = 0;
+    const tasks = Array.from({ length: 3 }, () => runner.run(async () => {
+      started += 1;
+      await new Promise<void>((resolve) => releases.push(resolve));
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toBe(3);
+    releases.forEach((release) => release());
+    await Promise.all(tasks);
   });
 
   it("rejects invalid concurrency", () => {

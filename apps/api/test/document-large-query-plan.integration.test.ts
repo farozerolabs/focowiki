@@ -22,6 +22,7 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
     await applyStorageVnextTestMigrations(sql);
+    await seedDeepWaitingQueue(sql);
   }, 120_000);
 
   afterAll(async () => {
@@ -35,6 +36,40 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
   }, 120_000);
 
   it.each([
+    {
+      name: "deep waiting-work claim",
+      expectedIndexes: ["document_artifact_work_claim_idx"],
+      query: `
+        SELECT work.public_id
+        FROM focowiki.document_artifact_work work
+        JOIN focowiki.document_processing_jobs job
+          ON job.knowledge_base_id = work.knowledge_base_id
+         AND job.public_id = work.document_job_public_id
+         AND job.source_revision_public_id = work.source_revision_public_id
+        WHERE work.state = 'waiting'
+          AND work.attempt_count < work.maximum_attempts
+          AND work.work_kind = 'relation_reconcile'
+          AND work.next_eligible_at <= now()
+          AND job.state IN ('waiting', 'processing', 'available')
+          AND job.cancellation_requested_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM focowiki.document_artifact_work prerequisite
+            JOIN focowiki.document_artifact_receipts receipt
+              ON receipt.work_public_id = prerequisite.public_id
+            WHERE prerequisite.knowledge_base_id = work.knowledge_base_id
+              AND prerequisite.document_job_public_id
+                = work.document_job_public_id
+              AND prerequisite.source_revision_public_id
+                = work.source_revision_public_id
+              AND prerequisite.work_kind = 'graphrag'
+              AND prerequisite.state = 'completed'
+          )
+        ORDER BY work.next_eligible_at, work.created_at, work.public_id
+        LIMIT 64
+        FOR UPDATE OF work SKIP LOCKED
+      `
+    },
     {
       name: "relationship evaluation lookup",
       expectedIndexes: [
@@ -166,10 +201,12 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
         LIMIT 501
       `
     }
-  ])("uses bounded indexes for $name", async ({ expectedIndexes, query }) => {
+  ])("uses bounded indexes for $name", async ({ name, expectedIndexes, query }) => {
     const plans = await sql.begin(async (transaction) => {
       await transaction`SET LOCAL enable_seqscan = off`;
-      return transaction.unsafe(`EXPLAIN (FORMAT JSON) ${query}`);
+      return transaction.unsafe(`EXPLAIN (${
+        name === "deep waiting-work claim" ? "ANALYZE, BUFFERS, " : ""
+      }FORMAT JSON) ${query}`);
     });
     const plan = JSON.stringify(plans);
     expect(plan).toMatch(/Index (?:Only )?Scan/u);
@@ -178,6 +215,16 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       expectedIndexes.some((indexName) => plan.includes(indexName)),
       plan
     ).toBe(true);
+    if (name === "deep waiting-work claim") {
+      expect(plan).toContain("document_artifact_work_claim_idx");
+      expect(plan).toContain("document_artifact_work_pkey");
+      expect(plan).toContain("document_artifact_receipts_work_idx");
+      const executionMilliseconds = Number(
+        /"Execution Time":([0-9.]+)/u.exec(plan)?.[1]
+      );
+      expect(executionMilliseconds).toBeGreaterThanOrEqual(0);
+      expect(executionMilliseconds).toBeLessThan(1_000);
+    }
   });
 });
 
@@ -189,4 +236,68 @@ function databaseConnectionUrl(connectionUrl: string, databaseName: string): str
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+async function seedDeepWaitingQueue(sql: postgres.Sql): Promise<void> {
+  await sql.begin(async (transaction) => {
+    await transaction`SET LOCAL session_replication_role = replica`;
+    await transaction`
+      INSERT INTO focowiki.document_processing_jobs (
+        public_id, knowledge_base_id, operation_public_id,
+        source_file_public_id, source_revision_public_id,
+        runtime_settings_revision_public_id,
+        generation_model_configuration_public_id,
+        generation_model_configuration_revision,
+        embedding_configuration_revision_public_id,
+        semantic_generation_public_id, semantic_contract_version,
+        state, maximum_attempts, accepted_at
+      ) VALUES (
+        'deep-job', 'deep-kb', 'deep-operation',
+        'deep-source', 'deep-revision', 'deep-settings',
+        'deep-model', 1, 'deep-embedding', 'deep-semantic',
+        'deep-contract', 'processing', 3, now()
+      )
+    `;
+    await transaction`
+      INSERT INTO focowiki.document_artifact_work (
+        public_id, knowledge_base_id, document_job_public_id,
+        source_file_public_id, source_revision_public_id,
+        work_kind, resource_lane, input_fingerprint_sha256,
+        state, maximum_attempts, next_eligible_at
+      ) VALUES (
+        'deep-prerequisite', 'deep-kb', 'deep-job',
+        'deep-source', 'deep-revision', 'graphrag',
+        'graphrag_adapter', ${"f".repeat(64)}, 'completed', 3, now()
+      )
+    `;
+    await transaction`
+      INSERT INTO focowiki.document_artifact_receipts (
+        public_id, knowledge_base_id, document_job_public_id,
+        work_public_id, source_file_public_id, source_revision_public_id,
+        receipt_kind, receipt_key, input_fingerprint_sha256,
+        output_fingerprint_sha256, receipt
+      ) VALUES (
+        'deep-prerequisite-receipt', 'deep-kb', 'deep-job',
+        'deep-prerequisite', 'deep-source', 'deep-revision',
+        'graphrag', 'deep', ${"f".repeat(64)}, ${"e".repeat(64)}, '{}'::jsonb
+      )
+    `;
+    await transaction.unsafe(`
+      INSERT INTO focowiki.document_artifact_work (
+        public_id, knowledge_base_id, document_job_public_id,
+        source_file_public_id, source_revision_public_id,
+        work_kind, resource_lane, input_fingerprint_sha256,
+        state, maximum_attempts, next_eligible_at, created_at, updated_at
+      )
+      SELECT 'deep-work-' || item::text, 'deep-kb', 'deep-job',
+             'deep-source', 'deep-revision', 'relation_reconcile',
+             'coordination', lpad(to_hex(item), 64, '0'),
+             'waiting', 3, now() - interval '1 minute',
+             now() + item * interval '1 microsecond', now()
+      FROM generate_series(1, 100000) item
+    `);
+  });
+  await sql`ANALYZE focowiki.document_artifact_work`;
+  await sql`ANALYZE focowiki.document_artifact_receipts`;
+  await sql`ANALYZE focowiki.document_processing_jobs`;
 }
