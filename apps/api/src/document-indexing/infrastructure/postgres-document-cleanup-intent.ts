@@ -41,23 +41,6 @@ export async function ensurePostgresDocumentCleanupIntent(input: {
       WHERE vector.knowledge_base_id = ${input.knowledgeBaseId}
         AND vector.source_file_public_id = ANY(${affectedSourceFilePublicIds}::text[])
         AND vector.state = 'deleted'
-      UNION ALL
-      SELECT candidate.source_revision_public_id,
-             'object_storage'::text,
-             NULL::text,
-             'generated_object'::text,
-             candidate.object_id,
-             candidate.checksum_sha256
-      FROM focowiki.generated_page_candidates candidate
-      WHERE candidate.knowledge_base_id = ${input.knowledgeBaseId}
-        AND candidate.source_revision_public_id IS NOT NULL
-        AND candidate.source_file_public_id = ANY(${affectedSourceFilePublicIds}::text[])
-        AND candidate.state = 'active'
-        AND NOT EXISTS (
-          SELECT 1 FROM focowiki.generated_page_heads head
-          WHERE head.knowledge_base_id = candidate.knowledge_base_id
-            AND head.page_candidate_public_id = candidate.public_id
-        )
     ), distinct_resources AS (
       SELECT DISTINCT ON (
         cleanup_plane, search_provider_kind, resource_kind,

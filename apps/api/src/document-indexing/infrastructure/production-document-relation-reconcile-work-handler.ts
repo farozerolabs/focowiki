@@ -43,6 +43,8 @@ import { resolvePinnedModelAssistance } from "./production-document-processor-su
 import type { ProviderRequestFailureReporter } from
   "../../semantic/provider-request-failure.js";
 
+const MAX_RELATION_PROJECTION_CLOSURE = 10_000;
+
 export function createProductionDocumentRelationReconcileWorkHandler(input: {
   contexts: ReturnType<typeof createPostgresDocumentWorkContext>;
   preparedSources: ReturnType<typeof createDocumentPreparedSourceLoader>;
@@ -251,6 +253,17 @@ export function createProductionDocumentRelationReconcileWorkHandler(input: {
         evidenceFingerprintSha256: relation.evidenceFingerprintSha256,
         evidence: relation.evidence
       });
+    }
+    const projectionClosure = await input.pairs.listProjectionClosureForRevision({
+      knowledgeBaseId: request.claimed.knowledgeBaseId,
+      sourceFilePublicId: request.claimed.sourceFilePublicId,
+      sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
+      limit: MAX_RELATION_PROJECTION_CLOSURE
+    });
+    for (const entry of projectionClosure) {
+      pairs.add(entry.pairPublicId);
+      relations.add(entry.relationPublicId);
+      affectedSources.add(entry.neighborSourceFilePublicId);
     }
     const outputFingerprintSha256 = hash([
       ...[...pairs].sort(), ...[...affectedSources].sort(),

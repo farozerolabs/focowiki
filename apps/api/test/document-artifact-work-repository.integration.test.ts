@@ -449,6 +449,16 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
       relationKind: "references",
       now: at(3_100)
     });
+    await expect(pairs.listProjectionClosureForRevision({
+      knowledgeBaseId: "kb-work",
+      sourceFilePublicId: "source-file-work-second",
+      sourceRevisionPublicId: "source-revision-work-second",
+      limit: 10
+    })).resolves.toEqual([{
+      pairPublicId,
+      relationPublicId,
+      neighborSourceFilePublicId: "source-file-work"
+    }]);
     await expect(sql<Array<{ direction: string }>>`
       SELECT direction FROM focowiki.canonical_file_relations
       WHERE public_id = ${relationPublicId}

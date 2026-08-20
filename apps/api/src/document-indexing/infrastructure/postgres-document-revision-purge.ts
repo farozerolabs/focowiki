@@ -1,5 +1,9 @@
 import type { DatabaseClient } from "../../db/client.js";
 import type { TransactionSql } from "postgres";
+import {
+  queuePostgresReleasedDocumentRevisionObjects,
+  readPostgresDocumentRevisionObjectIds
+} from "./postgres-document-revision-object-release.js";
 
 type RevisionPurgeAction = {
   publicId: string;
@@ -9,6 +13,57 @@ type RevisionPurgeAction = {
 };
 
 type PurgeOutcome = "completed" | "retried" | "failed";
+
+export async function enqueuePostgresReplacedDocumentRevisionPurge(input: {
+  transaction: DatabaseClient;
+  knowledgeBaseId: string;
+  operationPublicId: string;
+  documentJobPublicId: string;
+  sourceRevisionPublicId: string;
+  createdAt: string;
+}): Promise<boolean> {
+  const rows = await input.transaction<Array<{ public_id: string }>>`
+    INSERT INTO focowiki.cleanup_actions (
+      public_id, knowledge_base_id, operation_public_id,
+      document_job_public_id, source_revision_public_id,
+      action_kind, cleanup_plane, search_provider_kind,
+      resource_kind, resource_public_id, required, priority,
+      sequence_number, idempotency_key, request_hash, checkpoint,
+      state, attempt_count, maximum_attempts, not_before,
+      created_at, updated_at
+    )
+    SELECT 'cleanup-replaced-revision-' || md5(
+             ${input.documentJobPublicId} || chr(31)
+             || ${input.sourceRevisionPublicId}
+           ),
+           ${input.knowledgeBaseId}, ${input.operationPublicId},
+           ${input.documentJobPublicId}, ${input.sourceRevisionPublicId},
+           'document_revision_purge', 'postgres', NULL,
+           'source_revision', ${input.sourceRevisionPublicId}, true, 20, 0,
+           'replaced-revision:' || ${input.documentJobPublicId}
+             || ':' || ${input.sourceRevisionPublicId},
+           md5(${input.sourceRevisionPublicId}),
+           jsonb_build_object(
+             'schemaVersion', 'replaced-document-revision-purge-v1'
+           ),
+           'queued', 0, 10, ${input.createdAt}, ${input.createdAt},
+           ${input.createdAt}
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM focowiki.source_file_active_revisions active
+      WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
+        AND (
+          active.current_source_revision_public_id
+            = ${input.sourceRevisionPublicId}
+          OR active.active_source_revision_public_id
+            = ${input.sourceRevisionPublicId}
+        )
+    )
+    ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
+    RETURNING public_id
+  `;
+  return rows.length === 1;
+}
 
 export function createPostgresDocumentRevisionPurge(sql: DatabaseClient) {
   return {
@@ -162,6 +217,12 @@ async function processAction(
     return "retried";
   }
 
+  const releasedObjectIds = await readPostgresDocumentRevisionObjectIds({
+    transaction: sql as unknown as DatabaseClient,
+    knowledgeBaseId: action.knowledgeBaseId,
+    sourceRevisionPublicId: action.sourceRevisionPublicId
+  });
+
   const completed = await sql<Array<{ public_id: string }>>`
     UPDATE focowiki.cleanup_actions
     SET state = 'completed', document_job_public_id = NULL,
@@ -173,6 +234,40 @@ async function processAction(
     RETURNING public_id
   `;
   if (!completed[0]) throw purgeError("lease_lost");
+  await sql`
+    DELETE FROM focowiki.semantic_embedding_artifact_refs reference
+    WHERE reference.knowledge_base_id = ${action.knowledgeBaseId}
+      AND reference.artifact_public_id IN (
+        SELECT artifact.public_id
+        FROM focowiki.embedding_artifacts artifact
+        WHERE artifact.knowledge_base_id = ${action.knowledgeBaseId}
+          AND artifact.source_revision_public_id
+            = ${action.sourceRevisionPublicId}
+      )
+  `;
+  await sql`
+    DELETE FROM focowiki.semantic_vector_documents
+    WHERE knowledge_base_id = ${action.knowledgeBaseId}
+      AND source_revision_public_id = ${action.sourceRevisionPublicId}
+  `;
+  await sql`
+    DELETE FROM focowiki.embedding_artifacts
+    WHERE knowledge_base_id = ${action.knowledgeBaseId}
+      AND source_revision_public_id = ${action.sourceRevisionPublicId}
+  `;
+  await sql`
+    DELETE FROM focowiki.search_family_receipts
+    WHERE knowledge_base_id = ${action.knowledgeBaseId}
+      AND source_revision_public_id = ${action.sourceRevisionPublicId}
+  `;
+  await sql`
+    DELETE FROM focowiki.relation_candidate_pairs
+    WHERE knowledge_base_id = ${action.knowledgeBaseId}
+      AND (
+        first_source_revision_public_id = ${action.sourceRevisionPublicId}
+        OR second_source_revision_public_id = ${action.sourceRevisionPublicId}
+      )
+  `;
   await sql`
     DELETE FROM focowiki.source_revisions
     WHERE knowledge_base_id = ${action.knowledgeBaseId}
@@ -186,6 +281,14 @@ async function processAction(
           )
       )
   `;
+  await queuePostgresReleasedDocumentRevisionObjects({
+    transaction: sql as unknown as DatabaseClient,
+    knowledgeBaseId: action.knowledgeBaseId,
+    operationPublicId: action.operationPublicId,
+    purgeActionPublicId: action.publicId,
+    objectIds: releasedObjectIds,
+    queuedAt: now
+  });
   return "completed";
 }
 

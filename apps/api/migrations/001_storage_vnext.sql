@@ -3046,6 +3046,10 @@ CREATE INDEX generated_directory_leaves_order_idx ON focowiki.generated_director
 
 CREATE INDEX generated_page_candidates_revision_idx ON focowiki.generated_page_candidates USING btree (knowledge_base_id, source_revision_public_id, state, normalized_path);
 
+CREATE INDEX generated_page_candidates_work_state_idx ON focowiki.generated_page_candidates USING btree (knowledge_base_id, source_work_public_id, state, public_id);
+
+CREATE INDEX generated_page_candidates_active_idx ON focowiki.generated_page_candidates USING btree (knowledge_base_id, public_id) WHERE (state = 'active'::text);
+
 
 --
 -- Name: generated_page_heads_path_idx; Type: INDEX; Schema: focowiki; Owner: -
@@ -5043,6 +5047,8 @@ CREATE INDEX relation_candidate_pairs_claim_idx ON focowiki.relation_candidate_p
 CREATE INDEX relation_directed_evidence_source_idx ON focowiki.relation_directed_evidence (knowledge_base_id, source_revision_public_id, active);
 CREATE INDEX canonical_file_relations_first_active_idx ON focowiki.canonical_file_relations (knowledge_base_id, first_source_file_public_id) WHERE active;
 CREATE INDEX canonical_file_relations_second_active_idx ON focowiki.canonical_file_relations (knowledge_base_id, second_source_file_public_id) WHERE active;
+CREATE INDEX canonical_file_relations_first_pending_projection_idx ON focowiki.canonical_file_relations (knowledge_base_id, first_source_file_public_id, first_source_revision_public_id) WHERE NOT active AND retired_at IS NULL;
+CREATE INDEX canonical_file_relations_second_pending_projection_idx ON focowiki.canonical_file_relations (knowledge_base_id, second_source_file_public_id, second_source_revision_public_id) WHERE NOT active AND retired_at IS NULL;
 CREATE INDEX search_family_receipts_flush_idx ON focowiki.search_family_receipts (provider_kind, state, created_at, public_id) WHERE state = 'buffered';
 CREATE INDEX generated_page_bases_source_revision_idx ON focowiki.generated_page_bases (knowledge_base_id, source_revision_public_id);
 CREATE INDEX generated_page_heads_semantic_scope_idx ON focowiki.generated_page_heads (knowledge_base_id, normalized_path text_pattern_ops, logical_path);

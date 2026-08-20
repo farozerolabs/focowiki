@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
+import { listPostgresRelationProjectionClosure } from
+  "./postgres-relation-projection-closure.js";
 import {
   assertRepositoryIdentity,
   assertRepositoryPositiveInteger,
@@ -98,6 +100,15 @@ export function canonicalRelationPairInput(
 
 export function createPostgresRelationPairRepository(sql: DatabaseClient) {
   return {
+    listProjectionClosureForRevision(input: {
+      knowledgeBaseId: string;
+      sourceFilePublicId: string;
+      sourceRevisionPublicId: string;
+      limit: number;
+    }) {
+      return listPostgresRelationProjectionClosure(sql, input);
+    },
+
     async listActiveNeighborSourceFilePublicIds(input: {
       knowledgeBaseId: string;
       sourceFilePublicId: string;
