@@ -7,6 +7,7 @@ import {
 
 describe("provider-neutral reranker transport", () => {
   it("sends one bounded ordered request and validates complete normalized scores", async () => {
+    const onFailure = vi.fn();
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(String(url)).toBe("https://reranker.example/v1/rerank");
       expect(init?.headers).toMatchObject({
@@ -29,13 +30,15 @@ describe("provider-neutral reranker transport", () => {
     const transport = createOpenAiCompatibleRerankerTransport({
       fetchImpl: fetchImpl as typeof fetch,
       maximumPayloadBytes: 8_192,
-      maximumResponseBytes: 8_192
+      maximumResponseBytes: 8_192,
+      onFailure
     });
 
     await expect(transport.rerank(request())).resolves.toEqual({
       scores: [0.4, 0.9]
     });
     expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(onFailure).not.toHaveBeenCalled();
   });
 
   it("supports explicitly unauthenticated local endpoints", async () => {
@@ -159,6 +162,72 @@ describe("provider-neutral reranker transport", () => {
       code: "invalid_request",
       retryable: false
     });
+  });
+
+  it("reports a sanitized reranker provider failure response", async () => {
+    const onFailure = vi.fn();
+    const transport = createOpenAiCompatibleRerankerTransport({
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        error: {
+          type: "validation_error",
+          code: "documents_invalid",
+          param: "documents",
+          message: "Documents are invalid; api_key=reranker-secret"
+        }
+      }), {
+        status: 422,
+        headers: {
+          "content-type": "application/json",
+          "x-request-id": "reranker-request-123"
+        }
+      })) as unknown as typeof fetch,
+      onFailure
+    });
+
+    await expect(transport.rerank(request())).rejects.toMatchObject({
+      code: "invalid_request"
+    });
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      providerKind: "reranker",
+      apiMode: "rerank",
+      providerHost: "reranker.example",
+      providerRoute: "/v1/rerank",
+      modelName: "rerank-model",
+      httpStatusCode: 422,
+      providerRequestId: "reranker-request-123",
+      providerErrorType: "validation_error",
+      providerErrorCode: "documents_invalid",
+      providerErrorParam: "documents",
+      errorMessage: "Documents are invalid; api_key=<redacted>"
+    }));
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain("reranker-secret");
+  });
+
+  it("reports an invalid successful reranker response without logging documents", async () => {
+    const onFailure = vi.fn();
+    const fetchImpl = vi.fn(async () => Response.json({
+      results: [{ index: 0, relevance_score: 2 }]
+    }, { headers: { "x-request-id": "reranker-invalid-123" } })) as unknown as typeof fetch;
+    const transport = createOpenAiCompatibleRerankerTransport({
+      fetchImpl,
+      onFailure
+    });
+
+    await expect(transport.rerank({
+      ...request(),
+      documents: ["private-document-marker"]
+    })).rejects.toMatchObject({ code: "invalid_response" });
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      httpStatusCode: 200,
+      providerRequestId: "reranker-invalid-123",
+      errorClass: "RerankerTransportError",
+      errorMessage: "Reranker transport failed: invalid_response"
+    }));
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain(
+      "private-document-marker"
+    );
   });
 
   it("maps caller reranker cancellation to aborted", async () => {

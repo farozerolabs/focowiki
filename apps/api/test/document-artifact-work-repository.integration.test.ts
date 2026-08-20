@@ -547,6 +547,11 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
       relationKind: "references",
       now: at(3_400)
     });
+    await expect(renderable.listPublicIdsForPairs({
+      knowledgeBaseId: "kb-work",
+      pairPublicIds: [renamedPairPublicId],
+      limit: 10
+    })).resolves.toEqual([renamedRelationPublicId]);
     await sql`
       UPDATE focowiki.source_file_active_revisions
       SET active_source_revision_public_id = 'source-revision-work-renamed'

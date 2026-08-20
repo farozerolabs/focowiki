@@ -41,7 +41,7 @@ import { createDocumentResourceLanes } from "../application/document-resource-la
 import type { DocumentResourceCapacityInput } from
   "../application/document-resource-capacity.js";
 import {
-  resolveDocumentFinalizationCapacity,
+  resolveDocumentResourceLaneCapacities,
   resolveDocumentProjectionCapacities
 } from
   "../application/document-resource-capacity.js";
@@ -96,6 +96,10 @@ import { createPostgresProjectionScopeOutputRepository } from
   "./postgres-projection-scope-output-repository.js";
 import { createProductionDocumentScopeProjector } from
   "./production-document-scope-projector.js";
+import {
+  observeProductionDocumentWorkEvent,
+  observeProductionScopeFailure
+} from "./production-document-failure-observability.js";
 
 export function createProductionDocumentFixedProcessor(input: {
   sql: DatabaseClient;
@@ -106,8 +110,12 @@ export function createProductionDocumentFixedProcessor(input: {
   tokenizer: ReturnType<typeof createNodeJiebaTokenizer>;
   searchProvider: ReturnType<typeof createRuntimeSearchProvider>;
   workerId: string;
-  observability?: Pick<DocumentWorkerObservability, "work">;
+  observability?: Pick<
+    DocumentWorkerObservability,
+    "work" | "providerFailure" | "ingestionFailure"
+  >;
 }) {
+  let currentResourceCapacity = { ...input.resourceCapacity };
   const resources = createFixedResources(input);
   const projectionCapacities = resolveDocumentProjectionCapacities({
     documentConcurrency: input.resourceCapacity.documentConcurrency
@@ -197,7 +205,8 @@ export function createProductionDocumentFixedProcessor(input: {
       generation,
       objectWriter: resources.writer,
       ownership: resources.ownership,
-      deploymentSecret: resources.deploymentSecret
+      deploymentSecret: resources.deploymentSecret,
+      onProviderFailure: resources.onProviderFailure
     }),
     content_projection: createProductionDocumentContentProjectionWorkHandler({
       sql: input.sql,
@@ -225,6 +234,7 @@ export function createProductionDocumentFixedProcessor(input: {
       bodies: resources.bodies,
       ownership: resources.ownership,
       deploymentSecret: resources.deploymentSecret,
+      onProviderFailure: resources.onProviderFailure,
       chunkLeaseDurationMs: input.workerConfig.lockTtlSeconds * 1_000
     }),
     relation_reconcile: createProductionDocumentRelationReconcileWorkHandler({
@@ -239,6 +249,7 @@ export function createProductionDocumentFixedProcessor(input: {
       modelEvaluations: repositories.modelEvaluations,
       generation,
       deploymentSecret: resources.deploymentSecret,
+      onProviderFailure: resources.onProviderFailure,
       pairs: repositories.pairs
     }),
     knowledge_projection: createProductionDocumentKnowledgeProjectionWorkHandler({
@@ -276,6 +287,7 @@ export function createProductionDocumentFixedProcessor(input: {
     cleanup: createDocumentCleanupReceiptHandler({ sql: input.sql })
   };
   const scheduler = createDocumentFixedDagScheduler({
+    claimLimit: input.workerConfig.claimBatchSize,
     work: repositories.work,
     lanes: resources.lanes
   });
@@ -299,21 +311,7 @@ export function createProductionDocumentFixedProcessor(input: {
     },
     retryDelayMs: (attempt) => input.workerConfig.jobRetryDelayMs * attempt,
     onWorkEvent(event) {
-      input.observability?.work({
-        event: event.event,
-        workPublicId: event.work.publicId,
-        documentJobPublicId: event.work.documentJobPublicId,
-        workKind: event.work.kind,
-        resourceLane: event.work.resourceLane,
-        attemptCount: event.work.attemptCount,
-        errorCode: event.errorCode,
-        ...(event.errorConstraint === undefined
-          ? {} : { errorConstraint: event.errorConstraint }),
-        ...(event.errorResource === undefined
-          ? {} : { errorResource: event.errorResource }),
-        ...(event.errorTarget === undefined
-          ? {} : { errorTarget: event.errorTarget })
-      });
+      observeProductionDocumentWorkEvent(input.observability, event);
     }
   });
   const scopeSnapshots = createPostgresProjectionScopeSnapshot(input.sql);
@@ -327,7 +325,7 @@ export function createProductionDocumentFixedProcessor(input: {
       bases: repositories.bases,
       relations: repositories.relations,
       loadBase: loaders.pageBase,
-      readConcurrency: input.resourceCapacity.sourceObjectReadConcurrency
+      readConcurrency: () => currentResourceCapacity.sourceObjectReadConcurrency
     }),
     directoryNavigation: repositories.directoryNavigation,
     directoryLeafLimits: {
@@ -355,13 +353,38 @@ export function createProductionDocumentFixedProcessor(input: {
     repositories,
     outputs: scopeOutputs,
     renderer: scopeRenderer,
-    ownership: resources.ownership
+    ownership: resources.ownership,
+    onFailure: (failure) => observeProductionScopeFailure(
+      input.observability,
+      failure
+    )
   });
   return {
     async run(signal: AbortSignal) {
       await Promise.all([runtime.run(signal), scopeRuntime.run(signal)]);
     },
     async start() { await resources.graphRag.start(); },
+    async updateRuntime(next: {
+      workerConfig: Required<WorkerRuntimeConfig>;
+      resourceCapacity: DocumentResourceCapacityInput;
+    }): Promise<void> {
+      const projection = resolveDocumentProjectionCapacities({
+        documentConcurrency: next.resourceCapacity.documentConcurrency
+      });
+      const capacities = resolveDocumentResourceLaneCapacities(
+        next.resourceCapacity
+      );
+      await resources.graphRag.resize(next.resourceCapacity.graphRagConcurrency);
+      resources.lanes.updateCapacities(capacities);
+      generation.updateLimits(
+        next.resourceCapacity.generationModelConcurrency,
+        next.resourceCapacity.documentConcurrency * 8
+      );
+      scheduler.updateClaimLimit(next.workerConfig.claimBatchSize);
+      scopeRuntime.updateMaximumConcurrency(projection.scopeProjection);
+      Object.assign(input.workerConfig, next.workerConfig);
+      currentResourceCapacity = { ...next.resourceCapacity };
+    },
     async close() {
       await Promise.allSettled([resources.graphRag.close()]);
       resources.s3.destroy();
@@ -400,31 +423,19 @@ function createFixedResources(input: Parameters<
     }),
     clock: () => new Date().toISOString()
   });
-  const projectionCapacities = resolveDocumentProjectionCapacities({
-    documentConcurrency: input.resourceCapacity.documentConcurrency
-  });
   const lanes = createDocumentResourceLanes({
-    capacities: {
-      postgres_s3: Math.min(
-        input.resourceCapacity.sourceObjectReadConcurrency,
-        Math.max(1, input.resourceCapacity.databaseConnectionLimit - 1)
-      ),
-      generation_model: input.resourceCapacity.generationModelConcurrency,
-      graphrag_adapter: input.resourceCapacity.graphRagConcurrency,
-      embedding: input.resourceCapacity.embeddingConcurrency,
-      search_transport: input.resourceCapacity.searchConcurrency,
-      projection: projectionCapacities.documentPreparation,
-      activation: resolveDocumentFinalizationCapacity(input.resourceCapacity),
-      cleanup: 1
-    },
+    capacities: resolveDocumentResourceLaneCapacities(input.resourceCapacity),
     maximumWaitersPerLane: input.resourceCapacity.documentConcurrency * 8
   });
   if (!input.config.search) missingSearchConfig();
   const embeddingConfigurations =
     createPostgresEmbeddingConfigurationRepository(input.sql);
   const deploymentSecret = loadDeploymentSecret();
+  const onProviderFailure = input.observability?.providerFailure ?? (() => undefined);
   const embeddingGateway = createEmbeddingGateway({
-    transport: createOpenAiCompatibleEmbeddingTransport(),
+    transport: createOpenAiCompatibleEmbeddingTransport({
+      onFailure: onProviderFailure
+    }),
     deploymentSecret
   });
   const embeddingArtifacts = createEmbeddingArtifactService({
@@ -458,6 +469,7 @@ function createFixedResources(input: Parameters<
       poolSize: input.resourceCapacity.graphRagConcurrency
     }),
     deploymentSecret,
+    onProviderFailure,
     machineProjection
   };
 }

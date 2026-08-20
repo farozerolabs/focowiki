@@ -21,6 +21,8 @@ import { reuseDocumentProjectionScopeOutput } from
   "./production-document-projection-scope-output-reuse.js";
 import { latestContributors } from
   "./production-document-scope-renderer-support.js";
+import type { DocumentProjectionScopeClaim } from
+  "../application/document-scope-projector-runtime.js";
 
 type FixedRepositories = ReturnType<
   typeof createProductionDocumentFixedRepositories
@@ -46,6 +48,12 @@ export function createProductionDocumentScopeProjector(input: {
   outputs: ReturnType<typeof createPostgresProjectionScopeOutputRepository>;
   renderer: ReturnType<typeof createProductionDocumentScopeRenderer>;
   ownership: StorageVnextOwnershipRepository;
+  onFailure?: (input: {
+    scope: DocumentProjectionScopeClaim;
+    error: unknown;
+    errorCode: string;
+    retryable: boolean;
+  }) => void;
 }) {
   const completion = createPostgresProjectionScopeCompletion(input.sql);
   return createDocumentScopeProjectorRuntime({
@@ -104,6 +112,7 @@ export function createProductionDocumentScopeProjector(input: {
       const code = safeErrorCode(error);
       return { code, retryable: isRetryable(code) };
     },
+    ...(input.onFailure ? { onFailure: input.onFailure } : {}),
     retryDelayMs: (attempt) => input.retryDelayMs * attempt
   });
 }

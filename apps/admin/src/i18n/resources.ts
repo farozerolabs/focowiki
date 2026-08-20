@@ -706,7 +706,11 @@ export const resources = {
             source_body_empty:
               "The Markdown body is empty. Use Correct content, add the missing body, and save it for processing.",
             source_frontmatter_invalid:
-              "The Markdown frontmatter is invalid. Use Correct content, repair or remove the frontmatter, and save it for processing."
+              "The Markdown frontmatter is invalid. Use Correct content, repair or remove the frontmatter, and save it for processing.",
+            invalid_request:
+              "The embedding provider rejected the document request. Check the active embedding endpoint, model, and optional dimension, then retry processing.",
+            provider_request_rejected:
+              "The embedding provider rejected the document request. Check the active embedding endpoint, model, and optional dimension, then retry processing."
           }
         },
         deleteSelected: "Delete selected",
@@ -1681,7 +1685,11 @@ export const resources = {
             source_body_empty:
               "Markdown 正文为空。请点击“修正内容”，补充正文并保存，系统会重新处理。",
             source_frontmatter_invalid:
-              "Markdown frontmatter 无法解析。请点击“修正内容”，修正或移除 frontmatter 并保存，系统会重新处理。"
+              "Markdown frontmatter 无法解析。请点击“修正内容”，修正或移除 frontmatter 并保存，系统会重新处理。",
+            invalid_request:
+              "嵌入模型服务拒绝了文档请求。请检查当前生效的嵌入接口、模型和可选维度配置，然后重新处理。",
+            provider_request_rejected:
+              "嵌入模型服务拒绝了文档请求。请检查当前生效的嵌入接口、模型和可选维度配置，然后重新处理。"
           }
         },
         deleteSelected: "删除所选任务",

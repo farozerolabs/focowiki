@@ -3,6 +3,7 @@ export type AdaptiveResourceObservation = {
   latencyMs: number;
   cpuPressure: number;
   memoryPressure: number;
+  pressureSource?: string;
 };
 
 export function createAdaptiveResourceController(input: {
@@ -11,7 +12,7 @@ export function createAdaptiveResourceController(input: {
   stableSuccessesBeforeIncrease?: number;
   consecutivePressureObservationsBeforeDecrease?: number;
 }) {
-  const maximum = boundedInteger(input.configuredMaximum, "maximum");
+  let maximum = boundedInteger(input.configuredMaximum, "maximum");
   let current = Math.min(
     maximum,
     boundedInteger(input.initialCapacity ?? maximum, "initial_capacity")
@@ -28,6 +29,16 @@ export function createAdaptiveResourceController(input: {
   let consecutivePressureObservations = 0;
   return {
     capacity(): number {
+      return current;
+    },
+    configuredMaximum(): number {
+      return maximum;
+    },
+    updateConfiguredMaximum(value: number): number {
+      maximum = boundedInteger(value, "maximum");
+      current = maximum;
+      stableSuccesses = 0;
+      consecutivePressureObservations = 0;
       return current;
     },
     observe(observation: AdaptiveResourceObservation): number {
@@ -82,5 +93,10 @@ function validateObservation(observation: AdaptiveResourceObservation): void {
     if (!Number.isFinite(pressure) || pressure < 0 || pressure > 1) {
       throw new Error("ADAPTIVE_RESOURCE_PRESSURE_INVALID");
     }
+  }
+  if (observation.pressureSource !== undefined
+    && (!observation.pressureSource
+      || observation.pressureSource.length > 128)) {
+    throw new Error("ADAPTIVE_RESOURCE_PRESSURE_SOURCE_INVALID");
   }
 }

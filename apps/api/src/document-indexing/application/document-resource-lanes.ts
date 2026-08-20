@@ -36,6 +36,11 @@ export function createDocumentResourceLanes(input: {
     return [kind, {
       active: 0,
       waiters: [] as LaneWaiter[],
+      lastPressure: null as null | {
+        cpuPressure: number;
+        memoryPressure: number;
+        pressureSource: string | null;
+      },
       controller: createAdaptiveResourceController({
         configuredMaximum: configuredCapacity
       })
@@ -43,6 +48,11 @@ export function createDocumentResourceLanes(input: {
   })) as Record<DocumentResourceLane, {
     active: number;
     waiters: LaneWaiter[];
+    lastPressure: null | {
+      cpuPressure: number;
+      memoryPressure: number;
+      pressureSource: string | null;
+    };
     controller: ReturnType<typeof createAdaptiveResourceController>;
   }>;
 
@@ -114,6 +124,13 @@ export function createDocumentResourceLanes(input: {
   return {
     acquire,
     tryAcquire,
+    updateCapacities(capacities: Record<DocumentResourceLane, number>): void {
+      for (const kind of DOCUMENT_RESOURCE_LANES) {
+        lanes[kind].controller.updateConfiguredMaximum(capacities[kind]);
+        input.capacities[kind] = capacities[kind];
+        drain(kind);
+      }
+    },
     async run<TResult>(
       kind: DocumentResourceLane,
       operation: () => Promise<TResult>,
@@ -129,15 +146,18 @@ export function createDocumentResourceLanes(input: {
         throw caught;
       } finally {
         const endedAt = (input.clockMs ?? Date.now)();
-        lanes[kind].controller.observe({
+        const observation = {
           outcome: adaptiveOutcome(error),
           latencyMs: elapsed(startedAt, endedAt),
           ...(input.pressure ?? readProcessResourcePressure)()
-        });
+        };
+        lanes[kind].lastPressure = pressureSnapshot(observation);
+        lanes[kind].controller.observe(observation);
         release();
       }
     },
     observe(kind: DocumentResourceLane, observation: AdaptiveResourceObservation): number {
+      lanes[kind].lastPressure = pressureSnapshot(observation);
       const capacity = lanes[kind].controller.observe(observation);
       drain(kind);
       return capacity;
@@ -147,14 +167,28 @@ export function createDocumentResourceLanes(input: {
         active: lanes[kind].active,
         waiting: lanes[kind].waiters.length,
         capacity: lanes[kind].controller.capacity(),
-        configuredMaximum: input.capacities[kind]
+        configuredMaximum: lanes[kind].controller.configuredMaximum(),
+        pressure: lanes[kind].lastPressure
       }])) as Record<DocumentResourceLane, {
         active: number;
         waiting: number;
         capacity: number;
         configuredMaximum: number;
+        pressure: null | {
+          cpuPressure: number;
+          memoryPressure: number;
+          pressureSource: string | null;
+        };
       }>;
     }
+  };
+}
+
+function pressureSnapshot(observation: AdaptiveResourceObservation) {
+  return {
+    cpuPressure: observation.cpuPressure,
+    memoryPressure: observation.memoryPressure,
+    pressureSource: observation.pressureSource ?? null
   };
 }
 

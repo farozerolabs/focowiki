@@ -2,9 +2,13 @@ import type { DocumentState } from "../domain/contracts.js";
 import type { DocumentResourceKind } from "./document-resource-permits.js";
 import type { DocumentWorkKind } from "../domain/document-work-graph.js";
 import type { DocumentResourceLane } from "./document-fixed-dag-scheduler.js";
+import type { ProviderRequestFailureDiagnostic } from
+  "../../semantic/provider-request-failure.js";
+import type { IngestionFailureFields } from
+  "../../runtime/ingestion-failure.js";
 
 type WorkerLogEvent = {
-  level: "info";
+  level: "info" | "error";
   event: string;
   fields: Record<string, unknown>;
 };
@@ -107,6 +111,20 @@ export function createDocumentWorkerObservability(input: {
         waitTimeMs: metric(fields.waitTimeMs),
         serviceTimeMs: metric(fields.serviceTimeMs),
         outcome: fields.outcome
+      });
+    },
+    providerFailure(fields: ProviderRequestFailureDiagnostic) {
+      input.write({
+        level: "error",
+        event: "provider.request_failed",
+        fields: { ...fields }
+      });
+    },
+    ingestionFailure(fields: IngestionFailureFields) {
+      input.write({
+        level: "error",
+        event: "ingestion.stage_failed",
+        fields: { ...fields }
       });
     },
     activation(fields: {

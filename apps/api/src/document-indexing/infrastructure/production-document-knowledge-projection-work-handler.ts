@@ -28,6 +28,7 @@ import {
   documentProjectionAvailableSourceFileIds,
   documentProjectionGraphDirectoryPaths,
   documentProjectionActivationOwnerVersions,
+  documentProjectionRenderableSourceFileIds,
   documentProjectionSourceFileIds,
   documentProjectionScopes,
   readDocumentRelationPlan,
@@ -94,15 +95,24 @@ export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
       ]),
       request.signal
     );
-    const relationPlan = readDocumentRelationPlan(relationReceipt?.value);
+    const receivedRelationPlan = readDocumentRelationPlan(relationReceipt?.value);
+    const relationPlan: DocumentRelationPlan = {
+      ...receivedRelationPlan,
+      relationPublicIds: receivedRelationPlan.relationPublicIds
+        ?? await input.relations.listPublicIdsForPairs({
+          knowledgeBaseId: request.claimed.knowledgeBaseId,
+          pairPublicIds: receivedRelationPlan.pairPublicIds,
+          limit: 10_000
+        })
+    };
     const renderableRelations = await input.relations.listRenderable({
       knowledgeBaseId: request.claimed.knowledgeBaseId,
       currentSourceFilePublicId: request.claimed.sourceFilePublicId,
       currentSourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
-      affectedSourceFilePublicIds: relationPlan.affectedSourceFilePublicIds,
+      affectedSourceFilePublicIds: [request.claimed.sourceFilePublicId],
       limit: 10_000
     });
-    const renderSourceIds = documentProjectionSourceFileIds({
+    const renderSourceIds = documentProjectionRenderableSourceFileIds({
       currentSourceFilePublicId: request.claimed.sourceFilePublicId,
       affectedSourceFilePublicIds: relationPlan.affectedSourceFilePublicIds,
       relations: renderableRelations
@@ -193,13 +203,15 @@ export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
           });
           scopeRows.push(marked);
         }
-        await createPostgresProjectionScopeContributions(transaction).contribute({
-          knowledgeBaseId: request.claimed.knowledgeBaseId,
-          sourceFilePublicId: request.claimed.sourceFilePublicId,
-          sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
-          documentJobPublicId: request.claimed.documentJobPublicId,
-          scopes: scopeRows
-        });
+        for (let offset = 0; offset < scopeRows.length; offset += 256) {
+          await createPostgresProjectionScopeContributions(transaction).contribute({
+            knowledgeBaseId: request.claimed.knowledgeBaseId,
+            sourceFilePublicId: request.claimed.sourceFilePublicId,
+            sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
+            documentJobPublicId: request.claimed.documentJobPublicId,
+            scopes: scopeRows.slice(offset, offset + 256)
+          });
+        }
       }
     });
     if (!transitioned) throw projectionError("document_projection_lease_lost");
@@ -226,8 +238,7 @@ async function renderProjection(input: {
   });
   const sourceFilePublicIds = documentProjectionSourceFileIds({
     currentSourceFilePublicId: input.request.claimed.sourceFilePublicId,
-    affectedSourceFilePublicIds: input.relationPlan.affectedSourceFilePublicIds,
-    relations: input.relations
+    affectedSourceFilePublicIds: input.relationPlan.affectedSourceFilePublicIds
   });
   const graphSourceFilePublicIds = input.relationPlan.affectedSourceFilePublicIds;
   const graphDirectoryPaths = documentProjectionGraphDirectoryPaths({
@@ -251,7 +262,7 @@ async function renderProjection(input: {
   return {
     sourceFilePublicIds,
     navigationMutations: [],
-    relationPublicIds: input.relations.map((relation) => relation.publicId),
+    relationPublicIds: input.relationPlan.relationPublicIds,
     relations: input.relations,
     graphDirectoryPaths,
     directoryPaths
@@ -273,8 +284,7 @@ async function persistProjection(input: {
 }) {
   const generatedPages = renderAffectedDocumentSourcePages({
     sources: input.sources,
-    renderSourceFilePublicIds: input.sources.map((source) =>
-      source.sourceFilePublicId),
+    renderSourceFilePublicIds: [input.request.claimed.sourceFilePublicId],
     relations: input.projection.relations,
     sourcePathRewrites: documentSourcePathRewrites(input.sources)
   });
@@ -291,7 +301,8 @@ async function persistProjection(input: {
     base: input.currentBase,
     generatedPage: currentGeneratedPage,
     tokenizer: input.input.tokenizer,
-    relationPublicIds: input.projection.relationPublicIds,
+    relationPublicIds: input.projection.relations.map((relation) =>
+      relation.publicId),
     relations: input.projection.relations
   });
   const priorTermState = await input.input.machineProjection

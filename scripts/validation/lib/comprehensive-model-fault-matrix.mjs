@@ -50,7 +50,7 @@ export const MODEL_FAULT_CASES = Object.freeze([
     "retries only retryable failures within the configured bound"),
   modelFault("embedding", "non_retryable_failure",
     "apps/api/test/openai-compatible-embedding-transport.test.ts",
-    "classifies embedding HTTP 400 as a non-retryable invalid request"),
+    "distinguishes provider HTTP rejection from local request validation"),
   modelFault("embedding", "cancellation",
     "apps/api/test/openai-compatible-embedding-transport.test.ts",
     "maps caller embedding cancellation to aborted"),

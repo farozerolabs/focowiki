@@ -42,6 +42,47 @@ function createHarness(options: { autoResolve?: boolean } = {}) {
 }
 
 describe("GraphRAG Python pool", () => {
+  it("resizes a started pool without interrupting completed work", async () => {
+    const harness = createHarness({ autoResolve: true });
+    const pool = createGraphRagPythonPool({
+      size: 1,
+      maximumBacklog: 8,
+      maximumTasksPerChild: 100,
+      createChild: harness.createChild
+    });
+
+    await pool.start();
+    await pool.resize(3);
+    expect(pool.stats().size).toBe(3);
+    await pool.resize(1);
+    expect(pool.stats().size).toBe(1);
+    expect(harness.children.filter((child) => child.terminated)).toHaveLength(2);
+    await pool.close();
+  });
+
+  it("drains a busy child before shrinking the pool", async () => {
+    const harness = createHarness();
+    const pool = createGraphRagPythonPool({
+      size: 2,
+      maximumBacklog: 2,
+      maximumTasksPerChild: 100,
+      createChild: harness.createChild
+    });
+    await pool.start();
+    const first = pool.run(request("resize-first"), { timeoutMs: 1_000 });
+    const second = pool.run(request("resize-second"), { timeoutMs: 1_000 });
+
+    await pool.resize(1);
+    expect(harness.children.every((child) => !child.terminated)).toBe(true);
+    harness.children[0]!.pending.shift()!.resolve(success("resize-first"));
+    harness.children[1]!.pending.shift()!.resolve(success("resize-second"));
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    await Promise.resolve();
+    expect(pool.stats().size).toBe(1);
+    expect(harness.children.filter((child) => child.terminated)).toHaveLength(1);
+    await pool.close();
+  });
+
   it("keeps a fixed warm pool and enforces its backlog bound", async () => {
     const harness = createHarness();
     const pool = createGraphRagPythonPool({

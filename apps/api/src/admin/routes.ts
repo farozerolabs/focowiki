@@ -41,6 +41,7 @@ import { registerAdminEmbeddingSettingsRoutes } from
   "./embedding-settings-routes.js";
 import type { RerankerConfigurationService } from
   "../semantic/reranker/service.js";
+import type { RuntimeLogger } from "../logger.js";
 import { registerAdminRerankerSettingsRoutes } from
   "./reranker-settings-routes.js";
 
@@ -60,6 +61,7 @@ export type AdminApiServices = {
   runtimeSettings: RuntimeSettingsService | null;
   embeddingConfigurations: EmbeddingConfigurationService | null;
   rerankerConfigurations: RerankerConfigurationService | null;
+  logger: RuntimeLogger;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
@@ -189,7 +191,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     app,
     {
       application: services.adminUploadApplication,
-      audit: services.adminAuditApplication
+      audit: services.adminAuditApplication,
+      logger: services.logger
     },
     { requireAuth, requireWriteProtection }
   );

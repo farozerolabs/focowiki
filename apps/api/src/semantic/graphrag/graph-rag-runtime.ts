@@ -20,6 +20,7 @@ const DEFAULT_MAXIMUM_TASKS_PER_CHILD = 100;
 export type GraphRagDocumentRuntime = {
   pool: GraphRagPythonPool;
   start(): Promise<void>;
+  resize(poolSize: number): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -47,6 +48,7 @@ export function createGraphRagRuntime(input: {
   return {
     pool,
     start: () => pool.start(),
+    resize: (poolSize) => pool.resize(poolSize),
     close: () => pool.close()
   };
 }

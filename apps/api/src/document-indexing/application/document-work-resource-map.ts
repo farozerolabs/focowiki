@@ -6,7 +6,7 @@ const WORK_RESOURCE_LANES: Readonly<Record<DocumentWorkKind, DocumentResourceLan
   first_layer: "generation_model",
   content_projection: "embedding",
   graphrag: "graphrag_adapter",
-  relation_reconcile: "postgres_s3",
+  relation_reconcile: "coordination",
   knowledge_projection: "projection",
   activate: "activation",
   cleanup: "cleanup"

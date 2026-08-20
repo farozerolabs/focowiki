@@ -4,6 +4,9 @@ import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { registerAdminUploadSessionRoutes } from
   "../src/admin/upload-session-routes.js";
+import { UploadSessionError } from "../src/domain/upload-session.js";
+import { registerDeveloperOpenApiUploadSessionRoutes } from
+  "../src/developer-openapi/upload-session-routes.js";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 
@@ -44,6 +47,83 @@ describe("destructive folder-aware upload contract", () => {
       targetKind: "upload_session",
       targetPublicId: "upload-session-owned"
     }));
+  });
+
+  it("logs a safe ingestion diagnostic when an upload stage fails", async () => {
+    const app = new Hono();
+    const logger = { error: vi.fn() };
+    registerAdminUploadSessionRoutes(app, {
+      application: {
+        createUploadSession: vi.fn(async () => {
+          throw new UploadSessionError("UPLOAD_SESSION_STATE_CONFLICT");
+        })
+      } as never,
+      audit: { record: vi.fn(async () => undefined) } as never,
+      logger
+    }, {
+      requireAuth: async (_context, next) => next(),
+      requireWriteProtection: async (_context, next) => next()
+    });
+
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-owned/upload-sessions",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "upload-failed-attempt"
+        },
+        body: JSON.stringify({ declaredFileCount: 1, declaredByteCount: 12 })
+      }
+    );
+
+    expect(response.status).toBe(409);
+    expect(logger.error).toHaveBeenCalledWith(
+      "ingestion.stage_failed",
+      expect.objectContaining({
+        stage: "upload_create",
+        errorCode: "UPLOAD_SESSION_STATE_CONFLICT",
+        errorMessage: "UPLOAD_SESSION_STATE_CONFLICT",
+        knowledgeBaseId: "kb-owned"
+      })
+    );
+  });
+
+  it("logs the same safe ingestion event for Developer OpenAPI uploads", async () => {
+    const app = new Hono();
+    const logger = { error: vi.fn() };
+    registerDeveloperOpenApiUploadSessionRoutes(app, {
+      uploadApplication: {
+        createUploadSession: vi.fn(async () => {
+          throw new UploadSessionError("UPLOAD_SESSION_STATE_CONFLICT");
+        })
+      },
+      auditApplication: { record: vi.fn(async () => undefined) },
+      logger
+    } as never);
+
+    const response = await app.request(
+      "/openapi/v2/knowledge-bases/kb-openapi/upload-sessions",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "openapi-upload-failed-attempt"
+        },
+        body: JSON.stringify({ declaredFileCount: 1, declaredByteCount: 12 })
+      }
+    );
+
+    expect(response.status).toBe(409);
+    expect(logger.error).toHaveBeenCalledWith(
+      "ingestion.stage_failed",
+      expect.objectContaining({
+        stage: "upload_create",
+        errorCode: "UPLOAD_SESSION_STATE_CONFLICT",
+        errorMessage: "UPLOAD_SESSION_STATE_CONFLICT",
+        knowledgeBaseId: "kb-openapi"
+      })
+    );
   });
 
   it("removes the flat direct multipart upload contract", () => {

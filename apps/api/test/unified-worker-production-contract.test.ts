@@ -82,11 +82,16 @@ describe("unified worker production contract", () => {
     const processor = read(
       "apps/api/src/document-indexing/infrastructure/production-document-fixed-processor.ts"
     );
+    const failureObservability = read(
+      "apps/api/src/document-indexing/infrastructure/production-document-failure-observability.ts"
+    );
     const background = read(
       "apps/api/src/document-indexing/infrastructure/production-background-runtime.ts"
     );
     expect(runtime).toContain("observability");
-    expect(processor).toContain("input.observability?.work");
+    expect(processor).toContain("observeProductionDocumentWorkEvent");
+    expect(failureObservability).toContain("observability?.work");
+    expect(failureObservability).toContain("observability?.ingestionFailure");
     expect(processor).toContain("onWorkEvent");
     expect(background).toContain("observability?.cleanup");
   });

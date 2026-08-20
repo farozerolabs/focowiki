@@ -162,7 +162,7 @@ describe("document resource permits", () => {
     expect(processor).toContain("createDocumentResourceLanes");
     expect(scheduler).toContain("tryAcquire(request.resourceLane)");
     for (const lane of [
-      "postgres_s3", "generation_model", "graphrag_adapter", "embedding",
+      "postgres_s3", "coordination", "generation_model", "graphrag_adapter", "embedding",
       "search_transport", "projection", "activation", "cleanup"
     ]) {
       expect(`${resourceMap}\n${nestedHandlers}`, lane).toContain(`"${lane}"`);

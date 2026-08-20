@@ -27,6 +27,21 @@ describe("document worker observability", () => {
       serviceTimeMs: 45,
       outcome: "success"
     });
+    observer.ingestionFailure({
+      stage: "knowledge_projection",
+      errorCode: "portable_endpoint_unreadable",
+      errorClass: "Error",
+      errorMessage: "Generated endpoint is unreadable",
+      httpStatusCode: null,
+      requestId: null,
+      retryable: false,
+      attemptCount: 1,
+      knowledgeBaseId: "kb-one",
+      documentJobPublicId: "document-job-one",
+      workPublicId: "document-work-one",
+      scopePublicId: null,
+      uploadSessionId: null
+    });
     observer.work({
       event: "failed",
       workPublicId: "document-work-one",
@@ -59,6 +74,25 @@ describe("document worker observability", () => {
         serviceTimeMs: 45,
         outcome: "success"
       }),
+      {
+        level: "error",
+        event: "ingestion.stage_failed",
+        fields: {
+          stage: "knowledge_projection",
+          errorCode: "portable_endpoint_unreadable",
+          errorClass: "Error",
+          errorMessage: "Generated endpoint is unreadable",
+          httpStatusCode: null,
+          requestId: null,
+          retryable: false,
+          attemptCount: 1,
+          knowledgeBaseId: "kb-one",
+          documentJobPublicId: "document-job-one",
+          workPublicId: "document-work-one",
+          scopePublicId: null,
+          uploadSessionId: null
+        }
+      },
       log("worker.document_work_failed", {
         workPublicId: "document-work-one",
         documentJobPublicId: "document-job-one",

@@ -379,6 +379,7 @@ export function createPostgresDocumentArtifactWorkRepository(
                 terminal_at = ${input.now}, revision = revision + 1,
                 updated_at = ${input.now}
             WHERE public_id = ${work.document_job_public_id}
+              AND state <> 'error'
             RETURNING revision
           `;
           if (options.webhookRetentionMilliseconds !== undefined
@@ -397,21 +398,23 @@ export function createPostgresDocumentArtifactWorkRepository(
                 + options.webhookRetentionMilliseconds).toISOString()
             });
           }
-          await failPostgresDocumentOperation(tx, {
-            knowledgeBaseId: work.knowledge_base_id,
-            operationPublicId: work.operation_public_id,
-            documentJobPublicId: work.document_job_public_id,
-            sourceFilePublicId: work.source_file_public_id,
-            sourceRevisionPublicId: work.source_revision_public_id,
-            errorCode: input.errorCode,
-            safeMessage: input.safeMessage,
-            completedAt: input.now
-          });
-          await convergePostgresUploadDocumentOperation(tx, {
-            knowledgeBaseId: work.knowledge_base_id,
-            operationPublicId: work.operation_public_id,
-            completedAt: input.now
-          });
+          if (failedJobs[0]) {
+            await failPostgresDocumentOperation(tx, {
+              knowledgeBaseId: work.knowledge_base_id,
+              operationPublicId: work.operation_public_id,
+              documentJobPublicId: work.document_job_public_id,
+              sourceFilePublicId: work.source_file_public_id,
+              sourceRevisionPublicId: work.source_revision_public_id,
+              errorCode: input.errorCode,
+              safeMessage: input.safeMessage,
+              completedAt: input.now
+            });
+            await convergePostgresUploadDocumentOperation(tx, {
+              knowledgeBaseId: work.knowledge_base_id,
+              operationPublicId: work.operation_public_id,
+              completedAt: input.now
+            });
+          }
           return "error";
         }
         await updatePostgresDocumentJobSummary(
