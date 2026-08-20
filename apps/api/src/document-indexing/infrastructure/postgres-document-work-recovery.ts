@@ -1,6 +1,9 @@
 import type { TransactionSql } from "postgres";
+import type { DatabaseClient } from "../../db/client.js";
 import { enqueuePostgresDocumentWebhookEvent } from
   "./postgres-document-webhook-event.js";
+import { releasePostgresDocumentPageCandidates } from
+  "./postgres-document-page-candidate-release.js";
 
 export async function recoverExpiredPostgresDocumentArtifactWork(input: {
   transaction: TransactionSql;
@@ -93,20 +96,29 @@ async function terminalizeJobs(input: {
     RETURNING job.public_id, job.revision, job.knowledge_base_id,
               job.operation_public_id, job.source_file_public_id
   `;
-  if (input.webhookRetentionMilliseconds === undefined) return;
   for (const job of terminalJobs) {
-    await enqueuePostgresDocumentWebhookEvent(tx, {
-      documentJobPublicId: job.public_id,
-      documentJobRevision: Number(job.revision),
+    await releasePostgresDocumentPageCandidates({
+      transaction: tx as unknown as DatabaseClient,
       knowledgeBaseId: job.knowledge_base_id,
       operationPublicId: job.operation_public_id,
-      sourceFilePublicId: job.source_file_public_id,
-      eventType: "document.error",
-      state: "error",
-      safeErrorCode: "WORK_LEASE_EXPIRED",
-      occurredAt: input.now,
-      expiresAt: new Date(Date.parse(input.now)
-        + input.webhookRetentionMilliseconds).toISOString()
+      documentJobPublicId: job.public_id,
+      retainedCandidatePublicIds: [],
+      releasedAt: input.now
     });
+    if (input.webhookRetentionMilliseconds !== undefined) {
+      await enqueuePostgresDocumentWebhookEvent(tx, {
+        documentJobPublicId: job.public_id,
+        documentJobRevision: Number(job.revision),
+        knowledgeBaseId: job.knowledge_base_id,
+        operationPublicId: job.operation_public_id,
+        sourceFilePublicId: job.source_file_public_id,
+        eventType: "document.error",
+        state: "error",
+        safeErrorCode: "WORK_LEASE_EXPIRED",
+        occurredAt: input.now,
+        expiresAt: new Date(Date.parse(input.now)
+          + input.webhookRetentionMilliseconds).toISOString()
+      });
+    }
   }
 }

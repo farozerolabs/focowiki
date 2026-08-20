@@ -17,6 +17,8 @@ import { recoverExpiredPostgresDocumentArtifactWork } from
   "./postgres-document-work-recovery.js";
 import { completeReadyPostgresProjectionWaiters } from
   "./postgres-projection-waiting-completion.js";
+import { releasePostgresDocumentPageCandidates } from
+  "./postgres-document-page-candidate-release.js";
 import { artifactWorkTransaction as transaction,
   validateArtifactWorkIdentity as validateIdentity,
   validateArtifactWorkPositiveInteger as validatePositiveInteger,
@@ -399,6 +401,14 @@ export function createPostgresDocumentArtifactWorkRepository(
             });
           }
           if (failedJobs[0]) {
+            await releasePostgresDocumentPageCandidates({
+              transaction: tx as unknown as DatabaseClient,
+              knowledgeBaseId: work.knowledge_base_id,
+              documentJobPublicId: work.document_job_public_id,
+              operationPublicId: work.operation_public_id,
+              retainedCandidatePublicIds: [],
+              releasedAt: input.now
+            });
             await failPostgresDocumentOperation(tx, {
               knowledgeBaseId: work.knowledge_base_id,
               operationPublicId: work.operation_public_id,

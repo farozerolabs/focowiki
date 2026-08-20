@@ -5,7 +5,7 @@ import type { DatabaseClient } from "../src/db/client.js";
 import { applyPostgresDocumentDirectoryNavigation } from
   "../src/document-indexing/infrastructure/postgres-document-directory-navigation.js";
 import { lockAndAdvanceScopedOwners } from
-  "../src/document-indexing/infrastructure/postgres-document-fixed-activation.js";
+  "../src/document-indexing/infrastructure/postgres-scoped-activation-advance.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
 

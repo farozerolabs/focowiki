@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
 import { ensurePostgresDocumentCleanupIntent } from
   "../src/document-indexing/infrastructure/postgres-document-cleanup-intent.js";
 import { createPostgresDocumentObsoleteCleanup } from
   "../src/document-indexing/infrastructure/postgres-document-obsolete-cleanup.js";
-import { removeProductionDocumentObsoleteArtifact } from
-  "../src/document-indexing/infrastructure/production-obsolete-artifact-removal.js";
+import { releasePostgresDocumentPageCandidates } from
+  "../src/document-indexing/infrastructure/postgres-document-page-candidate-release.js";
+import {
+  createPostgresDocumentRevisionPurge,
+  enqueuePostgresReplacedDocumentRevisionPurge
+} from "../src/document-indexing/infrastructure/postgres-document-revision-purge.js";
+import { rehomePostgresCurrentDocumentPageCandidates } from
+  "../src/document-indexing/infrastructure/postgres-document-page-candidate-rehome.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
 
@@ -131,7 +137,7 @@ const enabled = Boolean(databaseUrl && runOwner
     });
   });
 
-  it("never schedules or removes a staged candidate owned by pending work", async () => {
+  it("keeps the current head and releases terminal staged and superseded candidates", async () => {
     const actions = await ensurePostgresDocumentCleanupIntent({
       transaction: sql as unknown as DatabaseClient,
       knowledgeBaseId: "kb-cleanup",
@@ -142,49 +148,163 @@ const enabled = Boolean(databaseUrl && runOwner
       affectedSourceFilePublicIds: ["source-cleanup-candidate"],
       createdAt: "2026-08-15T14:01:00.000Z"
     });
-    expect(actions).toHaveLength(1);
-    const [action] = await sql<Array<{
-      public_id: string;
-      resource_public_id: string;
-      source_revision_public_id: string;
-    }>>`
-      SELECT public_id, resource_public_id, source_revision_public_id
-      FROM focowiki.cleanup_actions
-      WHERE document_job_public_id = 'job-cleanup-candidate'
-    `;
-    expect(action).toMatchObject({
-      resource_public_id: "object-cleanup-candidate",
-      source_revision_public_id: "revision-cleanup-candidate"
+    expect(actions).toEqual([]);
+
+    await expect(releasePostgresDocumentPageCandidates({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "kb-cleanup",
+      documentJobPublicId: "job-cleanup-candidate",
+      operationPublicId: "operation-cleanup-candidate",
+      retainedCandidatePublicIds: ["candidate-cleanup-current"],
+      releasedAt: "2026-08-15T14:01:01.000Z"
+    })).resolves.toEqual({
+      releasedCandidateCount: 2,
+      queuedObjectCount: 2
     });
 
-    const deleteZeroOwner = vi.fn(async () => undefined);
-    await removeProductionDocumentObsoleteArtifact({
-      sql: sql as unknown as DatabaseClient,
-      config: {} as never,
-      search: null,
-      objectDeletion: { deleteZeroOwner } as never,
-      action: {
-        publicId: action!.public_id,
-        knowledgeBaseId: "kb-cleanup",
-        sourceRevisionPublicId: "revision-cleanup-candidate",
-        searchProviderKind: null,
-        plane: "object_storage",
-        resourceKind: "generated_object",
-        resourcePublicId: "object-cleanup-candidate",
-        attempt: 1,
-        maximumAttempts: 8
-      }
-    });
     await expect(sql<Array<{ public_id: string; state: string }>>`
       SELECT public_id, state
       FROM focowiki.generated_page_candidates
-      WHERE object_id = 'object-cleanup-candidate'
+      WHERE source_file_public_id = 'source-cleanup-candidate'
       ORDER BY public_id
     `).resolves.toEqual([{
-      public_id: "candidate-cleanup-staged",
-      state: "staged"
+      public_id: "candidate-cleanup-current",
+      state: "active"
     }]);
-    expect(deleteZeroOwner).toHaveBeenCalledWith("object-cleanup-candidate");
+    await expect(sql<Array<{ object_id: string }>>`
+      SELECT owner.object_id
+      FROM focowiki.object_owners owner
+      JOIN focowiki.generated_page_candidates candidate
+        ON candidate.public_id = owner.generated_page_candidate_public_id
+      WHERE owner.owner_kind = 'generated_page_candidate'
+        AND candidate.source_file_public_id = 'source-cleanup-candidate'
+      ORDER BY owner.object_id
+    `).resolves.toEqual([{
+      object_id: "object-cleanup-current"
+    }]);
+    await expect(sql<Array<{
+      resource_public_id: string;
+      action_kind: string;
+      state: string;
+    }>>`
+      SELECT resource_public_id, action_kind, state
+      FROM focowiki.cleanup_actions
+      WHERE document_job_public_id = 'job-cleanup-candidate'
+      ORDER BY resource_public_id
+    `).resolves.toEqual([
+      {
+        resource_public_id: "object-cleanup-page-old",
+        action_kind: "zero_owner_object",
+        state: "queued"
+      },
+      {
+        resource_public_id: "object-cleanup-staged",
+        action_kind: "zero_owner_object",
+        state: "queued"
+      }
+    ]);
+    await expect(releasePostgresDocumentPageCandidates({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "kb-cleanup",
+      documentJobPublicId: "job-cleanup-candidate",
+      operationPublicId: "operation-cleanup-candidate",
+      retainedCandidatePublicIds: ["candidate-cleanup-current"],
+      releasedAt: "2026-08-15T14:01:02.000Z"
+    })).resolves.toEqual({
+      releasedCandidateCount: 0,
+      queuedObjectCount: 0
+    });
+  });
+
+  it("purges a replaced revision and queues every orphaned object", async () => {
+    await expect(rehomePostgresCurrentDocumentPageCandidates({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "kb-cleanup",
+      documentJobPublicId: "job-cleanup",
+      sourceFilePublicId: "source-cleanup",
+      sourceRevisionPublicId: "revision-cleanup-new",
+      previousSourceRevisionPublicId: "revision-cleanup-old",
+      activationRevision: 3,
+      activatedAt: "2026-08-15T14:01:59.000Z"
+    })).resolves.toBe(1);
+    await expect(sql<Array<{
+      candidate_id: string;
+      candidate_revision: string;
+      head_revision: string | null;
+    }>>`
+      SELECT candidate.public_id AS candidate_id,
+             candidate.source_revision_public_id AS candidate_revision,
+             head.source_revision_public_id AS head_revision
+      FROM focowiki.generated_page_heads head
+      JOIN focowiki.generated_page_candidates candidate
+        ON candidate.knowledge_base_id = head.knowledge_base_id
+       AND candidate.public_id = head.page_candidate_public_id
+      WHERE head.knowledge_base_id = 'kb-cleanup'
+        AND head.normalized_path = 'shared.md'
+    `).resolves.toEqual([{
+      candidate_id: "candidate-cleanup-shared-current",
+      candidate_revision: "revision-cleanup-new",
+      head_revision: "revision-cleanup-new"
+    }]);
+
+    await expect(enqueuePostgresReplacedDocumentRevisionPurge({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "kb-cleanup",
+      operationPublicId: "operation-cleanup",
+      documentJobPublicId: "job-cleanup",
+      sourceRevisionPublicId: "revision-cleanup-old",
+      createdAt: "2026-08-15T14:02:00.000Z"
+    })).resolves.toBe(true);
+
+    const purge = createPostgresDocumentRevisionPurge(
+      sql as unknown as DatabaseClient
+    );
+    await expect(purge.runBatch({
+      owner: "revision-purge-owner-1",
+      limit: 1,
+      now: "2026-08-15T14:02:01.000Z",
+      leaseExpiresAt: "2026-08-15T14:03:01.000Z"
+    })).resolves.toEqual({ claimed: 1, completed: 0, retried: 1, failed: 0 });
+    await sql`
+      UPDATE focowiki.cleanup_actions
+      SET state = 'completed', completed_at = '2026-08-15T14:02:02.000Z',
+          updated_at = '2026-08-15T14:02:02.000Z'
+      WHERE action_kind = 'document_obsolete_artifact'
+        AND checkpoint->>'parentRevisionPurgeActionPublicId' IS NOT NULL
+    `;
+    await expect(purge.runBatch({
+      owner: "revision-purge-owner-2",
+      limit: 1,
+      now: "2026-08-15T14:02:03.000Z",
+      leaseExpiresAt: "2026-08-15T14:03:03.000Z"
+    })).resolves.toEqual({ claimed: 1, completed: 1, retried: 0, failed: 0 });
+
+    await expect(sql<Array<{ count: number }>>`
+      SELECT count(*)::integer AS count
+      FROM focowiki.source_revisions
+      WHERE public_id = 'revision-cleanup-old'
+    `).resolves.toEqual([{ count: 0 }]);
+    await expect(sql<Array<{
+      resource_public_id: string;
+      action_kind: string;
+      state: string;
+    }>>`
+      SELECT resource_public_id, action_kind, state
+      FROM focowiki.cleanup_actions
+      WHERE action_kind = 'zero_owner_object'
+        AND resource_public_id = 'object-cleanup-old'
+    `).resolves.toEqual([{
+      resource_public_id: "object-cleanup-old",
+      action_kind: "zero_owner_object",
+      state: "queued"
+    }]);
+    await expect(sql<Array<{ zero_owner_since: Date | null }>>`
+      SELECT zero_owner_since
+      FROM focowiki.object_registrations
+      WHERE object_id = 'object-cleanup-old'
+    `).resolves.toEqual([{
+      zero_owner_since: new Date("2026-08-15T14:02:03.000Z")
+    }]);
   });
 });
 
@@ -193,11 +313,27 @@ async function seedGeneratedCandidates(sql: postgres.Sql): Promise<void> {
     INSERT INTO focowiki.object_registrations (
       object_id, storage_key, checksum_sha256, byte_count, content_type,
       object_format, state, write_attempt_public_id, verified_at
-    ) VALUES (
-      'object-cleanup-candidate', 'cleanup/candidate.md', ${"5".repeat(64)}, 1,
-      'text/markdown; charset=utf-8', 'generated_markdown', 'verified',
-      'write-cleanup-candidate', now()
-    )
+    ) VALUES
+      (
+        'object-cleanup-source', 'cleanup/source.md', ${"5".repeat(64)}, 1,
+        'text/markdown; charset=utf-8', 'source-markdown-v1', 'verified',
+        'write-cleanup-source', now()
+      ),
+      (
+        'object-cleanup-current', 'cleanup/current.md', ${"6".repeat(64)}, 1,
+        'text/markdown; charset=utf-8', 'okf-generated-markdown-v1', 'verified',
+        'write-cleanup-current', now()
+      ),
+      (
+        'object-cleanup-page-old', 'cleanup/page-old.md', ${"7".repeat(64)}, 1,
+        'text/markdown; charset=utf-8', 'okf-generated-markdown-v1', 'verified',
+        'write-cleanup-page-old', now()
+      ),
+      (
+        'object-cleanup-staged', 'cleanup/staged.md', ${"8".repeat(64)}, 1,
+        'text/markdown; charset=utf-8', 'okf-generated-markdown-v1', 'verified',
+        'write-cleanup-staged', now()
+      )
   `;
   await sql`
     INSERT INTO focowiki.source_files (
@@ -214,7 +350,7 @@ async function seedGeneratedCandidates(sql: postgres.Sql): Promise<void> {
       checksum_sha256, byte_count, content_type
     ) VALUES (
       'revision-cleanup-candidate', 'kb-cleanup', 'source-cleanup-candidate',
-      'object-cleanup-candidate', ${"5".repeat(64)}, 1,
+      'object-cleanup-source', ${"5".repeat(64)}, 1,
       'text/markdown; charset=utf-8'
     )
   `;
@@ -275,17 +411,169 @@ async function seedGeneratedCandidates(sql: postgres.Sql): Promise<void> {
       base_activation_revision, state
     ) VALUES
       (
-        'candidate-cleanup-active', 'kb-cleanup', 'work-cleanup-candidate',
-        'revision-cleanup-candidate', 'active.md', 'active.md', 'index',
-        'source-cleanup-candidate', 'object-cleanup-candidate',
-        ${"5".repeat(64)}, 1, 1, 'active'
+        'candidate-cleanup-current', 'kb-cleanup', 'work-cleanup-candidate',
+        'revision-cleanup-candidate', 'current.md', 'current.md', 'index',
+        'source-cleanup-candidate', 'object-cleanup-current',
+        ${"6".repeat(64)}, 1, 1, 'active'
+      ),
+      (
+        'candidate-cleanup-old', 'kb-cleanup', 'work-cleanup-candidate',
+        'revision-cleanup-candidate', 'old.md', 'old.md', 'index',
+        'source-cleanup-candidate', 'object-cleanup-page-old',
+        ${"7".repeat(64)}, 1, 1, 'active'
       ),
       (
         'candidate-cleanup-staged', 'kb-cleanup', 'work-cleanup-candidate',
         'revision-cleanup-candidate', 'staged.md', 'staged.md', 'index',
-        'source-cleanup-candidate', 'object-cleanup-candidate',
-        ${"5".repeat(64)}, 1, 1, 'staged'
+        'source-cleanup-candidate', 'object-cleanup-staged',
+        ${"8".repeat(64)}, 1, 1, 'staged'
       )
+  `;
+  await sql`
+    INSERT INTO focowiki.object_owners (
+      public_id, knowledge_base_id, object_id, owner_kind,
+      generated_page_candidate_public_id
+    ) VALUES
+      (
+        'owner-cleanup-current', 'kb-cleanup', 'object-cleanup-current',
+        'generated_page_candidate', 'candidate-cleanup-current'
+      ),
+      (
+        'owner-cleanup-old', 'kb-cleanup', 'object-cleanup-page-old',
+        'generated_page_candidate', 'candidate-cleanup-old'
+      ),
+      (
+        'owner-cleanup-staged', 'kb-cleanup', 'object-cleanup-staged',
+        'generated_page_candidate', 'candidate-cleanup-staged'
+      )
+  `;
+  await seedRevisionRehome(sql);
+  await sql`
+    INSERT INTO focowiki.generated_page_heads (
+      knowledge_base_id, logical_path, normalized_path, entry_kind,
+      source_file_public_id, source_revision_public_id,
+      page_candidate_public_id, object_id, checksum_sha256, byte_count,
+      activation_revision
+    ) VALUES (
+      'kb-cleanup', 'current.md', 'current.md', 'index',
+      'source-cleanup-candidate', 'revision-cleanup-candidate',
+      'candidate-cleanup-current', 'object-cleanup-current',
+      ${"6".repeat(64)}, 1, 1
+    )
+  `;
+}
+
+async function seedRevisionRehome(sql: postgres.Sql): Promise<void> {
+  await sql`
+    INSERT INTO focowiki.object_registrations (
+      object_id, storage_key, checksum_sha256, byte_count, content_type,
+      object_format, state, write_attempt_public_id, verified_at
+    ) VALUES (
+      'object-cleanup-shared-page', 'cleanup/shared.md', ${"9".repeat(64)}, 2,
+      'text/markdown; charset=utf-8', 'okf-generated-markdown-v1', 'verified',
+      'write-cleanup-shared-page', now()
+    ), (
+      'object-cleanup-shared-current', 'cleanup/shared-current.md',
+      ${"0".repeat(64)}, 3, 'text/markdown; charset=utf-8',
+      'okf-generated-markdown-v1', 'verified',
+      'write-cleanup-shared-current', now()
+    )
+  `;
+  await sql`
+    INSERT INTO focowiki.operations (
+      public_id, knowledge_base_id, operation_kind, state, completed_at
+    ) VALUES (
+      'operation-cleanup-old', 'kb-cleanup', 'source_replace', 'completed',
+      '2026-08-15T13:00:00.000Z'
+    )
+  `;
+  await sql`
+    INSERT INTO focowiki.document_processing_jobs (
+      public_id, knowledge_base_id, operation_public_id,
+      source_file_public_id, source_revision_public_id,
+      runtime_settings_revision_public_id,
+      generation_model_configuration_public_id,
+      generation_model_configuration_revision,
+      embedding_configuration_revision_public_id,
+      semantic_generation_public_id, semantic_contract_version,
+      state, maximum_attempts, accepted_at, started_at, terminal_at,
+      created_at, updated_at
+    ) VALUES (
+      'job-cleanup-old', 'kb-cleanup', 'operation-cleanup-old',
+      'source-cleanup', 'revision-cleanup-old', 'settings-cleanup',
+      'model-config-cleanup', 1, 'embedding-revision-cleanup',
+      'semantic-generation-cleanup', 'semantic-v1', 'available', 3,
+      '2026-08-15T12:59:00.000Z', '2026-08-15T12:59:01.000Z',
+      '2026-08-15T13:00:00.000Z', '2026-08-15T12:59:00.000Z',
+      '2026-08-15T13:00:00.000Z'
+    )
+  `;
+  await sql`
+    INSERT INTO focowiki.document_artifact_work (
+      public_id, knowledge_base_id, document_job_public_id,
+      source_file_public_id, source_revision_public_id,
+      work_kind, resource_lane, input_fingerprint_sha256,
+      state, maximum_attempts, next_eligible_at, ended_at
+    ) VALUES
+      (
+        'work-cleanup-old-projection', 'kb-cleanup', 'job-cleanup-old',
+        'source-cleanup', 'revision-cleanup-old', 'knowledge_projection',
+        'projection', ${"7".repeat(64)}, 'completed', 3,
+        '2026-08-15T12:59:00.000Z', '2026-08-15T13:00:00.000Z'
+      ),
+      (
+        'work-cleanup-new-projection', 'kb-cleanup', 'job-cleanup',
+        'source-cleanup', 'revision-cleanup-new', 'knowledge_projection',
+        'projection', ${"8".repeat(64)}, 'waiting_on_projection', 3,
+        '2026-08-15T14:00:00.000Z', NULL
+      )
+  `;
+  await sql`
+    INSERT INTO focowiki.generated_page_candidates (
+      public_id, knowledge_base_id, source_work_public_id,
+      source_revision_public_id, logical_path, normalized_path, entry_kind,
+      source_file_public_id, page_source_file_public_id,
+      page_source_revision_public_id, object_id, checksum_sha256, byte_count,
+      base_activation_revision, state
+    ) VALUES (
+      'candidate-cleanup-shared-old', 'kb-cleanup',
+      'work-cleanup-old-projection', 'revision-cleanup-old',
+      'shared.md', 'shared.md', 'index', 'source-cleanup',
+      'source-cleanup', 'revision-cleanup-old',
+      'object-cleanup-shared-page', ${"9".repeat(64)}, 2, 2, 'active'
+    ), (
+      'candidate-cleanup-shared-current', 'kb-cleanup',
+      'work-cleanup-new-projection', 'revision-cleanup-new',
+      'shared.md', 'shared.md', 'index', 'source-cleanup',
+      'source-cleanup', 'revision-cleanup-new',
+      'object-cleanup-shared-current', ${"0".repeat(64)}, 3, 3, 'staged'
+    )
+  `;
+  await sql`
+    INSERT INTO focowiki.object_owners (
+      public_id, knowledge_base_id, object_id, owner_kind,
+      generated_page_candidate_public_id
+    ) VALUES (
+      'owner-cleanup-shared-old', 'kb-cleanup',
+      'object-cleanup-shared-page', 'generated_page_candidate',
+      'candidate-cleanup-shared-old'
+    ), (
+      'owner-cleanup-shared-current', 'kb-cleanup',
+      'object-cleanup-shared-current', 'generated_page_candidate',
+      'candidate-cleanup-shared-current'
+    )
+  `;
+  await sql`
+    INSERT INTO focowiki.generated_page_heads (
+      knowledge_base_id, logical_path, normalized_path, entry_kind,
+      source_file_public_id, source_revision_public_id,
+      page_candidate_public_id, object_id, checksum_sha256, byte_count,
+      activation_revision
+    ) VALUES (
+      'kb-cleanup', 'shared.md', 'shared.md', 'index', 'source-cleanup',
+      'revision-cleanup-old', 'candidate-cleanup-shared-old',
+      'object-cleanup-shared-page', ${"9".repeat(64)}, 2, 2
+    )
   `;
 }
 
@@ -402,6 +690,15 @@ async function seed(sql: postgres.Sql): Promise<void> {
       )
     `;
   }
+  await sql`
+    INSERT INTO focowiki.object_owners (
+      public_id, knowledge_base_id, object_id, owner_kind,
+      source_revision_public_id
+    ) VALUES (
+      'owner-cleanup-old-source', 'kb-cleanup', 'object-cleanup-old',
+      'source_revision', 'revision-cleanup-old'
+    )
+  `;
   await sql`
     INSERT INTO focowiki.source_file_active_revisions (
       knowledge_base_id, source_file_public_id,
