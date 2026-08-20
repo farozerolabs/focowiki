@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  GRAPH_RELATIONSHIP_MAX_ITEMS,
   GRAPH_RELATIONSHIP_PROMPT_CONTRACT_VERSION,
   MODEL_GRAPH_ANALYSIS_PROMPT_CONTRACT_VERSION,
   requestGraphRelationshipConfirmations,
@@ -47,7 +48,8 @@ import {
 } from "./production-document-model-evaluation-inputs.js";
 import { findOrCopyDocumentModelAnalysis } from
   "./production-document-model-reuse.js";
-import { createModelObservationCollector } from "../../semantic/provider-request-failure.js";
+import { createModelObservationCollector } from
+  "../../semantic/provider-request-failure.js";
 type EvaluationRequest = {
   knowledgeBaseId: string;
   sourceRevisionPublicId: string;
@@ -60,8 +62,6 @@ type EvaluationRequest = {
   edges: readonly DocumentProposedGraphEdge[];
   signal: AbortSignal;
 };
-const RELATIONSHIP_MODEL_BATCH_SIZE = 64;
-
 export function createProductionDocumentModelEvaluation(input: {
   repository: DocumentModelEvaluationRepository;
   permits?: ReturnType<typeof createDocumentResourcePermits>;
@@ -233,7 +233,8 @@ export function createProductionDocumentModelEvaluation(input: {
       const promptContractSha256 = documentModelContractDigest(
         GRAPH_RELATIONSHIP_PROMPT_CONTRACT_VERSION
       );
-      const keyed = relationshipKeys(request, promptContractSha256);
+      const keyed = relationshipKeys(request, promptContractSha256)
+        .slice(0, GRAPH_RELATIONSHIP_MAX_ITEMS);
       const ownerIdentity = createHash("sha256")
         .update(keyed.map((item) => item.fingerprint.publicId).sort().join("\u001f"))
         .digest("hex");
@@ -306,70 +307,50 @@ export function createProductionDocumentModelEvaluation(input: {
         const evaluate = async () => {
           const raced = await readDurable();
           if (raced) return raced;
-          const durableFacts: DocumentRelationshipEvaluationFact[] = [];
-          const evaluatedWarnings: string[] = [];
-          for (let offset = 0; offset < missing.length;
-            offset += RELATIONSHIP_MODEL_BATCH_SIZE) {
-            const batch = missing.slice(offset, offset + RELATIONSHIP_MODEL_BATCH_SIZE);
-            const batchTargetIds = new Set(
-              batch.map((item) => item.edge.toFileId)
-            );
-            const result = await runDocumentGeneration(
-              input,
-              "candidate_delta",
-              () => requestGraphRelationshipConfirmations({
-                client: request.assistance.client,
-                modelName: request.assistance.modelName,
-                contextWindowTokens: request.assistance.contextWindowTokens,
-                receiveTimeouts: request.assistance.receiveTimeouts,
-                transientRetryDelayMs: request.assistance.transientRetryDelayMs,
-                currentFile: modelSource(request.source),
-                body: relationshipDeltaEvidenceBody(
-                  batch.map((item) => item.edge),
-                  request.source.profile.summary
-                ),
-                candidates: edgeInputs(batch.map((item) => item.edge), tokens),
-                candidateFiles: candidateFiles(request.candidates.filter((candidate) =>
-                  batchTargetIds.has(candidate.sourceFilePublicId)), tokens),
-                onProviderRequest: () => {
-                  providerRequestCount += 1;
-                },
-                onProviderObservation: createModelObservationCollector(providerObservations,
-                  request.assistance.onProviderFailure,
-                  request.assistance.modelName
-                )
-              }), {
-                signal: request.signal,
-                ownerKey: `${request.modelConfigurationPublicId}:${request.modelConfigurationRevision}`,
-                onMetric(metric) {
-                  waitTimeMs += metric.waitTimeMs;
-                  serviceTimeMs += metric.serviceTimeMs;
-                }
+          const targetIds = new Set(missing.map((item) => item.edge.toFileId));
+          const result = await runDocumentGeneration(input, "candidate_delta", () =>
+            requestGraphRelationshipConfirmations({
+              client: request.assistance.client,
+              modelName: request.assistance.modelName,
+              contextWindowTokens: request.assistance.contextWindowTokens,
+              receiveTimeouts: request.assistance.receiveTimeouts,
+              transientRetryDelayMs: request.assistance.transientRetryDelayMs,
+              currentFile: modelSource(request.source),
+              body: relationshipDeltaEvidenceBody(
+                missing.map((item) => item.edge), request.source.profile.summary),
+              candidates: edgeInputs(missing.map((item) => item.edge), tokens),
+              candidateFiles: candidateFiles(request.candidates.filter(
+                (candidate) => targetIds.has(candidate.sourceFilePublicId)), tokens),
+              onProviderRequest: () => { providerRequestCount += 1; },
+              onProviderObservation: createModelObservationCollector(providerObservations,
+                request.assistance.onProviderFailure, request.assistance.modelName)
+            }), {
+              signal: request.signal,
+              ownerKey: `${request.modelConfigurationPublicId}:${request.modelConfigurationRevision}`,
+              onMetric(metric) {
+                waitTimeMs += metric.waitTimeMs;
+                serviceTimeMs += metric.serviceTimeMs;
               }
-            );
-            const batchWarnings = validateModelEvaluationWarnings(result.warnings);
-            evaluatedWarnings.push(...batchWarnings);
-            if (batchWarnings.length > 0 && result.confirmations.length === 0) {
-              continue;
-            }
-            await persistRelationshipEvaluations({
-              repository: input.repository,
-              request: { ...request, edges: batch.map((item) => item.edge) },
-              promptContractSha256,
-              confirmations: resolveCandidateConfirmations(
-                result.confirmations, tokens)
             });
-            const batchFacts = await input.repository.findRelationships({
-              knowledgeBaseId: request.knowledgeBaseId,
-              publicIds: batch.map((item) => item.fingerprint.publicId)
+          const evaluatedWarnings = validateModelEvaluationWarnings(result.warnings);
+          if (evaluatedWarnings.length > 0 && result.confirmations.length === 0) {
+            return { facts: [], warnings: evaluatedWarnings };
+          }
+          await persistRelationshipEvaluations({
+            repository: input.repository,
+            request: { ...request, edges: missing.map((item) => item.edge) },
+            promptContractSha256,
+            confirmations: resolveCandidateConfirmations(result.confirmations, tokens)
+          });
+          const durableFacts = await input.repository.findRelationships({
+            knowledgeBaseId: request.knowledgeBaseId,
+            publicIds
+          });
+          for (const fact of durableFacts) {
+            await input.acceleration?.markEvaluationDurable({
+              fingerprint: fact.publicId,
+              ttlSeconds: 3_600
             });
-            durableFacts.push(...batchFacts);
-            for (const fact of batchFacts) {
-              await input.acceleration?.markEvaluationDurable({
-                fingerprint: fact.publicId,
-                ttlSeconds: 3_600
-              });
-            }
           }
           return { facts: durableFacts, warnings: evaluatedWarnings };
         };
@@ -441,7 +422,9 @@ async function persistRelationshipEvaluations(input: {
   const stored = await input.repository.storeRelationships({
     evaluations: keyed.map(({ edge, candidate, fingerprint }) => {
       const confirmation = confirmationByTarget.get(edge.toFileId);
-      const normalized = confirmation ?? rejectedConfirmation(edge);
+      const normalized = confirmation
+        ? { ...confirmation, weight: edge.weight }
+        : rejectedConfirmation(edge);
       return {
         ...fingerprint,
         knowledgeBaseId: input.request.knowledgeBaseId,
@@ -489,10 +472,7 @@ function relationshipKeys(
     }];
   });
 }
-
-function relationshipReuseKey(
-  targetRevisionPublicId: string,
-  evidenceFingerprintSha256: string
-): string {
+function relationshipReuseKey(targetRevisionPublicId: string,
+  evidenceFingerprintSha256: string): string {
   return `${targetRevisionPublicId}\u001f${evidenceFingerprintSha256}`;
 }

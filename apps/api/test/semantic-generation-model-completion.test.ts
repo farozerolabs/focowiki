@@ -24,6 +24,13 @@ describe("GraphRAG generation-model completion", () => {
       expect(JSON.stringify(request)).not.toContain("json_schema");
       expect(request.model).toBe("test-model");
       expect(request.stream).toBe(true);
+      if (apiMode === "responses") {
+        expect(request.reasoning).toEqual({ effort: "none" });
+        expect(request).not.toHaveProperty("reasoning_effort");
+      } else {
+        expect(request.reasoning_effort).toBe("none");
+        expect(request).not.toHaveProperty("reasoning");
+      }
       expect(assistance.onProviderFailure).not.toHaveBeenCalled();
     }
   );
