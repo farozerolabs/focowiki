@@ -27,6 +27,8 @@ const enabled = Boolean(databaseUrl && runOwner
     await sql.unsafe(await migration("003_document_projection_throughput.sql"));
     await seedFailures(sql);
     await sql.unsafe(await migration("004_projection_output_object_lifecycle.sql"));
+    await seedActiveInvalidOutput(sql);
+    await sql.unsafe(await migration("005_active_projection_output_repair.sql"));
   }, 120_000);
 
   afterAll(async () => {
@@ -63,35 +65,14 @@ const enabled = Boolean(databaseUrl && runOwner
       safe_error_code: null,
       required_sequence: "3"
     }]);
-    await expect(sql<Array<{
-      public_id: string;
-      state: string;
-      required_sequence: number | string;
-      acknowledged_at: Date | null;
-    }>>`
+    await expect(sql`
       SELECT public_id, state, required_sequence, acknowledged_at
       FROM focowiki.projection_scope_contributions
       WHERE public_id IN (
         'invalid-contribution', 'invalid-page-contribution',
         'page-contribution'
       )
-      ORDER BY public_id
-    `).resolves.toEqual([{
-      public_id: "invalid-contribution",
-      state: "waiting",
-      required_sequence: "300",
-      acknowledged_at: null
-    }, {
-      public_id: "invalid-page-contribution",
-      state: "waiting",
-      required_sequence: "2",
-      acknowledged_at: null
-    }, {
-      public_id: "page-contribution",
-      state: "waiting",
-      required_sequence: "3",
-      acknowledged_at: null
-    }]);
+    `).resolves.toEqual([]);
     await expect(sql`
       SELECT * FROM focowiki.projection_scope_receipts
       WHERE contribution_public_id IN (
@@ -135,9 +116,100 @@ const enabled = Boolean(databaseUrl && runOwner
     await expect(sql<Array<{ generation: string }>>`
       SELECT generation FROM focowiki.runtime_generation WHERE singleton = true
     `).resolves.toEqual([{
-      generation: "storage-vnext-v12-projection-object-lifecycle"
+      generation: "storage-vnext-v13-active-projection-output-repair"
     }]);
   });
+
+  it("requeues active and conflicted jobs that reference invalid exact outputs",
+    async () => {
+      await expect(sql<Array<{
+        public_id: string;
+        state: string;
+        safe_error_code: string | null;
+        terminal_at: Date | null;
+      }>>`
+        SELECT public_id, state, safe_error_code, terminal_at
+        FROM focowiki.document_processing_jobs
+        WHERE public_id IN ('active-output-job', 'conflicted-output-job')
+        ORDER BY public_id
+      `).resolves.toEqual([{
+        public_id: "active-output-job",
+        state: "waiting",
+        safe_error_code: null,
+        terminal_at: null
+      }, {
+        public_id: "conflicted-output-job",
+        state: "waiting",
+        safe_error_code: null,
+        terminal_at: null
+      }]);
+      await expect(sql<Array<{
+        public_id: string;
+        state: string;
+        safe_error_code: string | null;
+      }>>`
+        SELECT public_id, state, safe_error_code
+        FROM focowiki.document_artifact_work
+        WHERE public_id IN ('active-output-work', 'conflicted-output-work')
+        ORDER BY public_id
+      `).resolves.toEqual([{
+        public_id: "active-output-work",
+        state: "waiting",
+        safe_error_code: null
+      }, {
+        public_id: "conflicted-output-work",
+        state: "waiting",
+        safe_error_code: null
+      }]);
+      await expect(sql`
+        SELECT public_id, state, required_sequence
+        FROM focowiki.projection_scope_contributions
+        WHERE public_id IN (
+          'active-output-contribution', 'conflicted-output-contribution'
+        )
+      `).resolves.toEqual([]);
+      await expect(sql<Array<{
+        state: string;
+        required_sequence: number | string;
+        completed_sequence: number | string;
+      }>>`
+        SELECT state, required_sequence, completed_sequence
+        FROM focowiki.projection_dirty_scopes
+        WHERE public_id = 'active-invalid-output-scope'
+      `).resolves.toEqual([{
+        state: "completed",
+        required_sequence: "1",
+        completed_sequence: "1"
+      }]);
+      await expect(sql`
+        SELECT * FROM focowiki.projection_scope_outputs
+        WHERE scope_public_id = 'active-invalid-output-scope'
+      `).resolves.toEqual([]);
+      await expect(sql`
+        SELECT * FROM focowiki.projection_scope_receipts
+        WHERE contribution_public_id IN (
+          'active-output-contribution', 'conflicted-output-contribution'
+        )
+      `).resolves.toEqual([]);
+      await expect(sql<Array<{
+        public_id: string;
+        processing_generation: string;
+        completed_work_count: number;
+      }>>`
+        SELECT public_id, processing_generation, completed_work_count
+        FROM focowiki.document_processing_jobs
+        WHERE public_id IN ('active-output-job', 'conflicted-output-job')
+        ORDER BY public_id
+      `).resolves.toEqual([{
+        public_id: "active-output-job",
+        processing_generation: "document-indexing-v13",
+        completed_work_count: 0
+      }, {
+        public_id: "conflicted-output-job",
+        processing_generation: "document-indexing-v13",
+        completed_work_count: 0
+      }]);
+    });
 
   it("releases historical terminal outputs without pinning their objects", async () => {
     await expect(sql<Array<{ count: number | string }>>`
@@ -150,7 +222,7 @@ const enabled = Boolean(databaseUrl && runOwner
     `).resolves.toEqual([{ state: "queued" }]);
   });
 
-  it("preserves valid exact outputs consumed by repaired jobs", async () => {
+  it("releases exact outputs owned only by reset jobs", async () => {
     await expect(sql<Array<{
       output_count: number | string;
       reference_count: number | string;
@@ -164,10 +236,14 @@ const enabled = Boolean(databaseUrl && runOwner
         (SELECT count(*) FROM focowiki.projection_scope_receipts
          WHERE contribution_public_id = 'valid-contribution') AS receipt_count
     `).resolves.toEqual([{
-      output_count: "1",
-      reference_count: "1",
-      receipt_count: "1"
+      output_count: "0",
+      reference_count: "0",
+      receipt_count: "0"
     }]);
+    await expect(sql<Array<{ state: string }>>`
+      SELECT state FROM focowiki.cleanup_actions
+      WHERE resource_public_id = 'valid-output-object'
+    `).resolves.toEqual([{ state: "queued" }]);
   });
 });
 
@@ -350,6 +426,116 @@ async function seedFailures(sql: postgres.Sql): Promise<void> {
       ), (
         'terminal-contribution', 'terminal-scope', 1, ${"7".repeat(64)}
       )
+    `;
+  });
+}
+
+async function seedActiveInvalidOutput(sql: postgres.Sql): Promise<void> {
+  await sql.begin(async (transaction) => {
+    await transaction`SET LOCAL session_replication_role = replica`;
+    await transaction`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state,
+        target_kind, target_public_id, completed_at
+      ) VALUES
+        ('active-output-operation', 'repair-kb', 'source_upload', 'processing',
+         'source_file', 'active-output-source', NULL),
+        ('conflicted-output-operation', 'repair-kb', 'source_upload', 'failed',
+         'source_file', 'conflicted-output-source', now())
+    `;
+    await transaction`
+      INSERT INTO focowiki.document_processing_jobs (
+        public_id, knowledge_base_id, operation_public_id,
+        source_file_public_id, source_revision_public_id,
+        runtime_settings_revision_public_id,
+        generation_model_configuration_public_id,
+        generation_model_configuration_revision,
+        embedding_configuration_revision_public_id,
+        semantic_generation_public_id, semantic_contract_version,
+        state, maximum_attempts, blocking_work_kind,
+        safe_error_code, retryable,
+        accepted_at, started_at, terminal_at, created_at, updated_at
+      ) VALUES
+        ('active-output-job', 'repair-kb', 'active-output-operation',
+         'active-output-source', 'active-output-revision', 'settings',
+         'model', 1, 'embedding', 'semantic', 'contract', 'processing', 3,
+         'knowledge_projection', NULL, false,
+         now(), now(), NULL, now(), now()),
+        ('conflicted-output-job', 'repair-kb', 'conflicted-output-operation',
+         'conflicted-output-source', 'conflicted-output-revision', 'settings',
+         'model', 1, 'embedding', 'semantic', 'contract', 'error', 3,
+         'knowledge_projection', 'projection_scope_output_conflict', true,
+         now(), now(), now(), now(), now())
+    `;
+    await transaction`
+      INSERT INTO focowiki.document_artifact_work (
+        public_id, knowledge_base_id, document_job_public_id,
+        source_file_public_id, source_revision_public_id,
+        work_kind, resource_lane, input_fingerprint_sha256,
+        state, attempt_count, maximum_attempts, next_eligible_at,
+        safe_error_code, retryable, ended_at
+      ) VALUES
+        ('active-output-work', 'repair-kb', 'active-output-job',
+         'active-output-source', 'active-output-revision',
+         'knowledge_projection', 'projection', ${"a".repeat(64)},
+         'waiting_on_projection', 1, 3, now(), NULL, false, now()),
+        ('conflicted-output-work', 'repair-kb', 'conflicted-output-job',
+         'conflicted-output-source', 'conflicted-output-revision',
+         'knowledge_projection', 'projection', ${"b".repeat(64)},
+         'error', 3, 3, now(), 'projection_scope_output_conflict', true, now())
+    `;
+    await transaction`
+      INSERT INTO focowiki.projection_dirty_scopes (
+        public_id, knowledge_base_id, scope_kind, scope_key,
+        required_sequence, completed_sequence, state, next_eligible_at,
+        coalesce_until
+      ) VALUES (
+        'active-invalid-output-scope', 'repair-kb', '_graph', 'active-invalid',
+        1, 1, 'completed', now(), now()
+      )
+    `;
+    await transaction`
+      INSERT INTO focowiki.projection_scope_contributions (
+        public_id, knowledge_base_id, source_file_public_id,
+        source_revision_public_id, document_job_public_id,
+        scope_public_id, required_sequence, state, acknowledged_at
+      ) VALUES
+        ('active-output-contribution', 'repair-kb', 'active-output-source',
+         'active-output-revision', 'active-output-job',
+         'active-invalid-output-scope', 1, 'acknowledged', now()),
+        ('conflicted-output-contribution', 'repair-kb',
+         'conflicted-output-source', 'conflicted-output-revision',
+         'conflicted-output-job', 'active-invalid-output-scope', 1,
+         'acknowledged', now())
+    `;
+    await transaction`
+      INSERT INTO focowiki.projection_scope_outputs (
+        scope_public_id, rendered_sequence, knowledge_base_id,
+        output_fingerprint_sha256, pages, removed_normalized_paths,
+        navigation_mutations, activation_owner_versions
+      ) VALUES (
+        'active-invalid-output-scope', 1, 'repair-kb', ${"c".repeat(64)},
+        ${transaction.json([{
+          logicalPath: "_graph/index.md",
+          normalizedPath: "_graph/index.md",
+          entryKind: "graph-index",
+          sourceFilePublicId: null,
+          sourceRevisionPublicId: null,
+          objectId: "missing-active-output-object",
+          checksumSha256: "d".repeat(64),
+          byteCount: 32
+        }] as never)}, ARRAY[]::text[], '[]'::jsonb, '[]'::jsonb
+      )
+    `;
+    await transaction`
+      INSERT INTO focowiki.projection_scope_receipts (
+        contribution_public_id, scope_public_id, rendered_sequence,
+        output_fingerprint_sha256
+      ) VALUES
+        ('active-output-contribution', 'active-invalid-output-scope', 1,
+         ${"c".repeat(64)}),
+        ('conflicted-output-contribution', 'active-invalid-output-scope', 1,
+         ${"c".repeat(64)})
     `;
   });
 }

@@ -22,7 +22,7 @@ describe("Focowiki-owned semantic contracts", () => {
   it("uses only the destructive sparse-skeleton extraction baseline", () => {
     expect(SEMANTIC_EXTRACTION_CONTRACT_VERSION)
       .toBe("semantic-skeleton-v2");
-    expect(SEMANTIC_PROMPT_CONTRACT_VERSION).toBe("general-purpose-graph-v2");
+    expect(SEMANTIC_PROMPT_CONTRACT_VERSION).toBe("general-purpose-graph-v3");
     expect(SEMANTIC_EXTRACTION_CONTRACT_VERSION).not.toContain("v1");
   });
 

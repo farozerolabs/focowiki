@@ -141,7 +141,7 @@ describeOwnedDatabase("storage vNext fixed-DAG clean bootstrap", () => {
     await expect(sql.unsafe<Array<{ generation: string }>>(
       "SELECT generation FROM focowiki.runtime_generation WHERE singleton = true"
     )).resolves.toEqual([{
-      generation: "storage-vnext-v12-projection-object-lifecycle"
+      generation: "storage-vnext-v13-active-projection-output-repair"
     }]);
   });
 });

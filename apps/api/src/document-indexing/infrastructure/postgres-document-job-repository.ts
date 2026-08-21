@@ -10,6 +10,8 @@ import {
   repositoryContractError
 } from "./document-repository-validation.js";
 
+export const DOCUMENT_PROCESSING_GENERATION = "document-indexing-v13";
+
 export type CreateDocumentJobInput = {
   publicId: string;
   knowledgeBaseId: string;
@@ -41,7 +43,8 @@ export function createPostgresDocumentJobRepository(sql: DatabaseClient) {
             generation_model_configuration_revision,
             embedding_configuration_revision_public_id,
             semantic_generation_public_id, semantic_contract_version,
-            state, maximum_attempts, accepted_at, created_at, updated_at
+            processing_generation, state, maximum_attempts,
+            accepted_at, created_at, updated_at
           ) VALUES (
             ${input.publicId}, ${input.knowledgeBaseId}, ${input.operationPublicId},
             ${input.sourceFilePublicId}, ${input.sourceRevisionPublicId},
@@ -50,7 +53,8 @@ export function createPostgresDocumentJobRepository(sql: DatabaseClient) {
             ${input.generationModelConfigurationRevision},
             ${input.embeddingConfigurationRevisionPublicId},
             ${input.semanticGenerationPublicId}, ${input.semanticContractVersion},
-            'waiting', ${input.maximumAttempts}, ${input.acceptedAt},
+            ${DOCUMENT_PROCESSING_GENERATION}, 'waiting',
+            ${input.maximumAttempts}, ${input.acceptedAt},
             ${input.acceptedAt}, ${input.acceptedAt}
           )
           ON CONFLICT (knowledge_base_id, source_revision_public_id) DO NOTHING

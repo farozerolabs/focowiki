@@ -104,6 +104,18 @@ class NormalizeTest(unittest.TestCase):
         for _ in range(250):
             self.assertEqual(normalize_extraction(request(), parser, AdapterLimits()), expected)
 
+    def test_rejects_record_headers_inside_normalized_fields(self):
+        def corrupted(_output, source_id):
+            return ([{
+                "title": "Atlas",
+                "type": "PROJECT",
+                "description": 'Maintains a glossary)("entity"',
+                "source_id": source_id,
+            }], [])
+
+        with self.assertRaisesRegex(AdapterContractError, "record framing"):
+            normalize_extraction(request(), corrupted, AdapterLimits())
+
 
 if __name__ == "__main__":
     unittest.main()

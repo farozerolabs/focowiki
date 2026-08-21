@@ -25,7 +25,7 @@ describe("semantic GraphRAG extraction gateway", () => {
         const source = request.source as { canonicalInputHash: string; chunks: Array<{ id: string }> };
         return ok(request, {
           canonicalInputHash: source.canonicalInputHash,
-          promptRevision: "general-purpose-graph-v2",
+          promptRevision: "general-purpose-graph-v3",
           prompts: source.chunks.map((chunk) => ({
             chunkId: chunk.id,
             prompt: `Extract ${chunk.id}`
@@ -127,7 +127,7 @@ describe("semantic GraphRAG extraction gateway", () => {
     const gateway = createGraphRagExtractionGateway({
       pool: fakePool(async (request) => ok(request, {
         canonicalInputHash: (request.source as { canonicalInputHash: string }).canonicalInputHash,
-        promptRevision: "general-purpose-graph-v2",
+        promptRevision: "general-purpose-graph-v3",
         prompts: [{ chunkId: "wrong", prompt: "unsafe" }]
       })),
       selectSkeleton: selectEveryChunk,
@@ -153,7 +153,7 @@ describe("semantic GraphRAG extraction gateway", () => {
         ? ok(request, {
             canonicalInputHash:
               (request.source as { canonicalInputHash: string }).canonicalInputHash,
-            promptRevision: "general-purpose-graph-v2",
+            promptRevision: "general-purpose-graph-v3",
             prompts: (request.source as { chunks: Array<{ id: string }> }).chunks
               .map((chunk) => ({ chunkId: chunk.id, prompt: `Extract ${chunk.id}` }))
           })
@@ -193,7 +193,7 @@ describe("semantic GraphRAG extraction gateway", () => {
         ? ok(request, {
             canonicalInputHash:
               (request.source as { canonicalInputHash: string }).canonicalInputHash,
-            promptRevision: "general-purpose-graph-v2",
+            promptRevision: "general-purpose-graph-v3",
             prompts: (request.source as { chunks: Array<{ id: string }> }).chunks
               .map((chunk) => ({ chunkId: chunk.id, prompt: `Extract ${chunk.id}` }))
           })
@@ -235,7 +235,7 @@ describe("semantic GraphRAG extraction gateway", () => {
         ? ok(request, {
             canonicalInputHash:
               (request.source as { canonicalInputHash: string }).canonicalInputHash,
-            promptRevision: "general-purpose-graph-v2",
+            promptRevision: "general-purpose-graph-v3",
             prompts: (request.source as { chunks: Array<{ id: string }> }).chunks
               .map((chunk) => ({ chunkId: chunk.id, prompt: `Extract ${chunk.id}` }))
           })
@@ -294,7 +294,7 @@ describe("semantic GraphRAG extraction gateway", () => {
         ? ok(request, {
             canonicalInputHash:
               (request.source as { canonicalInputHash: string }).canonicalInputHash,
-            promptRevision: "general-purpose-graph-v2",
+            promptRevision: "general-purpose-graph-v3",
             prompts: (request.source as { chunks: Array<{ id: string }> }).chunks
               .map((chunk) => ({ chunkId: chunk.id, prompt: `Extract ${chunk.id}` }))
           })
@@ -379,7 +379,7 @@ describe("semantic GraphRAG extraction gateway", () => {
           preparedChunkCount = source.chunks.length;
           return ok(request, {
             canonicalInputHash: source.canonicalInputHash,
-            promptRevision: "general-purpose-graph-v2",
+            promptRevision: "general-purpose-graph-v3",
             prompts: source.chunks.map((chunk) => ({
               chunkId: chunk.id,
               prompt: `Extract ${chunk.id}`
@@ -431,7 +431,7 @@ describe("semantic GraphRAG extraction gateway", () => {
         ? ok(request, {
             canonicalInputHash:
               (request.source as { canonicalInputHash: string }).canonicalInputHash,
-            promptRevision: "general-purpose-graph-v2",
+            promptRevision: "general-purpose-graph-v3",
             prompts: (request.source as { chunks: Array<{ id: string }> }).chunks
               .map((chunk) => ({ chunkId: chunk.id, prompt: `Extract ${chunk.id}` }))
           })
