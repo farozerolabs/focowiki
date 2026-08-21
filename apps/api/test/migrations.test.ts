@@ -62,11 +62,12 @@ describe("storage vNext runtime schema guard", () => {
       currentGeneration: "storage-vnext-v9-document-indexing-hybrid",
       pendingFiles: [
         "002_document_queue_throughput.sql",
-        "003_document_projection_throughput.sql"
+        "003_document_projection_throughput.sql",
+        "004_projection_output_object_lifecycle.sql"
       ]
     });
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(2);
+    expect(database.unsafeCalls).toBe(3);
     expect(database.beginCalls).toBe(1);
     await expect(preflightMigrations(database.sql)).resolves.toEqual({
       currentGeneration: RUNTIME_SCHEMA_GENERATION,

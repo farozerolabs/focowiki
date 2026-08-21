@@ -31,6 +31,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v10-document-indexing-throughput",
     targetGeneration: "storage-vnext-v11-projection-throughput",
     safety: "compatible"
+  },
+  {
+    fileName: "004_projection_output_object_lifecycle.sql",
+    sourceGeneration: "storage-vnext-v11-projection-throughput",
+    targetGeneration: "storage-vnext-v12-projection-object-lifecycle",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
