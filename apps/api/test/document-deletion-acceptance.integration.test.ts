@@ -832,6 +832,18 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       )
     `;
     await sql`
+      INSERT INTO focowiki.upload_operation_summaries (
+        operation_public_id, knowledge_base_id, session_public_id,
+        expected_entry_count, expected_byte_count, received_entry_count,
+        received_byte_count, skipped_existing_count, expires_at, created_at
+      ) VALUES (
+        ${uploadOperationPublicId}, 'knowledge-base-delete',
+        ${uploadSessionPublicId}, 1, 10, 1, 10, 0,
+        ${new Date(Date.parse(requestedAt) + 86_400_000).toISOString()},
+        ${requestedAt}
+      )
+    `;
+    await sql`
       INSERT INTO focowiki.document_processing_jobs (
         public_id, knowledge_base_id, operation_public_id,
         source_file_public_id, source_revision_public_id,

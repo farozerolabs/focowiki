@@ -12,6 +12,8 @@ import { directoryLeafPath } from
   "../application/document-directory-navigation-renderer.js";
 import { buildDocumentIndexCatalogPage } from
   "../application/document-page-term-projection.js";
+import { buildDocumentGraphCatalogPage } from
+  "../application/document-graph-projection.js";
 import type { OrderedDirectoryLeafLimits } from
   "../domain/document-directory-leaves.js";
 import { documentDirectoryEntryId } from
@@ -156,12 +158,14 @@ export async function materializeRootExtensionNavigation(input: {
       scope: input.scope,
       directoryPath: "_graph",
       projected: { pages: [], removedLogicalPaths: [] },
-      desiredEntries: input.projected.graphEdgeCount > 0 ? [
-        rootDirectoryEntry("Relationships by directory",
-          "_graph/by-directory/index.md"),
-        rootDirectoryEntry("Relationships by file", "_graph/by-file/index.md"),
+      desiredEntries: [
+        ...(input.projected.graphEdgeCount > 0 ? [
+          rootDirectoryEntry("Relationships by directory",
+            "_graph/by-directory/index.md"),
+          rootDirectoryEntry("Relationships by file", "_graph/by-file/index.md")
+        ] : []),
         rootFileEntry("Relationship catalog", "_graph/catalog.json")
-      ] : [],
+      ],
       changedAt: input.changedAt,
       leafPrefix: "extension-leaf",
       rootEntryKind: "graph_index",
@@ -186,9 +190,11 @@ export async function materializeRootExtensionNavigation(input: {
     })
   ]);
   const catalogPages = input.projected.pages.filter((page) =>
-    page.logicalPath === "_index/catalog.json");
+    page.logicalPath === "_index/catalog.json"
+      || page.logicalPath === "_graph/catalog.json");
   const rootPages = input.projected.pages.filter((page) =>
-    page.logicalPath !== "_index/catalog.json");
+    page.logicalPath !== "_index/catalog.json"
+      && page.logicalPath !== "_graph/catalog.json");
   return {
     pages: [...catalogPages, ...graph.pages, ...index.pages, ...rootPages],
     removedLogicalPaths: [...new Set([
@@ -406,6 +412,7 @@ export async function projectRoot(input: {
   return {
     pages: [
       buildDocumentIndexCatalogPage(),
+      buildDocumentGraphCatalogPage(state.graphEdgeCount),
       ...(["index.md", "log.md"] as const)
         .map((path) => renderDocumentRootPage({
           path,

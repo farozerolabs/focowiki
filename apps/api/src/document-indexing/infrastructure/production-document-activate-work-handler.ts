@@ -38,8 +38,6 @@ import {
   "./document-knowledge-projection-support.js";
 import { applyPostgresDocumentFixedActivation } from
   "./postgres-document-fixed-activation.js";
-import { convergePostgresUploadDocumentOperation } from
-  "./postgres-upload-operation-aggregation.js";
 import { enqueuePostgresDocumentWebhookEvent } from
   "./postgres-document-webhook-event.js";
 import type { DatabaseClient } from "../../db/client.js";
@@ -377,12 +375,7 @@ async function completeOperation(input: {
     expiresAt
   });
   const operationId = await operationPublicId(input.transaction, input.claimed);
-  const aggregate = await convergePostgresUploadDocumentOperation(input.transaction, {
-    knowledgeBaseId: input.claimed.knowledgeBaseId,
-    operationPublicId: operationId,
-    completedAt: input.activatedAt
-  });
-  if (aggregate === "not_upload"
+  if (row.operation_kind !== "upload"
     && row.operation_kind !== "maintenance"
     && row.operation_kind !== "source_directory_move") {
     await input.transaction`

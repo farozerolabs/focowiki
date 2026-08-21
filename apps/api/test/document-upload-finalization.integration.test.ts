@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
 import { createPostgresDocumentArtifactWorkRepository } from
   "../src/document-indexing/infrastructure/postgres-document-artifact-work-repository.js";
+import { createDocumentCleanupReceiptHandler } from
+  "../src/document-indexing/infrastructure/production-document-fixed-runtime-support.js";
 import { createStorageVnextUploadCoordinator } from
   "../src/storage-vnext/upload/upload-coordinator.js";
 import { createPostgresStorageVnextUploadRepository } from
@@ -208,11 +210,22 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
         failedCount: 0
       }
     });
-    await expect(sql<Array<{ count: string }>>`
-      SELECT count(*)::text AS count
-      FROM focowiki.operation_work_items
+    await expect(sql<Array<{
+      session_public_id: string;
+      received_entry_count: number;
+    }>>`
+      SELECT session_public_id, received_entry_count
+      FROM focowiki.upload_operation_summaries
       WHERE operation_public_id = 'operation-document-upload'
-    `).resolves.toEqual([{ count: "0" }]);
+    `).resolves.toEqual([{
+      session_public_id: "session-document-upload",
+      received_entry_count: 2
+    }]);
+
+    await sql`
+      DELETE FROM focowiki.upload_sessions
+      WHERE public_id = 'session-document-upload'
+    `;
 
     await sql`
       UPDATE focowiki.document_processing_jobs
@@ -220,6 +233,30 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
           started_at = accepted_at, updated_at = '2026-08-14T05:02:00.000Z'
       WHERE public_id = ${jobs[0]!.public_id}
     `;
+    const cleanup = createDocumentCleanupReceiptHandler({
+      sql: database,
+      now: () => "2026-08-14T05:02:00.500Z"
+    });
+    await expect(cleanup({
+      claimed: {
+        publicId: `cleanup-${jobs[0]!.public_id}`,
+        knowledgeBaseId: "knowledge-base-document-upload",
+        documentJobPublicId: jobs[0]!.public_id,
+        sourceFilePublicId: "source-file-one",
+        sourceRevisionPublicId: "source-revision-source-file-one-entry-one",
+        kind: "cleanup",
+        resourceLane: "cleanup",
+        inputFingerprintSha256: "c".repeat(64),
+        attemptCount: 1,
+        maximumAttempts: 3,
+        leaseOwner: "worker-cleanup",
+        leaseExpiresAt: "2026-08-14T05:03:00.000Z",
+        startedAt: "2026-08-14T05:02:00.000Z"
+      },
+      signal: new AbortController().signal
+    })).resolves.toMatchObject({
+      value: { schemaVersion: "document-cleanup-receipt-v1" }
+    });
     await expect(operationRead.get({
       knowledgeBaseId: "knowledge-base-document-upload",
       operationId: "operation-document-upload"
@@ -319,6 +356,10 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     });
     await expect(sql<Array<{ count: string }>>`
       SELECT count(*)::text AS count FROM focowiki.upload_sessions
+      WHERE operation_public_id = 'operation-document-upload'
+    `).resolves.toEqual([{ count: "0" }]);
+    await expect(sql<Array<{ count: string }>>`
+      SELECT count(*)::text AS count FROM focowiki.upload_operation_summaries
       WHERE operation_public_id = 'operation-document-upload'
     `).resolves.toEqual([{ count: "0" }]);
   });
