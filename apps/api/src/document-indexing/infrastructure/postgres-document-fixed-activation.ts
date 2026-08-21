@@ -323,6 +323,7 @@ async function activatePages(
           byte_count = excluded.byte_count,
           activation_revision = excluded.activation_revision,
           updated_at = excluded.updated_at
+      WHERE generated_page_heads.activation_revision <= excluded.activation_revision
     `;
   }
   if (manifest.removedPageNormalizedPaths.length > 0) {
@@ -330,6 +331,7 @@ async function activatePages(
       DELETE FROM focowiki.generated_page_heads
       WHERE knowledge_base_id = ${manifest.knowledgeBaseId}
         AND normalized_path = ANY(${manifest.removedPageNormalizedPaths}::text[])
+        AND activation_revision <= ${manifest.readinessSequence}
     `;
   }
 }

@@ -6,6 +6,8 @@ import { applyPostgresDocumentDirectoryNavigation } from
   "../src/document-indexing/infrastructure/postgres-document-directory-navigation.js";
 import { lockAndAdvanceScopedOwners } from
   "../src/document-indexing/infrastructure/postgres-scoped-activation-advance.js";
+import { createDirectoryLeafId } from
+  "../src/document-indexing/infrastructure/production-document-processor-support.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
 
@@ -85,6 +87,124 @@ const enabled = Boolean(databaseUrl && runOwner
       ORDER BY entry.name
     `;
     expect(rows).toEqual([{ name: "updated", activation_revision: "2" }]);
+  });
+
+  it("replaces a concurrently rendered directory entry without an identity conflict", async () => {
+    const directoryPath = "_graph/by-directory/concurrent";
+    const leafId = () => createDirectoryLeafId({
+      prefix: "extension-leaf",
+      knowledgeBaseId: "knowledge-base-set",
+      directoryPath,
+      occupiedLeafIds: new Set(),
+      sequence: 1
+    });
+    const mutation = (name: string) => ({
+      directoryPath,
+      touchedLeaves: [{
+        ...leaf(leafId(), name),
+        entries: [{
+          id: "entry-shared-directory",
+          sortKey: name,
+          name,
+          targetPath: `pages/${name}.md`,
+          kind: "directory" as const
+        }]
+      }],
+      removedLeafIds: []
+    });
+
+    await applyPostgresDocumentDirectoryNavigation({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "knowledge-base-set",
+      activationRevision: 12,
+      activatedAt: "2026-08-17T00:01:12.000Z",
+      mutations: [mutation("first")]
+    });
+    await expect(applyPostgresDocumentDirectoryNavigation({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "knowledge-base-set",
+      activationRevision: 13,
+      activatedAt: "2026-08-17T00:01:13.000Z",
+      mutations: [mutation("second")]
+    })).resolves.toBeUndefined();
+
+    const rows = await sql<Array<{
+      leaf_public_id: string;
+      name: string;
+    }>>`
+      SELECT leaf_public_id, name
+      FROM focowiki.generated_directory_leaf_entries
+      WHERE knowledge_base_id = 'knowledge-base-set'
+        AND directory_path = ${directoryPath}
+    `;
+    expect(rows).toEqual([{
+      leaf_public_id: leafId(),
+      name: "second"
+    }]);
+  });
+
+  it("does not let an older directory projection replace a newer revision", async () => {
+    const directoryPath = "_graph/by-file/out-of-order";
+    const leafId = createDirectoryLeafId({
+      prefix: "extension-leaf",
+      knowledgeBaseId: "knowledge-base-set",
+      directoryPath,
+      occupiedLeafIds: new Set(),
+      sequence: 1
+    });
+    const mutation = (names: readonly string[]) => ({
+      directoryPath,
+      touchedLeaves: [{
+        id: leafId,
+        previousLeafId: null,
+        nextLeafId: null,
+        entries: names.map((name) => ({
+          id: `entry-${name}`,
+          sortKey: name,
+          name,
+          targetPath: `pages/${name}/index.md`,
+          kind: "directory" as const
+        })),
+        revision: names.length,
+        changedAt: "2026-08-17T00:02:00.000Z"
+      }],
+      removedLeafIds: []
+    });
+
+    await applyPostgresDocumentDirectoryNavigation({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "knowledge-base-set",
+      activationRevision: 13,
+      activatedAt: "2026-08-17T00:02:13.000Z",
+      mutations: [mutation(["constitution", "statutes"])]
+    });
+    await applyPostgresDocumentDirectoryNavigation({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: "knowledge-base-set",
+      activationRevision: 12,
+      activatedAt: "2026-08-17T00:02:12.000Z",
+      mutations: [mutation(["constitution"])]
+    });
+
+    const rows = await sql<Array<{
+      name: string;
+      activation_revision: number | string;
+    }>>`
+      SELECT entry.name, leaf.activation_revision
+      FROM focowiki.generated_directory_leaf_entries entry
+      JOIN focowiki.generated_directory_leaves leaf
+        USING (knowledge_base_id, directory_path, leaf_public_id)
+      WHERE entry.knowledge_base_id = 'knowledge-base-set'
+        AND entry.directory_path = ${directoryPath}
+      ORDER BY entry.name
+    `;
+    expect(rows).toEqual([{
+      name: "constitution",
+      activation_revision: "13"
+    }, {
+      name: "statutes",
+      activation_revision: "13"
+    }]);
   });
 
   it("locks and advances all scoped owners through set-based statements", async () => {
