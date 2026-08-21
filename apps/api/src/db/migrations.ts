@@ -175,6 +175,7 @@ async function assertDocumentIndexingSchemaSignature(
         FROM (VALUES
           ('document_processing_jobs', 'source_revision_public_id'),
           ('document_processing_jobs', 'state'),
+          ('document_processing_jobs', 'processing_generation'),
           ('document_processing_jobs', 'required_work_count'),
           ('document_processing_jobs', 'completed_work_count'),
           ('document_processing_jobs', 'active_work_kinds'),
@@ -236,6 +237,7 @@ async function assertDocumentIndexingSchemaSignature(
           'document_processing_jobs_source_list_idx',
           'document_processing_jobs_knowledge_base_list_idx',
           'document_processing_jobs_operation_list_idx',
+          'document_processing_jobs_generation_reset_idx',
           'document_processing_jobs_retention_idx',
           'document_artifact_work_claim_idx',
           'document_artifact_work_lease_idx',

@@ -232,6 +232,8 @@ def _identifier(value: object, field: str) -> str:
 def _bounded_text(value: object, field: str, limits: AdapterLimits) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limits.maximum_field_characters:
         raise AdapterContractError("INVALID_RECORD", f"{field} is empty or exceeds its bound")
+    if re.search(r"\)\s*\(\s*[\"']?(?:entity|relationship)[\"']?", value, re.IGNORECASE):
+        raise AdapterContractError("INVALID_RECORD", f"{field} contains invalid record framing")
     return value.strip()
 
 

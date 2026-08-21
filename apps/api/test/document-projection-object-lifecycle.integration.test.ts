@@ -234,7 +234,143 @@ const enabled = Boolean(databaseUrl && runOwner
       WHERE resource_public_id = ${objectId}
     `).resolves.toEqual([{ state: "queued" }]);
   });
+
+  it("atomically replaces an exact output whose page object is no longer verified",
+    async () => {
+      const staleObjectId = `generated-sha256:okf-generated-markdown-v1:${
+        "e".repeat(64)}`;
+      const replacementObjectId = `generated-sha256:okf-generated-markdown-v1:${
+        "f".repeat(64)}`;
+      await sql`
+        INSERT INTO focowiki.projection_dirty_scopes (
+          public_id, knowledge_base_id, scope_kind, scope_key,
+          required_sequence, completed_sequence, state, next_eligible_at,
+          coalesce_until
+        ) VALUES (
+          'invalid-exact-scope', 'lifecycle-kb', 'root', 'invalid-exact',
+          1, 0, 'waiting', now(), now()
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.object_registrations (
+          object_id, storage_key, checksum_sha256, byte_count, content_type,
+          object_format, state, write_attempt_public_id, verified_at
+        ) VALUES (
+          ${staleObjectId}, 'generated/stale.md', ${"e".repeat(64)}, 32,
+          'text/markdown; charset=utf-8', 'okf-generated-markdown-v1',
+          'deleted', 'stale-write', now()
+        ), (
+          ${replacementObjectId}, 'generated/replacement.md',
+          ${"f".repeat(64)}, 48, 'text/markdown; charset=utf-8',
+          'okf-generated-markdown-v1', 'verified', 'replacement-write', now()
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_scope_outputs (
+          scope_public_id, rendered_sequence, knowledge_base_id,
+          output_fingerprint_sha256, pages, removed_normalized_paths,
+          navigation_mutations, activation_owner_versions
+        ) VALUES (
+          'invalid-exact-scope', 1, 'lifecycle-kb', ${"1".repeat(64)},
+          ${sql.json([page(staleObjectId, "e".repeat(64), 32)] as never)},
+          ARRAY[]::text[], '[]'::jsonb, '[]'::jsonb
+        )
+      `;
+      const outputs = createPostgresProjectionScopeOutputRepository(
+        sql as unknown as DatabaseClient
+      );
+
+      await expect(outputs.persist({
+        scopePublicId: "invalid-exact-scope",
+        renderedSequence: 1,
+        knowledgeBaseId: "lifecycle-kb",
+        outputFingerprintSha256: "2".repeat(64),
+        pages: [page(replacementObjectId, "f".repeat(64), 48)],
+        removedNormalizedPaths: [],
+        navigationMutations: [],
+        activationOwnerVersions: [],
+        createdAt: "2026-08-21T00:00:00.000Z"
+      })).resolves.toBeUndefined();
+      await expect(outputs.read({
+        scopePublicId: "invalid-exact-scope",
+        renderedSequence: 1
+      })).resolves.toMatchObject({
+        outputFingerprintSha256: "2".repeat(64),
+        pages: [expect.objectContaining({ objectId: replacementObjectId })]
+      });
+    });
+
+  it("rejects a different replacement while the exact output remains usable",
+    async () => {
+      const firstObjectId = `generated-sha256:okf-generated-markdown-v1:${
+        "1".repeat(64)}`;
+      const secondObjectId = `generated-sha256:okf-generated-markdown-v1:${
+        "2".repeat(64)}`;
+      await sql`
+        INSERT INTO focowiki.projection_dirty_scopes (
+          public_id, knowledge_base_id, scope_kind, scope_key,
+          required_sequence, completed_sequence, state, next_eligible_at,
+          coalesce_until
+        ) VALUES (
+          'valid-exact-scope', 'lifecycle-kb', 'root', 'valid-exact',
+          1, 0, 'waiting', now(), now()
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.object_registrations (
+          object_id, storage_key, checksum_sha256, byte_count, content_type,
+          object_format, state, write_attempt_public_id, verified_at
+        ) VALUES (
+          ${firstObjectId}, 'generated/first.md', ${"1".repeat(64)}, 32,
+          'text/markdown; charset=utf-8', 'okf-generated-markdown-v1',
+          'verified', 'first-valid-write', now()
+        ), (
+          ${secondObjectId}, 'generated/second.md', ${"2".repeat(64)}, 48,
+          'text/markdown; charset=utf-8', 'okf-generated-markdown-v1',
+          'verified', 'second-valid-write', now()
+        )
+      `;
+      const outputs = createPostgresProjectionScopeOutputRepository(
+        sql as unknown as DatabaseClient
+      );
+      await outputs.persist({
+        scopePublicId: "valid-exact-scope",
+        renderedSequence: 1,
+        knowledgeBaseId: "lifecycle-kb",
+        outputFingerprintSha256: "3".repeat(64),
+        pages: [page(firstObjectId, "1".repeat(64), 32)],
+        removedNormalizedPaths: [],
+        navigationMutations: [],
+        activationOwnerVersions: [],
+        createdAt: "2026-08-21T00:00:01.000Z"
+      });
+
+      await expect(outputs.persist({
+        scopePublicId: "valid-exact-scope",
+        renderedSequence: 1,
+        knowledgeBaseId: "lifecycle-kb",
+        outputFingerprintSha256: "4".repeat(64),
+        pages: [page(secondObjectId, "2".repeat(64), 48)],
+        removedNormalizedPaths: [],
+        navigationMutations: [],
+        activationOwnerVersions: [],
+        createdAt: "2026-08-21T00:00:02.000Z"
+      })).rejects.toMatchObject({ code: "projection_scope_output_conflict" });
+    });
 });
+
+function page(objectId: string, checksumSha256: string, byteCount: number) {
+  return {
+    logicalPath: "index.md",
+    normalizedPath: "index.md",
+    entryKind: "root-index" as const,
+    sourceFilePublicId: null,
+    sourceRevisionPublicId: null,
+    objectId,
+    checksumSha256,
+    byteCount
+  };
+}
 
 function withDatabase(connectionUrl: string, databaseName: string): string {
   const url = new URL(connectionUrl);

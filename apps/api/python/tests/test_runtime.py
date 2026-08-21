@@ -42,9 +42,32 @@ class RuntimeTest(unittest.TestCase):
         with patch("graphrag_adapter.runtime.assert_graphrag_compatible", return_value={"graphragVersion": "3.1.1"}):
             response = execute_request(request)
         self.assertTrue(response["ok"])
-        self.assertEqual(response["result"]["promptRevision"], "general-purpose-graph-v2")
+        self.assertEqual(response["result"]["promptRevision"], "general-purpose-graph-v3")
         self.assertEqual(response["result"]["prompts"][0]["chunkId"], "chunk-0001")
         self.assertIn("A system uses a dataset.", response["result"]["prompts"][0]["prompt"])
+        self.assertIn(")##(\"entity\"<|>", response["result"]["prompts"][0]["prompt"].replace("\n", ""))
+
+    def test_rejects_tuple_headers_absorbed_into_entity_descriptions(self):
+        chunks = [{"id": "chunk-0001", "text": "Atlas maintains a glossary."}]
+        response = execute_request({
+            "schemaVersion": REQUEST_SCHEMA_VERSION,
+            "requestId": "extract-corrupt-1",
+            "operation": "extract",
+            "knowledgeBaseId": "kb-1",
+            "source": {
+                "sourceFileId": "file-1",
+                "sourceRevisionId": "revision-1",
+                "chunks": chunks,
+                "canonicalInputHash": canonical_manifest_hash(chunks),
+            },
+            "modelOutputs": [
+                '("entity"<|>Atlas<|>PROJECT<|>Maintains a glossary)\n'
+                '("entity"<|>Glossary<|>DOCUMENT<|>Shared terms)\n'
+                '##<|COMPLETE|>'
+            ],
+        })
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "INVALID_RECORD")
 
 
 if __name__ == "__main__":

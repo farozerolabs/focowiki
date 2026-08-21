@@ -1,7 +1,7 @@
 export const SEMANTIC_EXTRACTION_CONTRACT_VERSION = "semantic-skeleton-v2";
 export const SEMANTIC_GRAPH_SCHEMA_VERSION = "focowiki-semantic-graph-v1";
 export const SEMANTIC_VECTOR_ARTIFACT_SCHEMA_VERSION = "focowiki-vector-artifact-v1";
-export const SEMANTIC_PROMPT_CONTRACT_VERSION = "general-purpose-graph-v2";
+export const SEMANTIC_PROMPT_CONTRACT_VERSION = "general-purpose-graph-v3";
 export const SEMANTIC_VECTOR_SCHEMA_VERSION = "focowiki-semantic-vector-v1";
 
 export type SemanticPublicId = string;

@@ -37,6 +37,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v11-projection-throughput",
     targetGeneration: "storage-vnext-v12-projection-object-lifecycle",
     safety: "compatible"
+  },
+  {
+    fileName: "005_active_projection_output_repair.sql",
+    sourceGeneration: "storage-vnext-v12-projection-object-lifecycle",
+    targetGeneration: "storage-vnext-v13-active-projection-output-repair",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
