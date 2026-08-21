@@ -135,7 +135,6 @@ export function documentProjectionScopes(input: {
     ...input.pages.flatMap((page) =>
       page.sourceFilePublicId ? [page.sourceFilePublicId] : [])
   ]);
-  const relationPublicIds = sortedUnique(input.relationPublicIds);
   const directoryPaths = sortedUnique([
     ...(input.directoryPaths ?? []),
     ...input.navigationMutations.map((mutation) => mutation.directoryPath)
@@ -154,20 +153,12 @@ export function documentProjectionScopes(input: {
   ]);
   const graphSourceFilePublicIds = sortedUnique(input.graphSourceFilePublicIds);
   const termBuckets = sortedUnique(input.termBuckets);
-  const graphChanged = relationPublicIds.length > 0
+  const graphChanged = input.relationPublicIds.length > 0
     || graphSourceFilePublicIds.length > 0;
   return [...new Map([
     ...sourceFilePublicIds.map((key) => ({ kind: "source" as const, key })),
-    ...relationPublicIds.map((key) => ({
-      kind: "relation" as const,
-      key
-    })),
     ...directoryPaths.map((key) => ({
       kind: "directory" as const,
-      key
-    })),
-    ...graphSourceFilePublicIds.map((key) => ({
-      kind: "graph" as const,
       key
     })),
     ...pageDirectoryPaths.map((path) => ({

@@ -13,7 +13,7 @@ describe("document scope projector runtime", () => {
         async fail() { return "error" as const; },
         async recoverExpired() { return 0; }
       },
-      async commit() { return "completed" as const; },
+      async commit() { return completedCommit(["job-concurrent"]); },
       async persist() {},
       async render() {
         return {
@@ -37,7 +37,7 @@ describe("document scope projector runtime", () => {
 
   it("renders a fixed scope sequence and acknowledges every covered contributor", async () => {
     const calls: string[] = [];
-    const commit = vi.fn(async () => "completed" as const);
+    const commit = vi.fn(async () => completedCommit(["job-1", "job-2"]));
     const persist = vi.fn(async () => { calls.push("persist"); });
     const finalize = vi.fn(async () => 2);
     const runtime = createDocumentScopeProjectorRuntime({
@@ -107,7 +107,7 @@ describe("document scope projector runtime", () => {
   });
 
   it("records a bounded retry without acknowledging a failed render", async () => {
-    const commit = vi.fn(async () => "completed" as const);
+    const commit = vi.fn(async () => completedCommit());
     const fail = vi.fn(async () => "waiting" as const);
     const onFailure = vi.fn();
     const renderFailure = new Error("temporary storage failure");
@@ -156,9 +156,47 @@ describe("document scope projector runtime", () => {
     }));
   });
 
+  it("drains every contributor in bounded completion pages", async () => {
+    const documentJobPublicIds = Array.from(
+      { length: 300 },
+      (_, index) => `job-page-${index}`
+    );
+    const finalize = vi.fn(async (request: {
+      documentJobPublicIds?: readonly string[];
+    }) => request.documentJobPublicIds?.[0] === "job-page-0"
+      ? finalize.mock.calls.length < 4 ? 64 : 8
+      : 44);
+    const runtime = createDocumentScopeProjectorRuntime({
+      workerId: "scope-worker",
+      leaseDurationMs: 30_000,
+      scopes: {
+        async claim() { return [scopeClaim("scope-paged", 1)]; },
+        async fail() { return "error" as const; },
+        async recoverExpired() { return 0; }
+      },
+      async commit() { return completedCommit(documentJobPublicIds); },
+      async persist() {},
+      async render() {
+        return {
+          outputFingerprintSha256: "f".repeat(64),
+          storageRequests: zeroStorageRequests()
+        };
+      },
+      finalize,
+      now: () => "2026-08-17T10:00:00.000Z",
+      wait: async () => undefined,
+      classifyError: () => ({ code: "UNEXPECTED", retryable: false })
+    });
+
+    await expect(runtime.runOne(new AbortController().signal)).resolves.toBe(true);
+    expect(finalize).toHaveBeenCalledTimes(5);
+    expect(finalize.mock.calls.map(([request]) =>
+      request.documentJobPublicIds?.length)).toEqual([256, 256, 256, 256, 44]);
+  });
+
   it("retries after immutable output is written but candidate persistence fails",
     async () => {
-      const commit = vi.fn(async () => "completed" as const);
+      const commit = vi.fn(async () => completedCommit());
       const fail = vi.fn(async () => "waiting" as const);
       const persist = vi.fn(async () => {
         throw new Error("candidate persistence unavailable");
@@ -263,7 +301,7 @@ describe("document scope projector runtime", () => {
         async fail() { return "error" as const; },
         async recoverExpired() { return 0; }
       },
-      async commit() { return "completed" as const; },
+      async commit() { return completedCommit(); },
       async persist() {},
       async render() {
         throw new Error("no scope should render");
@@ -305,7 +343,7 @@ describe("document scope projector runtime", () => {
         async fail() { return "error" as const; },
         async recoverExpired() { return 0; }
       },
-      async commit() { return "completed" as const; },
+      async commit() { return completedCommit(["job-concurrent"]); },
       async persist() {},
       async render() {
         active += 1;
@@ -332,12 +370,61 @@ describe("document scope projector runtime", () => {
     await runtime.run(controller.signal);
     expect(maximumActive).toBe(2);
   });
+
+  it("claims every free projector slot in one bounded database request", async () => {
+    const controller = new AbortController();
+    let claimed = false;
+    let finalized = 0;
+    const claim = vi.fn(async ({ limit }: { limit: number }) => {
+      if (claimed) return [];
+      claimed = true;
+      expect(limit).toBe(4);
+      return Array.from({ length: limit }, (_, index) =>
+        scopeClaim(`scope-batch-${index}`, index + 1));
+    });
+    const runtime = createDocumentScopeProjectorRuntime({
+      workerId: "scope-worker",
+      leaseDurationMs: 30_000,
+      maximumConcurrency: 4,
+      scopes: {
+        claim,
+        async fail() { return "error" as const; },
+        async recoverExpired() { return 0; }
+      },
+      async commit() { return completedCommit(["job-batch"]); },
+      async persist() {},
+      async render() {
+        return {
+          outputFingerprintSha256: "f".repeat(64),
+          storageRequests: zeroStorageRequests()
+        };
+      },
+      async finalize() {
+        finalized += 1;
+        if (finalized === 4) controller.abort();
+        return 1;
+      },
+      now: () => "2026-08-17T10:00:00.000Z",
+      wait: async () => undefined,
+      classifyError: () => ({ code: "UNEXPECTED", retryable: false })
+    });
+
+    await runtime.run(controller.signal);
+    expect(claim).toHaveBeenCalledTimes(1);
+  });
 });
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((complete) => { resolve = complete; });
   return { promise, resolve };
+}
+
+function completedCommit(documentJobPublicIds: readonly string[] = []) {
+  return {
+    state: "completed" as const,
+    readyDocumentJobPublicIds: documentJobPublicIds
+  };
 }
 
 function zeroStorageRequests() {

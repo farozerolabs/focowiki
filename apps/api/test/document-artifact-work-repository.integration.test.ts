@@ -779,7 +779,10 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
       renderedSequence: 2,
       outputFingerprintSha256: "e".repeat(64),
       now: at(3_300)
-    })).resolves.toBe(0);
+    })).resolves.toEqual({
+      acknowledgedCount: 0,
+      documentJobPublicIds: []
+    });
     await expect(contributions.allAcknowledged({
       documentJobPublicId: "job-work-second"
     })).resolves.toBe(true);
@@ -1112,7 +1115,10 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
         attemptedBytes: 128, retries: 0, latencyMilliseconds: 1
       },
       now: at(6_070)
-    })).resolves.toBe("completed");
+    })).resolves.toEqual({
+      state: "completed",
+      readyDocumentJobPublicIds: ["job-work", "job-work-second"]
+    });
     await expect(sql<Array<{
       state: string;
       safe_error_code: string | null;
@@ -1371,7 +1377,8 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
     })).resolves.toBe("error");
     await expect(repository.completeReadyWaitingProjections({
       now: at(9_061),
-      limit: 10
+      limit: 10,
+      detectFailures: true
     })).resolves.toBe(0);
     await expect(sql<Array<{
       work_state: string;
@@ -1461,7 +1468,10 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
         latencyMilliseconds: 42
       },
       now: at(9_100)
-    })).resolves.toBe("completed");
+    })).resolves.toEqual({
+      state: "completed",
+      readyDocumentJobPublicIds: ["job-work-projection"]
+    });
     await expect(sql<Array<{
       put_count: number;
       head_count: number;
@@ -1527,7 +1537,8 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
     })).resolves.toBe("completed");
     await expect(repository.completeReadyWaitingProjections({
       now: at(9_220),
-      limit: 10
+      limit: 10,
+      documentJobPublicIds: ["job-work-projection"]
     })).resolves.toBe(1);
     const activationClaim = await repository.claim({
       kind: "activate",

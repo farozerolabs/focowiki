@@ -101,12 +101,8 @@ describe("document knowledge projection support", () => {
       termBuckets: []
     })).toEqual([
       { kind: "source", key: "source-a" },
-      { kind: "relation", key: "relation-a" },
-      { kind: "relation", key: "relation-b" },
       { kind: "directory", key: "_graph/by-directory" },
       { kind: "directory", key: "_graph/by-directory/guides" },
-      { kind: "graph", key: "source-a" },
-      { kind: "graph", key: "source-b" },
       { kind: "_graph", key: "source-a" },
       { kind: "_graph", key: "source-b" },
       { kind: "_graph", key: "directory:pages" },
@@ -116,6 +112,23 @@ describe("document knowledge projection support", () => {
       { kind: "_graph", key: "catalog" },
       { kind: "root", key: "index" }
     ]);
+  });
+
+  it("does not create receipt-only scopes that materialize no portable files", () => {
+    const scopes = documentProjectionScopes({
+      relationPublicIds: ["relation-a"],
+      graphSourceFilePublicIds: ["source-a", "source-b"],
+      sourceFilePublicIds: ["source-a"],
+      directoryPaths: [],
+      graphDirectoryPaths: [],
+      navigationMutations: [],
+      pages: [],
+      termBuckets: []
+    });
+
+    expect(scopes.some((scope) => scope.kind === "relation")).toBe(false);
+    expect(scopes.some((scope) => scope.kind === "graph")).toBe(false);
+    expect(scopes).toContainEqual({ kind: "_graph", key: "source-a" });
   });
 
   it("uses the same NFKC owner identity that the activation repository reads", () => {

@@ -26,6 +26,8 @@ import type { createPostgresDocumentDirectoryNavigation } from
   "./postgres-document-directory-navigation.js";
 import type { OrderedDirectoryLeafLimits } from
   "../domain/document-directory-leaves.js";
+import { MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER } from
+  "../domain/document-projection-limits.js";
 import {
   materializeMachineDirectoryNavigation,
   materializePerFileGraphDirectoryNavigation,
@@ -130,7 +132,7 @@ export function createProductionDocumentScopeRenderer(input: {
     const coveredContributors = await input.scopeContributions.listCovered({
       scopePublicId: scope.publicId,
       renderedSequence: scope.renderedSequence,
-      limit: 256
+      limit: MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER
     });
     const contributors = latestContributors(coveredContributors);
     const includedSourceRevisionPublicIds = contributors.map((contributor) =>

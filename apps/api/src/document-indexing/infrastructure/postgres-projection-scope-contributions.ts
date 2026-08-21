@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../../db/client.js";
+import { MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER } from
+  "../domain/document-projection-limits.js";
 import {
   assertRepositoryIdentity,
   assertRepositoryPositiveInteger,
@@ -118,6 +120,7 @@ export function createPostgresProjectionScopeContributions(sql: DatabaseClient) 
                 AND contribution.state = 'waiting'
             )
         `;
+        await refreshScopePressure(tx, scopeIds);
         return stored.map((row) => row.public_id).sort();
       });
     },
@@ -127,17 +130,26 @@ export function createPostgresProjectionScopeContributions(sql: DatabaseClient) 
       renderedSequence: number;
       outputFingerprintSha256: string;
       now: string;
-    }): Promise<number> {
+    }): Promise<{
+      acknowledgedCount: number;
+      documentJobPublicIds: readonly string[];
+    }> {
       return transaction(sql, async (tx) => {
-        const rows = await tx<Array<{ public_id: string }>>`
+        const rows = await tx<Array<{
+          public_id: string;
+          document_job_public_id: string;
+        }>>`
           UPDATE focowiki.projection_scope_contributions
           SET state = 'acknowledged', acknowledged_at = ${assertRepositoryTimestamp(input.now, "now")}
           WHERE scope_public_id = ${assertRepositoryIdentity(input.scopePublicId, "scope_public_id")}
             AND state = 'waiting'
             AND required_sequence <= ${assertRepositoryPositiveInteger(input.renderedSequence, "rendered_sequence")}
-          RETURNING public_id
+          RETURNING public_id, document_job_public_id
         `;
-        if (rows.length === 0) return 0;
+        if (rows.length === 0) {
+          await refreshScopePressure(tx, [input.scopePublicId]);
+          return { acknowledgedCount: 0, documentJobPublicIds: [] };
+        }
         const receipts = rows.map((row) => ({
           contribution_public_id: row.public_id,
           scope_public_id: input.scopePublicId,
@@ -161,7 +173,12 @@ export function createPostgresProjectionScopeContributions(sql: DatabaseClient) 
           )
           ON CONFLICT (contribution_public_id) DO NOTHING
         `;
-        return rows.length;
+        await refreshScopePressure(tx, [input.scopePublicId]);
+        return {
+          acknowledgedCount: rows.length,
+          documentJobPublicIds: [...new Set(rows.map((row) =>
+            row.document_job_public_id))].sort()
+        };
       });
     },
 
@@ -178,7 +195,11 @@ export function createPostgresProjectionScopeContributions(sql: DatabaseClient) 
       sourceWorkPublicId: string;
       requiredSequence: number;
     }>> {
-      const limit = assertRepositoryPositiveInteger(input.limit, "limit", 256);
+      const limit = assertRepositoryPositiveInteger(
+        input.limit,
+        "limit",
+        MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER
+      );
       const rows = await sql<Array<{
         public_id: string;
         knowledge_base_id: string;
@@ -240,6 +261,30 @@ export function createPostgresProjectionScopeContributions(sql: DatabaseClient) 
       return Number(rows[0]?.pending ?? 0) === 0;
     }
   };
+}
+
+async function refreshScopePressure(
+  tx: TransactionSql,
+  scopePublicIds: readonly string[]
+): Promise<void> {
+  const unique = [...new Set(scopePublicIds)];
+  if (unique.length === 0) return;
+  await tx`
+    UPDATE focowiki.projection_dirty_scopes scope
+    SET waiting_contribution_count = pressure.waiting_count,
+        oldest_waiting_contribution_at = pressure.oldest_waiting_at
+    FROM (
+      SELECT target.public_id,
+             count(contribution.public_id)::integer AS waiting_count,
+             min(contribution.created_at) AS oldest_waiting_at
+      FROM unnest(${unique}::text[]) AS target(public_id)
+      LEFT JOIN focowiki.projection_scope_contributions contribution
+        ON contribution.scope_public_id = target.public_id
+       AND contribution.state = 'waiting'
+      GROUP BY target.public_id
+    ) pressure
+    WHERE scope.public_id = pressure.public_id
+  `;
 }
 
 function contributionId(

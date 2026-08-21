@@ -1,4 +1,6 @@
 import type { DatabaseClient } from "../../db/client.js";
+import { MAXIMUM_PROJECTION_SCOPE_OUTPUTS_PER_DOCUMENT } from
+  "../domain/document-projection-limits.js";
 import type { DocumentDirectoryNavigationMutation } from
   "../application/document-directory-navigation-mutation.js";
 import { validateDocumentDirectoryNavigationMutations } from
@@ -115,7 +117,11 @@ export function createPostgresProjectionScopeOutputRepository(
       documentJobPublicId: string;
       limit: number;
     }): Promise<readonly DocumentProjectionScopeOutput[]> {
-      const limit = assertRepositoryPositiveInteger(input.limit, "limit", 256);
+      const limit = assertRepositoryPositiveInteger(
+        input.limit,
+        "limit",
+        MAXIMUM_PROJECTION_SCOPE_OUTPUTS_PER_DOCUMENT
+      );
       const rows = await sql<OutputRow[]>`
         SELECT DISTINCT ON (output.scope_public_id)
                output.scope_public_id, output.rendered_sequence,
