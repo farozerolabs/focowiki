@@ -24,6 +24,8 @@ describe("storage vNext runtime schema guard", () => {
       expect.stringContaining("document_artifact_work_claim_idx"),
       expect.stringContaining("generated_page_heads_path_idx"),
       expect.stringContaining("unresolved_file_references_reverse_idx"),
+      expect.stringContaining("upload_operation_summaries"),
+      expect.stringContaining("upload_operation_summaries_expiry_idx"),
       expect.stringContaining("document_processing_jobs_source_revision_key"),
       expect.stringContaining("release_candidates"),
       expect.stringContaining("release_roots"),
@@ -53,27 +55,22 @@ describe("storage vNext runtime schema guard", () => {
     expect(database.beginCalls).toBe(1);
   });
 
-  it("upgrades the deployed v9 generation without replaying the bootstrap", async () => {
-    const database = createGenerationDatabase(
-      "storage-vnext-v9-document-indexing-hybrid"
-    );
-
-    await expect(preflightMigrations(database.sql)).resolves.toEqual({
-      currentGeneration: "storage-vnext-v9-document-indexing-hybrid",
-      pendingFiles: [
-        "002_document_queue_throughput.sql",
-        "003_document_projection_throughput.sql",
-        "004_projection_output_object_lifecycle.sql",
-        "005_active_projection_output_repair.sql"
-      ]
-    });
-    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(1);
-    await expect(preflightMigrations(database.sql)).resolves.toEqual({
-      currentGeneration: RUNTIME_SCHEMA_GENERATION,
-      pendingFiles: []
-    });
+  it("rejects persisted generations before executing migration SQL", async () => {
+    for (const generation of [
+      "storage-vnext-v9-document-indexing-hybrid",
+      "storage-vnext-v10-document-indexing-throughput",
+      "storage-vnext-v11-projection-throughput",
+      "storage-vnext-v12-projection-object-lifecycle",
+      "storage-vnext-v13-active-projection-output-repair"
+    ]) {
+      const database = createGenerationDatabase(generation);
+      await expect(preflightMigrations(database.sql)).rejects.toMatchObject({
+        name: "RuntimeSchemaGenerationError",
+        message: expect.stringMatching(/clean reset/iu)
+      });
+      expect(database.unsafeCalls).toBe(0);
+      expect(database.beginCalls).toBe(0);
+    }
   });
 
   it("leaves an absent schema retryable when the bootstrap fails", async () => {

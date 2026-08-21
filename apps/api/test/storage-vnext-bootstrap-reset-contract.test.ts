@@ -31,7 +31,7 @@ function findIdentifiers(source: string, identifiers: readonly string[]): string
 }
 
 describe("storage vNext clean bootstrap and reset contract", () => {
-  it("keeps the destructive bootstrap immutable and adds one compatible successor", () => {
+  it("keeps the clean bootstrap chain behind a final breaking boundary", () => {
     const manifest = readFileSync(
       resolve(workspaceRoot, "apps/api/src/db/migration-manifest.ts"),
       "utf8"
@@ -42,7 +42,7 @@ describe("storage vNext clean bootstrap and reset contract", () => {
       "002_document_queue_throughput.sql",
       "003_document_projection_throughput.sql",
       "004_projection_output_object_lifecycle.sql",
-      "005_active_projection_output_repair.sql"
+      "005_clean_document_indexing_boundary.sql"
     ]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
@@ -54,9 +54,9 @@ describe("storage vNext clean bootstrap and reset contract", () => {
     expect(manifest).toContain('targetGeneration: "storage-vnext-v11-projection-throughput"');
     expect(manifest).toContain('fileName: "004_projection_output_object_lifecycle.sql"');
     expect(manifest).toContain('targetGeneration: "storage-vnext-v12-projection-object-lifecycle"');
-    expect(manifest).toContain('fileName: "005_active_projection_output_repair.sql"');
-    expect(manifest).toContain('targetGeneration: "storage-vnext-v13-active-projection-output-repair"');
-    expect(manifest).toContain('safety: "compatible"');
+    expect(manifest).toContain('fileName: "005_clean_document_indexing_boundary.sql"');
+    expect(manifest).toContain('targetGeneration: "storage-vnext-v13-clean-document-indexing"');
+    expect(manifest).toContain('safety: "breaking_reset"');
     expect(manifest).not.toMatch(/incremental-sharded-publication|compatible_with_persisted_work/u);
   });
 

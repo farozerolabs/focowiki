@@ -12,8 +12,8 @@ type AggregateRow = {
   nonterminal_count: number | string;
 };
 
-type UploadSessionRow = {
-  public_id: string;
+type UploadOperationSummaryRow = {
+  session_public_id: string;
   expected_entry_count: number | string;
   expected_byte_count: number | string;
   received_entry_count: number | string;
@@ -58,42 +58,22 @@ export async function convergePostgresUploadDocumentOperation(
   const aggregate = requireAggregate(aggregateRows[0]);
   if (aggregate.nonterminalCount > 0) return "pending";
 
-  const sessions = await sql<UploadSessionRow[]>`
-    SELECT session.public_id, session.expected_entry_count,
-           session.expected_byte_count, session.received_entry_count,
-           session.received_byte_count, session.expires_at,
-           (SELECT count(*)
-            FROM focowiki.upload_entries entry
-            WHERE entry.knowledge_base_id = session.knowledge_base_id
-              AND entry.upload_session_public_id = session.public_id
-              AND EXISTS (
-               SELECT 1
-               FROM focowiki.source_files source
-               WHERE source.knowledge_base_id = entry.knowledge_base_id
-                 AND source.public_id = entry.source_file_public_id
-                 AND source.normalized_path = entry.normalized_path
-                 AND source.deleted_at IS NULL
-             )
-             AND NOT EXISTS (
-               SELECT 1
-               FROM focowiki.document_processing_jobs job
-               WHERE job.knowledge_base_id = entry.knowledge_base_id
-                 AND job.source_file_public_id = entry.source_file_public_id
-                 AND job.operation_public_id = session.operation_public_id
-             )
-           ) AS skipped_existing_count
-    FROM focowiki.upload_sessions session
-    WHERE session.knowledge_base_id = ${input.knowledgeBaseId}
-      AND session.operation_public_id = ${input.operationPublicId}
-    FOR UPDATE OF session
+  const summaries = await sql<UploadOperationSummaryRow[]>`
+    SELECT session_public_id, expected_entry_count, expected_byte_count,
+           received_entry_count, received_byte_count, skipped_existing_count,
+           expires_at
+    FROM focowiki.upload_operation_summaries
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND operation_public_id = ${input.operationPublicId}
+    FOR UPDATE
   `;
-  const session = sessions[0];
-  if (!session) throw aggregateError("upload_session_missing");
-  const receivedCount = count(session.received_entry_count);
+  const summary = summaries[0];
+  if (!summary) throw aggregateError("upload_operation_summary_missing");
+  const receivedCount = count(summary.received_entry_count);
   if (aggregate.totalCount !== receivedCount) {
     throw aggregateError("document_count_mismatch");
   }
-  const expiresAt = timestamp(session.expires_at);
+  const expiresAt = timestamp(summary.expires_at);
   if (Date.parse(expiresAt) <= Date.parse(input.completedAt)) {
     throw aggregateError("result_expiry_invalid");
   }
@@ -118,12 +98,12 @@ export async function convergePostgresUploadDocumentOperation(
       ${input.operationPublicId}, ${input.knowledgeBaseId}, 'upload',
       'completed', 'UPLOAD_DOCUMENTS_TERMINAL', NULL,
       ${sql.json({
-        sessionPublicId: session.public_id,
-        expectedEntryCount: count(session.expected_entry_count),
-        expectedByteCount: count(session.expected_byte_count),
+        sessionPublicId: summary.session_public_id,
+        expectedEntryCount: count(summary.expected_entry_count),
+        expectedByteCount: count(summary.expected_byte_count),
         receivedEntryCount: receivedCount,
-        receivedByteCount: count(session.received_byte_count),
-        skippedExistingCount: count(session.skipped_existing_count),
+        receivedByteCount: count(summary.received_byte_count),
+        skippedExistingCount: count(summary.skipped_existing_count),
         totalCount: aggregate.totalCount,
         waitingCount: 0,
         processingCount: 0,
@@ -132,28 +112,33 @@ export async function convergePostgresUploadDocumentOperation(
         deletingCount: 0,
         cancelledCount: aggregate.cancelledCount,
         supersededCount: aggregate.supersededCount
-      })}, ${session.public_id}, ${input.completedAt}, ${expiresAt}
+      })}, ${summary.session_public_id}, ${input.completedAt}, ${expiresAt}
     )
     ON CONFLICT (public_id) DO NOTHING
   `;
   await sql`
     DELETE FROM focowiki.upload_path_reservations
-    WHERE upload_session_public_id = ${session.public_id}
+    WHERE upload_session_public_id = ${summary.session_public_id}
   `;
   await sql`
     DELETE FROM focowiki.upload_entries
-    WHERE upload_session_public_id = ${session.public_id}
+    WHERE upload_session_public_id = ${summary.session_public_id}
   `;
   await sql`
     DELETE FROM focowiki.upload_sessions
     WHERE knowledge_base_id = ${input.knowledgeBaseId}
-      AND public_id = ${session.public_id}
+      AND public_id = ${summary.session_public_id}
   `;
   await sql`
     DELETE FROM focowiki.operation_work_items
     WHERE knowledge_base_id = ${input.knowledgeBaseId}
       AND operation_public_id = ${input.operationPublicId}
       AND work_kind = 'upload'
+  `;
+  await sql`
+    DELETE FROM focowiki.upload_operation_summaries
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND operation_public_id = ${input.operationPublicId}
   `;
   return "completed";
 }

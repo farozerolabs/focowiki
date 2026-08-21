@@ -4,6 +4,8 @@ import type { ClaimedDocumentArtifactWork } from
   "../application/document-work-port.js";
 import { ensurePostgresDocumentCleanupIntent } from
   "./postgres-document-cleanup-intent.js";
+import { convergePostgresUploadDocumentOperation } from
+  "./postgres-upload-operation-aggregation.js";
 
 export function createDocumentCleanupReceiptHandler(input: {
   sql: DatabaseClient;
@@ -32,6 +34,11 @@ export function createDocumentCleanupReceiptHandler(input: {
       sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
       affectedSourceFilePublicIds: [request.claimed.sourceFilePublicId],
       createdAt
+    });
+    await convergePostgresUploadDocumentOperation(input.sql, {
+      knowledgeBaseId: request.claimed.knowledgeBaseId,
+      operationPublicId: jobs[0].operation_public_id,
+      completedAt: createdAt
     });
     return {
       key: "obsolete",

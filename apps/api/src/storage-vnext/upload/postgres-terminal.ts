@@ -44,6 +44,28 @@ export function createPostgresStorageVnextUploadTerminalPort(
             DELETE FROM focowiki.upload_path_reservations
             WHERE upload_session_public_id = ${context.sessionPublicId}
           `;
+          const summaries = await transaction<SessionSummaryRow[]>`
+            SELECT session.expected_entry_count, session.expected_byte_count,
+                   session.received_entry_count, session.received_byte_count,
+                   (SELECT count(*)
+                    FROM focowiki.upload_entries entry
+                    WHERE entry.knowledge_base_id = session.knowledge_base_id
+                      AND entry.upload_session_public_id = session.public_id
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM focowiki.document_processing_jobs job
+                        WHERE job.knowledge_base_id = entry.knowledge_base_id
+                          AND job.source_file_public_id = entry.source_file_public_id
+                          AND job.operation_public_id = session.operation_public_id
+                      )) AS skipped_existing_count
+            FROM focowiki.upload_sessions session
+            WHERE session.public_id = ${context.sessionPublicId}
+              AND session.knowledge_base_id = ${context.knowledgeBaseId}
+            FOR UPDATE OF session
+          `;
+          const summary = summaries[0];
+          if (!summary) throw terminalError("session_missing");
+          await persistAcceptedSummary(transaction, context, summary, aggregateExpiresAt);
           await transaction`
             DELETE FROM focowiki.operation_work_items
             WHERE knowledge_base_id = ${context.knowledgeBaseId}
@@ -125,6 +147,35 @@ export function createPostgresStorageVnextUploadTerminalPort(
       });
     }
   };
+}
+
+async function persistAcceptedSummary(
+  transaction: TransactionSql,
+  context: Parameters<StorageVnextUploadTerminalPort["converge"]>[0],
+  summary: SessionSummaryRow,
+  expiresAt: string
+): Promise<void> {
+  const expectedEntryCount = terminalCount(summary.expected_entry_count);
+  const receivedEntryCount = terminalCount(summary.received_entry_count);
+  const skippedExistingCount = terminalCount(summary.skipped_existing_count);
+  if (receivedEntryCount + skippedExistingCount !== expectedEntryCount) {
+    throw terminalError("invalid_summary");
+  }
+  await transaction`
+    INSERT INTO focowiki.upload_operation_summaries (
+      operation_public_id, knowledge_base_id, session_public_id,
+      expected_entry_count, expected_byte_count, received_entry_count,
+      received_byte_count, skipped_existing_count, expires_at, created_at
+    ) VALUES (
+      ${context.operationPublicId}, ${context.knowledgeBaseId},
+      ${context.sessionPublicId}, ${expectedEntryCount},
+      ${terminalCount(summary.expected_byte_count)}, ${receivedEntryCount},
+      ${terminalCount(summary.received_byte_count)}, ${skippedExistingCount},
+      ${expiresAt}, ${context.completedAt}
+    )
+    ON CONFLICT (operation_public_id) DO UPDATE
+    SET expires_at = excluded.expires_at
+  `;
 }
 
 async function persistResult(
