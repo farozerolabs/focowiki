@@ -122,7 +122,8 @@ export function createProductionDocumentFixedProcessor(input: {
   });
   const repositories = createProductionDocumentFixedRepositories(
     input.sql,
-    input.workerConfig.completedJobRetentionDays * 86_400_000
+    input.workerConfig.completedJobRetentionDays * 86_400_000,
+    projectionBacklogLimit(input.resourceCapacity.documentConcurrency)
   );
   const scopeOutputs = createPostgresProjectionScopeOutputRepository(input.sql);
   const loaders = createProductionDocumentFixedLoaders({
@@ -381,6 +382,9 @@ export function createProductionDocumentFixedProcessor(input: {
         next.resourceCapacity.documentConcurrency * 8
       );
       scheduler.updateClaimLimit(next.workerConfig.claimBatchSize);
+      repositories.work.updateProjectionBacklogLimit(
+        projectionBacklogLimit(next.resourceCapacity.documentConcurrency)
+      );
       scopeRuntime.updateMaximumConcurrency(projection.scopeProjection);
       Object.assign(input.workerConfig, next.workerConfig);
       currentResourceCapacity = { ...next.resourceCapacity };
@@ -398,6 +402,10 @@ export function createProductionDocumentFixedProcessor(input: {
       };
     }
   };
+}
+
+function projectionBacklogLimit(documentConcurrency: number): number {
+  return Math.max(documentConcurrency, documentConcurrency * 8);
 }
 
 function createFixedResources(input: Parameters<

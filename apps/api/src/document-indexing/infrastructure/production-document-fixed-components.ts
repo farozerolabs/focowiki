@@ -57,11 +57,13 @@ import { createPostgresSemanticFactRepository } from
 
 export function createProductionDocumentFixedRepositories(
   sql: DatabaseClient,
-  webhookRetentionMilliseconds = 30 * 86_400_000
+  webhookRetentionMilliseconds = 30 * 86_400_000,
+  projectionBacklogLimit = 10_000
 ) {
   return {
     work: createPostgresDocumentArtifactWorkRepository(sql, {
-      webhookRetentionMilliseconds
+      webhookRetentionMilliseconds,
+      projectionBacklogLimit
     }),
     receipts: createPostgresDocumentReceiptRepository(sql),
     contexts: createPostgresDocumentWorkContext(sql),

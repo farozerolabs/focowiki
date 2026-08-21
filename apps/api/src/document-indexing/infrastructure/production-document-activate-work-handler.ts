@@ -45,6 +45,8 @@ import { enqueuePostgresDocumentWebhookEvent } from
 import type { DatabaseClient } from "../../db/client.js";
 import { rebaseDocumentActivationOwnerVersions } from
   "../application/document-activation-rebase.js";
+import { MAXIMUM_PROJECTION_SCOPE_OUTPUTS_PER_DOCUMENT } from
+  "../domain/document-projection-limits.js";
 
 const RESULT_RETENTION_MILLISECONDS = 30 * 86_400_000;
 const MAXIMUM_INLINE_ACTIVATION_REBASE_ATTEMPTS = 4;
@@ -202,7 +204,7 @@ async function hydrateProjectionManifest(input: {
   const storedOutputs = await input.input.scopeOutputs.readForDocument({
     knowledgeBaseId: input.manifest.knowledgeBaseId,
     documentJobPublicId: input.manifest.documentJobPublicId,
-    limit: 256
+    limit: MAXIMUM_PROJECTION_SCOPE_OUTPUTS_PER_DOCUMENT
   });
   const allPaths = [...new Set(storedOutputs.flatMap((output) => [
     ...output.pages.map((page) => page.normalizedPath),

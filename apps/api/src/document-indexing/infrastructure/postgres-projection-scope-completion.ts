@@ -16,7 +16,10 @@ export function createPostgresProjectionScopeCompletion(sql: DatabaseClient) {
       outputFingerprintSha256: string;
       storageRequests: DocumentProjectionStorageRequests;
       now: string;
-    }): Promise<"completed" | "waiting" | null> {
+    }): Promise<{
+      state: "completed" | "waiting";
+      readyDocumentJobPublicIds: readonly string[];
+    } | null> {
       return transaction(sql, async (tx) => {
         const transactionClient = tx as unknown as DatabaseClient;
         const outputs = await tx<Array<{ scope_public_id: string }>>`
@@ -58,14 +61,19 @@ export function createPostgresProjectionScopeCompletion(sql: DatabaseClient) {
               retry_count = excluded.retry_count,
               latency_milliseconds = excluded.latency_milliseconds
         `;
-        await createPostgresProjectionScopeContributions(transactionClient)
+        const acknowledged = await createPostgresProjectionScopeContributions(
+          transactionClient
+        )
           .acknowledge({
             scopePublicId: input.publicId,
             renderedSequence: input.renderedSequence,
             outputFingerprintSha256: input.outputFingerprintSha256,
             now: input.now
           });
-        return state;
+        return {
+          state,
+          readyDocumentJobPublicIds: acknowledged.documentJobPublicIds
+        };
       });
     }
   };

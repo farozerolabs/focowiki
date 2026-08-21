@@ -23,6 +23,8 @@ import { latestContributors } from
   "./production-document-scope-renderer-support.js";
 import type { DocumentProjectionScopeClaim } from
   "../application/document-scope-projector-runtime.js";
+import { MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER } from
+  "../domain/document-projection-limits.js";
 
 type FixedRepositories = ReturnType<
   typeof createProductionDocumentFixedRepositories
@@ -105,7 +107,10 @@ export function createProductionDocumentScopeProjector(input: {
       await releaseReservations(input, rendered, persistenceError);
     },
     finalize: (request) => input.repositories.work
-      .completeReadyWaitingProjections(request),
+      .completeReadyWaitingProjections({
+        ...request,
+        detectFailures: request.documentJobPublicIds === undefined
+      }),
     now: () => new Date().toISOString(),
     wait: waitForDocumentWork,
     classifyError(error) {
@@ -128,7 +133,7 @@ async function stageContributorPages(
     await input.repositories.scopeContributions.listCovered({
       scopePublicId: scope.publicId,
       renderedSequence: scope.renderedSequence,
-      limit: 256
+      limit: MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER
     })
   );
   await input.repositories.pages.stageForContributors({

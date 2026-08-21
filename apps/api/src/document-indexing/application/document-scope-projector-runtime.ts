@@ -22,6 +22,11 @@ type DocumentProjectionScopeRendered = Readonly<{
   storageRequests: DocumentProjectionStorageRequests;
 }>;
 
+export type DocumentProjectionScopeCommitResult = Readonly<{
+  state: "completed" | "waiting";
+  readyDocumentJobPublicIds: readonly string[];
+}>;
+
 export function createDocumentScopeProjectorRuntime<
   TRendered extends DocumentProjectionScopeRendered
 >(input: {
@@ -59,14 +64,18 @@ export function createDocumentScopeProjectorRuntime<
     outputFingerprintSha256: string;
     storageRequests: DocumentProjectionStorageRequests;
     now: string;
-  }): Promise<"completed" | "waiting" | null>;
+  }): Promise<DocumentProjectionScopeCommitResult | null>;
   render(scope: DocumentProjectionScopeClaim, signal: AbortSignal): Promise<TRendered>;
   persist(
     scope: DocumentProjectionScopeClaim,
     rendered: TRendered,
     signal: AbortSignal
   ): Promise<void>;
-  finalize(request: { now: string; limit: number }): Promise<number>;
+  finalize(request: {
+    now: string;
+    limit: number;
+    documentJobPublicIds?: readonly string[];
+  }): Promise<number>;
   now(): string;
   wait(milliseconds: number, signal: AbortSignal): Promise<void>;
   classifyError(error: unknown): { code: string; retryable: boolean };
@@ -107,6 +116,37 @@ export function createDocumentScopeProjectorRuntime<
     return claims[0] ?? null;
   }
 
+  async function claimAvailable(
+    signal: AbortSignal,
+    limit: number
+  ): Promise<readonly DocumentProjectionScopeClaim[]> {
+    if (signal.aborted || limit < 1) return [];
+    return input.scopes.claim({
+      workerId: input.workerId,
+      now: input.now(),
+      leaseDurationMs: input.leaseDurationMs,
+      limit
+    });
+  }
+
+  async function finalizeDocumentJobs(
+    now: string,
+    documentJobPublicIds: readonly string[]
+  ): Promise<void> {
+    const unique = [...new Set(documentJobPublicIds)];
+    for (let offset = 0; offset < unique.length; offset += 256) {
+      const chunk = unique.slice(offset, offset + 256);
+      let completed: number;
+      do {
+        completed = await input.finalize({
+          now,
+          limit: 64,
+          documentJobPublicIds: chunk
+        });
+      } while (completed === 64);
+    }
+  }
+
   function launch(
     scope: DocumentProjectionScopeClaim,
     signal: AbortSignal
@@ -129,7 +169,7 @@ export function createDocumentScopeProjectorRuntime<
       validateStorageRequests(rendered.storageRequests);
       await input.persist(scope, rendered, signal);
       const now = input.now();
-      const completed = await input.commit({
+      const committed = await input.commit({
         publicId: scope.publicId,
         workerId: input.workerId,
         renderedSequence: scope.renderedSequence,
@@ -137,8 +177,10 @@ export function createDocumentScopeProjectorRuntime<
         storageRequests: rendered.storageRequests,
         now
       });
-      if (!completed) throw projectorError("projection_scope_lease_lost");
-      await input.finalize({ now, limit: 64 });
+      if (!committed) throw projectorError("projection_scope_lease_lost");
+      if (committed.readyDocumentJobPublicIds.length > 0) {
+        await finalizeDocumentJobs(now, committed.readyDocumentJobPublicIds);
+      }
     } catch (error) {
       if (signal.aborted) throw error;
       const diagnostic = input.classifyError(error);
@@ -200,9 +242,12 @@ export function createDocumentScopeProjectorRuntime<
         }
         let launched = false;
         while (!signal.aborted && active.size < maximumConcurrency) {
-          const scope = await claimOne(signal);
-          if (!scope) break;
-          launch(scope, signal);
+          const scopes = await claimAvailable(
+            signal,
+            maximumConcurrency - active.size
+          );
+          if (scopes.length === 0) break;
+          scopes.forEach((scope) => launch(scope, signal));
           launched = true;
         }
         if (active.size > 0 && (!launched || active.size >= maximumConcurrency)) {

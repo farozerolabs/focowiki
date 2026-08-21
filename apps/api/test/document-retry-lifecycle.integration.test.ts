@@ -67,6 +67,33 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       sql,
       "knowledge-base-retry"
     );
+    await sql`
+      INSERT INTO focowiki.runtime_setting_revisions (
+        public_id, checksum_sha256, settings_values
+      ) VALUES (
+        'runtime-retry-current', ${"2".repeat(64)},
+        '{"sections":{"worker":{"jobMaxAttempts":5}}}'::jsonb
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.runtime_setting_current (
+        singleton, revision_public_id
+      ) VALUES (true, 'runtime-retry-current')
+    `;
+    await sql`
+      UPDATE focowiki.model_configs
+      SET enabled = false
+      WHERE public_id = ${processingContract.generationModelConfigurationPublicId}
+    `;
+    await sql`
+      INSERT INTO focowiki.model_configs (
+        public_id, provider, model, secret_reference, config, enabled, revision
+      ) VALUES (
+        'model-config-retry-current', 'openai-compatible',
+        'generation-model-current', 'runtime/document-test-model-current',
+        '{"status":"active"}'::jsonb, true, 1
+      )
+    `;
     await seedFailedDocument({
       sourceFilePublicId: "source-file-retryable",
       sourceRevisionPublicId: "source-revision-retryable",
@@ -151,7 +178,7 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     await admin.end({ timeout: 5 });
   }, 120_000);
 
-  it("reopens only the current retryable error job and clears stale presentation", async () => {
+  it("rebuilds the failed job from prepare with the current processing contract", async () => {
     const dirtyScopes = createPostgresProjectionDirtyScopeRepository(
       sql as unknown as DatabaseClient
     );
@@ -199,6 +226,9 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     await expect(sql<Array<{
       state: string;
       blocking_work_kind: string | null;
+      runtime_settings_revision_public_id: string;
+      generation_model_configuration_public_id: string;
+      generation_model_configuration_revision: number | string;
       attempt_count: number;
       maximum_attempts: number;
       failure_count: number;
@@ -213,7 +243,11 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       operation_state: string;
       result_count: number;
     }>>`
-      SELECT job.state, job.blocking_work_kind, job.attempt_count,
+      SELECT job.state, job.blocking_work_kind,
+             job.runtime_settings_revision_public_id,
+             job.generation_model_configuration_public_id,
+             job.generation_model_configuration_revision,
+             job.attempt_count,
              job.maximum_attempts,
              job.failure_count, job.total_attempt_count,
              job.manual_retry_count, job.completed_work_count, job.started_at,
@@ -232,20 +266,41 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       GROUP BY job.public_id, operation.public_id
     `).resolves.toEqual([{
       state: "waiting",
-      blocking_work_kind: "first_layer",
+      blocking_work_kind: "prepare",
+      runtime_settings_revision_public_id: "runtime-retry-current",
+      generation_model_configuration_public_id: "model-config-retry-current",
+      generation_model_configuration_revision: "1",
       attempt_count: 0,
-      maximum_attempts: 3,
+      maximum_attempts: 5,
       failure_count: 0,
       total_attempt_count: "3",
       manual_retry_count: 1,
       completed_work_count: 0,
-      started_at: new Date("2026-08-14T09:00:00.000Z"),
+      started_at: null,
       terminal_at: null,
       safe_error_code: null,
       retryable: false,
       model_status: null,
       operation_state: "processing",
       result_count: 0
+    }]);
+    await expect(sql<Array<{
+      count: number;
+      waiting_count: number;
+      completed_count: number;
+      maximum_attempts: number;
+    }>>`
+      SELECT count(*)::integer AS count,
+             count(*) FILTER (WHERE state = 'waiting')::integer AS waiting_count,
+             count(*) FILTER (WHERE state = 'completed')::integer AS completed_count,
+             min(maximum_attempts)::integer AS maximum_attempts
+      FROM focowiki.document_artifact_work
+      WHERE document_job_public_id = 'document-job-retryable'
+    `).resolves.toEqual([{
+      count: 8,
+      waiting_count: 8,
+      completed_count: 0,
+      maximum_attempts: 5
     }]);
     await expect(sql<Array<{
       state: string;

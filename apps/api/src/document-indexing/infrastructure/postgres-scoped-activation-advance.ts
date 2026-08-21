@@ -31,7 +31,7 @@ export async function lockAndAdvanceScopedOwners(
       active_source_revision_public_id text,
       active_page_candidate_public_id text
     )
-    ON CONFLICT (knowledge_base_id, owner_kind, owner_key) DO NOTHING
+    ON CONFLICT DO NOTHING
   `;
   const locked = await sql<Array<{
     owner_kind: string;
