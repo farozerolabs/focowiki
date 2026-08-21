@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { TransactionSql } from "postgres";
+import type { DatabaseClient } from "../../db/client.js";
 import type { DocumentArtifactWorkRepository } from
   "../application/document-work-port.js";
+import { releasePostgresProjectionScopeOutputsForDocument } from
+  "./postgres-projection-scope-output-release.js";
 
 type CompletionInput = Parameters<DocumentArtifactWorkRepository["complete"]>[0];
 
@@ -78,6 +81,12 @@ export async function completePostgresDocumentWork(
     work.document_job_public_id,
     input.now
   );
+  await releasePostgresProjectionScopeOutputsForDocument({
+    transaction: sql as unknown as DatabaseClient,
+    knowledgeBaseId: work.knowledge_base_id,
+    documentJobPublicId: work.document_job_public_id,
+    releasedAt: input.now
+  });
   await afterComplete?.();
   return true;
 }

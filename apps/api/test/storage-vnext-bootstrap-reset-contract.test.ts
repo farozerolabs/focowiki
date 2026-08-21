@@ -40,7 +40,8 @@ describe("storage vNext clean bootstrap and reset contract", () => {
     expect(migrationFiles()).toEqual([
       bootstrapFileName,
       "002_document_queue_throughput.sql",
-      "003_document_projection_throughput.sql"
+      "003_document_projection_throughput.sql",
+      "004_projection_output_object_lifecycle.sql"
     ]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
@@ -50,6 +51,8 @@ describe("storage vNext clean bootstrap and reset contract", () => {
     expect(manifest).toContain('targetGeneration: "storage-vnext-v10-document-indexing-throughput"');
     expect(manifest).toContain('fileName: "003_document_projection_throughput.sql"');
     expect(manifest).toContain('targetGeneration: "storage-vnext-v11-projection-throughput"');
+    expect(manifest).toContain('fileName: "004_projection_output_object_lifecycle.sql"');
+    expect(manifest).toContain('targetGeneration: "storage-vnext-v12-projection-object-lifecycle"');
     expect(manifest).toContain('safety: "compatible"');
     expect(manifest).not.toMatch(/incremental-sharded-publication|compatible_with_persisted_work/u);
   });

@@ -204,15 +204,17 @@ const enabled = Boolean(
     }
   });
 
-  it("reads all legacy scope outputs required to activate one document", async () => {
+  it("reads the exact receipted scope output required to activate one document", async () => {
     const outputs = createPostgresProjectionScopeOutputRepository(
       sql as unknown as DatabaseClient
     );
-    await expect(outputs.readForDocument({
+    const stored = await outputs.readForDocument({
       knowledgeBaseId: "plan-kb",
       documentJobPublicId: "wide-output-job",
       limit: 10_000
-    })).resolves.toHaveLength(300);
+    });
+    expect(stored).toHaveLength(300);
+    expect(stored.every((output) => output.renderedSequence === 1)).toBe(true);
   });
 });
 
@@ -386,6 +388,31 @@ async function seedProjectionBacklog(sql: postgres.Sql): Promise<void> {
              ARRAY[]::text[], '[]'::jsonb, '[]'::jsonb, now()
       FROM generate_series(1, 300) item
     `);
+    await transaction.unsafe(`
+      INSERT INTO focowiki.projection_scope_receipts (
+        contribution_public_id, scope_public_id, rendered_sequence,
+        output_fingerprint_sha256, committed_at
+      )
+      SELECT 'wide-output-contribution-' || item::text,
+             'wide-output-scope-' || item::text, 1,
+             lpad(to_hex(item + 20000), 64, '0'), now()
+      FROM generate_series(1, 300) item
+    `);
+    await transaction`
+      UPDATE focowiki.projection_dirty_scopes
+      SET required_sequence = 2, completed_sequence = 2
+      WHERE public_id = 'wide-output-scope-1'
+    `;
+    await transaction`
+      INSERT INTO focowiki.projection_scope_outputs (
+        scope_public_id, rendered_sequence, knowledge_base_id,
+        output_fingerprint_sha256, pages, removed_normalized_paths,
+        navigation_mutations, activation_owner_versions, created_at
+      ) VALUES (
+        'wide-output-scope-1', 2, 'plan-kb', ${"f".repeat(64)}, '[]'::jsonb,
+        ARRAY[]::text[], '[]'::jsonb, '[]'::jsonb, now()
+      )
+    `;
     await transaction`
       INSERT INTO focowiki.document_processing_jobs (
         public_id, knowledge_base_id, operation_public_id,
