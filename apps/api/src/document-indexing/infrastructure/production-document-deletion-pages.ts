@@ -200,7 +200,6 @@ async function buildDeletionNavigation(input: {
           prefix: "directory-leaf",
           knowledgeBaseId: input.request.action.knowledgeBaseId,
           directoryPath,
-          baseRevision: input.request.baseRevision,
           occupiedLeafIds,
           sequence: ++sequence
         })

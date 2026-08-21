@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenAIModelClient } from "@focowiki/okf";
-import { createPacedModelClient } from
+import {
+  createDirectoryLeafId,
+  createPacedModelClient
+} from
   "../src/document-indexing/infrastructure/production-document-processor-support.js";
 
 afterEach(() => {
@@ -127,4 +130,18 @@ describe("production generation model client", () => {
       );
     }
   );
+});
+
+describe("directory leaf identity", () => {
+  it("stays stable across concurrent projection revisions", () => {
+    const create = () => createDirectoryLeafId({
+      prefix: "extension-leaf",
+      knowledgeBaseId: "knowledge-base-1",
+      directoryPath: "_graph/by-directory",
+      occupiedLeafIds: new Set(),
+      sequence: 1
+    });
+
+    expect(create()).toBe(create());
+  });
 });
