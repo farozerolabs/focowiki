@@ -24,12 +24,18 @@ describe("document indexing migration manifest", () => {
       sourceGeneration: "storage-vnext-v9-document-indexing-hybrid",
       targetGeneration: "storage-vnext-v10-document-indexing-throughput",
       safety: "compatible"
+    }, {
+      fileName: "003_document_projection_throughput.sql",
+      sourceGeneration: "storage-vnext-v10-document-indexing-throughput",
+      targetGeneration: "storage-vnext-v11-projection-throughput",
+      safety: "compatible"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
-      "002_document_queue_throughput.sql"
+      "002_document_queue_throughput.sql",
+      "003_document_projection_throughput.sql"
     ]);
-    expect(RUNTIME_SCHEMA_GENERATION).toBe("storage-vnext-v10-document-indexing-throughput");
+    expect(RUNTIME_SCHEMA_GENERATION).toBe("storage-vnext-v11-projection-throughput");
   });
 
   it("covers the migration directory exactly once", () => {
@@ -46,10 +52,16 @@ describe("document indexing migration manifest", () => {
   it("initializes an absent schema, continues v9, and rejects unsupported generations", () => {
     expect(createBootstrapPlan("absent").pendingFiles).toEqual([
       "001_storage_vnext.sql",
-      "002_document_queue_throughput.sql"
+      "002_document_queue_throughput.sql",
+      "003_document_projection_throughput.sql"
     ]);
     expect(createBootstrapPlan("storage-vnext-v9-document-indexing-hybrid").pendingFiles)
-      .toEqual(["002_document_queue_throughput.sql"]);
+      .toEqual([
+        "002_document_queue_throughput.sql",
+        "003_document_projection_throughput.sql"
+      ]);
+    expect(createBootstrapPlan("storage-vnext-v10-document-indexing-throughput")
+      .pendingFiles).toEqual(["003_document_projection_throughput.sql"]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     for (const generation of [
       "storage-vnext-v1",

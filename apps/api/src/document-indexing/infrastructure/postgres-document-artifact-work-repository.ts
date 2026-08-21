@@ -30,9 +30,8 @@ import { artifactWorkTransaction as transaction,
 
 export type PostgresDocumentArtifactWorkRepository =
   DocumentArtifactWorkRepository & {
-    completeWithMutation(input: Parameters<
-      DocumentArtifactWorkRepository["complete"]
-    >[0] & {
+    completeWithMutation(input:
+      Parameters<DocumentArtifactWorkRepository["complete"]>[0] & {
       apply(transaction: DatabaseClient): Promise<void>;
       afterComplete?(transaction: DatabaseClient): Promise<void>;
     }): Promise<boolean>;
@@ -40,23 +39,24 @@ export type PostgresDocumentArtifactWorkRepository =
       publicId: string;
       workerId: string;
       now: string;
-      receipt: Parameters<DocumentArtifactWorkRepository["complete"]>[0]["receipt"];
+      receipt:
+        Parameters<DocumentArtifactWorkRepository["complete"]>[0]["receipt"];
       apply(transaction: DatabaseClient): Promise<void>;
     }): Promise<boolean>;
-    completeWaitingProjection(input: {
-      publicId: string;
-      now: string;
-    }): Promise<boolean>;
+    completeWaitingProjection(input: { publicId: string; now: string }): Promise<boolean>;
     completeReadyWaitingProjections(input: {
-      now: string;
-      limit: number;
+      now: string; limit: number;
+      documentJobPublicIds?: readonly string[];
+      detectFailures?: boolean;
     }): Promise<number>;
+    updateProjectionBacklogLimit(limit: number): void;
   };
 
 export function createPostgresDocumentArtifactWorkRepository(
   sql: DatabaseClient,
-  options: { webhookRetentionMilliseconds?: number } = {}
+  options: { webhookRetentionMilliseconds?: number; projectionBacklogLimit?: number } = {}
 ): PostgresDocumentArtifactWorkRepository {
+  let projectionBacklogLimit = options.projectionBacklogLimit ?? 10_000;
   return {
     async createFixedGraph(input) {
       validateIdentity(input.knowledgeBaseId);
@@ -111,6 +111,7 @@ export function createPostgresDocumentArtifactWorkRepository(
         now: input.now,
         limit: input.limit,
         leaseExpiresAt,
+        projectionBacklogLimit,
         webhookRetentionMilliseconds: options.webhookRetentionMilliseconds
       }));
     },
@@ -289,6 +290,10 @@ export function createPostgresDocumentArtifactWorkRepository(
         sql,
         now: input.now,
         limit: input.limit,
+        ...(input.documentJobPublicIds === undefined
+          ? {}
+          : { documentJobPublicIds: input.documentJobPublicIds }),
+        detectFailures: input.detectFailures ?? false,
         ...(options.webhookRetentionMilliseconds === undefined
           ? {}
           : {
@@ -300,6 +305,11 @@ export function createPostgresDocumentArtifactWorkRepository(
           now: input.now
         })
       });
+    },
+
+    updateProjectionBacklogLimit(limit) {
+      validatePositiveInteger(limit, "projection_backlog_limit", 100_000);
+      projectionBacklogLimit = limit;
     },
 
     async heartbeat(input) {

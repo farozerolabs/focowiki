@@ -134,7 +134,7 @@ export function createPostgresScopedActivationOwnerRepository(sql: DatabaseClien
               ${`activation-owner-${digest}`}, ${knowledgeBaseId},
               ${owner.kind}, ${owner.key}, 0
             )
-            ON CONFLICT (knowledge_base_id, owner_kind, owner_key) DO NOTHING
+            ON CONFLICT DO NOTHING
           `;
         }
         for (const owner of owners) {
@@ -205,7 +205,7 @@ export async function bumpPostgresScopedActivationOwners(input: {
         public_id, knowledge_base_id, owner_kind, owner_key, owner_version
       ) VALUES (
         ${publicId}, ${knowledgeBaseId}, ${owner.kind}, ${owner.key}, 0
-      ) ON CONFLICT (knowledge_base_id, owner_kind, owner_key) DO NOTHING
+      ) ON CONFLICT DO NOTHING
     `;
   }
   for (const owner of owners) {

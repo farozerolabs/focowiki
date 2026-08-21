@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
@@ -141,6 +141,36 @@ const enabled = Boolean(databaseUrl && runOwner
       sql as unknown as DatabaseClient,
       manifest as never,
       "2026-08-17T00:03:00.000Z"
+    )).rejects.toMatchObject({ code: "scoped_activation_conflict" });
+  });
+
+  it("turns a primary-key insertion race into a scoped conflict", async () => {
+    const desiredKey = "source-primary-key-race";
+    const publicId = `activation-owner-${createHash("sha256")
+      .update(JSON.stringify(["knowledge-base-set", "source", desiredKey]))
+      .digest("hex")}`;
+    await sql`
+      INSERT INTO focowiki.scoped_activation_owners (
+        public_id, knowledge_base_id, owner_kind, owner_key, owner_version
+      ) VALUES (
+        ${publicId}, 'knowledge-base-set', 'source',
+        'legacy-primary-key-owner', 0
+      )
+    `;
+    await expect(lockAndAdvanceScopedOwners(
+      sql as unknown as DatabaseClient,
+      {
+        knowledgeBaseId: "knowledge-base-set",
+        readinessSequence: 4,
+        activationOwners: [{
+          kind: "source",
+          key: desiredKey,
+          expectedVersion: 0,
+          activeSourceRevisionPublicId: "revision-primary-key-race",
+          activePageCandidatePublicId: null
+        }]
+      } as never,
+      "2026-08-17T00:04:00.000Z"
     )).rejects.toMatchObject({ code: "scoped_activation_conflict" });
   });
 

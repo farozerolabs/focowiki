@@ -28,6 +28,7 @@ export async function claimPostgresDocumentArtifactWork(input: {
   now: string;
   limit: number;
   leaseExpiresAt: string;
+  projectionBacklogLimit: number;
   webhookRetentionMilliseconds: number | undefined;
 }): Promise<readonly ClaimedDocumentArtifactWork[]> {
   const tx = input.transaction;
@@ -45,6 +46,17 @@ export async function claimPostgresDocumentArtifactWork(input: {
         AND work.next_eligible_at <= ${input.now}
         AND job.state IN ('waiting', 'processing', 'available')
         AND job.cancellation_requested_at IS NULL
+        AND (
+          work.work_kind <> 'knowledge_projection'
+          OR NOT EXISTS (
+            SELECT 1
+            FROM focowiki.document_artifact_work projection_backlog
+            WHERE projection_backlog.work_kind = 'knowledge_projection'
+              AND projection_backlog.state = 'waiting_on_projection'
+            OFFSET ${input.projectionBacklogLimit - 1}
+            LIMIT 1
+          )
+        )
         AND ${fixedPrerequisiteSql(tx)}
       ORDER BY work.next_eligible_at, work.created_at, work.public_id
       FOR UPDATE OF work SKIP LOCKED

@@ -27,27 +27,32 @@ export async function failPostgresDocumentsBlockedByProjectionScopes(input: {
 }): Promise<number> {
   const tx = input.transaction;
   const blocked = await tx<BlockedProjectionRow[]>`
+    WITH failed_jobs AS (
+      SELECT DISTINCT ON (contribution.document_job_public_id)
+             contribution.document_job_public_id,
+             coalesce(scope.safe_error_code, 'PROJECTION_SCOPE_FAILED')
+               AS error_code,
+             scope.retryable
+      FROM focowiki.projection_dirty_scopes scope
+      JOIN focowiki.projection_scope_contributions contribution
+        ON contribution.scope_public_id = scope.public_id
+       AND contribution.state = 'waiting'
+      WHERE scope.state = 'error'
+      ORDER BY contribution.document_job_public_id,
+               scope.updated_at DESC,
+               scope.public_id COLLATE "C"
+    )
     SELECT work.public_id AS work_public_id,
            work.document_job_public_id, work.knowledge_base_id,
            job.operation_public_id, work.source_file_public_id,
            work.source_revision_public_id,
-           failure.error_code, failure.retryable
-    FROM focowiki.document_artifact_work work
+           failed.error_code, failed.retryable
+    FROM failed_jobs failed
+    JOIN focowiki.document_artifact_work work
+      ON work.document_job_public_id = failed.document_job_public_id
     JOIN focowiki.document_processing_jobs job
-      ON job.public_id = work.document_job_public_id
-    JOIN LATERAL (
-      SELECT coalesce(scope.safe_error_code, 'PROJECTION_SCOPE_FAILED')
-               AS error_code,
-             scope.retryable
-      FROM focowiki.projection_scope_contributions contribution
-      JOIN focowiki.projection_dirty_scopes scope
-        ON scope.public_id = contribution.scope_public_id
-      WHERE contribution.document_job_public_id = work.document_job_public_id
-        AND contribution.state = 'waiting'
-        AND scope.state = 'error'
-      ORDER BY scope.updated_at DESC, scope.public_id COLLATE "C"
-      LIMIT 1
-    ) failure ON true
+      ON job.knowledge_base_id = work.knowledge_base_id
+     AND job.public_id = work.document_job_public_id
     WHERE work.work_kind = 'knowledge_projection'
       AND work.state = 'waiting_on_projection'
       AND job.state = 'processing'

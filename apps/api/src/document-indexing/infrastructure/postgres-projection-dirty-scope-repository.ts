@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
+import { MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER } from
+  "../domain/document-projection-limits.js";
 import {
   assertRepositoryIdentity,
   assertRepositoryPositiveInteger,
@@ -171,8 +173,22 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
       }>>`
         WITH claimable AS (
           SELECT scope.public_id,
-                 scope.required_sequence AS rendered_sequence
+                 coalesce(slice.rendered_sequence, scope.required_sequence)
+                   AS rendered_sequence
           FROM focowiki.projection_dirty_scopes scope
+          CROSS JOIN LATERAL (
+            SELECT max(covered.required_sequence) AS rendered_sequence
+            FROM (
+              SELECT contribution.required_sequence
+              FROM focowiki.projection_scope_contributions contribution
+              WHERE contribution.scope_public_id = scope.public_id
+                AND contribution.state = 'waiting'
+                AND contribution.required_sequence <= scope.required_sequence
+              ORDER BY contribution.required_sequence,
+                       contribution.public_id COLLATE "C"
+              LIMIT ${MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER}
+            ) covered
+          ) slice
           WHERE scope.state = 'waiting' AND scope.next_eligible_at <= ${now}
             AND scope.coalesce_until <= ${now}
             AND scope.attempt_count < scope.maximum_attempts
@@ -202,7 +218,10 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
                   'available', 'error', 'cancelled', 'superseded'
                 )
             )
-          ORDER BY scope.next_eligible_at, scope.public_id
+          ORDER BY scope.oldest_waiting_contribution_at NULLS LAST,
+                   scope.waiting_contribution_count DESC,
+                   scope.next_eligible_at,
+                   scope.public_id
           FOR UPDATE OF scope SKIP LOCKED
           LIMIT ${assertRepositoryPositiveInteger(input.limit, "limit", 256)}
         )
@@ -247,6 +266,7 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
               ) >= required_sequence
               THEN 'completed' ELSE 'waiting'
             END,
+            attempt_count = 0,
             lease_owner = NULL, lease_expires_at = NULL,
             next_eligible_at = ${assertRepositoryTimestamp(input.now, "now")},
             coalesce_until = ${input.now},
@@ -337,6 +357,7 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
               ) >= scope.required_sequence
               THEN 'completed' ELSE 'waiting'
             END,
+            attempt_count = 0,
             lease_owner = NULL, lease_expires_at = NULL,
             next_eligible_at = ${assertRepositoryTimestamp(input.now, "now")},
             safe_error_code = NULL, safe_error_message = NULL,
