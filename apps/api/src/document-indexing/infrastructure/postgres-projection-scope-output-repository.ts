@@ -54,41 +54,79 @@ export function createPostgresProjectionScopeOutputRepository(
   return {
     async persist(input: DocumentProjectionScopeOutput): Promise<void> {
       const normalized = validateOutput(input);
-      const rows = await sql<OutputRow[]>`
-        INSERT INTO focowiki.projection_scope_outputs (
-          scope_public_id, rendered_sequence, knowledge_base_id,
-          output_fingerprint_sha256, pages, removed_normalized_paths,
-          navigation_mutations, activation_owner_versions, created_at
-        ) VALUES (
-          ${normalized.scopePublicId}, ${normalized.renderedSequence},
-          ${normalized.knowledgeBaseId},
-          ${normalized.outputFingerprintSha256},
-          ${sql.json(normalized.pages as never)},
-          ${normalized.removedNormalizedPaths},
-          ${sql.json(normalized.navigationMutations as never)},
-          ${sql.json(normalized.activationOwnerVersions as never)},
-          ${normalized.createdAt}
-        )
-        ON CONFLICT (scope_public_id, rendered_sequence) DO UPDATE
-        SET output_fingerprint_sha256 = excluded.output_fingerprint_sha256,
-            pages = excluded.pages,
-            removed_normalized_paths = excluded.removed_normalized_paths,
-            navigation_mutations = excluded.navigation_mutations
-            , activation_owner_versions = excluded.activation_owner_versions
-        WHERE projection_scope_outputs.output_fingerprint_sha256
-                = excluded.output_fingerprint_sha256
-          AND projection_scope_outputs.pages = excluded.pages
-          AND projection_scope_outputs.removed_normalized_paths
-                = excluded.removed_normalized_paths
-          AND projection_scope_outputs.navigation_mutations
-                = excluded.navigation_mutations
-        RETURNING scope_public_id, rendered_sequence, knowledge_base_id,
-                  output_fingerprint_sha256, pages, removed_normalized_paths,
-                  navigation_mutations, activation_owner_versions, created_at
-      `;
-      if (rows.length !== 1) {
-        throw repositoryContractError("projection_scope_output_conflict");
-      }
+      await sql.begin(async (transaction) => {
+        const rows = await transaction<OutputRow[]>`
+          INSERT INTO focowiki.projection_scope_outputs (
+            scope_public_id, rendered_sequence, knowledge_base_id,
+            output_fingerprint_sha256, pages, removed_normalized_paths,
+            navigation_mutations, activation_owner_versions, created_at
+          ) VALUES (
+            ${normalized.scopePublicId}, ${normalized.renderedSequence},
+            ${normalized.knowledgeBaseId},
+            ${normalized.outputFingerprintSha256},
+            ${transaction.json(normalized.pages as never)},
+            ${normalized.removedNormalizedPaths},
+            ${transaction.json(normalized.navigationMutations as never)},
+            ${transaction.json(normalized.activationOwnerVersions as never)},
+            ${normalized.createdAt}
+          )
+          ON CONFLICT (scope_public_id, rendered_sequence) DO UPDATE
+          SET output_fingerprint_sha256 = excluded.output_fingerprint_sha256,
+              pages = excluded.pages,
+              removed_normalized_paths = excluded.removed_normalized_paths,
+              navigation_mutations = excluded.navigation_mutations,
+              activation_owner_versions = excluded.activation_owner_versions
+          WHERE projection_scope_outputs.output_fingerprint_sha256
+                  = excluded.output_fingerprint_sha256
+            AND projection_scope_outputs.pages = excluded.pages
+            AND projection_scope_outputs.removed_normalized_paths
+                  = excluded.removed_normalized_paths
+            AND projection_scope_outputs.navigation_mutations
+                  = excluded.navigation_mutations
+          RETURNING scope_public_id, rendered_sequence, knowledge_base_id,
+                    output_fingerprint_sha256, pages, removed_normalized_paths,
+                    navigation_mutations, activation_owner_versions, created_at
+        `;
+        if (rows.length !== 1) {
+          throw repositoryContractError("projection_scope_output_conflict");
+        }
+        const objectIds = [...new Set(normalized.pages.map(
+          (page) => page.objectId
+        ))];
+        if (objectIds.length > 0) {
+          await transaction`
+            INSERT INTO focowiki.projection_scope_object_refs (
+              scope_public_id, rendered_sequence, knowledge_base_id,
+              object_id, created_at
+            )
+            SELECT ${normalized.scopePublicId}, ${normalized.renderedSequence},
+                   ${normalized.knowledgeBaseId}, registration.object_id,
+                   ${normalized.createdAt}
+            FROM focowiki.object_registrations registration
+            WHERE registration.object_id IN ${transaction(objectIds)}
+              AND registration.state = 'verified'
+            ON CONFLICT (scope_public_id, rendered_sequence, object_id)
+            DO NOTHING
+          `;
+          const stored = await transaction<Array<{ object_id: string }>>`
+            SELECT object_id
+            FROM focowiki.projection_scope_object_refs
+            WHERE scope_public_id = ${normalized.scopePublicId}
+              AND rendered_sequence = ${normalized.renderedSequence}
+              AND object_id IN ${transaction(objectIds)}
+          `;
+          if (new Set(stored.map((row) => row.object_id)).size
+            !== objectIds.length) {
+            throw repositoryContractError("projection_scope_object_unverified");
+          }
+          await transaction`
+            UPDATE focowiki.object_registrations
+            SET zero_owner_since = NULL
+            WHERE object_id IN ${transaction(objectIds)}
+              AND state = 'verified'
+          `;
+        }
+      });
     },
 
     async read(input: {
@@ -108,6 +146,21 @@ export function createPostgresProjectionScopeOutputRepository(
             input.renderedSequence,
             "rendered_sequence"
           )}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(projection_scope_outputs.pages) page
+            LEFT JOIN focowiki.object_registrations registration
+              ON registration.object_id = page->>'objectId'
+             AND registration.state = 'verified'
+            LEFT JOIN focowiki.projection_scope_object_refs reference
+              ON reference.scope_public_id
+                   = projection_scope_outputs.scope_public_id
+             AND reference.rendered_sequence
+                   = projection_scope_outputs.rendered_sequence
+             AND reference.object_id = page->>'objectId'
+            WHERE registration.object_id IS NULL
+               OR reference.object_id IS NULL
+          )
       `;
       return rows[0] ? mapRow(rows[0]) : null;
     },
@@ -130,12 +183,11 @@ export function createPostgresProjectionScopeOutputRepository(
                output.navigation_mutations, output.activation_owner_versions,
                output.created_at
         FROM focowiki.projection_scope_contributions contribution
-        JOIN focowiki.projection_dirty_scopes scope
-          ON scope.knowledge_base_id = contribution.knowledge_base_id
-         AND scope.public_id = contribution.scope_public_id
+        JOIN focowiki.projection_scope_receipts receipt
+          ON receipt.contribution_public_id = contribution.public_id
         JOIN focowiki.projection_scope_outputs output
-          ON output.scope_public_id = scope.public_id
-         AND output.rendered_sequence = scope.completed_sequence
+          ON output.scope_public_id = receipt.scope_public_id
+         AND output.rendered_sequence = receipt.rendered_sequence
         WHERE contribution.knowledge_base_id = ${assertRepositoryIdentity(
           input.knowledgeBaseId,
           "knowledge_base_id"
@@ -145,7 +197,6 @@ export function createPostgresProjectionScopeOutputRepository(
             "document_job_public_id"
           )}
           AND contribution.state = 'acknowledged'
-          AND scope.completed_sequence >= contribution.required_sequence
         ORDER BY output.scope_public_id
         LIMIT ${limit + 1}
       `;

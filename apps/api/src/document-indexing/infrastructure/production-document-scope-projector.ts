@@ -25,6 +25,10 @@ import type { DocumentProjectionScopeClaim } from
   "../application/document-scope-projector-runtime.js";
 import { MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER } from
   "../domain/document-projection-limits.js";
+import { splitDocumentProjectionContributors } from
+  "./document-projection-contributor-batches.js";
+
+const MAXIMUM_CONTRIBUTOR_PAGE_PAIRS_PER_WRITE = 10_000;
 
 type FixedRepositories = ReturnType<
   typeof createProductionDocumentFixedRepositories
@@ -136,12 +140,19 @@ async function stageContributorPages(
       limit: MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER
     })
   );
-  await input.repositories.pages.stageForContributors({
-    knowledgeBaseId: scope.knowledgeBaseId,
+  const batches = splitDocumentProjectionContributors({
     contributors,
-    pages: rendered.pages,
-    stagedAt
+    pageCount: rendered.pages.length,
+    maximumPairs: MAXIMUM_CONTRIBUTOR_PAGE_PAIRS_PER_WRITE
   });
+  for (const batch of batches) {
+    await input.repositories.pages.stageForContributors({
+      knowledgeBaseId: scope.knowledgeBaseId,
+      contributors: batch,
+      pages: rendered.pages,
+      stagedAt
+    });
+  }
 }
 
 async function releaseReservations(

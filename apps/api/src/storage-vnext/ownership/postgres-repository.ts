@@ -188,6 +188,10 @@ export function createPostgresStorageVnextOwnershipRepository(
             SELECT 1 FROM focowiki.embedding_artifacts artifact
             WHERE artifact.object_id = registration.object_id
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM focowiki.projection_scope_object_refs reference
+            WHERE reference.object_id = registration.object_id
+          )
           ${cursor
             ? sql`AND (registration.zero_owner_since, registration.object_id)
                 > (${cursor.zeroOwnerSince}, ${cursor.objectId})`
@@ -700,6 +704,8 @@ async function readDurableReferenceCount(
          WHERE entry.object_id = ${objectId})
       + (SELECT count(*) FROM focowiki.embedding_artifacts artifact
          WHERE artifact.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.projection_scope_object_refs reference
+         WHERE reference.object_id = ${objectId})
     ) AS reference_count
   `;
   return Number(rows[0]?.reference_count ?? 0);
@@ -727,6 +733,10 @@ function hasNoDurableReferences(sql: ReadSql, alias: string) {
     AND NOT EXISTS (
       SELECT 1 FROM focowiki.embedding_artifacts artifact
       WHERE artifact.object_id = ${registration}.object_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM focowiki.projection_scope_object_refs reference
+      WHERE reference.object_id = ${registration}.object_id
     )
   `;
 }

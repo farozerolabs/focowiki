@@ -1432,6 +1432,18 @@ describeOwnedDatabase("PostgreSQL fixed document work repository", () => {
     const completion = createPostgresProjectionScopeCompletion(
       sql as unknown as DatabaseClient
     );
+    await sql`
+      INSERT INTO focowiki.object_registrations (
+        object_id, storage_key, checksum_sha256, byte_count, content_type,
+        object_format, state, write_attempt_public_id, verified_at
+      ) VALUES (
+        'projection-scope-object', 'generated/projection-scope-object',
+        ${"f".repeat(64)}, 128, 'text/markdown; charset=utf-8',
+        'okf-generated-markdown-v1', 'verified',
+        'projection-scope-write', ${at(9_074)}
+      )
+      ON CONFLICT (object_id) DO NOTHING
+    `;
     await createPostgresProjectionScopeOutputRepository(
       sql as unknown as DatabaseClient
     ).persist({

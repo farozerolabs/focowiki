@@ -1,4 +1,6 @@
 import type { DatabaseClient } from "../../db/client.js";
+import { releasePostgresProjectionScopeOutputsForDocument } from
+  "./postgres-projection-scope-output-release.js";
 
 export type ReleasedDocumentPageCandidates = {
   releasedCandidateCount: number;
@@ -57,7 +59,7 @@ export async function releasePostgresDocumentPageCandidates(input: {
     ORDER BY public_id COLLATE "C"
   `;
   if (releasable.length === 0) {
-    return { releasedCandidateCount: 0, queuedObjectCount: 0 };
+    return finishRelease(input, 0, 0);
   }
   const candidatePublicIds = releasable.map((candidate) => candidate.public_id);
   const deleted = await sql<Array<{ public_id: string; object_id: string }>>`
@@ -73,7 +75,7 @@ export async function releasePostgresDocumentPageCandidates(input: {
     RETURNING candidate.public_id, candidate.object_id
   `;
   if (deleted.length === 0) {
-    return { releasedCandidateCount: 0, queuedObjectCount: 0 };
+    return finishRelease(input, 0, 0);
   }
   const deletedCandidatePublicIds = deleted.map((candidate) => candidate.public_id);
   const objectIds = [...new Set(deleted.map((candidate) => candidate.object_id))];
@@ -111,6 +113,10 @@ export async function releasePostgresDocumentPageCandidates(input: {
         SELECT 1 FROM focowiki.embedding_artifacts artifact
         WHERE artifact.object_id = registration.object_id
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM focowiki.projection_scope_object_refs reference
+        WHERE reference.object_id = registration.object_id
+      )
     RETURNING registration.object_id
   `;
   if (zeroOwnerObjects.length > 0) {
@@ -142,8 +148,19 @@ export async function releasePostgresDocumentPageCandidates(input: {
       ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
     `;
   }
-  return {
-    releasedCandidateCount: deleted.length,
-    queuedObjectCount: zeroOwnerObjects.length
-  };
+  return finishRelease(input, deleted.length, zeroOwnerObjects.length);
+}
+
+async function finishRelease(
+  input: Parameters<typeof releasePostgresDocumentPageCandidates>[0],
+  releasedCandidateCount: number,
+  queuedObjectCount: number
+): Promise<ReleasedDocumentPageCandidates> {
+  await releasePostgresProjectionScopeOutputsForDocument({
+    transaction: input.transaction,
+    knowledgeBaseId: input.knowledgeBaseId,
+    documentJobPublicId: input.documentJobPublicId,
+    releasedAt: input.releasedAt
+  });
+  return { releasedCandidateCount, queuedObjectCount };
 }
