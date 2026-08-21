@@ -105,7 +105,6 @@ export function createDirectoryLeafId(input: {
   prefix: "directory-leaf" | "extension-leaf";
   knowledgeBaseId: string;
   directoryPath: string;
-  baseRevision: number;
   occupiedLeafIds: Set<string>;
   sequence: number;
 }): string {
@@ -114,7 +113,6 @@ export function createDirectoryLeafId(input: {
       input.prefix,
       input.knowledgeBaseId,
       input.directoryPath,
-      String(input.baseRevision),
       String(input.sequence),
       String(attempt)
     ]);

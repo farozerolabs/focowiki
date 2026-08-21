@@ -97,7 +97,22 @@ export async function applyPostgresDocumentDirectoryNavigation(input: {
     throw directoryNavigationError("apply_input_invalid");
   }
   const sql = input.transaction;
-  const touchedLeaves = input.mutations.flatMap((mutation) =>
+  const directoryPaths = input.mutations.map((mutation) => mutation.directoryPath);
+  const newerLeaves = directoryPaths.length === 0 ? [] : await sql<Array<{
+    directory_path: string;
+  }>>`
+    SELECT leaf.directory_path
+    FROM focowiki.generated_directory_leaves leaf
+    WHERE leaf.knowledge_base_id = ${input.knowledgeBaseId}
+      AND leaf.directory_path IN ${sql(directoryPaths)}
+      AND leaf.activation_revision > ${input.activationRevision}
+    FOR UPDATE OF leaf
+  `;
+  const newerDirectories = new Set(newerLeaves.map((leaf) =>
+    leaf.directory_path));
+  const mutations = input.mutations.filter((mutation) =>
+    !newerDirectories.has(mutation.directoryPath));
+  const touchedLeaves = mutations.flatMap((mutation) =>
     mutation.touchedLeaves.map((leaf) => ({
       directory_path: mutation.directoryPath,
       leaf_public_id: leaf.id,
@@ -109,7 +124,7 @@ export async function applyPostgresDocumentDirectoryNavigation(input: {
       revision: leaf.revision,
       changed_at: leaf.changedAt ?? input.activatedAt
     })));
-  const affectedLeaves = [...new Map(input.mutations.flatMap((mutation) => [
+  const affectedLeaves = [...new Map(mutations.flatMap((mutation) => [
     ...mutation.touchedLeaves.map((leaf) => ({
       directory_path: mutation.directoryPath,
       leaf_public_id: leaf.id
@@ -122,12 +137,12 @@ export async function applyPostgresDocumentDirectoryNavigation(input: {
     `${leaf.directory_path}\0${leaf.leaf_public_id}`,
     leaf
   ])).values()];
-  const removedLeaves = input.mutations.flatMap((mutation) =>
+  const removedLeaves = mutations.flatMap((mutation) =>
     mutation.removedLeafIds.map((leafId) => ({
       directory_path: mutation.directoryPath,
       leaf_public_id: leafId
     })));
-  const entries = input.mutations.flatMap((mutation) =>
+  const entries = mutations.flatMap((mutation) =>
     mutation.touchedLeaves.flatMap((leaf) =>
       leaf.entries.map((entry, ordinal) => ({
         directory_path: mutation.directoryPath,

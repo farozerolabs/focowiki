@@ -304,7 +304,6 @@ async function materializeDirectoryNavigation(input: {
       prefix: input.leafPrefix ?? "extension-leaf",
       knowledgeBaseId: input.scope.knowledgeBaseId,
       directoryPath: input.directoryPath,
-      baseRevision: input.scope.renderedSequence,
       occupiedLeafIds,
       sequence: ++sequence
     })
