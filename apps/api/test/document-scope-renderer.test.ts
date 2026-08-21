@@ -11,8 +11,46 @@ import { parseDocumentPortableRecords } from
   "../src/document-indexing/application/document-portable-record-parser.js";
 import { createProductionDocumentScopeRenderer } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer.js";
+import { projectRoot } from
+  "../src/document-indexing/infrastructure/production-document-scope-navigation.js";
 
 describe("production document scope renderer", () => {
+  it("keeps the empty relationship catalog beside the graph root", async () => {
+    const projected = await projectRoot({
+      dependencies: {
+        machineProjection: {
+          async readRootProjectionState() {
+            return {
+              knowledgeBase: { id: "kb-1", name: "Portable", description: null },
+              sourceFileCount: 1,
+              graphEdgeCount: 0,
+              rootEntryCount: 1,
+              currentLogEntries: [],
+              previousLogEntries: []
+            };
+          }
+        } as never,
+        rootLimits: {
+          rootSummaryLimit: 500,
+          okfLogMaxEntries: 100,
+          okfLogMaxBytes: 65_536
+        }
+      },
+      knowledgeBaseId: "kb-1",
+      includedSourceRevisionPublicIds: [],
+      excludedActiveSourceFilePublicIds: [],
+      changedAt: "2026-08-21T09:00:00.000Z"
+    });
+
+    expect(projected.pages.map((page) => page.logicalPath)).toContain(
+      "_graph/catalog.json"
+    );
+    const catalog = projected.pages.find((page) =>
+      page.logicalPath === "_graph/catalog.json");
+    expect(JSON.parse(new TextDecoder().decode(catalog?.bytes)))
+      .toMatchObject({ relationshipCount: 0 });
+  });
+
   it("materializes a source page through its exact dirty scope", async () => {
     const body = new TextEncoder().encode("# Updated source\n\nRelated content.");
     const checksum = createHash("sha256").update(body).digest("hex");
@@ -1197,6 +1235,7 @@ describe("production document scope renderer", () => {
 
       expect(result.pages.map((page) => page.logicalPath)).toEqual([
         "_index/catalog.json",
+        "_graph/catalog.json",
         "_graph/index.md",
         expect.stringMatching(
           /^_graph\/index-extension-leaf-[0-9a-f-]+\.md$/u
@@ -1244,7 +1283,7 @@ describe("production document scope renderer", () => {
       expect(result.navigationMutations.map((mutation) =>
         mutation.directoryPath)).toEqual(["_graph", "_index"]);
       expect(result.factCount).toBe(3);
-      expect(putVerified).toHaveBeenCalledTimes(7);
+      expect(putVerified).toHaveBeenCalledTimes(8);
     });
 
   it("removes an emptied term bucket without writing an empty graph", async () => {

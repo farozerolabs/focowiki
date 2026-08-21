@@ -166,6 +166,7 @@ async function assertDocumentIndexingSchemaSignature(
           'document_model_analysis_results',
           'document_model_layer_executions',
           'search_document_owners',
+          'upload_operation_summaries',
           'operation_tombstones'
         ]) AS required(name)
         WHERE to_regclass('focowiki.' || required.name) IS NULL
@@ -221,6 +222,9 @@ async function assertDocumentIndexingSchemaSignature(
           ,('operation_tombstones', 'result_summary')
           ,('webhook_subscriptions', 'idempotency_key')
           ,('webhook_subscriptions', 'request_hash')
+          ,('upload_operation_summaries', 'session_public_id')
+          ,('upload_operation_summaries', 'received_entry_count')
+          ,('upload_operation_summaries', 'expires_at')
         ) AS required(table_name, column_name)
         WHERE NOT EXISTS (
           SELECT 1 FROM information_schema.columns actual
@@ -269,6 +273,7 @@ async function assertDocumentIndexingSchemaSignature(
           'search_projections_one_active_idx',
           'cleanup_actions_claim_idx',
           'cleanup_actions_obsolete_artifact_idx',
+          'upload_operation_summaries_expiry_idx',
           'operation_tombstones_expiry_idx',
           'operation_tombstones_scope_time_idx',
           'webhook_subscriptions_public_idempotency_key'
@@ -301,6 +306,7 @@ async function assertDocumentIndexingSchemaSignature(
           'document_model_layer_executions_identity_key',
           'search_projections_value_check',
           'search_document_owners_value_check'
+          ,'upload_operation_summaries_count_check'
         ]) AS required(name)
         WHERE NOT EXISTS (
           SELECT 1

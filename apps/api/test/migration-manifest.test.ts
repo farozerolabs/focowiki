@@ -35,20 +35,20 @@ describe("document indexing migration manifest", () => {
       targetGeneration: "storage-vnext-v12-projection-object-lifecycle",
       safety: "compatible"
     }, {
-      fileName: "005_active_projection_output_repair.sql",
+      fileName: "005_clean_document_indexing_boundary.sql",
       sourceGeneration: "storage-vnext-v12-projection-object-lifecycle",
-      targetGeneration: "storage-vnext-v13-active-projection-output-repair",
-      safety: "compatible"
+      targetGeneration: "storage-vnext-v13-clean-document-indexing",
+      safety: "breaking_reset"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
       "002_document_queue_throughput.sql",
       "003_document_projection_throughput.sql",
       "004_projection_output_object_lifecycle.sql",
-      "005_active_projection_output_repair.sql"
+      "005_clean_document_indexing_boundary.sql"
     ]);
     expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      "storage-vnext-v13-active-projection-output-repair"
+      "storage-vnext-v13-clean-document-indexing"
     );
   });
 
@@ -63,36 +63,21 @@ describe("document indexing migration manifest", () => {
     })).not.toThrow();
   });
 
-  it("initializes an absent schema, continues v9, and rejects unsupported generations", () => {
+  it("initializes only an absent schema and rejects persisted generations", () => {
     expect(createBootstrapPlan("absent").pendingFiles).toEqual([
       "001_storage_vnext.sql",
       "002_document_queue_throughput.sql",
       "003_document_projection_throughput.sql",
       "004_projection_output_object_lifecycle.sql",
-      "005_active_projection_output_repair.sql"
+      "005_clean_document_indexing_boundary.sql"
     ]);
-    expect(createBootstrapPlan("storage-vnext-v9-document-indexing-hybrid").pendingFiles)
-      .toEqual([
-        "002_document_queue_throughput.sql",
-        "003_document_projection_throughput.sql",
-        "004_projection_output_object_lifecycle.sql",
-        "005_active_projection_output_repair.sql"
-      ]);
-    expect(createBootstrapPlan("storage-vnext-v10-document-indexing-throughput")
-      .pendingFiles).toEqual([
-        "003_document_projection_throughput.sql",
-        "004_projection_output_object_lifecycle.sql",
-        "005_active_projection_output_repair.sql"
-      ]);
-    expect(createBootstrapPlan("storage-vnext-v11-projection-throughput")
-      .pendingFiles).toEqual([
-        "004_projection_output_object_lifecycle.sql",
-        "005_active_projection_output_repair.sql"
-      ]);
-    expect(createBootstrapPlan("storage-vnext-v12-projection-object-lifecycle")
-      .pendingFiles).toEqual(["005_active_projection_output_repair.sql"]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     for (const generation of [
+      "storage-vnext-v9-document-indexing-hybrid",
+      "storage-vnext-v10-document-indexing-throughput",
+      "storage-vnext-v11-projection-throughput",
+      "storage-vnext-v12-projection-object-lifecycle",
+      "storage-vnext-v13-active-projection-output-repair",
       "storage-vnext-v1",
       "storage-vnext-v2",
       "storage-vnext-v4-continuous-pipeline",

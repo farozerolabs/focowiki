@@ -39,10 +39,10 @@ export const MIGRATION_MANIFEST = [
     safety: "compatible"
   },
   {
-    fileName: "005_active_projection_output_repair.sql",
+    fileName: "005_clean_document_indexing_boundary.sql",
     sourceGeneration: "storage-vnext-v12-projection-object-lifecycle",
-    targetGeneration: "storage-vnext-v13-active-projection-output-repair",
-    safety: "compatible"
+    targetGeneration: "storage-vnext-v13-clean-document-indexing",
+    safety: "breaking_reset"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
