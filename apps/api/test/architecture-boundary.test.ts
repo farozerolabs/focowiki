@@ -379,7 +379,7 @@ describe("lightweight architecture boundaries", () => {
     expect(developerPaths).not.toContain("/openapi/v1");
   });
 
-  it("keeps document work limited to facts and dirty-scope contributions", () => {
+  it("keeps document work limited to immutable publication facts", () => {
     const projection = readWorkspaceFile(
       "apps/api/src/document-indexing/infrastructure/production-document-knowledge-projection-work-handler.ts"
     );
@@ -389,7 +389,8 @@ describe("lightweight architecture boundaries", () => {
     expect(projection).not.toContain("createDocumentGeneratedPageStaging");
     expect(projection).toContain("createProductionDocumentKnowledgeProjectionWorkHandler");
     expect(projection).toContain("createPostgresDocumentProjectionFacts");
-    expect(projection).toContain("createPostgresProjectionScopeContributions");
+    expect(projection).not.toContain("createPostgresProjectionScopeContributions");
+    expect(projection).toContain("allocatePostgresDocumentFactEpoch");
     expect(projection).toContain("waitForProjectionWithMutation");
   });
 
@@ -488,18 +489,17 @@ describe("lightweight architecture boundaries", () => {
 
   it("keeps document completion free of publication orchestration", () => {
     const processor = readWorkspaceFile(
-      "apps/api/src/document-indexing/infrastructure/production-document-activate-work-handler.ts"
+      "apps/api/src/document-indexing/infrastructure/postgres-document-publication-work-activation.ts"
     );
     const activation = readWorkspaceFile(
-      "apps/api/src/document-indexing/infrastructure/postgres-document-fixed-activation.ts"
+      "apps/api/src/document-indexing/infrastructure/postgres-document-publication-source-activation.ts"
     );
 
-    expect(processor).toContain("applyPostgresDocumentFixedActivation");
     expect(processor).toContain('eventType: "document.available"');
     expect(processor).not.toContain("createStorageVnextPublicationProcessor");
     expect(processor).not.toContain("activateCandidate");
-    expect(activation).toContain("activation_sequence = ${manifest.readinessSequence}");
-    expect(activation).toContain(".activateRevision({");
+    expect(activation).toContain("activation_sequence = ${input.targetFactEpoch}");
+    expect(activation).toContain("activateProjectionRecords");
     expect(activation).toContain("UPDATE focowiki.source_file_identity_keys");
   });
 

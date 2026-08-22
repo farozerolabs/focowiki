@@ -3,8 +3,6 @@ import type { createS3StorageVnextImmutableBodyStore } from
   "../../storage-vnext/ownership/s3-immutable-body-store.js";
 import { createDocumentFirstLayerSourceLoader } from
   "./document-first-layer-source-loader.js";
-import { createDocumentKnowledgeProjectionManifestLoader } from
-  "./document-knowledge-projection-manifest-loader.js";
 import { createDocumentPageBaseLoader } from "./document-page-base-loader.js";
 import { createDocumentPreparedSourceLoader } from
   "./document-prepared-source-loader.js";
@@ -38,18 +36,8 @@ import { createPostgresDocumentWorkContext } from
   "./postgres-document-work-context.js";
 import { createPostgresGeneratedPageBaseRepository } from
   "./postgres-generated-page-base-repository.js";
-import { createPostgresGeneratedPageRepository } from
-  "./postgres-generated-page-repository.js";
-import { createPostgresProjectionDirtyScopeRepository } from
-  "./postgres-projection-dirty-scope-repository.js";
-import { createPostgresDocumentProjectionFacts } from
-  "./postgres-document-projection-facts.js";
-import { createPostgresProjectionScopeContributions } from
-  "./postgres-projection-scope-contributions.js";
 import { createPostgresRelationPairRepository } from
   "./postgres-relation-pair-repository.js";
-import { createPostgresScopedActivationOwnerRepository } from
-  "./postgres-scoped-activation-owner-repository.js";
 import { createPostgresSearchFamilyRepository } from
   "./postgres-search-family-repository.js";
 import { createPostgresSemanticFactRepository } from
@@ -70,14 +58,9 @@ export function createProductionDocumentFixedRepositories(
     referenceFacts: createPostgresDocumentReferenceFactRepository(sql),
     pairs: createPostgresRelationPairRepository(sql),
     relations: createPostgresCandidateFileRelationRepository(sql),
-    dirtyScopes: createPostgresProjectionDirtyScopeRepository(sql),
-    projectionFacts: createPostgresDocumentProjectionFacts(sql),
-    scopeContributions: createPostgresProjectionScopeContributions(sql),
-    activationOwners: createPostgresScopedActivationOwnerRepository(sql),
     searchFamilies: createPostgresSearchFamilyRepository(sql),
     searchOwners: createPostgresDocumentSearchOwnerRepository(sql),
     bases: createPostgresGeneratedPageBaseRepository(sql),
-    pages: createPostgresGeneratedPageRepository(sql),
     directoryNavigation: createPostgresDocumentDirectoryNavigation(sql),
     generatedContext: createPostgresDocumentGeneratedContext(sql),
     modelTraces: createPostgresDocumentModelTraceRepository(sql),
@@ -112,10 +95,6 @@ export function createProductionDocumentFixedLoaders(input: {
       maximumBytes: maximumSnapshotBytes
     }),
     pageBase: createDocumentPageBaseLoader({
-      bodies: input.bodies,
-      maximumBytes: maximumSnapshotBytes
-    }),
-    manifest: createDocumentKnowledgeProjectionManifestLoader({
       bodies: input.bodies,
       maximumBytes: maximumSnapshotBytes
     })

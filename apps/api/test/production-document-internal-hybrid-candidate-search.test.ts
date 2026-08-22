@@ -11,6 +11,54 @@ import type { EmbeddingConfigurationRepository } from
   "../src/semantic/embedding/repository.js";
 
 describe("production document internal hybrid candidate search", () => {
+  it("routes every provider operation through the shared search transport lane", async () => {
+    const query = vi.fn(async () => ({
+      hits: [], continuation: null, processingTimeMs: 1
+    }));
+    const vectorQuery = vi.fn(async () => ({ hits: [], processingTimeMs: 1 }));
+    const run = vi.fn(async (
+      _kind: string,
+      operation: () => Promise<unknown>
+    ) => operation());
+    const find = createProductionDocumentInternalHybridCandidateSearch({
+      sql: fakeSql(),
+      config: { search: { indexPrefix: "focowiki-test" } } as RuntimeConfig,
+      provider: {
+        kind: "opensearch",
+        query: { query },
+        vector: { query: vectorQuery }
+      } as unknown as Pick<SearchProviderRuntime, "kind" | "query" | "vector">,
+      embeddingConfigurations: {
+        getRevision: vi.fn(async () => ({
+          revisionPublicId: "embedding-revision",
+          vectorProducingRevisionPublicId: "embedding-vector-revision",
+          resolvedDimension: 3,
+          validationStatus: "valid"
+        }))
+      } as unknown as EmbeddingConfigurationRepository,
+      embeddingGateway: {
+        embed: vi.fn(async () => [[0.1, 0.2, 0.3]])
+      } satisfies EmbeddingGateway,
+      referenceFacts: { hydrateEligible: vi.fn() } as never,
+      lanes: { run } as never
+    });
+
+    await find.find({
+      knowledgeBaseId: "knowledge-base-a",
+      sourceFilePublicId: "current",
+      sourceRevisionPublicId: "revision-current",
+      semanticGenerationPublicId: "semantic-generation-a",
+      embeddingConfigurationRevisionPublicId: "embedding-revision",
+      terms: ["current title", "候选关系"],
+      limit: 8,
+      signal: new AbortController().signal
+    });
+
+    expect(run).toHaveBeenCalledTimes(5);
+    expect(run.mock.calls.every(([kind]) => kind === "search_transport"))
+      .toBe(true);
+  });
+
   it.each(["opensearch", "meilisearch"] as const)(
     "fuses %s staged and active lanes before PostgreSQL eligibility hydration",
     async (providerKind) => {
@@ -58,6 +106,7 @@ describe("production document internal hybrid candidate search", () => {
       const find = createProductionDocumentInternalHybridCandidateSearch({
         sql: fakeSql(),
         config: { search: { indexPrefix: "focowiki-test" } } as RuntimeConfig,
+        lanes: immediateLanes(),
         provider: {
           kind: providerKind,
           query: { query },
@@ -123,6 +172,7 @@ describe("production document internal hybrid candidate search", () => {
     const find = createProductionDocumentInternalHybridCandidateSearch({
       sql: fakeSql(),
       config: { search: { indexPrefix: "focowiki-test" } } as RuntimeConfig,
+      lanes: immediateLanes(),
       provider: {
         kind: "opensearch",
         query: { query },
@@ -156,6 +206,7 @@ describe("production document internal hybrid candidate search", () => {
     const find = createProductionDocumentInternalHybridCandidateSearch({
       sql: fakeSql(),
       config: { search: { indexPrefix: "focowiki-test" } } as RuntimeConfig,
+      lanes: immediateLanes(),
       provider: {
         kind: "opensearch",
         query: { query },
@@ -206,6 +257,7 @@ describe("production document internal hybrid candidate search", () => {
       const find = createProductionDocumentInternalHybridCandidateSearch({
         sql: fakeSql(),
         config: { search: { indexPrefix: "focowiki-test" } } as RuntimeConfig,
+        lanes: immediateLanes(),
         provider: {
           kind: providerKind,
           query: { query },
@@ -269,6 +321,17 @@ describe("production document internal hybrid candidate search", () => {
     }
   );
 });
+
+function immediateLanes() {
+  return {
+    run<T>(
+      _kind: string,
+      operation: () => Promise<T>
+    ): Promise<T> {
+      return operation();
+    }
+  } as never;
+}
 
 function fakeSql(): DatabaseClient {
   return (async (strings: TemplateStringsArray) => {

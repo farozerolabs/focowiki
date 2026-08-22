@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
 import type { DocumentArtifactWorkRepository } from
   "../application/document-work-port.js";
@@ -15,8 +14,6 @@ import { claimPostgresDocumentArtifactWork } from
   "./postgres-document-work-claim.js";
 import { recoverExpiredPostgresDocumentArtifactWork } from
   "./postgres-document-work-recovery.js";
-import { completeReadyPostgresProjectionWaiters } from
-  "./postgres-projection-waiting-completion.js";
 import { releasePostgresDocumentPageCandidates } from
   "./postgres-document-page-candidate-release.js";
 import { artifactWorkTransaction as transaction,
@@ -43,12 +40,6 @@ export type PostgresDocumentArtifactWorkRepository =
         Parameters<DocumentArtifactWorkRepository["complete"]>[0]["receipt"];
       apply(transaction: DatabaseClient): Promise<void>;
     }): Promise<boolean>;
-    completeWaitingProjection(input: { publicId: string; now: string }): Promise<boolean>;
-    completeReadyWaitingProjections(input: {
-      now: string; limit: number;
-      documentJobPublicIds?: readonly string[];
-      detectFailures?: boolean;
-    }): Promise<number>;
     updateProjectionBacklogLimit(limit: number): void;
   };
 
@@ -204,109 +195,6 @@ export function createPostgresDocumentArtifactWorkRepository(
       });
     },
 
-    async completeWaitingProjection(input) {
-      validateIdentity(input.publicId);
-      validateTimestamp(input.now);
-      return transaction(sql, async (tx) => {
-        const rows = await tx<Array<{
-          knowledge_base_id: string;
-          document_job_public_id: string;
-          source_file_public_id: string;
-          source_revision_public_id: string;
-          receipt_key: string;
-          input_fingerprint_sha256: string;
-          output_fingerprint_sha256: string;
-          receipt: Record<string, unknown>;
-        }>>`
-          SELECT work.knowledge_base_id, work.document_job_public_id,
-                 work.source_file_public_id, work.source_revision_public_id,
-                 pending.receipt_key, pending.input_fingerprint_sha256,
-                 pending.output_fingerprint_sha256, pending.receipt
-          FROM focowiki.document_artifact_work work
-          JOIN focowiki.document_projection_waiting_completions pending
-            ON pending.work_public_id = work.public_id
-          WHERE work.public_id = ${input.publicId}
-            AND work.state = 'waiting_on_projection'
-          FOR UPDATE OF work
-        `;
-        const work = rows[0];
-        if (!work) return false;
-        const contributions = await tx<Array<{
-          total_count: number | string;
-          waiting_count: number | string;
-        }>>`
-          SELECT count(*) AS total_count,
-                 count(*) FILTER (WHERE state = 'waiting') AS waiting_count
-          FROM focowiki.projection_scope_contributions
-          WHERE document_job_public_id = ${work.document_job_public_id}
-        `;
-        if (Number(contributions[0]?.total_count ?? 0) < 1
-          || Number(contributions[0]?.waiting_count ?? 0) > 0) return false;
-        await tx`
-          INSERT INTO focowiki.document_artifact_receipts (
-            public_id, knowledge_base_id, document_job_public_id,
-            work_public_id, source_file_public_id, source_revision_public_id,
-            receipt_kind, receipt_key, input_fingerprint_sha256,
-            output_fingerprint_sha256, receipt, committed_at
-          ) VALUES (
-            ${`document-receipt-${randomUUID()}`},
-            ${work.knowledge_base_id}, ${work.document_job_public_id},
-            ${input.publicId}, ${work.source_file_public_id},
-            ${work.source_revision_public_id}, 'generated_page',
-            ${work.receipt_key}, ${work.input_fingerprint_sha256},
-            ${work.output_fingerprint_sha256},
-            ${tx.json(work.receipt as never)}, ${input.now}
-          )
-          ON CONFLICT (
-            knowledge_base_id, source_revision_public_id, receipt_kind,
-            receipt_key, input_fingerprint_sha256
-          ) DO NOTHING
-        `;
-        const updated = await tx<Array<{ public_id: string }>>`
-          UPDATE focowiki.document_artifact_work
-          SET state = 'completed', ended_at = ${input.now}, updated_at = ${input.now}
-          WHERE public_id = ${input.publicId}
-            AND state = 'waiting_on_projection'
-          RETURNING public_id
-        `;
-        if (updated.length !== 1) return false;
-        await tx`
-          DELETE FROM focowiki.document_projection_waiting_completions
-          WHERE work_public_id = ${input.publicId}
-        `;
-        await updatePostgresDocumentJobSummary(
-          tx,
-          work.document_job_public_id,
-          input.now
-        );
-        return true;
-      });
-    },
-
-    async completeReadyWaitingProjections(input) {
-      validateTimestamp(input.now);
-      validatePositiveInteger(input.limit, "completion_limit", 256);
-      return completeReadyPostgresProjectionWaiters({
-        sql,
-        now: input.now,
-        limit: input.limit,
-        ...(input.documentJobPublicIds === undefined
-          ? {}
-          : { documentJobPublicIds: input.documentJobPublicIds }),
-        detectFailures: input.detectFailures ?? false,
-        ...(options.webhookRetentionMilliseconds === undefined
-          ? {}
-          : {
-              webhookRetentionMilliseconds:
-                options.webhookRetentionMilliseconds
-            }),
-        complete: (publicId) => this.completeWaitingProjection({
-          publicId,
-          now: input.now
-        })
-      });
-    },
-
     updateProjectionBacklogLimit(limit) {
       validatePositiveInteger(limit, "projection_backlog_limit", 100_000);
       projectionBacklogLimit = limit;
@@ -391,7 +279,7 @@ export function createPostgresDocumentArtifactWorkRepository(
                 terminal_at = ${input.now}, revision = revision + 1,
                 updated_at = ${input.now}
             WHERE public_id = ${work.document_job_public_id}
-              AND state <> 'error'
+              AND state NOT IN ('error', 'available')
             RETURNING revision
           `;
           if (options.webhookRetentionMilliseconds !== undefined

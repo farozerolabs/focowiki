@@ -34,9 +34,16 @@ export function createAdaptiveResourceController(input: {
     configuredMaximum(): number {
       return maximum;
     },
-    updateConfiguredMaximum(value: number): number {
-      maximum = boundedInteger(value, "maximum");
-      current = maximum;
+    updateConfiguredMaximum(
+      value: number,
+      options: { preserveCurrent?: boolean } = {}
+    ): number {
+      const nextMaximum = boundedInteger(value, "maximum");
+      if (nextMaximum === maximum) return current;
+      maximum = nextMaximum;
+      current = options.preserveCurrent
+        ? Math.min(current, maximum)
+        : maximum;
       stableSuccesses = 0;
       consecutivePressureObservations = 0;
       return current;

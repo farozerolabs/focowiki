@@ -6,6 +6,9 @@ export type DocumentProjectionScopeClaim = Readonly<{
   key: string;
   requiredSequence: number;
   renderedSequence: number;
+  deterministicEventTime?: string;
+  leaseGeneration?: number;
+  leaseExpiresAt?: string;
 }>;
 
 export type DocumentProjectionStorageRequests = Readonly<{
@@ -42,6 +45,7 @@ export function createDocumentScopeProjectorRuntime<
     fail(request: {
       publicId: string;
       workerId: string;
+      leaseGeneration?: number;
       now: string;
       errorCode: string;
       retryable: boolean;
@@ -52,6 +56,13 @@ export function createDocumentScopeProjectorRuntime<
       retryAt: string;
       limit: number;
     }): Promise<number>;
+    heartbeat?(request: {
+      publicId: string;
+      workerId: string;
+      leaseGeneration: number;
+      now: string;
+      leaseDurationMs: number;
+    }): Promise<boolean>;
     compactTerminalHistory?(request: {
       before: string;
       limit: number;
@@ -61,6 +72,7 @@ export function createDocumentScopeProjectorRuntime<
     publicId: string;
     workerId: string;
     renderedSequence: number;
+    leaseGeneration?: number;
     outputFingerprintSha256: string;
     storageRequests: DocumentProjectionStorageRequests;
     now: string;
@@ -161,18 +173,37 @@ export function createDocumentScopeProjectorRuntime<
     scope: DocumentProjectionScopeClaim,
     signal: AbortSignal
   ): Promise<void> {
+    const leaseController = new AbortController();
+    const abortFromParent = () => leaseController.abort(signal.reason);
+    signal.addEventListener("abort", abortFromParent, { once: true });
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     try {
-      const rendered = await input.render(scope, signal);
+      if (input.scopes.heartbeat && scope.leaseGeneration !== undefined) {
+        await requireLeaseHeartbeat(scope, leaseController);
+        heartbeatTimer = setInterval(() => {
+          void requireLeaseHeartbeat(scope, leaseController).catch((error) => {
+            leaseController.abort(error);
+          });
+        }, Math.max(100, Math.floor(input.leaseDurationMs / 3)));
+        heartbeatTimer.unref?.();
+      }
+      const rendered = await input.render(scope, leaseController.signal);
+      if (input.scopes.heartbeat && scope.leaseGeneration !== undefined) {
+        await requireLeaseHeartbeat(scope, leaseController);
+      }
+      leaseController.signal.throwIfAborted();
       if (!/^[0-9a-f]{64}$/u.test(rendered.outputFingerprintSha256)) {
         throw projectorError("projection_scope_fingerprint_invalid");
       }
       validateStorageRequests(rendered.storageRequests);
-      await input.persist(scope, rendered, signal);
+      await input.persist(scope, rendered, leaseController.signal);
       const now = input.now();
       const committed = await input.commit({
         publicId: scope.publicId,
         workerId: input.workerId,
         renderedSequence: scope.renderedSequence,
+        ...(scope.leaseGeneration !== undefined
+          ? { leaseGeneration: scope.leaseGeneration } : {}),
         outputFingerprintSha256: rendered.outputFingerprintSha256,
         storageRequests: rendered.storageRequests,
         now
@@ -191,6 +222,8 @@ export function createDocumentScopeProjectorRuntime<
       await input.scopes.fail({
         publicId: scope.publicId,
         workerId: input.workerId,
+        ...(scope.leaseGeneration !== undefined
+          ? { leaseGeneration: scope.leaseGeneration } : {}),
         now,
         errorCode: diagnostic.code,
         retryable: diagnostic.retryable,
@@ -204,6 +237,27 @@ export function createDocumentScopeProjectorRuntime<
         errorCode: diagnostic.code,
         retryable: diagnostic.retryable
       });
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      signal.removeEventListener("abort", abortFromParent);
+    }
+  }
+
+  async function requireLeaseHeartbeat(
+    scope: DocumentProjectionScopeClaim,
+    controller: AbortController
+  ): Promise<void> {
+    const renewed = await input.scopes.heartbeat!({
+      publicId: scope.publicId,
+      workerId: input.workerId,
+      leaseGeneration: scope.leaseGeneration!,
+      now: input.now(),
+      leaseDurationMs: input.leaseDurationMs
+    });
+    if (!renewed) {
+      const error = projectorError("projection_scope_lease_lost");
+      controller.abort(error);
+      throw error;
     }
   }
 

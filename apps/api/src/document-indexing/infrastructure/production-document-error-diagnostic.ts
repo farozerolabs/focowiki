@@ -1,6 +1,15 @@
 import { safeDocumentDiagnosticPath } from
   "../application/document-error-diagnostic-path.js";
 
+const PROJECTION_INVARIANT_CODES = new Set([
+  "projection_path_owner_mismatch",
+  "projection_directory_owner_mismatch",
+  "projection_scope_output_conflict",
+  "projection_scope_page_conflict",
+  "projection_scope_navigation_conflict",
+  "projection_scope_owner_version_conflict"
+]);
+
 export function safeErrorCode(error: unknown): string {
   const code = typeof error === "object" && error !== null && "code" in error
     ? (error as { code?: unknown }).code : null;
@@ -37,12 +46,16 @@ export function safeWorkerErrorDiagnostic(error: unknown): {
 }
 
 export function isRetryable(code: string): boolean {
-  return ![
+  return !PROJECTION_INVARIANT_CODES.has(code) && ![
     "source_body_empty", "source_frontmatter_invalid", "source_utf8_invalid",
     "source_size_limit", "invalid_source_contract", "metadata_too_large",
     "document_revision_superseded",
     "projection_scope_contribution_count_invalid"
   ].includes(code);
+}
+
+export function isProjectionInvariantCode(code: string): boolean {
+  return PROJECTION_INVARIANT_CODES.has(code);
 }
 
 export function isAutomaticallyRetryable(

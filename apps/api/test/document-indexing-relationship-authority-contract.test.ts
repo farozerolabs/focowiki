@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const canonicalRelationshipConsumers = [
-  "apps/api/src/document-indexing/infrastructure/postgres-document-deletion-acceptance.ts",
   "apps/api/src/document-indexing/infrastructure/postgres-document-deletion-projection-context.ts",
   "apps/api/src/document-indexing/infrastructure/postgres-document-generated-context.ts",
   "apps/api/src/document-indexing/infrastructure/postgres-document-relation-deletion.ts",

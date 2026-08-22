@@ -153,24 +153,6 @@ export function createPostgresDocumentRetry(
             AND public_id = ${row.operation_public_id}
         `;
       }
-      await transaction`
-        UPDATE focowiki.projection_dirty_scopes scope
-        SET state = 'waiting', attempt_count = 0,
-            next_eligible_at = ${input.retriedAt},
-            coalesce_until = ${input.retriedAt},
-            lease_owner = NULL, lease_expires_at = NULL,
-            safe_error_code = NULL, safe_error_message = NULL,
-            retryable = false, updated_at = ${input.retriedAt}
-        FROM focowiki.projection_scope_contributions contribution
-        WHERE contribution.document_job_public_id = ${row.public_id}
-          AND contribution.state = 'waiting'
-          AND scope.public_id = contribution.scope_public_id
-          AND scope.state = 'error'
-      `;
-      await transaction`
-        DELETE FROM focowiki.projection_scope_contributions
-        WHERE document_job_public_id = ${row.public_id}
-      `;
       const removed = await transaction<Array<{ public_id: string }>>`
         DELETE FROM focowiki.document_processing_jobs
         WHERE public_id = ${row.public_id}

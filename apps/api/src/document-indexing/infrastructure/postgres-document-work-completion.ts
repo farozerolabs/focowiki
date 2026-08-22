@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { TransactionSql } from "postgres";
-import type { DatabaseClient } from "../../db/client.js";
 import type { DocumentArtifactWorkRepository } from
   "../application/document-work-port.js";
-import { releasePostgresProjectionScopeOutputsForDocument } from
-  "./postgres-projection-scope-output-release.js";
+import { convergePostgresUploadDocumentOperation } from
+  "./postgres-upload-operation-aggregation.js";
 
 type CompletionInput = Parameters<DocumentArtifactWorkRepository["complete"]>[0];
 
@@ -19,14 +18,19 @@ export async function completePostgresDocumentWork(
     document_job_public_id: string;
     source_file_public_id: string;
     source_revision_public_id: string;
+    operation_public_id: string;
+    work_kind: string;
     state: "running" | "completed";
   }>>`
-    SELECT knowledge_base_id, document_job_public_id,
-           source_file_public_id, source_revision_public_id, state
-    FROM focowiki.document_artifact_work
-    WHERE public_id = ${input.publicId}
-      AND ((state = 'running' AND lease_owner = ${input.workerId}
-        AND lease_expires_at > ${input.now}) OR state = 'completed')
+    SELECT work.knowledge_base_id, work.document_job_public_id,
+           work.source_file_public_id, work.source_revision_public_id,
+           job.operation_public_id, work.work_kind, work.state
+    FROM focowiki.document_artifact_work work
+    JOIN focowiki.document_processing_jobs job
+      ON job.public_id = work.document_job_public_id
+    WHERE work.public_id = ${input.publicId}
+      AND ((work.state = 'running' AND work.lease_owner = ${input.workerId}
+        AND work.lease_expires_at > ${input.now}) OR work.state = 'completed')
     FOR UPDATE
   `;
   const work = rows[0];
@@ -81,12 +85,13 @@ export async function completePostgresDocumentWork(
     work.document_job_public_id,
     input.now
   );
-  await releasePostgresProjectionScopeOutputsForDocument({
-    transaction: sql as unknown as DatabaseClient,
-    knowledgeBaseId: work.knowledge_base_id,
-    documentJobPublicId: work.document_job_public_id,
-    releasedAt: input.now
-  });
+  if (work.work_kind === "cleanup") {
+    await convergePostgresUploadDocumentOperation(sql, {
+      knowledgeBaseId: work.knowledge_base_id,
+      operationPublicId: work.operation_public_id,
+      completedAt: input.now
+    });
+  }
   await afterComplete?.();
   return true;
 }
@@ -128,16 +133,42 @@ export async function updatePostgresDocumentJobSummary(
                AS projection_wait_count,
              coalesce(array_agg(work_kind ORDER BY work_kind)
                FILTER (WHERE state = 'running'), '{}'::text[]) AS active_kinds,
-             (array_agg(work_kind ORDER BY CASE work_kind
-               WHEN 'prepare' THEN 1 WHEN 'first_layer' THEN 2
-               WHEN 'content_projection' THEN 3 WHEN 'graphrag' THEN 4
-               WHEN 'relation_reconcile' THEN 5
-               WHEN 'knowledge_projection' THEN 6
-               WHEN 'activate' THEN 7 WHEN 'cleanup' THEN 8 ELSE 9 END)
-               FILTER (WHERE state IN (
-                 'waiting', 'running', 'waiting_on_projection'
-               )))[1]
-               AS blocking_kind,
+             CASE
+               WHEN EXISTS (
+                 SELECT 1
+                 FROM focowiki.projection_generation_documents document
+                 JOIN focowiki.projection_publication_generations generation
+                   ON generation.public_id = document.generation_public_id
+                 JOIN focowiki.document_artifact_work activation_work
+                   ON activation_work.document_job_public_id
+                        = document.document_job_public_id
+                  AND activation_work.work_kind = 'activate'
+                  AND activation_work.state <> 'completed'
+                 WHERE document.document_job_public_id
+                         = ${documentJobPublicId}
+                   AND generation.state = 'ready'
+               ) THEN 'activate'
+               WHEN EXISTS (
+                 SELECT 1
+                 FROM focowiki.projection_generation_documents document
+                 JOIN focowiki.projection_publication_generations generation
+                   ON generation.public_id = document.generation_public_id
+                 WHERE document.document_job_public_id
+                         = ${documentJobPublicId}
+                   AND generation.state IN (
+                     'planned', 'rendering', 'validating'
+                   )
+               ) THEN 'knowledge_projection'
+               ELSE (array_agg(work_kind ORDER BY CASE work_kind
+                 WHEN 'prepare' THEN 1 WHEN 'first_layer' THEN 2
+                 WHEN 'content_projection' THEN 3 WHEN 'graphrag' THEN 4
+                 WHEN 'relation_reconcile' THEN 5
+                 WHEN 'knowledge_projection' THEN 6
+                 WHEN 'activate' THEN 7 WHEN 'cleanup' THEN 8 ELSE 9 END)
+                 FILTER (WHERE state IN (
+                   'waiting', 'running', 'waiting_on_projection'
+                 )))[1]
+             END AS blocking_kind,
              (array_agg(work_kind ORDER BY CASE work_kind
                WHEN 'prepare' THEN 1 WHEN 'first_layer' THEN 2
                WHEN 'content_projection' THEN 3 WHEN 'graphrag' THEN 4

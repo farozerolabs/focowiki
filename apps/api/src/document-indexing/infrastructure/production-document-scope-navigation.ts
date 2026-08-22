@@ -12,8 +12,6 @@ import { directoryLeafPath } from
   "../application/document-directory-navigation-renderer.js";
 import { buildDocumentIndexCatalogPage } from
   "../application/document-page-term-projection.js";
-import { buildDocumentGraphCatalogPage } from
-  "../application/document-graph-projection.js";
 import type { OrderedDirectoryLeafLimits } from
   "../domain/document-directory-leaves.js";
 import { documentDirectoryEntryId } from
@@ -190,11 +188,9 @@ export async function materializeRootExtensionNavigation(input: {
     })
   ]);
   const catalogPages = input.projected.pages.filter((page) =>
-    page.logicalPath === "_index/catalog.json"
-      || page.logicalPath === "_graph/catalog.json");
+    page.logicalPath === "_index/catalog.json");
   const rootPages = input.projected.pages.filter((page) =>
-    page.logicalPath !== "_index/catalog.json"
-      && page.logicalPath !== "_graph/catalog.json");
+    page.logicalPath !== "_index/catalog.json");
   return {
     pages: [...catalogPages, ...graph.pages, ...index.pages, ...rootPages],
     removedLogicalPaths: [...new Set([
@@ -411,7 +407,6 @@ export async function projectRoot(input: {
   return {
     pages: [
       buildDocumentIndexCatalogPage(),
-      buildDocumentGraphCatalogPage(state.graphEdgeCount),
       ...(["index.md", "log.md"] as const)
         .map((path) => renderDocumentRootPage({
           path,

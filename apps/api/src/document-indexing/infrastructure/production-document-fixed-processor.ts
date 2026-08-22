@@ -1,43 +1,13 @@
-import { S3Client } from "@aws-sdk/client-s3";
 import type { RuntimeConfig, WorkerRuntimeConfig } from "../../config.js";
 import type { DatabaseClient } from "../../db/client.js";
 import type { createNodeJiebaTokenizer } from
   "../../infrastructure/tokenization/nodejieba-tokenizer.js";
 import type { createRuntimeSearchProvider } from "../../runtime/search-provider.js";
 import type { RuntimeSearchSettings } from "../../runtime-settings/types.js";
-import { createRuntimeSettingsRepository } from
-  "../../runtime-settings/repository.js";
-import { loadDeploymentSecret } from "../../security/runtime-secrets.js";
-import { createEmbeddingArtifactService } from "../../semantic/embedding/artifact-service.js";
-import { createEmbeddingGateway } from "../../semantic/embedding/gateway.js";
-import { createOpenAiCompatibleEmbeddingTransport } from
-  "../../semantic/embedding/openai-compatible-transport.js";
-import { createGraphRagRuntime } from
-  "../../semantic/graphrag/graph-rag-runtime.js";
-import { createPostgresEmbeddingArtifactRepository } from
-  "../../semantic/infrastructure/postgres-embedding-artifact-repository.js";
-import { createPostgresEmbeddingConfigurationRepository } from
-  "../../semantic/infrastructure/postgres-embedding-configuration-repository.js";
-import { createS3EmbeddingArtifactStore } from
-  "../../semantic/infrastructure/s3-embedding-artifact-store.js";
-import { createS3ClientConfig } from "../../storage/s3.js";
-import { createS3StorageVnextSourceBodyStore } from
-  "../../storage-vnext/catalog/s3-source-body-store.js";
-import {
-  createS3StorageVnextFailedWriteProvider,
-  createStorageVnextFailedWriteCompensator
-} from "../../storage-vnext/ownership/failed-write-compensation.js";
-import { createStorageVnextImmutableObjectWriter } from
-  "../../storage-vnext/ownership/immutable-object-writer.js";
-import { createPostgresStorageVnextOwnershipRepository } from
-  "../../storage-vnext/ownership/postgres-repository.js";
-import { createS3StorageVnextImmutableBodyStore } from
-  "../../storage-vnext/ownership/s3-immutable-body-store.js";
 import { createStorageVnextSearchSettings } from
   "../../storage-vnext/search/settings.js";
 import { createDocumentFixedDagRuntime } from "../application/document-fixed-dag-runtime.js";
 import { createDocumentFixedDagScheduler } from "../application/document-fixed-dag-scheduler.js";
-import { createDocumentResourceLanes } from "../application/document-resource-lanes.js";
 import type { DocumentResourceCapacityInput } from
   "../application/document-resource-capacity.js";
 import {
@@ -46,10 +16,6 @@ import {
 } from
   "../application/document-resource-capacity.js";
 import { createWeightedGenerationTaskRunner } from "../application/weighted-generation-task-runner.js";
-import { createPostgresDocumentMachineProjectionReader } from
-  "./postgres-document-machine-projection-reader.js";
-import { createProductionDocumentActivateWorkHandler } from
-  "./production-document-activate-work-handler.js";
 import { createProductionDocumentContentProjectionWorkHandler } from
   "./production-document-content-projection-work-handler.js";
 import { createProductionDocumentFirstLayerWorkHandler } from
@@ -90,16 +56,21 @@ import {
 } from "./production-document-fixed-runtime-support.js";
 import type { DocumentWorkerObservability } from
   "../application/document-worker-observability.js";
-import { createPostgresProjectionScopeSnapshot } from
-  "./postgres-projection-scope-snapshot.js";
-import { createPostgresProjectionScopeOutputRepository } from
-  "./postgres-projection-scope-output-repository.js";
-import { createProductionDocumentScopeProjector } from
-  "./production-document-scope-projector.js";
+import { createDocumentProjectionCleanupRuntime } from
+  "../application/document-projection-cleanup-runtime.js";
+import { createPostgresProjectionCleanupOutbox } from
+  "./postgres-projection-cleanup-outbox.js";
 import {
-  observeProductionDocumentWorkEvent,
-  observeProductionScopeFailure
+  observeProductionDocumentWorkEvent
 } from "./production-document-failure-observability.js";
+import { createProductionDocumentFixedResources } from
+  "./production-document-fixed-resources.js";
+import { createProductionDocumentPublicationScopeRuntime } from
+  "./production-document-publication-scope-runtime.js";
+import { createProductionDocumentPublicationCoordinatorRuntime } from
+  "./production-document-publication-coordinator-runtime.js";
+import { createProductionDocumentPublicationCutoverRuntime } from
+  "./production-document-publication-cutover-runtime.js";
 
 export function createProductionDocumentFixedProcessor(input: {
   sql: DatabaseClient;
@@ -112,11 +83,13 @@ export function createProductionDocumentFixedProcessor(input: {
   workerId: string;
   observability?: Pick<
     DocumentWorkerObservability,
-    "work" | "providerFailure" | "ingestionFailure"
+    "work" | "providerFailure" | "ingestionFailure" | "publication"
+      | "publicationBacklog" | "publicationScope" | "publicationStorage"
+      | "cleanup"
   >;
 }) {
   let currentResourceCapacity = { ...input.resourceCapacity };
-  const resources = createFixedResources(input);
+  const resources = createProductionDocumentFixedResources(input);
   const projectionCapacities = resolveDocumentProjectionCapacities({
     documentConcurrency: input.resourceCapacity.documentConcurrency
   });
@@ -125,7 +98,6 @@ export function createProductionDocumentFixedProcessor(input: {
     input.workerConfig.completedJobRetentionDays * 86_400_000,
     projectionBacklogLimit(input.resourceCapacity.documentConcurrency)
   );
-  const scopeOutputs = createPostgresProjectionScopeOutputRepository(input.sql);
   const loaders = createProductionDocumentFixedLoaders({
     contexts: repositories.contexts,
     receipts: repositories.receipts,
@@ -181,7 +153,8 @@ export function createProductionDocumentFixedProcessor(input: {
     provider: resources.searchProvider,
     embeddingConfigurations: resources.embeddingConfigurations,
     embeddingGateway: resources.embeddingGateway,
-    referenceFacts: repositories.referenceFacts
+    referenceFacts: repositories.referenceFacts,
+    lanes: resources.lanes
   });
   const handlers = {
     prepare: createProductionDocumentPrepareWorkHandler({
@@ -261,28 +234,9 @@ export function createProductionDocumentFixedProcessor(input: {
       bases: repositories.bases,
       loadBase: loaders.pageBase,
       relations: repositories.relations,
-      generatedContext: repositories.generatedContext,
-      machineProjection: resources.machineProjection,
       semanticSearch,
-      searchFamilies: repositories.searchFamilies,
-      dirtyScopes: repositories.dirtyScopes,
-      projectionFacts: repositories.projectionFacts,
-      scopeContributions: repositories.scopeContributions,
       work: repositories.work,
       tokenizer: resources.tokenizer,
-      activationOwners: repositories.activationOwners,
-      objectWriter: resources.writer,
-      ownership: resources.ownership,
-      lanes: resources.lanes
-    }),
-    activate: createProductionDocumentActivateWorkHandler({
-      work: repositories.work,
-      receipts: repositories.receipts,
-      loadManifest: loaders.manifest,
-      pages: repositories.pages,
-      scopeOutputs,
-      activationOwners: repositories.activationOwners,
-      directoryNavigation: repositories.directoryNavigation,
       lanes: resources.lanes
     }),
     cleanup: createDocumentCleanupReceiptHandler({ sql: input.sql })
@@ -315,13 +269,10 @@ export function createProductionDocumentFixedProcessor(input: {
       observeProductionDocumentWorkEvent(input.observability, event);
     }
   });
-  const scopeSnapshots = createPostgresProjectionScopeSnapshot(input.sql);
   const graphConfig = input.config.graph;
   if (!graphConfig) missingGraphConfig();
   const scopeRenderer = createProductionDocumentScopeRenderer({
-    snapshots: scopeSnapshots,
     machineProjection: resources.machineProjection,
-    scopeContributions: repositories.scopeContributions,
     sourceProjection: createProductionDocumentSourceScopeProjection({
       bases: repositories.bases,
       relations: repositories.relations,
@@ -345,24 +296,49 @@ export function createProductionDocumentFixedProcessor(input: {
     maximumRecordsPerShard: graphConfig.shardSize,
     maximumShardBytes: 1_048_576
   });
-  const scopeRuntime = createProductionDocumentScopeProjector({
-    sql: input.sql,
-    workerId: input.workerId,
+  const publicationScopeRuntime =
+    createProductionDocumentPublicationScopeRuntime({
+      sql: input.sql,
+      workerId: input.workerId,
+      leaseDurationMs: input.workerConfig.lockTtlSeconds * 1_000,
+      heartbeatIntervalMs: input.workerConfig.heartbeatIntervalMs,
+      maximumConcurrency: projectionCapacities.scopeProjection,
+      renderer: scopeRenderer,
+      ...(input.observability
+        ? { observability: input.observability } : {})
+    });
+  const publicationCoordinatorRuntime =
+    createProductionDocumentPublicationCoordinatorRuntime({
+      sql: input.sql,
+      ...(input.observability
+        ? { observability: input.observability } : {})
+    });
+  const publicationCutoverRuntime =
+    createProductionDocumentPublicationCutoverRuntime({ sql: input.sql });
+  const projectionCleanup = createDocumentProjectionCleanupRuntime({
+    workerId: `${input.workerId}:projection-cleanup`,
     leaseDurationMs: input.workerConfig.lockTtlSeconds * 1_000,
-    maximumConcurrency: projectionCapacities.scopeProjection,
+    concurrency: Math.min(4, projectionCapacities.scopeProjection),
     retryDelayMs: input.workerConfig.jobRetryDelayMs,
-    repositories,
-    outputs: scopeOutputs,
-    renderer: scopeRenderer,
+    outbox: createPostgresProjectionCleanupOutbox(input.sql),
     ownership: resources.ownership,
-    onFailure: (failure) => observeProductionScopeFailure(
-      input.observability,
-      failure
-    )
+    now: () => new Date().toISOString(),
+    wait: waitForDocumentWork,
+    ...(input.observability
+      ? { onMetrics: (fields: Parameters<
+        DocumentWorkerObservability["cleanup"]
+      >[0]) => input.observability?.cleanup(fields) }
+      : {})
   });
   return {
     async run(signal: AbortSignal) {
-      await Promise.all([runtime.run(signal), scopeRuntime.run(signal)]);
+      await Promise.all([
+        runtime.run(signal),
+        publicationScopeRuntime.run(signal),
+        publicationCoordinatorRuntime.run(signal),
+        publicationCutoverRuntime.run(signal),
+        projectionCleanup.run(signal)
+      ]);
     },
     async start() { await resources.graphRag.start(); },
     async updateRuntime(next: {
@@ -385,7 +361,9 @@ export function createProductionDocumentFixedProcessor(input: {
       repositories.work.updateProjectionBacklogLimit(
         projectionBacklogLimit(next.resourceCapacity.documentConcurrency)
       );
-      scopeRuntime.updateMaximumConcurrency(projection.scopeProjection);
+      publicationScopeRuntime.updateMaximumConcurrency(
+        projection.scopeProjection
+      );
       Object.assign(input.workerConfig, next.workerConfig);
       currentResourceCapacity = { ...next.resourceCapacity };
     },
@@ -396,7 +374,9 @@ export function createProductionDocumentFixedProcessor(input: {
     snapshot() {
       return {
         activeWork: runtime.activeCount(),
-        activeScopeProjection: scopeRuntime.activeCount(),
+        activeScopeProjection: 0,
+        activePublicationScopeProjection:
+          publicationScopeRuntime.activeCount(),
         resources: resources.lanes.snapshot(),
         generation: generation.snapshot()
       };
@@ -406,84 +386,6 @@ export function createProductionDocumentFixedProcessor(input: {
 
 function projectionBacklogLimit(documentConcurrency: number): number {
   return Math.max(documentConcurrency, documentConcurrency * 8);
-}
-
-function createFixedResources(input: Parameters<
-  typeof createProductionDocumentFixedProcessor
->[0]) {
-  const s3 = new S3Client(createS3ClientConfig(input.config.storage));
-  const ownership = createPostgresStorageVnextOwnershipRepository(input.sql);
-  const bodies = createS3StorageVnextImmutableBodyStore({
-    client: s3,
-    bucket: input.config.storage.bucket,
-    prefix: input.config.storage.prefix
-  });
-  const writer = createStorageVnextImmutableObjectWriter({
-    registrations: ownership,
-    bodyStore: bodies,
-    compensation: createStorageVnextFailedWriteCompensator({
-      registrations: ownership,
-      provider: createS3StorageVnextFailedWriteProvider({
-        client: s3,
-        bucket: input.config.storage.bucket,
-        prefix: input.config.storage.prefix
-      })
-    }),
-    clock: () => new Date().toISOString()
-  });
-  const lanes = createDocumentResourceLanes({
-    capacities: resolveDocumentResourceLaneCapacities(input.resourceCapacity),
-    maximumWaitersPerLane: input.resourceCapacity.documentConcurrency * 8
-  });
-  if (!input.config.search) missingSearchConfig();
-  const embeddingConfigurations =
-    createPostgresEmbeddingConfigurationRepository(input.sql);
-  const deploymentSecret = loadDeploymentSecret();
-  const onProviderFailure = input.observability?.providerFailure ?? (() => undefined);
-  const embeddingGateway = createEmbeddingGateway({
-    transport: createOpenAiCompatibleEmbeddingTransport({
-      onFailure: onProviderFailure
-    }),
-    deploymentSecret
-  });
-  const embeddingArtifacts = createEmbeddingArtifactService({
-    gateway: embeddingGateway,
-    repository: createPostgresEmbeddingArtifactRepository(input.sql),
-    store: createS3EmbeddingArtifactStore({
-      client: s3,
-      bucket: input.config.storage.bucket,
-      prefix: input.config.storage.prefix
-    })
-  });
-  const machineProjection = createPostgresDocumentMachineProjectionReader(input.sql);
-  return {
-    s3,
-    ownership,
-    bodies,
-    writer,
-    sourceBodies: createS3StorageVnextSourceBodyStore({
-      client: s3,
-      bucket: input.config.storage.bucket,
-      prefix: input.config.storage.prefix
-    }),
-    lanes,
-    tokenizer: input.tokenizer,
-    searchProvider: input.searchProvider,
-    embeddingConfigurations,
-    embeddingGateway,
-    embeddingArtifacts,
-    runtimeSettings: createRuntimeSettingsRepository(input.sql),
-    graphRag: createGraphRagRuntime({
-      poolSize: input.resourceCapacity.graphRagConcurrency
-    }),
-    deploymentSecret,
-    onProviderFailure,
-    machineProjection
-  };
-}
-
-function missingSearchConfig(): never {
-  throw processorError("search_configuration_missing");
 }
 
 function missingGraphConfig(): never {

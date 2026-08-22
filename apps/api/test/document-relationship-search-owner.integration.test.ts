@@ -8,6 +8,8 @@ import {
   createPostgresDocumentSearchOwnerRepository
 } from
   "../src/document-indexing/infrastructure/postgres-document-search-owner-repository.js";
+import { readDocumentRelationshipSearchActivation } from
+  "../src/document-indexing/infrastructure/postgres-document-publication-source-activation.js";
 import { createPostgresActiveFileRelationshipHitRepository } from
   "../src/document-indexing/infrastructure/postgres-active-file-relationship-hit-repository.js";
 import { applyStorageVnextTestMigrations } from
@@ -200,6 +202,57 @@ const enabled = Boolean(databaseUrl && runOwner
       }],
       limit: 2
     })).resolves.toEqual(["relation-a-new"]);
+  });
+
+  it("derives every staged relationship endpoint from an acknowledged receipt", async () => {
+    await sql`
+      INSERT INTO focowiki.search_family_receipts (
+        public_id, knowledge_base_id, source_file_public_id,
+        source_revision_public_id, provider_kind, family,
+        input_fingerprint_sha256, provider_document_ids,
+        state, acknowledged_at
+      ) VALUES (
+        'search-family-relationship-activation',
+        'knowledge-base-relationship-search', 'source-file-a',
+        'source-revision-a', 'opensearch', 'relation_evidence',
+        ${"9".repeat(64)}, ARRAY['relation-a-new']::text[],
+        'acknowledged', now()
+      )
+    `;
+    await sql`
+      UPDATE focowiki.search_document_owners
+      SET state = 'staged'
+      WHERE provider_document_id = 'relation-a-new'
+    `;
+    await sql`
+      INSERT INTO focowiki.search_document_owners (
+        knowledge_base_id, search_projection_public_id, provider_kind,
+        provider_document_id, document_kind, source_file_public_id,
+        source_revision_public_id, document_checksum_sha256, state,
+        acknowledged_at
+      ) VALUES (
+        'knowledge-base-relationship-search', 'search-projection-relationship',
+        'opensearch', 'relation-b-new', 'file_relationship', 'source-file-b',
+        'source-revision-b', ${"8".repeat(64)}, 'staged', now()
+      )
+    `;
+    await sql`
+      UPDATE focowiki.search_family_receipts
+      SET provider_document_ids = ARRAY['relation-a-new', 'relation-b-new']::text[]
+      WHERE public_id = 'search-family-relationship-activation'
+    `;
+
+    await expect(readDocumentRelationshipSearchActivation({
+      transaction: sql as unknown as DatabaseClient,
+      knowledgeBaseId: 'knowledge-base-relationship-search',
+      documents: [{
+        source_file_public_id: 'source-file-a',
+        source_revision_public_id: 'source-revision-a'
+      }]
+    })).resolves.toEqual({
+      affectedSourceFilePublicIds: ['source-file-a', 'source-file-b'],
+      providerDocumentIds: ['relation-a-new', 'relation-b-new']
+    });
   });
 });
 
