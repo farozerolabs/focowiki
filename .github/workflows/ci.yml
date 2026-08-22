@@ -273,7 +273,7 @@ jobs:
           test/document-upload-finalization.integration.test.ts
           test/document-retry-lifecycle.integration.test.ts
           test/document-activation-cleanup-lifecycle.integration.test.ts
-          test/document-deletion-projection.integration.test.ts
+          test/document-deletion-acceptance.integration.test.ts
           test/document-semantic-fact-reuse.integration.test.ts
 
       - name: Test validation scripts
