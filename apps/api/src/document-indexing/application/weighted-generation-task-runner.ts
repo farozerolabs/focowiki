@@ -8,6 +8,8 @@ import {
 } from "./weighted-generation-queue.js";
 import { readProcessResourcePressure } from "./process-resource-pressure.js";
 
+const INITIAL_PROVIDER_CAPACITY = 4;
+
 export type GenerationTaskMetric = {
   workClass: GenerationWorkClass;
   waitTimeMs: number;
@@ -24,6 +26,8 @@ type QueuedTask = {
   resolve(value: unknown): void;
   reject(error: unknown): void;
   onMetric: ((metric: GenerationTaskMetric) => void) | undefined;
+  classifyResult: ((value: unknown) => AdaptiveResourceObservation["outcome"])
+    | undefined;
 };
 
 export type WeightedGenerationTaskRunner = ReturnType<
@@ -100,7 +104,9 @@ export function createWeightedGenerationTaskRunner(input: {
           outcome
         };
         const observation: AdaptiveResourceObservation = {
-          outcome: adaptiveOutcome(failure),
+          outcome: failure === undefined && item.classifyResult
+            ? item.classifyResult(result)
+            : adaptiveOutcome(failure),
           latencyMs: metric.serviceTimeMs,
           ...pressure()
         };
@@ -137,6 +143,7 @@ export function createWeightedGenerationTaskRunner(input: {
         signal?: AbortSignal;
         ownerKey?: string;
         onMetric?(metric: GenerationTaskMetric): void;
+        classifyResult?(result: TResult): AdaptiveResourceObservation["outcome"];
       } = {}
     ): Promise<TResult> {
       if (options.signal?.aborted) {
@@ -157,7 +164,10 @@ export function createWeightedGenerationTaskRunner(input: {
           enqueuedAt: clockMs(),
           resolve: (value) => resolve(value as TResult),
           reject,
-          onMetric: options.onMetric
+          onMetric: options.onMetric,
+          classifyResult: options.classifyResult
+            ? (value) => options.classifyResult!(value as TResult)
+            : undefined
         });
         drain();
       });
@@ -174,9 +184,13 @@ export function createWeightedGenerationTaskRunner(input: {
         throw new Error("GENERATION_WAITER_LIMIT_INVALID");
       }
       maximumWaiters = nextMaximumWaiters;
-      controller.updateConfiguredMaximum(configuredMaximum);
+      controller.updateConfiguredMaximum(configuredMaximum, {
+        preserveCurrent: true
+      });
       for (const owner of providerControllers.values()) {
-        owner.updateConfiguredMaximum(configuredMaximum);
+        owner.updateConfiguredMaximum(configuredMaximum, {
+          preserveCurrent: true
+        });
       }
       drain();
     },
@@ -206,7 +220,10 @@ export function createWeightedGenerationTaskRunner(input: {
     let owner = providerControllers.get(ownerKey);
     if (!owner) {
       owner = createAdaptiveResourceController({
-        configuredMaximum: controller.configuredMaximum()
+        configuredMaximum: controller.configuredMaximum(),
+        initialCapacity: Math.min(
+          controller.configuredMaximum(), INITIAL_PROVIDER_CAPACITY
+        )
       });
       providerControllers.set(ownerKey, owner);
     }

@@ -119,6 +119,45 @@ describeOwnedDatabase("storage vNext object reservation leases", () => {
     await expect(repository.markDeleting(reservation.objectId))
       .resolves.toBeUndefined();
   });
+
+  it("treats an active generated page head as a durable object reference", async () => {
+    const repository = createPostgresStorageVnextOwnershipRepository(
+      sql as unknown as DatabaseClient
+    );
+    const objectId = "generated-sha256:okf-generated-json-v1:" + "b".repeat(64);
+    const reservation = {
+      objectId,
+      storageKey: "runs/reservation/active-graph.json",
+      checksum: "b".repeat(64),
+      byteCount: 32,
+      contentType: "application/json; charset=utf-8",
+      format: "okf-generated-json-v1",
+      writeAttemptPublicId: "write-active-graph",
+      createdAt: "2026-08-17T01:00:00.000Z"
+    };
+    await repository.reserve(reservation);
+    await repository.markVerified({
+      ...reservation,
+      verifiedAt: "2026-08-17T01:00:01.000Z"
+    });
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+      VALUES ('knowledge-base-active-head', 'Active head', 1)
+    `;
+    await sql`
+      INSERT INTO focowiki.generated_page_heads (
+        knowledge_base_id, logical_path, normalized_path, entry_kind,
+        page_candidate_public_id, object_id, checksum_sha256,
+        byte_count, activation_revision
+      ) VALUES (
+        'knowledge-base-active-head', '_graph/active.json',
+        '_graph/active.json', 'graph', NULL, ${objectId},
+        ${reservation.checksum}, ${reservation.byteCount}, 1
+      )
+    `;
+    await expect(repository.markDeleting(objectId))
+      .rejects.toMatchObject({ code: "owners_present" });
+  });
 });
 
 function withDatabase(connectionUrl: string, databaseName: string): string {

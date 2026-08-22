@@ -181,7 +181,8 @@ export function createPostgresDocumentResourceDeletion(
             transaction,
             input.action,
             input.pageSize,
-            input.now
+            input.now,
+            "await_external"
           ));
         }
         if (input.action.checkpoint.phase === "await_external") {
@@ -210,12 +211,13 @@ async function deactivatePage(
   sql: TransactionSql,
   action: DocumentResourceDeletionAction,
   pageSize: number,
-  now: string
+  now: string,
+  nextPhase: "reconcile_projection" | "await_external"
 ) {
   const sourceIds = await selectSourcePage(sql, action, pageSize, false);
   if (sourceIds.length === 0) {
     await obsoleteOrphanRelations(sql, action.knowledgeBaseId, now);
-    return result(action, "reconcile_projection", null, 0, false);
+    return result(action, nextPhase, null, 0, false);
   }
   const ids = sourceIds.map((row) => row.public_id);
   const deletingJobs = await sql<Array<{ public_id: string }>>`
@@ -298,7 +300,7 @@ async function deactivatePage(
   const cursor = ids.at(-1) ?? null;
   return result(
     action,
-    sourceIds.length < pageSize ? "reconcile_projection" : "deactivate",
+    sourceIds.length < pageSize ? nextPhase : "deactivate",
     sourceIds.length < pageSize ? null : cursor,
     sourceIds.length,
     false

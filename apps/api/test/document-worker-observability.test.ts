@@ -55,7 +55,50 @@ describe("document worker observability", () => {
       errorTarget: "pages/guides/missing.md"
     });
     observer.activation({ attempt: 2, outcome: "conflict" });
-    observer.cleanup({ claimed: 3, completed: 2, retried: 1, failed: 0 });
+    observer.publication({
+      event: "activated",
+      knowledgeBaseId: "kb-one",
+      generationPublicId: "projection-generation-one",
+      scopeKind: null,
+      waitingCount: 0,
+      durationMs: 17,
+      contentionCount: 1,
+      objectPutCount: 2,
+      objectReuseCount: 5,
+      errorCode: null
+    });
+    observer.publicationBacklog({
+      knowledgeBaseId: "kb-one",
+      waitingScopeCount: 4,
+      runningScopeCount: 2,
+      dirtyFactCount: 3,
+      oldestAgeMs: 1_500,
+      statusRegressionCount: 0
+    });
+    observer.publicationScope({
+      event: "completed",
+      knowledgeBaseId: "kb-one",
+      generationPublicId: "projection-generation-one",
+      scopeKind: "root",
+      safeScopeKeyHash: "a".repeat(64),
+      targetFactEpoch: 9,
+      activeFactEpoch: 7,
+      scopeGeneration: 4,
+      leaseGeneration: 3,
+      durationMs: 21,
+      errorCode: null
+    });
+    observer.publicationStorage({
+      knowledgeBaseId: "kb-one",
+      generationPublicId: "projection-generation-one",
+      objectPutCount: 2,
+      objectReuseCount: 5,
+      putByteCount: 1_024
+    });
+    observer.cleanup({
+      claimed: 3, completed: 2, retried: 1, failed: 0,
+      backlogDepth: 4, oldestAgeMs: 2_000, verifiedReservationDebt: 1
+    });
 
     expect(events).toEqual([
       log("worker.queue_metrics", { waiting: 7, oldestAgeMs: 1_250 }),
@@ -105,11 +148,53 @@ describe("document worker observability", () => {
         errorTarget: "pages/guides/missing.md"
       }),
       log("worker.activation_attempt", { attempt: 2, outcome: "conflict" }),
+      log("worker.publication_activated", {
+        knowledgeBaseId: "kb-one",
+        generationPublicId: "projection-generation-one",
+        scopeKind: null,
+        waitingCount: 0,
+        durationMs: 17,
+        contentionCount: 1,
+        objectPutCount: 2,
+        objectReuseCount: 5,
+        errorCode: null
+      }),
+      log("worker.publication_backlog", {
+        knowledgeBaseId: "kb-one",
+        waitingScopeCount: 4,
+        runningScopeCount: 2,
+        dirtyFactCount: 3,
+        oldestAgeMs: 1_500,
+        statusRegressionCount: 0
+      }),
+      log("worker.publication_scope_completed", {
+        knowledgeBaseId: "kb-one",
+        generationPublicId: "projection-generation-one",
+        scopeKind: "root",
+        safeScopeKeyHash: "a".repeat(64),
+        targetFactEpoch: 9,
+        activeFactEpoch: 7,
+        scopeLag: 2,
+        scopeGeneration: 4,
+        leaseGeneration: 3,
+        durationMs: 21,
+        errorCode: null
+      }),
+      log("worker.publication_storage", {
+        knowledgeBaseId: "kb-one",
+        generationPublicId: "projection-generation-one",
+        objectPutCount: 2,
+        objectReuseCount: 5,
+        putByteCount: 1_024
+      }),
       log("worker.cleanup_metrics", {
         claimed: 3,
         completed: 2,
         retried: 1,
-        failed: 0
+        failed: 0,
+        backlogDepth: 4,
+        oldestAgeMs: 2_000,
+        verifiedReservationDebt: 1
       })
     ]);
     expect(JSON.stringify(events)).not.toMatch(/body|prompt|secret|token/u);

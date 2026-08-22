@@ -99,6 +99,33 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(len(normalized["entities"]), 2)
         self.assertEqual(len(normalized["relationships"]), 2)
 
+    def test_removes_completion_framing_before_parsing_records(self):
+        parsed_outputs = []
+
+        def framing_parser(output, source_id):
+            parsed_outputs.append(output)
+            return ([{
+                "title": "Atlas",
+                "type": "SYSTEM",
+                "description": f"Parsed {output}",
+                "source_id": source_id,
+            }], [])
+
+        normalized = normalize_extraction(
+            request([
+                "first record##<|COMPLETE|>ignored",
+                "second record##<|COMPLETE|>",
+            ]),
+            framing_parser,
+            AdapterLimits(),
+        )
+
+        self.assertEqual(parsed_outputs, ["first record##", "second record##"])
+        self.assertNotIn(
+            "<|COMPLETE|>",
+            normalized["entities"][0]["descriptions"][0],
+        )
+
     def test_repeated_work_does_not_retain_prior_manifests(self):
         expected = normalize_extraction(request(), parser, AdapterLimits())
         for _ in range(250):

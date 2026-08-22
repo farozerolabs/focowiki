@@ -42,7 +42,7 @@ describe("document webhook event contract", () => {
       "src/document-indexing/infrastructure/postgres-document-work-recovery.ts"
     ].map(read).join("\n");
     const finalization = read(
-      "src/document-indexing/infrastructure/production-document-activate-work-handler.ts"
+      "src/document-indexing/infrastructure/postgres-document-publication-work-activation.ts"
     );
     expect(lifecycle).toContain('eventType: "document.processing"');
     expect(lifecycle).toContain('eventType: "document.error"');

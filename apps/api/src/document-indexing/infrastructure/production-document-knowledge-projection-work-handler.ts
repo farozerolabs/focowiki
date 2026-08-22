@@ -1,53 +1,34 @@
-import type { StorageVnextImmutableObjectWriter } from "../../storage-vnext/ownership/immutable-object-writer.js";
-import type { StorageVnextOwnershipRepository } from "../../storage-vnext/ownership/ports.js";
-import type { DocumentKnowledgeProjectionManifest } from "../application/document-knowledge-projection-manifest.js";
+import { createHash } from "node:crypto";
 import type { createDocumentResourceLanes } from "../application/document-resource-lanes.js";
 import type { ClaimedDocumentArtifactWork } from "../application/document-work-port.js";
 import type { createDocumentPageBaseLoader } from "./document-page-base-loader.js";
 import type { createDocumentPreparedSourceLoader } from "./document-prepared-source-loader.js";
 import type { createPostgresCandidateFileRelationRepository } from "./postgres-candidate-file-relation-repository.js";
-import type { createPostgresDocumentGeneratedContext } from "./postgres-document-generated-context.js";
 import type { createPostgresDocumentReceiptRepository } from "./postgres-document-receipt-repository.js";
 import type { createPostgresDocumentWorkContext } from "./postgres-document-work-context.js";
 import type { createPostgresGeneratedPageBaseRepository } from "./postgres-generated-page-base-repository.js";
-import { createPostgresProjectionDirtyScopeRepository } from "./postgres-projection-dirty-scope-repository.js";
 import { createPostgresDocumentProjectionFacts } from
   "./postgres-document-projection-facts.js";
-import { createPostgresProjectionScopeContributions } from
-  "./postgres-projection-scope-contributions.js";
 import type { createPostgresDocumentArtifactWorkRepository } from
   "./postgres-document-artifact-work-repository.js";
-import type { createPostgresScopedActivationOwnerRepository } from "./postgres-scoped-activation-owner-repository.js";
-import type { createPostgresSearchFamilyRepository } from "./postgres-search-family-repository.js";
-import type { createPostgresDocumentMachineProjectionReader } from
-  "./postgres-document-machine-projection-reader.js";
 import type { createProductionDocumentSemanticSearchProjection } from "./production-document-semantic-search-projection.js";
 import type { createProductionDocumentPageBase } from "./production-document-page-base.js";
 import {
-  documentActivationOwnerRequests,
   documentProjectionAvailableSourceFileIds,
-  documentProjectionGraphDirectoryPaths,
-  documentProjectionActivationOwnerVersions,
   documentProjectionRenderableSourceFileIds,
-  documentProjectionSourceFileIds,
-  documentProjectionScopes,
   readDocumentRelationPlan,
-  shouldProjectDocumentGraphDirectories,
   type DocumentRelationPlan
 } from "./document-knowledge-projection-support.js";
-import { storeDocumentProjectionManifest } from
-  "./production-document-projection-manifest-store.js";
 import type { LexicalTokenizer } from
   "../../application/ports/lexical-tokenizer.js";
 import { buildDocumentProjectionFact } from
   "./document-projection-persistence-plan.js";
-import { classifyDocumentNavigationTerm } from
-  "../application/document-term-routing.js";
 import {
   documentSourcePathRewrites,
   renderAffectedDocumentSourcePages
 } from "../application/document-affected-source-pages.js";
-import { posix } from "node:path";
+import { allocatePostgresDocumentFactEpoch } from
+  "./postgres-document-publication-repository.js";
 
 export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
   contexts: ReturnType<typeof createPostgresDocumentWorkContext>;
@@ -57,20 +38,11 @@ export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
   bases: ReturnType<typeof createPostgresGeneratedPageBaseRepository>;
   loadBase: ReturnType<typeof createDocumentPageBaseLoader>;
   relations: ReturnType<typeof createPostgresCandidateFileRelationRepository>;
-  generatedContext: ReturnType<typeof createPostgresDocumentGeneratedContext>;
-  machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
   semanticSearch: ReturnType<
     typeof createProductionDocumentSemanticSearchProjection
   >;
-  searchFamilies: ReturnType<typeof createPostgresSearchFamilyRepository>;
-  dirtyScopes: ReturnType<typeof createPostgresProjectionDirtyScopeRepository>;
-  projectionFacts: ReturnType<typeof createPostgresDocumentProjectionFacts>;
-  scopeContributions: ReturnType<typeof createPostgresProjectionScopeContributions>;
   work: ReturnType<typeof createPostgresDocumentArtifactWorkRepository>;
   tokenizer: LexicalTokenizer;
-  activationOwners: ReturnType<typeof createPostgresScopedActivationOwnerRepository>;
-  objectWriter: StorageVnextImmutableObjectWriter;
-  ownership: StorageVnextOwnershipRepository;
   lanes: ReturnType<typeof createDocumentResourceLanes>;
   now?: () => string;
 }) {
@@ -192,26 +164,19 @@ export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
             knowledgeBaseId: request.claimed.knowledgeBaseId,
             pages: persisted.generatedPageFacts
           });
-        const dirtyScopes = createPostgresProjectionDirtyScopeRepository(transaction);
-        const scopeRows = [];
-        for (const scope of persisted.scopes) {
-          const marked = await dirtyScopes.markWithSequence({
-            knowledgeBaseId: request.claimed.knowledgeBaseId,
-            ...scope,
-            requiredSequence: context.job.readinessSequence,
-            nextEligibleAt: persisted.receipt.serviceEndedAt
-          });
-          scopeRows.push(marked);
-        }
-        for (let offset = 0; offset < scopeRows.length; offset += 256) {
-          await createPostgresProjectionScopeContributions(transaction).contribute({
-            knowledgeBaseId: request.claimed.knowledgeBaseId,
-            sourceFilePublicId: request.claimed.sourceFilePublicId,
-            sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
-            documentJobPublicId: request.claimed.documentJobPublicId,
-            scopes: scopeRows.slice(offset, offset + 256)
-          });
-        }
+        await allocatePostgresDocumentFactEpoch({
+          transaction,
+          knowledgeBaseId: request.claimed.knowledgeBaseId,
+          mutationPublicId: request.claimed.documentJobPublicId,
+          sourceFilePublicId: request.claimed.sourceFilePublicId,
+          sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
+          factKind: projectionFactKind({
+            operationKind: context.job.operationKind,
+            priorActiveSourceRevisionPublicId:
+              context.source.priorActiveSourceRevisionPublicId
+          }),
+          createdAt: persisted.receipt.serviceEndedAt
+        });
       }
     });
     if (!transitioned) throw projectionError("document_projection_lease_lost");
@@ -232,41 +197,7 @@ async function renderProjection(input: {
   relations: Awaited<ReturnType<ReturnType<typeof createPostgresCandidateFileRelationRepository>["listRenderable"]>>;
   relationPlan: DocumentRelationPlan;
 }) {
-  const prior = await input.input.generatedContext.readActiveSourcePresentation({
-    knowledgeBaseId: input.request.claimed.knowledgeBaseId,
-    sourceFilePublicId: input.request.claimed.sourceFilePublicId
-  });
-  const sourceFilePublicIds = documentProjectionSourceFileIds({
-    currentSourceFilePublicId: input.request.claimed.sourceFilePublicId,
-    affectedSourceFilePublicIds: input.relationPlan.affectedSourceFilePublicIds
-  });
-  const graphSourceFilePublicIds = input.relationPlan.affectedSourceFilePublicIds;
-  const graphDirectoryPaths = documentProjectionGraphDirectoryPaths({
-    enabled: shouldProjectDocumentGraphDirectories({
-      relationCount: input.relations.length,
-      affectedSourceFileCount: graphSourceFilePublicIds.length,
-      hasPriorPresentation: prior !== null
-    }),
-    currentSourceFilePublicId: input.request.claimed.sourceFilePublicId,
-    affectedSourceFilePublicIds: graphSourceFilePublicIds,
-    sourcePaths: input.sources.map((source) => ({
-      sourceFilePublicId: source.sourceFilePublicId,
-      logicalPath: source.logicalPath
-    })),
-    ...(prior ? { priorCurrentLogicalPath: prior.logicalPath } : {})
-  });
-  const directoryPaths = [...new Set([
-    ...pageDirectoryAncestors(`pages/${input.prepared.context.source.logicalPath}`),
-    ...(prior ? pageDirectoryAncestors(`pages/${prior.logicalPath}`) : [])
-  ])].sort();
-  return {
-    sourceFilePublicIds,
-    navigationMutations: [],
-    relationPublicIds: input.relationPlan.relationPublicIds,
-    relations: input.relations,
-    graphDirectoryPaths,
-    directoryPaths
-  };
+  return { relations: input.relations };
 }
 
 async function persistProjection(input: {
@@ -305,86 +236,22 @@ async function persistProjection(input: {
       relation.publicId),
     relations: input.projection.relations
   });
-  const priorTermState = await input.input.machineProjection
-    .readNavigationTermBucketState({
-      knowledgeBaseId: input.request.claimed.knowledgeBaseId,
-      affectedSourceFilePublicIds: [input.request.claimed.sourceFilePublicId]
-    });
-  const termBuckets = [...new Set([
-    ...priorTermState.affectedBuckets,
-    ...projectionFact.navigationTerms.map((term) =>
-      classifyDocumentNavigationTerm(term.term))
-  ])].sort();
-  const staged = {
-    pageCandidates: [],
-    removedNormalizedPaths: []
-  };
-  const families = await input.input.searchFamilies.listAcknowledged({
-    knowledgeBaseId: input.request.claimed.knowledgeBaseId,
-    sourceRevisionPublicId: input.request.claimed.sourceRevisionPublicId
-  });
-  const graphSourceFilePublicIds = input.projection.relationPublicIds.length > 0
-    || input.relationPlan.affectedSourceFilePublicIds.length > 1
-    ? input.relationPlan.affectedSourceFilePublicIds
-    : [];
-  const scopes = documentProjectionScopes({
-    relationPublicIds: input.projection.relationPublicIds,
-    graphSourceFilePublicIds,
-    sourceFilePublicIds: input.projection.sourceFilePublicIds,
-    directoryPaths: input.projection.directoryPaths,
-    graphDirectoryPaths: input.projection.graphDirectoryPaths,
-    navigationMutations: input.projection.navigationMutations,
-    pages: staged.pageCandidates,
-    termBuckets
-  });
-  const ownerRequests = documentActivationOwnerRequests({
-    sourceFilePublicId: input.request.claimed.sourceFilePublicId,
+  const outputFingerprintSha256 = createHash("sha256").update(JSON.stringify({
     sourceRevisionPublicId: input.request.claimed.sourceRevisionPublicId,
-    pairPublicIds: input.relationPlan.pairPublicIds,
-    familyPublicIds: families.map((family) => family.publicId),
-    pageCandidates: staged.pageCandidates,
-    removedPaths: staged.removedNormalizedPaths,
-    navigationMutations: input.projection.navigationMutations
-  });
-  const versions = await input.input.activationOwners.readVersions({
-    knowledgeBaseId: input.request.claimed.knowledgeBaseId,
-    owners: ownerRequests
-  });
-  const manifest: DocumentKnowledgeProjectionManifest = {
-    schemaVersion: "document-knowledge-projection-manifest-v1",
-    knowledgeBaseId: input.request.claimed.knowledgeBaseId,
-    documentJobPublicId: input.request.claimed.documentJobPublicId,
-    sourceFilePublicId: input.request.claimed.sourceFilePublicId,
-    sourceRevisionPublicId: input.request.claimed.sourceRevisionPublicId,
-    readinessSequence: input.context.job.readinessSequence,
-    presentation: {
-      logicalPath: input.currentBase.logicalPath,
-      normalizedPath: input.context.source.normalizedPath,
-      title: input.currentBase.title,
-      metadata: input.currentBase.metadata,
-      modelSuggestions: input.currentBase.modelSuggestions ?? null
+    generatedPageChecksumSha256: currentGeneratedPage.checksumSha256,
+    relationPublicIds: input.projection.relations.map((relation) =>
+      relation.publicId).sort()
+  })).digest("hex");
+  const receipt = {
+    key: "closure",
+    outputFingerprintSha256,
+    value: {
+      schemaVersion: "document-publication-fact-receipt-v1",
+      sourceFilePublicId: input.request.claimed.sourceFilePublicId,
+      sourceRevisionPublicId: input.request.claimed.sourceRevisionPublicId
     },
-    affectedSourceFilePublicIds: input.relationPlan.affectedSourceFilePublicIds,
-    relationPublicIds: input.projection.relationPublicIds,
-    searchFamilyPublicIds: families.map((family) => family.publicId),
-    relationshipSearchDocumentPublicIds:
-      input.semanticSearch.relationshipSearchDocumentPublicIds,
-    pageCandidates: staged.pageCandidates,
-    removedPageNormalizedPaths: staged.removedNormalizedPaths,
-    navigationMutations: input.projection.navigationMutations,
-    dirtyScopes: scopes,
-    activationOwners: documentProjectionActivationOwnerVersions({
-      owners: ownerRequests,
-      versions
-    }),
-    projectedAt: input.completedAt
+    serviceEndedAt: input.completedAt
   };
-  const receipt = await storeDocumentProjectionManifest({
-    manifest,
-    objectWriter: input.input.objectWriter,
-    ownership: input.input.ownership,
-    signal: input.request.signal
-  });
   const sourceRevisionByFileId = new Map(input.sources.map((source) => [
     source.sourceFilePublicId,
     source.sourceRevisionPublicId
@@ -394,18 +261,23 @@ async function persistProjection(input: {
     checksumSha256: page.checksumSha256,
     byteCount: page.byteCount
   }));
-  return { receipt, scopes, projectionFact, generatedPageFacts };
-}
-
-function pageDirectoryAncestors(pagePath: string): string[] {
-  const directories = [posix.dirname(pagePath)];
-  while (directories.at(-1) !== "pages") {
-    directories.push(posix.dirname(directories.at(-1)!));
-  }
-  return directories.reverse();
+  return { receipt, projectionFact, generatedPageFacts };
 }
 function projectionError(code: string): Error & { code: string } {
   return Object.assign(new Error(`Document knowledge projection error: ${code}`), {
     code
   });
+}
+
+function projectionFactKind(input: Readonly<{
+  operationKind: string;
+  priorActiveSourceRevisionPublicId: string | null;
+}>): "create" | "replace" | "move" | "delete" | "repair" {
+  if (["source_file_move", "source_directory_move"]
+    .includes(input.operationKind)) return "move";
+  if (input.operationKind === "deletion") return "delete";
+  if (input.operationKind === "maintenance") return "repair";
+  if (input.operationKind === "source_replace"
+    || input.priorActiveSourceRevisionPublicId) return "replace";
+  return "create";
 }

@@ -265,20 +265,33 @@ export async function runUnifiedWorkerProduction(config: RuntimeConfig): Promise
         event: "worker.started",
         fields: { workerId, resourceCapacity }
       }));
-      await Promise.all([
-        processor.run(controller.signal),
-        backgroundWindow.run(controller.signal),
-        webhookDeliveryLoop,
-        runtimeRefresh
-      ]);
+      try {
+        await Promise.all([
+          processor.run(controller.signal),
+          backgroundWindow.run(controller.signal),
+          webhookDeliveryLoop,
+          runtimeRefresh
+        ]);
+      } catch (error) {
+        console.error(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          event: "worker.runtime_failed",
+          fields: safeWorkerErrorDiagnostic(error)
+        }));
+        throw error;
+      }
     } finally {
-      await Promise.allSettled([
-        runtimeRefresh,
-        processor?.close(),
-        backgroundRuntime?.close(),
-        searchProvider.close(),
-        wakeup.close()
-      ]);
+      await settleDocumentWorkerRuntime({
+        controller,
+        cleanup: [
+          () => runtimeRefresh ?? Promise.resolve(),
+          () => processor?.close() ?? Promise.resolve(),
+          () => backgroundRuntime?.close() ?? Promise.resolve(),
+          () => searchProvider.close(),
+          () => wakeup.close()
+        ]
+      });
     }
   } finally {
     if (!controller.signal.aborted) {
@@ -293,6 +306,19 @@ export async function runUnifiedWorkerProduction(config: RuntimeConfig): Promise
     await redis.close().catch(() => undefined);
     await closeDatabaseClient(sql);
   }
+}
+
+export async function settleDocumentWorkerRuntime(input: Readonly<{
+  controller: AbortController;
+  cleanup: readonly (() => Promise<unknown>)[];
+}>): Promise<void> {
+  if (!input.controller.signal.aborted) {
+    input.controller.abort(Object.assign(
+      new Error("Worker runtime is stopping"),
+      { code: "WORKER_SHUTDOWN" }
+    ));
+  }
+  await Promise.allSettled(input.cleanup.map((cleanup) => cleanup()));
 }
 
 type DocumentWorkerRuntimeState = {

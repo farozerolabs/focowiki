@@ -11,12 +11,14 @@ import { parseDocumentPortableRecords } from
   "../src/document-indexing/application/document-portable-record-parser.js";
 import { createProductionDocumentScopeRenderer } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer.js";
+import { projectGraphCatalog } from
+  "../src/document-indexing/infrastructure/production-document-scope-graph.js";
 import { projectRoot } from
   "../src/document-indexing/infrastructure/production-document-scope-navigation.js";
 
 describe("production document scope renderer", () => {
-  it("keeps the empty relationship catalog beside the graph root", async () => {
-    const projected = await projectRoot({
+  it("assigns the relationship catalog only to its graph scope", async () => {
+    const root = await projectRoot({
       dependencies: {
         machineProjection: {
           async readRootProjectionState() {
@@ -41,14 +43,27 @@ describe("production document scope renderer", () => {
       excludedActiveSourceFilePublicIds: [],
       changedAt: "2026-08-21T09:00:00.000Z"
     });
+    const graph = await projectGraphCatalog({
+      dependencies: {
+        machineProjection: {
+          async readGraphCatalogState() {
+            return { relationshipCount: 3 };
+          }
+        } as never,
+        maximumRecordsPerShard: 1_000,
+        maximumShardBytes: 1_000_000
+      },
+      knowledgeBaseId: "kb-1",
+      includedSourceRevisionPublicIds: ["revision-a", "revision-b"],
+      excludedActiveSourceFilePublicIds: []
+    });
 
-    expect(projected.pages.map((page) => page.logicalPath)).toContain(
-      "_graph/catalog.json"
-    );
-    const catalog = projected.pages.find((page) =>
+    expect(root.pages.map((page) => page.logicalPath))
+      .not.toContain("_graph/catalog.json");
+    const graphCatalog = graph.pages.find((page) =>
       page.logicalPath === "_graph/catalog.json");
-    expect(JSON.parse(new TextDecoder().decode(catalog?.bytes)))
-      .toMatchObject({ relationshipCount: 0 });
+    expect(JSON.parse(new TextDecoder().decode(graphCatalog?.bytes)))
+      .toMatchObject({ relationshipCount: 3 });
   });
 
   it("materializes a source page through its exact dirty scope", async () => {
@@ -81,24 +96,8 @@ describe("production document scope renderer", () => {
         latencyMilliseconds: 2 }
     }));
     const renderer = createProductionDocumentScopeRenderer({
-      snapshots: ({
-        async render() { throw new Error("source scope must be materialized"); }
-      }) as never,
       machineProjection: {} as never,
       sourceProjection: { project },
-      scopeContributions: {
-        async listCovered() {
-          return [{
-            sourceFilePublicId: "source-b",
-            sourceRevisionPublicId: "revision-b",
-            requiredSequence: 7
-          }, {
-            sourceFilePublicId: "source-a",
-            sourceRevisionPublicId: "revision-a",
-            requiredSequence: 8
-          }];
-        }
-      } as never,
       objectWriter: { putVerified },
       maximumRecordsPerShard: 100,
       maximumShardBytes: 1_048_576
@@ -111,7 +110,17 @@ describe("production document scope renderer", () => {
       key: "source-a",
       requiredSequence: 8,
       renderedSequence: 8
-    }, new AbortController().signal);
+    }, new AbortController().signal, {
+      contributors: [{
+        sourceFilePublicId: "source-b",
+        sourceRevisionPublicId: "revision-b",
+        requiredSequence: 7
+      }, {
+        sourceFilePublicId: "source-a",
+        sourceRevisionPublicId: "revision-a",
+        requiredSequence: 8
+      }]
+    });
 
     expect(project).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-1",
@@ -129,6 +138,63 @@ describe("production document scope renderer", () => {
     expect(putVerified).toHaveBeenCalledTimes(1);
   });
 
+  it("renders a source tombstone from its frozen base without reading source bytes",
+    async () => {
+      const project = vi.fn(async () => {
+        throw new Error("tombstone_source_should_not_render");
+      });
+      const putVerified = vi.fn();
+      const renderer = createProductionDocumentScopeRenderer({
+        machineProjection: {} as never,
+        sourceProjection: { project },
+        objectWriter: { putVerified } as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      });
+
+      const result = await renderer.renderPublication({
+        publicId: "scope-source-deleted",
+        publicationGenerationPublicId: "generation-delete",
+        knowledgeBaseId: "kb-1",
+        scopeIdentity: "source:source-deleted",
+        scopeKind: "source",
+        scopeKey: "source-deleted",
+        scopeGeneration: 2,
+        targetFactEpoch: 9,
+        inputSnapshotFingerprintSha256: "a".repeat(64),
+        rendererContractVersion: "portable-okf-v2",
+        deterministicChangedAt: "2026-08-21T12:00:00.000Z",
+        baseGenerationPublicId: "generation-active",
+        members: [{
+          kind: "tombstone",
+          publicId: "source-deleted",
+          version: "9",
+          order: 0,
+          sourceFilePublicId: "source-deleted"
+        }],
+        basePages: [{
+          normalizedPath: "pages/deleted.md",
+          action: "put",
+          entryKind: "source",
+          objectId: "object-deleted",
+          checksumSha256: "b".repeat(64),
+          byteCount: 128
+        }]
+      }, new AbortController().signal);
+
+      expect(project).not.toHaveBeenCalled();
+      expect(putVerified).not.toHaveBeenCalled();
+      expect(result.pages).toEqual([{
+        logicalPath: "pages/deleted.md",
+        normalizedPath: "pages/deleted.md",
+        action: "delete",
+        entryKind: null,
+        objectId: null,
+        checksumSha256: null,
+        byteCount: null
+      }]);
+    });
+
   it("renders one finite term bucket directly from PostgreSQL facts", async () => {
     const putVerified = vi.fn(async (input: { bytes: Uint8Array }) => ({
       objectId: "object-han-part",
@@ -145,11 +211,6 @@ describe("production document scope renderer", () => {
       }
     }));
     const renderer = createProductionDocumentScopeRenderer({
-      snapshots: {
-        async render() {
-          throw new Error("term scope must not use fingerprint-only fallback");
-        }
-      } as never,
       machineProjection: {
         async listNavigationTermRecords(request: {
           includedSourceRevisionPublicIds: readonly string[];
@@ -180,19 +241,6 @@ describe("production document scope renderer", () => {
         maxBytes: 65_536,
         mergeBelowEntries: 50
       },
-      scopeContributions: {
-        async listCovered() {
-          return [{
-            sourceFilePublicId: "source-new",
-            sourceRevisionPublicId: "revision-old",
-            requiredSequence: 2
-          }, {
-            sourceFilePublicId: "source-new",
-            sourceRevisionPublicId: "revision-new",
-            requiredSequence: 3
-          }];
-        }
-      } as never,
       objectWriter: { putVerified },
       ownership: {
         releaseVerifiedReservation: vi.fn()
@@ -208,7 +256,13 @@ describe("production document scope renderer", () => {
       key: "term:han",
       requiredSequence: 3,
       renderedSequence: 3
-    }, new AbortController().signal);
+    }, new AbortController().signal, {
+      contributors: [{
+        sourceFilePublicId: "source-new",
+        sourceRevisionPublicId: "revision-new",
+        requiredSequence: 3
+      }]
+    });
 
     expect(result.pages.map((page) => page.logicalPath)).toEqual([
       "_index/terms/han/han-terms-part-0001.json",
@@ -266,9 +320,6 @@ describe("production document scope renderer", () => {
         latencyMilliseconds: 1 }
     }));
     const renderer = createProductionDocumentScopeRenderer({
-      snapshots: ({
-        async render() { throw new Error("unexpected fallback"); }
-      }) as never,
       machineProjection: {
         async listNavigationTermRecords() { return records; },
         async listTermPartPaths() { return []; },
@@ -287,7 +338,6 @@ describe("production document scope renderer", () => {
         maxBytes: 65_536,
         mergeBelowEntries: 50
       },
-      scopeContributions: { async listCovered() { return []; } } as never,
       objectWriter: { putVerified },
       maximumRecordsPerShard: 1,
       maximumShardBytes: 1_024
@@ -328,9 +378,6 @@ describe("production document scope renderer", () => {
       }
     }));
     const renderer = createProductionDocumentScopeRenderer({
-      snapshots: ({
-        async render() { throw new Error("unexpected fallback"); }
-      }) as never,
       machineProjection: {
         async readDocumentDirectoryState(request: {
           includedSourceRevisionPublicIds: readonly string[];
@@ -369,14 +416,6 @@ describe("production document scope renderer", () => {
         maxBytes: 65_536,
         mergeBelowEntries: 50
       },
-      scopeContributions: {
-        async listCovered() {
-          return [{
-            sourceFilePublicId: "source-new",
-            sourceRevisionPublicId: "revision-new"
-          }];
-        }
-      } as never,
       objectWriter: { putVerified },
       maximumRecordsPerShard: 100,
       maximumShardBytes: 1_048_576,
@@ -391,6 +430,11 @@ describe("production document scope renderer", () => {
       requiredSequence: 8,
       renderedSequence: 8
     }, {
+      contributors: [{
+        sourceFilePublicId: "source-new",
+        sourceRevisionPublicId: "revision-new",
+        requiredSequence: 8
+      }],
       pageIntegrityOverrides: [{
         path: "pages/guides/overview.md",
         checksumSha256: "9".repeat(64),
@@ -416,7 +460,13 @@ describe("production document scope renderer", () => {
       key: "pages:pages/guides",
       requiredSequence: 8,
       renderedSequence: 8
-    }, new AbortController().signal);
+    }, new AbortController().signal, {
+      contributors: [{
+        sourceFilePublicId: "source-new",
+        sourceRevisionPublicId: "revision-new",
+        requiredSequence: 8
+      }]
+    });
 
     expect(result.pages.map((page) => page.logicalPath)).toEqual([
       "_index/pages/guides/guides-documents.json",
@@ -442,6 +492,71 @@ describe("production document scope renderer", () => {
     expect(result.storageRequests.put).toBe(4);
   });
 
+  it("removes an emptied page-index directory after its final document moves",
+    async () => {
+      const putVerified = vi.fn();
+      const renderer = createProductionDocumentScopeRenderer({
+        machineProjection: {
+          async readDocumentDirectoryState() {
+            return {
+              records: [],
+              childDirectories: [],
+              resourcePaths: [
+                "_index/pages/guides/guides-documents.json"
+              ]
+            };
+          }
+        } as never,
+        directoryNavigation: {
+          async read() {
+            return [{
+              id: "extension-leaf-old",
+              previousLeafId: null,
+              nextLeafId: null,
+              revision: 1,
+              entries: [{
+                id: "old-document-packet",
+                sortKey: "1/guides-documents.json/resource",
+                name: "guides-documents.json",
+                targetPath: "_index/pages/guides/guides-documents.json",
+                kind: "file" as const
+              }]
+            }];
+          }
+        } as never,
+        directoryLeafLimits: {
+          maxEntries: 200,
+          maxBytes: 65_536,
+          mergeBelowEntries: 50
+        },
+        objectWriter: { putVerified } as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      });
+
+      const result = await renderer.render({
+        publicId: "scope-empty-page-index-guides",
+        knowledgeBaseId: "kb-1",
+        kind: "_index",
+        key: "pages:pages/guides",
+        requiredSequence: 9,
+        renderedSequence: 9
+      }, new AbortController().signal);
+
+      expect(result.pages).toEqual([]);
+      expect(result.removedNormalizedPaths).toEqual([
+        "_index/pages/guides/guides-documents.json",
+        "_index/pages/guides/index-extension-leaf-old.md",
+        "_index/pages/guides/index.json",
+        "_index/pages/guides/index.md"
+      ]);
+      expect(result.navigationMutations).toEqual([expect.objectContaining({
+        directoryPath: "_index/pages/guides",
+        removedLeafIds: ["extension-leaf-old"]
+      })]);
+      expect(putVerified).not.toHaveBeenCalled();
+    });
+
   it("renders one semantic Markdown directory from the same PostgreSQL snapshot",
     async () => {
       const putVerified = vi.fn(async (input: { bytes: Uint8Array }) => ({
@@ -458,10 +573,8 @@ describe("production document scope renderer", () => {
           retries: 0, latencyMilliseconds: 2
         }
       }));
+      let wallClockOffset = 0;
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readDocumentDirectoryState() {
             return {
@@ -491,18 +604,11 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new"
-            }];
-          }
-        } as never,
         objectWriter: { putVerified },
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576,
-        now: () => "2026-08-17T12:00:00.000Z"
+        now: () => new Date(Date.parse("2026-08-17T12:00:00.000Z")
+          + wallClockOffset++ * 1_000).toISOString()
       });
 
       const result = await renderer.render({
@@ -551,9 +657,6 @@ describe("production document scope renderer", () => {
         }
       }));
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readGraphDirectoryState(request: {
             includedSourceRevisionPublicIds: readonly string[];
@@ -595,14 +698,6 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new"
-            }];
-          }
-        } as never,
         objectWriter: { putVerified },
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576,
@@ -616,7 +711,13 @@ describe("production document scope renderer", () => {
         key: "directory:pages/guides",
         requiredSequence: 11,
         renderedSequence: 11
-      }, new AbortController().signal);
+      }, new AbortController().signal, {
+        contributors: [{
+          sourceFilePublicId: "source-new",
+          sourceRevisionPublicId: "revision-new",
+          requiredSequence: 11
+        }]
+      });
 
       expect(result.pages.map((page) => page.logicalPath)).toEqual([
         "_graph/by-directory/guides/guides-relationships.json",
@@ -643,9 +744,6 @@ describe("production document scope renderer", () => {
     async () => {
       const putVerified = vi.fn();
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readGraphDirectoryState() {
             return {
@@ -680,14 +778,6 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-old",
-              sourceRevisionPublicId: "revision-new"
-            }];
-          }
-        } as never,
         objectWriter: { putVerified } as never,
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576
@@ -729,9 +819,6 @@ describe("production document scope renderer", () => {
         }
       }));
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readPerFileGraphState(request: {
             sourceFilePublicId: string;
@@ -773,14 +860,6 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new"
-            }];
-          }
-        } as never,
         objectWriter: { putVerified },
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576,
@@ -794,7 +873,13 @@ describe("production document scope renderer", () => {
         key: "source-new",
         requiredSequence: 13,
         renderedSequence: 13
-      }, new AbortController().signal);
+      }, new AbortController().signal, {
+        contributors: [{
+          sourceFilePublicId: "source-new",
+          sourceRevisionPublicId: "revision-new",
+          requiredSequence: 13
+        }]
+      });
 
       expect(result.pages.map((page) => page.logicalPath)).toEqual([
         "_graph/by-file/guides/overview.json"
@@ -823,9 +908,6 @@ describe("production document scope renderer", () => {
         }
       }));
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readPerFileGraphDirectoryState() {
             return {
@@ -849,14 +931,6 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new"
-            }];
-          }
-        } as never,
         objectWriter: { putVerified },
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576,
@@ -895,9 +969,6 @@ describe("production document scope renderer", () => {
   it("removes by-file navigation after the final relationship disappears",
     async () => {
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readPerFileGraphDirectoryState() {
             return { records: [], childDirectories: [] };
@@ -925,9 +996,6 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() { return []; }
-        } as never,
         objectWriter: { putVerified: vi.fn() } as never,
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576
@@ -940,7 +1008,13 @@ describe("production document scope renderer", () => {
         key: "file-directory:pages/guides",
         requiredSequence: 15,
         renderedSequence: 15
-      }, new AbortController().signal);
+      }, new AbortController().signal, {
+        contributors: [{
+          sourceFilePublicId: "source-new",
+          sourceRevisionPublicId: "revision-new",
+          requiredSequence: 15
+        }]
+      });
 
       expect(result.pages).toEqual([]);
       expect(result.removedNormalizedPaths).toEqual([
@@ -953,9 +1027,6 @@ describe("production document scope renderer", () => {
     async () => {
       const putVerified = vi.fn();
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readPerFileGraphState() {
             return {
@@ -966,14 +1037,6 @@ describe("production document scope renderer", () => {
               relationships: [],
               resourcePaths: ["_graph/by-file/guides/overview.json"]
             };
-          }
-        } as never,
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new"
-            }];
           }
         } as never,
         objectWriter: { putVerified } as never,
@@ -1014,9 +1077,6 @@ describe("production document scope renderer", () => {
         }
       }));
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readGraphCatalogState(request: {
             includedSourceRevisionPublicIds: readonly string[];
@@ -1029,15 +1089,6 @@ describe("production document scope renderer", () => {
               "source-new"
             ]);
             return { relationshipCount: 2 };
-          }
-        } as never,
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new",
-              requiredSequence: 15
-            }];
           }
         } as never,
         objectWriter: { putVerified },
@@ -1053,7 +1104,13 @@ describe("production document scope renderer", () => {
         key: "catalog",
         requiredSequence: 15,
         renderedSequence: 15
-      }, new AbortController().signal);
+      }, new AbortController().signal, {
+        contributors: [{
+          sourceFilePublicId: "source-new",
+          sourceRevisionPublicId: "revision-new",
+          requiredSequence: 15
+        }]
+      });
 
       expect(result.pages.map((page) => page.logicalPath)).toEqual([
         "_graph/catalog.json"
@@ -1079,9 +1136,6 @@ describe("production document scope renderer", () => {
         }
       }));
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readNavigationTermCatalogState(request: {
             includedSourceRevisionPublicIds: readonly string[];
@@ -1104,15 +1158,6 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new",
-              requiredSequence: 16
-            }];
-          }
-        } as never,
         objectWriter: { putVerified },
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576,
@@ -1126,7 +1171,13 @@ describe("production document scope renderer", () => {
         key: "term-catalog",
         requiredSequence: 16,
         renderedSequence: 16
-      }, new AbortController().signal);
+      }, new AbortController().signal, {
+        contributors: [{
+          sourceFilePublicId: "source-new",
+          sourceRevisionPublicId: "revision-new",
+          requiredSequence: 16
+        }]
+      });
 
       expect(result.pages.map((page) => page.logicalPath)).toEqual([
         "_index/terms/index.json",
@@ -1166,10 +1217,8 @@ describe("production document scope renderer", () => {
           retries: 0, latencyMilliseconds: 3
         }
       }));
+      let rootWallClockOffset = 0;
       const renderer = createProductionDocumentScopeRenderer({
-        snapshots: ({
-          async render() { throw new Error("unexpected fallback"); }
-        }) as never,
         machineProjection: {
           async readRootProjectionState() {
             return {
@@ -1207,19 +1256,11 @@ describe("production document scope renderer", () => {
           maxBytes: 65_536,
           mergeBelowEntries: 50
         },
-        scopeContributions: {
-          async listCovered() {
-            return [{
-              sourceFilePublicId: "source-new",
-              sourceRevisionPublicId: "revision-new",
-              requiredSequence: 17
-            }];
-          }
-        } as never,
         objectWriter: { putVerified },
         maximumRecordsPerShard: 100,
         maximumShardBytes: 1_048_576,
-        now: () => "2026-08-17T12:00:00.000Z"
+        now: () => new Date(Date.parse("2026-08-17T12:00:00.000Z")
+          + rootWallClockOffset++ * 1_000).toISOString()
       });
 
       const scope = {
@@ -1228,14 +1269,42 @@ describe("production document scope renderer", () => {
         kind: "root" as const,
         key: "index",
         requiredSequence: 17,
-        renderedSequence: 17
+        renderedSequence: 17,
+        deterministicEventTime: "2026-08-17T11:59:00.000Z"
       };
       const projectedRoot = await renderer.project(scope);
+      const repeatedRoot = await renderer.project(scope);
       const result = await renderer.render(scope, new AbortController().signal);
+      const repeatedResult = await renderer.render(
+        scope,
+        new AbortController().signal
+      );
+
+      expect(repeatedRoot.pages.map((page) => ({
+        logicalPath: page.logicalPath,
+        checksumSha256: page.checksumSha256,
+        bytes: [...page.bytes]
+      }))).toEqual(projectedRoot.pages.map((page) => ({
+        logicalPath: page.logicalPath,
+        checksumSha256: page.checksumSha256,
+        bytes: [...page.bytes]
+      })));
+      expect({
+        pages: repeatedResult.pages,
+        removedNormalizedPaths: repeatedResult.removedNormalizedPaths,
+        navigationMutations: repeatedResult.navigationMutations,
+        factCount: repeatedResult.factCount,
+        outputFingerprintSha256: repeatedResult.outputFingerprintSha256
+      }).toEqual({
+        pages: result.pages,
+        removedNormalizedPaths: result.removedNormalizedPaths,
+        navigationMutations: result.navigationMutations,
+        factCount: result.factCount,
+        outputFingerprintSha256: result.outputFingerprintSha256
+      });
 
       expect(result.pages.map((page) => page.logicalPath)).toEqual([
         "_index/catalog.json",
-        "_graph/catalog.json",
         "_graph/index.md",
         expect.stringMatching(
           /^_graph\/index-extension-leaf-[0-9a-f-]+\.md$/u
@@ -1283,15 +1352,12 @@ describe("production document scope renderer", () => {
       expect(result.navigationMutations.map((mutation) =>
         mutation.directoryPath)).toEqual(["_graph", "_index"]);
       expect(result.factCount).toBe(3);
-      expect(putVerified).toHaveBeenCalledTimes(8);
+      expect(putVerified).toHaveBeenCalledTimes(14);
     });
 
   it("removes an emptied term bucket without writing an empty graph", async () => {
     const putVerified = vi.fn();
     const renderer = createProductionDocumentScopeRenderer({
-      snapshots: ({
-        async render() { throw new Error("unexpected fallback"); }
-      }) as never,
       machineProjection: {
         async listNavigationTermRecords() { return []; },
         async listTermPartPaths() {
@@ -1320,12 +1386,6 @@ describe("production document scope renderer", () => {
         maxBytes: 65_536,
         mergeBelowEntries: 50
       },
-      scopeContributions: {
-        async listCovered() {
-          return [{ sourceFilePublicId: "source-old",
-            sourceRevisionPublicId: "revision-new" }];
-        }
-      } as never,
       objectWriter: { putVerified } as never,
       maximumRecordsPerShard: 100,
       maximumShardBytes: 1_048_576

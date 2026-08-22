@@ -1,4 +1,8 @@
 import type { TransactionSql } from "postgres";
+import {
+  finalizeKnowledgeBasePublicationObjectCleanup,
+  prepareKnowledgeBasePublicationObjectCleanup
+} from "./postgres-knowledge-base-publication-cleanup.js";
 
 const OPERATION_TOMBSTONE_RETENTION_MS = 7 * 86_400_000;
 
@@ -42,11 +46,31 @@ export async function preserveDeletionOperationAndRemoveKnowledgeBase(input: {
       AND operation.state IN ('completed', 'failed')
     ON CONFLICT (public_id) DO NOTHING
   `;
+  const operationRows = await input.sql<Array<{ operation_public_id: string }>>`
+    SELECT operation_public_id
+    FROM focowiki.cleanup_actions
+    WHERE public_id = ${input.actionPublicId}
+  `;
+  const operationPublicId = operationRows[0]?.operation_public_id;
+  if (!operationPublicId) return false;
+  await prepareKnowledgeBasePublicationObjectCleanup({
+    sql: input.sql,
+    knowledgeBaseId: input.knowledgeBaseId,
+    operationPublicId,
+    queuedAt: input.completedAt
+  });
   const deleted = await input.sql<Array<{ public_id: string }>>`
     DELETE FROM focowiki.knowledge_bases
     WHERE public_id = ${input.knowledgeBaseId}
       AND deleted_at IS NOT NULL
     RETURNING public_id
   `;
-  return deleted.length === 1;
+  if (deleted.length !== 1) return false;
+  await finalizeKnowledgeBasePublicationObjectCleanup({
+    sql: input.sql,
+    knowledgeBaseId: input.knowledgeBaseId,
+    operationPublicId,
+    releasedAt: input.completedAt
+  });
+  return true;
 }

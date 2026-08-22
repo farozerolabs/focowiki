@@ -8,6 +8,8 @@ import {
   assertRepositoryTimestamp,
   repositoryContractError
 } from "./document-repository-validation.js";
+import { createPostgresProjectionScopeLease } from
+  "./postgres-projection-scope-lease.js";
 
 export const PROJECTION_DIRTY_SCOPE_KINDS = [
   "source", "relation", "directory", "graph", "_index", "_graph", "root"
@@ -50,6 +52,7 @@ export function mergeDirtyScopeSequence(input: {
 }
 
 export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient) {
+  const lease = createPostgresProjectionScopeLease(sql);
   async function markWithSequence(input: ProjectionDirtyScopeMarkInput): Promise<{
     publicId: string;
     requiredSequence: number;
@@ -93,7 +96,7 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
         )
         ON CONFLICT (knowledge_base_id, scope_kind, scope_key) DO UPDATE
         SET required_sequence = greatest(
-              projection_dirty_scopes.required_sequence + 1,
+              projection_dirty_scopes.required_sequence,
               excluded.required_sequence
             ),
             state = CASE
@@ -125,6 +128,10 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
               WHEN projection_dirty_scopes.state = 'running'
                 AND projection_dirty_scopes.lease_expires_at > ${nextEligibleAt}
               THEN projection_dirty_scopes.lease_expires_at ELSE NULL END,
+            heartbeat_at = CASE
+              WHEN projection_dirty_scopes.state = 'running'
+                AND projection_dirty_scopes.lease_expires_at > ${nextEligibleAt}
+              THEN projection_dirty_scopes.heartbeat_at ELSE NULL END,
             safe_error_code = NULL,
             safe_error_message = NULL,
             retryable = false,
@@ -156,6 +163,9 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
       key: string;
       requiredSequence: number;
       renderedSequence: number;
+      deterministicEventTime: string;
+      leaseGeneration: number;
+      leaseExpiresAt: string;
     }>> {
       const now = assertRepositoryTimestamp(input.now, "now");
       const leaseDurationMs = assertRepositoryPositiveInteger(
@@ -170,12 +180,18 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
         scope_key: string;
         required_sequence: number | string;
         rendered_sequence: number | string;
+        deterministic_event_time: Date | string;
+        lease_generation: number | string;
+        lease_expires_at: Date | string;
       }>>`
         WITH claimable AS (
           SELECT scope.public_id,
                  coalesce(slice.rendered_sequence, scope.required_sequence)
-                   AS rendered_sequence
+                   AS rendered_sequence,
+                 scope.coalesce_until AS deterministic_event_time
           FROM focowiki.projection_dirty_scopes scope
+          LEFT JOIN focowiki.projection_cutover_states cutover
+            ON cutover.knowledge_base_id = scope.knowledge_base_id
           CROSS JOIN LATERAL (
             SELECT max(covered.required_sequence) AS rendered_sequence
             FROM (
@@ -190,6 +206,8 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
             ) covered
           ) slice
           WHERE scope.state = 'waiting' AND scope.next_eligible_at <= ${now}
+            AND coalesce(cutover.writer_mode, 'legacy')
+                  IN ('legacy', 'shadow')
             AND scope.coalesce_until <= ${now}
             AND scope.attempt_count < scope.maximum_attempts
             AND NOT EXISTS (
@@ -229,13 +247,17 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
         SET state = 'running',
             lease_owner = ${assertRepositoryIdentity(input.workerId, "worker_id")},
             lease_expires_at = ${new Date(Date.parse(now) + leaseDurationMs).toISOString()},
+            lease_generation = lease_generation + 1,
+            heartbeat_at = ${now},
             attempt_count = attempt_count + 1,
             updated_at = ${now}
         FROM claimable
         WHERE scope.public_id = claimable.public_id
         RETURNING scope.public_id, scope.knowledge_base_id,
                   scope.scope_kind, scope.scope_key, scope.required_sequence,
-                  claimable.rendered_sequence
+                  claimable.rendered_sequence,
+                  claimable.deterministic_event_time,
+                  scope.lease_generation, scope.lease_expires_at
       `;
       return rows.map((row) => ({
         publicId: row.public_id,
@@ -243,86 +265,15 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
         kind: row.scope_kind,
         key: row.scope_key,
         requiredSequence: Number(row.required_sequence),
-        renderedSequence: Number(row.rendered_sequence)
+        renderedSequence: Number(row.rendered_sequence),
+        deterministicEventTime: new Date(row.deterministic_event_time)
+          .toISOString(),
+        leaseGeneration: Number(row.lease_generation),
+        leaseExpiresAt: new Date(row.lease_expires_at).toISOString()
       }));
     },
 
-    async complete(input: {
-      publicId: string;
-      workerId: string;
-      renderedSequence: number;
-      now: string;
-    }): Promise<"completed" | "waiting" | null> {
-      const rows = await sql<Array<{ state: "completed" | "waiting" }>>`
-        UPDATE focowiki.projection_dirty_scopes
-        SET completed_sequence = greatest(
-              completed_sequence,
-              least(required_sequence, ${assertRepositoryPositiveInteger(input.renderedSequence, "rendered_sequence")})
-            ),
-            state = CASE
-              WHEN greatest(
-                completed_sequence,
-                least(required_sequence, ${input.renderedSequence})
-              ) >= required_sequence
-              THEN 'completed' ELSE 'waiting'
-            END,
-            attempt_count = 0,
-            lease_owner = NULL, lease_expires_at = NULL,
-            next_eligible_at = ${assertRepositoryTimestamp(input.now, "now")},
-            coalesce_until = ${input.now},
-            safe_error_code = NULL, safe_error_message = NULL,
-            retryable = false,
-            updated_at = ${input.now}
-        WHERE public_id = ${assertRepositoryIdentity(input.publicId, "public_id")}
-          AND state = 'running'
-          AND lease_owner = ${assertRepositoryIdentity(input.workerId, "worker_id")}
-        RETURNING state
-      `;
-      return rows[0]?.state ?? null;
-    },
-
-    async fail(input: {
-      publicId: string;
-      workerId: string;
-      now: string;
-      errorCode: string;
-      retryable: boolean;
-      nextEligibleAt: string | null;
-    }): Promise<"waiting" | "error" | null> {
-      const now = assertRepositoryTimestamp(input.now, "now");
-      if (!input.errorCode
-        || Buffer.byteLength(input.errorCode, "utf8") > 128) {
-        throw repositoryContractError("invalid_scope_error_code");
-      }
-      if (input.nextEligibleAt !== null) {
-        assertRepositoryTimestamp(input.nextEligibleAt, "next_eligible_at");
-      }
-      const rows = await sql<Array<{ state: "waiting" | "error" }>>`
-        UPDATE focowiki.projection_dirty_scopes
-        SET state = CASE
-              WHEN ${input.retryable}
-                AND ${input.nextEligibleAt}::timestamptz IS NOT NULL
-                AND attempt_count < maximum_attempts
-              THEN 'waiting' ELSE 'error' END,
-            next_eligible_at = coalesce(
-              ${input.nextEligibleAt}::timestamptz,
-              ${now}::timestamptz
-            ),
-            coalesce_until = coalesce(
-              ${input.nextEligibleAt}::timestamptz,
-              ${now}::timestamptz
-            ),
-            lease_owner = NULL, lease_expires_at = NULL,
-            safe_error_code = ${input.errorCode},
-            safe_error_message = NULL, retryable = ${input.retryable},
-            updated_at = ${now}
-        WHERE public_id = ${assertRepositoryIdentity(input.publicId, "public_id")}
-          AND state = 'running'
-          AND lease_owner = ${assertRepositoryIdentity(input.workerId, "worker_id")}
-        RETURNING state
-      `;
-      return rows[0]?.state ?? null;
-    },
+    ...lease,
 
     async cover(input: {
       knowledgeBaseId: string;
@@ -359,6 +310,7 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
             END,
             attempt_count = 0,
             lease_owner = NULL, lease_expires_at = NULL,
+            heartbeat_at = NULL,
             next_eligible_at = ${assertRepositoryTimestamp(input.now, "now")},
             safe_error_code = NULL, safe_error_message = NULL,
             retryable = false,
@@ -374,37 +326,6 @@ export function createPostgresProjectionDirtyScopeRepository(sql: DatabaseClient
       if (rows.length !== unique.length) {
         throw repositoryContractError("dirty_scope_coverage_missing");
       }
-      return rows.length;
-    },
-
-    async recoverExpired(input: {
-      now: string;
-      retryAt: string;
-      limit: number;
-    }): Promise<number> {
-      const now = assertRepositoryTimestamp(input.now, "now");
-      const retryAt = assertRepositoryTimestamp(input.retryAt, "retry_at");
-      const rows = await sql<Array<{ public_id: string }>>`
-        WITH expired AS (
-          SELECT public_id
-          FROM focowiki.projection_dirty_scopes
-          WHERE state = 'running' AND lease_expires_at <= ${now}
-          ORDER BY lease_expires_at, public_id
-          FOR UPDATE SKIP LOCKED
-          LIMIT ${assertRepositoryPositiveInteger(input.limit, "limit", 256)}
-        )
-        UPDATE focowiki.projection_dirty_scopes scope
-        SET state = CASE WHEN scope.attempt_count < scope.maximum_attempts
-              THEN 'waiting' ELSE 'error' END,
-            next_eligible_at = ${retryAt}, coalesce_until = ${retryAt},
-            lease_owner = NULL, lease_expires_at = NULL,
-            safe_error_code = 'PROJECTION_SCOPE_LEASE_EXPIRED',
-            safe_error_message = NULL, retryable = true,
-            updated_at = ${now}
-        FROM expired
-        WHERE scope.public_id = expired.public_id
-        RETURNING scope.public_id
-      `;
       return rows.length;
     },
 

@@ -35,7 +35,232 @@ const input = {
   contextWindowTokens: 32_000
 };
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe("model graph analysis", () => {
+  it("streams Chat front-layer analysis and renews the idle deadline on every event", async () => {
+    const requests: unknown[] = [];
+    const output = JSON.stringify({
+      suggestions: {
+        title: "Climate Operations",
+        type: "guide",
+        description: "Operations guidance.",
+        tags: ["climate"],
+        keywords: ["maintenance"]
+      }
+    });
+    const create = vi.fn(async (request: unknown) => {
+      requests.push(request);
+      return (async function* () {
+        for (const part of [output.slice(0, 30), output.slice(30, 70), output.slice(70)]) {
+          await wait(15);
+          yield {
+            id: "chat-stream-1",
+            choices: [{ delta: { content: part }, finish_reason: null }]
+          };
+        }
+        await wait(15);
+        yield {
+          id: "chat-stream-1",
+          choices: [{ delta: {}, finish_reason: "stop" }],
+          usage: {
+            prompt_tokens: 320,
+            completion_tokens: 84,
+            prompt_tokens_details: { cached_tokens: 128 }
+          }
+        };
+      })();
+    });
+
+    const result = await requestModelGraphAnalysis({
+      ...input,
+      receiveTimeouts: { maxMs: 500, idleMs: 25 },
+      client: {
+        apiMode: "chat_completions",
+        structuredOutputCapability: "native_json_schema",
+        chat: { completions: { create } }
+      }
+    });
+
+    expect(result).toMatchObject({
+      suggestions: { title: "Climate Operations" },
+      warnings: []
+    });
+    expect(requests).toEqual([expect.objectContaining({ stream: true })]);
+    expect(requests).toEqual([expect.objectContaining({
+      stream_options: { include_usage: true }
+    })]);
+  });
+
+  it("streams Chat relationship confirmation before validating complete JSON", async () => {
+    const requests: unknown[] = [];
+    const output = JSON.stringify({
+      relationships: [{
+        candidateId: "source-b",
+        relationType: "direct_reference",
+        reason: "Climate Operations explicitly names Maintenance Guide."
+      }]
+    });
+    const create = vi.fn(async (request: unknown) => {
+      requests.push(request);
+      return (async function* () {
+        yield { choices: [{ delta: { content: output.slice(0, 50) }, finish_reason: null }] };
+        yield { choices: [{ delta: { content: output.slice(50) }, finish_reason: "stop" }] };
+      })();
+    });
+
+    const result = await requestGraphRelationshipConfirmations({
+      ...input,
+      receiveTimeouts: { maxMs: 500, idleMs: 100 },
+      client: {
+        apiMode: "chat_completions",
+        structuredOutputCapability: "native_json_schema",
+        chat: { completions: { create } }
+      }
+    });
+
+    expect(result).toMatchObject({
+      confirmations: [{ targetFileId: "source-b", relationType: "direct_reference" }],
+      warnings: []
+    });
+    expect(requests).toEqual([expect.objectContaining({ stream: true })]);
+  });
+
+  it("streams Responses structured output and preserves terminal observations", async () => {
+    const requests: unknown[] = [];
+    const observations: unknown[] = [];
+    const output = JSON.stringify({
+      suggestions: {
+        title: "Climate Operations",
+        type: "guide",
+        description: "Operations guidance.",
+        tags: ["climate"],
+        keywords: ["maintenance"]
+      }
+    });
+    const create = vi.fn(async (request: unknown) => {
+      requests.push(request);
+      return (async function* () {
+        yield { type: "response.output_text.delta", delta: output.slice(0, 40) };
+        yield { type: "response.output_text.delta", delta: output.slice(40) };
+        yield {
+          type: "response.completed",
+          response: {
+            id: "response-stream-1",
+            status: "completed",
+            usage: {
+              input_tokens: 280,
+              output_tokens: 40,
+              input_tokens_details: { cached_tokens: 96 }
+            }
+          }
+        };
+      })();
+    });
+
+    const result = await requestModelGraphAnalysis({
+      ...input,
+      receiveTimeouts: { maxMs: 500, idleMs: 100 },
+      onProviderObservation: (observation) => observations.push(observation),
+      client: { responses: { create } }
+    });
+
+    expect(result).toMatchObject({
+      suggestions: { title: "Climate Operations" },
+      warnings: []
+    });
+    expect(requests).toEqual([expect.objectContaining({ stream: true })]);
+    expect(observations).toEqual([expect.objectContaining({
+      requestId: "response-stream-1",
+      finishState: "completed",
+      inputTokens: 280,
+      outputTokens: 40,
+      cachedInputTokens: 96,
+      errorClass: "none"
+    })]);
+  });
+
+  it("rejects a Chat stream that closes without a terminal finish reason", async () => {
+    const output = JSON.stringify({
+      suggestions: {
+        title: "Climate Operations",
+        type: "guide",
+        description: "Operations guidance.",
+        tags: [],
+        keywords: []
+      }
+    });
+    const create = vi.fn(async () => (async function* () {
+      yield { choices: [{ delta: { content: output }, finish_reason: null }] };
+    })());
+
+    const result = await requestModelGraphAnalysis({
+      ...input,
+      receiveTimeouts: { maxMs: 500, idleMs: 100 },
+      client: {
+        apiMode: "chat_completions",
+        structuredOutputCapability: "native_json_schema",
+        chat: { completions: { create } }
+      }
+    });
+
+    expect(result.suggestions).toBeNull();
+    expect(result.warnings).toEqual([
+      "Model graph analysis did not complete: stream_ended"
+    ]);
+  });
+
+  it("rejects a Responses stream that closes without a terminal event", async () => {
+    const output = JSON.stringify({
+      suggestions: {
+        title: "Climate Operations",
+        type: "guide",
+        description: "Operations guidance.",
+        tags: [],
+        keywords: []
+      }
+    });
+    const create = vi.fn(async () => (async function* () {
+      yield { type: "response.output_text.delta", delta: output };
+    })());
+
+    const result = await requestModelGraphAnalysis({
+      ...input,
+      receiveTimeouts: { maxMs: 500, idleMs: 100 },
+      client: { responses: { create } }
+    });
+
+    expect(result.suggestions).toBeNull();
+    expect(result.warnings).toEqual([
+      "Model graph analysis did not complete: stream_ended"
+    ]);
+  });
+
+  it("times out and rejects partial streamed JSON after progress stops", async () => {
+    const create = vi.fn(async () => (async function* () {
+      yield { choices: [{ delta: { content: "{\"suggestions\":" }, finish_reason: null }] };
+      await wait(80);
+      yield { choices: [{ delta: { content: "{}" }, finish_reason: "stop" }] };
+    })());
+
+    const result = await requestModelGraphAnalysis({
+      ...input,
+      transientRetryDelayMs: 0,
+      receiveTimeouts: { maxMs: 200, idleMs: 20 },
+      client: {
+        apiMode: "chat_completions",
+        structuredOutputCapability: "native_json_schema",
+        chat: { completions: { create } }
+      }
+    });
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(result.suggestions).toBeNull();
+    expect(result.warnings[0]).toContain("idle timeout");
+  });
+
   it("builds one compact strict response containing only suggestions", () => {
     const request = buildModelGraphAnalysisRequest(input);
     expect(request.instructions).toContain("# Task");
@@ -475,7 +700,8 @@ describe("model graph analysis", () => {
         }
       },
       max_tokens: 100,
-      stream: false
+      stream: true,
+      stream_options: { include_usage: true }
     } as const;
     await client.chat.completions.create(structuredRequest as never);
     const controller = new AbortController();

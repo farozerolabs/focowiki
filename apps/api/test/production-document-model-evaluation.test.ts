@@ -10,6 +10,8 @@ import { createDocumentResourcePermits } from
 import { buildSourceContentProfile } from "../src/graph/content-profile.js";
 import { createProductionDocumentModelEvaluation } from
   "../src/document-indexing/infrastructure/production-document-model-evaluation.js";
+import { classifyDocumentGenerationResult } from
+  "../src/document-indexing/infrastructure/production-document-generation-runner.js";
 import { assertRelationshipConfirmationSucceeded } from
   "../src/document-indexing/infrastructure/document-model-evaluation-validation.js";
 import {
@@ -19,6 +21,19 @@ import {
 import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
 
 describe("production document model evaluation reuse", () => {
+  it("classifies returned provider warnings for adaptive admission", () => {
+    expect(classifyDocumentGenerationResult({ warnings: [] })).toBe("success");
+    expect(classifyDocumentGenerationResult({
+      warnings: ["Model provider error: HTTP 429 rate limit"]
+    })).toBe("rate_limited");
+    expect(classifyDocumentGenerationResult({
+      warnings: ["Model response idle timeout reached"]
+    })).toBe("timeout");
+    expect(classifyDocumentGenerationResult({
+      warnings: ["Model refused to confirm graph relationships"]
+    })).toBe("failure");
+  });
+
   it("does not treat provider warnings as a successful empty relationship set", () => {
     expect(() => assertRelationshipConfirmationSucceeded({
       warnings: ["Model response idle timeout reached"],

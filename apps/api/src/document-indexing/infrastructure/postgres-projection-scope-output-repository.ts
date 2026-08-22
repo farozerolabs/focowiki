@@ -1,19 +1,20 @@
 import type { DatabaseClient } from "../../db/client.js";
-import { MAXIMUM_PROJECTION_SCOPE_OUTPUTS_PER_DOCUMENT } from
-  "../domain/document-projection-limits.js";
 import type { DocumentDirectoryNavigationMutation } from
-  "../application/document-directory-navigation-mutation.js";
-import { validateDocumentDirectoryNavigationMutations } from
   "../application/document-directory-navigation-mutation.js";
 import type { StagedDocumentPage } from
   "../application/document-generated-page-staging.js";
 import {
   assertRepositoryIdentity,
   assertRepositoryPositiveInteger,
-  assertRepositorySha256,
   assertRepositoryTimestamp,
   repositoryContractError
 } from "./document-repository-validation.js";
+import { validateProjectionScopeOutput } from
+  "./document-projection-scope-output-validation.js";
+import {
+  enqueueProjectionCleanupOutbox,
+  type ProjectionCleanupReservation
+} from "./postgres-projection-cleanup-outbox.js";
 
 export type DocumentProjectionScopeOutputPage = Omit<
   StagedDocumentPage,
@@ -36,6 +37,14 @@ export type DocumentProjectionScopeOutput = Readonly<{
   createdAt: string;
 }>;
 
+type DocumentProjectionScopeOutputWrite = DocumentProjectionScopeOutput &
+  Readonly<{
+    leaseOwner?: string;
+    leaseGeneration?: number;
+    leaseCheckedAt?: string;
+    cleanupReservations?: readonly ProjectionCleanupReservation[];
+  }>;
+
 type OutputRow = {
   scope_public_id: string;
   rendered_sequence: number | string;
@@ -57,9 +66,41 @@ export function createPostgresProjectionScopeOutputRepository(
   sql: DatabaseClient
 ) {
   return {
-    async persist(input: DocumentProjectionScopeOutput): Promise<void> {
-      const normalized = validateOutput(input);
+    async persist(input: DocumentProjectionScopeOutputWrite): Promise<void> {
+      const normalized = validateProjectionScopeOutput(input);
       await sql.begin(async (transaction) => {
+        if (input.leaseOwner !== undefined
+          || input.leaseGeneration !== undefined
+          || input.leaseCheckedAt !== undefined) {
+          if (input.leaseOwner === undefined
+            || input.leaseGeneration === undefined
+            || input.leaseCheckedAt === undefined) {
+            throw repositoryContractError("projection_scope_lease_fence_invalid");
+          }
+          const fenced = await transaction<Array<{ public_id: string }>>`
+            SELECT public_id
+            FROM focowiki.projection_dirty_scopes
+            WHERE public_id = ${normalized.scopePublicId}
+              AND knowledge_base_id = ${normalized.knowledgeBaseId}
+              AND state = 'running'
+              AND lease_owner = ${assertRepositoryIdentity(
+                input.leaseOwner,
+                "lease_owner"
+              )}
+              AND lease_generation = ${assertRepositoryPositiveInteger(
+                input.leaseGeneration,
+                "lease_generation"
+              )}
+              AND lease_expires_at > ${assertRepositoryTimestamp(
+                input.leaseCheckedAt,
+                "lease_checked_at"
+              )}
+            FOR SHARE
+          `;
+          if (fenced.length !== 1) {
+            throw repositoryContractError("projection_scope_lease_lost");
+          }
+        }
         await transaction`
           INSERT INTO focowiki.projection_scope_object_refs (
             scope_public_id, rendered_sequence, knowledge_base_id,
@@ -207,6 +248,14 @@ export function createPostgresProjectionScopeOutputRepository(
               AND rendered_sequence = ${normalized.renderedSequence}
           `;
         }
+        await enqueueProjectionCleanupOutbox({
+          transaction: transaction as unknown as DatabaseClient,
+          knowledgeBaseId: normalized.knowledgeBaseId,
+          scopePublicId: normalized.scopePublicId,
+          renderedSequence: normalized.renderedSequence,
+          reservations: input.cleanupReservations ?? [],
+          createdAt: normalized.createdAt
+        });
       });
     },
 
@@ -246,46 +295,6 @@ export function createPostgresProjectionScopeOutputRepository(
       return rows[0] ? mapRow(rows[0]) : null;
     },
 
-    async readForDocument(input: {
-      knowledgeBaseId: string;
-      documentJobPublicId: string;
-      limit: number;
-    }): Promise<readonly DocumentProjectionScopeOutput[]> {
-      const limit = assertRepositoryPositiveInteger(
-        input.limit,
-        "limit",
-        MAXIMUM_PROJECTION_SCOPE_OUTPUTS_PER_DOCUMENT
-      );
-      const rows = await sql<OutputRow[]>`
-        SELECT DISTINCT ON (output.scope_public_id)
-               output.scope_public_id, output.rendered_sequence,
-               output.knowledge_base_id, output.output_fingerprint_sha256,
-               output.pages, output.removed_normalized_paths,
-               output.navigation_mutations, output.activation_owner_versions,
-               output.created_at
-        FROM focowiki.projection_scope_contributions contribution
-        JOIN focowiki.projection_scope_receipts receipt
-          ON receipt.contribution_public_id = contribution.public_id
-        JOIN focowiki.projection_scope_outputs output
-          ON output.scope_public_id = receipt.scope_public_id
-         AND output.rendered_sequence = receipt.rendered_sequence
-        WHERE contribution.knowledge_base_id = ${assertRepositoryIdentity(
-          input.knowledgeBaseId,
-          "knowledge_base_id"
-        )}
-          AND contribution.document_job_public_id = ${assertRepositoryIdentity(
-            input.documentJobPublicId,
-            "document_job_public_id"
-          )}
-          AND contribution.state = 'acknowledged'
-        ORDER BY output.scope_public_id
-        LIMIT ${limit + 1}
-      `;
-      if (rows.length > limit) {
-        throw repositoryContractError("projection_scope_output_limit_exceeded");
-      }
-      return rows.map(mapRow);
-    }
   };
 }
 
@@ -359,76 +368,8 @@ async function queueReleasedProjectionObjects(input: {
   `;
 }
 
-function validateOutput(
-  input: DocumentProjectionScopeOutput
-): DocumentProjectionScopeOutput {
-  const pages = [...input.pages].sort(comparePage);
-  const removedNormalizedPaths = [...new Set(input.removedNormalizedPaths)]
-    .sort();
-  if (pages.length > 256
-    || new Set(pages.map((page) => page.normalizedPath)).size !== pages.length
-    || removedNormalizedPaths.length > 256
-    || pages.some((page) => !validPage(page))
-    || removedNormalizedPaths.some((path) => !validPath(path))) {
-    throw repositoryContractError("projection_scope_output_invalid");
-  }
-  validateDocumentDirectoryNavigationMutations(input.navigationMutations);
-  const ownerIdentities = input.activationOwnerVersions.map((owner) =>
-    `${owner.kind}\0${owner.key}`);
-  if (input.activationOwnerVersions.length > 30_000
-    || new Set(ownerIdentities).size !== ownerIdentities.length
-    || input.activationOwnerVersions.some((owner) =>
-      !["page_head", "directory_leaf", "directory_entry"].includes(owner.kind)
-      || !owner.key || Buffer.byteLength(owner.key, "utf8") > 2_048
-      || !Number.isSafeInteger(owner.expectedVersion)
-      || owner.expectedVersion < 0)) {
-    throw repositoryContractError("projection_scope_output_owner_invalid");
-  }
-  return {
-    scopePublicId: assertRepositoryIdentity(input.scopePublicId, "scope_public_id"),
-    renderedSequence: assertRepositoryPositiveInteger(
-      input.renderedSequence,
-      "rendered_sequence"
-    ),
-    knowledgeBaseId: assertRepositoryIdentity(
-      input.knowledgeBaseId,
-      "knowledge_base_id"
-    ),
-    outputFingerprintSha256: assertRepositorySha256(
-      input.outputFingerprintSha256,
-      "output_fingerprint"
-    ),
-    pages,
-    removedNormalizedPaths,
-    navigationMutations: [...input.navigationMutations],
-    activationOwnerVersions: [...input.activationOwnerVersions].sort(
-      (left, right) => left.kind.localeCompare(right.kind, "en-US")
-        || left.key.localeCompare(right.key, "en-US")
-    ),
-    createdAt: assertRepositoryTimestamp(input.createdAt, "created_at")
-  };
-}
-
-function validPage(page: DocumentProjectionScopeOutputPage): boolean {
-  return validPath(page.logicalPath) && validPath(page.normalizedPath)
-    && page.normalizedPath === page.logicalPath.toLocaleLowerCase("en-US")
-    && Boolean(page.entryKind) && Buffer.byteLength(page.entryKind, "utf8") <= 128
-    && Boolean(page.objectId) && Buffer.byteLength(page.objectId, "utf8") <= 255
-    && /^[0-9a-f]{64}$/u.test(page.checksumSha256)
-    && Number.isSafeInteger(page.byteCount) && page.byteCount >= 0
-    && ((page.sourceFilePublicId === null
-      && page.sourceRevisionPublicId === null)
-      || (Boolean(page.sourceFilePublicId)
-        && Boolean(page.sourceRevisionPublicId)));
-}
-
-function validPath(path: string): boolean {
-  return Boolean(path) && !path.startsWith("/") && !path.includes("..")
-    && Buffer.byteLength(path, "utf8") <= 4096;
-}
-
 function mapRow(row: OutputRow): DocumentProjectionScopeOutput {
-  return validateOutput({
+  return validateProjectionScopeOutput({
     scopePublicId: row.scope_public_id,
     renderedSequence: Number(row.rendered_sequence),
     knowledgeBaseId: row.knowledge_base_id,
@@ -439,11 +380,4 @@ function mapRow(row: OutputRow): DocumentProjectionScopeOutput {
     activationOwnerVersions: row.activation_owner_versions,
     createdAt: new Date(row.created_at).toISOString()
   });
-}
-
-function comparePage(
-  left: DocumentProjectionScopeOutputPage,
-  right: DocumentProjectionScopeOutputPage
-): number {
-  return left.normalizedPath.localeCompare(right.normalizedPath, "en-US");
 }

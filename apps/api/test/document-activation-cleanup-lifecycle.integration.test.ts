@@ -79,6 +79,43 @@ const enabled = Boolean(databaseUrl && runOwner
     }]);
   });
 
+  it("keeps an available document available when cleanup permanently fails", async () => {
+    await sql`
+      UPDATE focowiki.document_processing_jobs
+      SET state = 'available', completed_work_count = 7,
+          blocking_work_kind = 'cleanup',
+          terminal_at = '2026-08-16T00:00:07.000Z'
+      WHERE public_id = 'document-job-1'
+    `;
+    await sql`
+      UPDATE focowiki.document_artifact_work
+      SET state = 'running', attempt_count = maximum_attempts,
+          lease_owner = 'worker-cleanup',
+          lease_expires_at = '2026-08-16T00:02:00.000Z',
+          started_at = '2026-08-16T00:00:08.000Z',
+          updated_at = '2026-08-16T00:00:08.000Z'
+      WHERE public_id = ${documentFixedWorkPublicId("document-job-1", "cleanup")}
+    `;
+
+    await expect(repository.fail({
+      publicId: documentFixedWorkPublicId("document-job-1", "cleanup"),
+      workerId: "worker-cleanup",
+      now: "2026-08-16T00:00:09.000Z",
+      errorCode: "PROJECTION_CLEANUP_FAILED",
+      safeMessage: null,
+      retryable: false,
+      nextEligibleAt: null
+    })).resolves.toBe("error");
+
+    await expect(readJob()).resolves.toEqual([{
+      state: "available",
+      completed_work_count: 7,
+      required_work_count: 8,
+      blocking_work_kind: "cleanup",
+      terminal_at: new Date("2026-08-16T00:00:07.000Z")
+    }]);
+  });
+
   function receipt(kind: "activate" | "cleanup", now: string) {
     return {
       publicId: documentFixedWorkPublicId("document-job-1", kind),

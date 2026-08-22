@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { watchDocumentWorkerRuntime } from
+import {
+  settleDocumentWorkerRuntime,
+  watchDocumentWorkerRuntime
+} from
   "../src/document-indexing/infrastructure/production-runtime.js";
 
 describe("document worker runtime refresh", () => {
@@ -23,6 +26,25 @@ describe("document worker runtime refresh", () => {
 
     expect(apply).toHaveBeenCalledOnce();
     expect(apply).toHaveBeenCalledWith(changed);
+  });
+
+  it("aborts infinite refresh work before awaiting runtime cleanup", async () => {
+    const controller = new AbortController();
+    const refresh = new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), {
+        once: true
+      });
+    });
+
+    await expect(Promise.race([
+      settleDocumentWorkerRuntime({
+        controller,
+        cleanup: [() => refresh, async () => undefined]
+      }).then(() => "settled"),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("timed-out"), 100))
+    ])).resolves.toBe("settled");
+    expect(controller.signal.aborted).toBe(true);
   });
 });
 
