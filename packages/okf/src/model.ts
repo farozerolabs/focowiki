@@ -5,6 +5,7 @@ import {
   type ModelReceiveTimeouts
 } from "./model-receive.js";
 import { buildModelSourceView } from "./model-source-view.js";
+import { consumeStructuredModelStream } from "./model-stream.js";
 import type { OkfGraphEdge, OkfGraphNode } from "./graph.js";
 
 export { receiveWithProgressTimeout } from "./model-receive.js";
@@ -167,6 +168,7 @@ export type GraphRelationshipConfirmationRequest = {
     };
   };
   store: false;
+  stream: true;
 };
 
 export type ModelGraphAnalysisRequest = {
@@ -184,6 +186,7 @@ export type ModelGraphAnalysisRequest = {
     };
   };
   store: false;
+  stream: true;
 };
 
 export type ModelRequestInput = Array<{
@@ -262,7 +265,10 @@ export type ChatCompletionsJsonRequest = {
       schema: Readonly<Record<string, unknown>>;
     };
   };
-  stream: false;
+  stream: true;
+  stream_options: {
+    include_usage: true;
+  };
 };
 
 export type OpenAIChatCompletionsClient = {
@@ -484,7 +490,8 @@ export function buildGraphRelationshipConfirmationRequest(
         schema: GRAPH_RELATIONSHIP_CONFIRMATION_SCHEMA
       }
     },
-    store: false
+    store: false,
+    stream: true
   };
 }
 
@@ -546,7 +553,8 @@ export function buildModelGraphAnalysisRequest(
         schema: MODEL_GRAPH_ANALYSIS_SCHEMA
       }
     },
-    store: false
+    store: false,
+    stream: true
   };
 }
 
@@ -709,11 +717,17 @@ async function runGraphRelationshipConfirmationAttempt(input: {
 }): Promise<GraphRelationshipConfirmationResult> {
   const startedAt = Date.now();
   let providerResponse: unknown = null;
+  const requestController = new AbortController();
   try {
     input.onProviderRequest?.();
     const response = await receiveWithProgressTimeout({
       timeouts: input.receiveTimeouts,
-      start: () => sendModelRequest(input.client, input.request)
+      start: (progress) => sendModelRequest(
+        input.client,
+        input.request,
+        progress,
+        requestController.signal
+      )
     });
     providerResponse = response;
 
@@ -779,6 +793,8 @@ async function runGraphRelationshipConfirmationAttempt(input: {
     observeProviderAttempt(input, error, startedAt,
       isTransientModelWarning(warning) ? "transient" : "provider");
     return graphWarning(warning);
+  } finally {
+    requestController.abort();
   }
 }
 
@@ -793,11 +809,17 @@ async function runModelGraphAnalysisAttempt(input: {
 }): Promise<ModelGraphAnalysisResult> {
   const startedAt = Date.now();
   let providerResponse: unknown = null;
+  const requestController = new AbortController();
   try {
     input.onProviderRequest?.();
     const response = await receiveWithProgressTimeout({
       timeouts: input.receiveTimeouts,
-      start: () => sendModelRequest(input.client, input.request)
+      start: (progress) => sendModelRequest(
+        input.client,
+        input.request,
+        progress,
+        requestController.signal
+      )
     });
     providerResponse = response;
     if (containsRefusal(response)) {
@@ -858,21 +880,35 @@ async function runModelGraphAnalysisAttempt(input: {
     observeProviderAttempt(input, error, startedAt,
       isTransientModelWarning(warning) ? "transient" : "provider");
     return modelGraphWarning(warning);
+  } finally {
+    requestController.abort();
   }
 }
 
-function sendModelRequest(
+async function sendModelRequest(
   client: OpenAIModelClient,
-  request: GraphRelationshipConfirmationRequest | ModelGraphAnalysisRequest
+  request: GraphRelationshipConfirmationRequest | ModelGraphAnalysisRequest,
+  progress: () => void,
+  signal: AbortSignal
 ): Promise<unknown> {
   if (isChatCompletionsClient(client)) {
-    return client.chat.completions.create(toChatCompletionsJsonRequest(
+    const response = await client.chat.completions.create(toChatCompletionsJsonRequest(
       request,
       client.structuredOutputCapability ?? "native_json_schema"
-    ));
+    ), { signal });
+    return consumeStructuredModelStream({
+      response,
+      mode: "chat_completions",
+      progress
+    });
   }
 
-  return client.responses.create(request);
+  const response = await client.responses.create(request, { signal });
+  return consumeStructuredModelStream({
+    response,
+    mode: "responses",
+    progress
+  });
 }
 
 function isChatCompletionsClient(client: OpenAIModelClient): client is OpenAIChatCompletionsClient {
@@ -905,7 +941,8 @@ function toChatCompletionsJsonRequest(
         schema: request.text.format.schema
       }
     },
-    stream: false
+    stream: true,
+    stream_options: { include_usage: true }
   };
   return capability === "json_object_compatibility"
     ? toJsonObjectCompatibilityRequest(converted)

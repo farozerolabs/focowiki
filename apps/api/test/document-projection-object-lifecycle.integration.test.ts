@@ -235,6 +235,61 @@ const enabled = Boolean(databaseUrl && runOwner
     `).resolves.toEqual([{ state: "queued" }]);
   });
 
+  it("treats publication-generation object references as durable owners",
+    async () => {
+      const objectId = `generated-sha256:okf-generated-markdown-v1:${
+        "9".repeat(64)}`;
+      await sql`
+        INSERT INTO focowiki.object_registrations (
+          object_id, storage_key, checksum_sha256, byte_count, content_type,
+          object_format, state, write_attempt_public_id, verified_at,
+          zero_owner_since
+        ) VALUES (
+          ${objectId}, 'generated/publication-generation.md',
+          ${"9".repeat(64)}, 24, 'text/markdown; charset=utf-8',
+          'okf-generated-markdown-v1', 'verified',
+          'publication-generation-write', now(), now()
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_publication_generations (
+          public_id, knowledge_base_id, target_fact_epoch,
+          renderer_contract_version, deterministic_changed_at, state,
+          input_fingerprint_sha256
+        ) VALUES (
+          'lifecycle-generation', 'lifecycle-kb', 1, 'portable-okf-v2',
+          now(), 'rendering', ${"8".repeat(64)}
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_scope_generations (
+          public_id, publication_generation_public_id, knowledge_base_id,
+          scope_identity, scope_kind, scope_key, scope_generation,
+          input_snapshot_fingerprint_sha256
+        ) VALUES (
+          'lifecycle-generation-scope', 'lifecycle-generation',
+          'lifecycle-kb', 'root:index', 'root', 'index', 1,
+          ${"8".repeat(64)}
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_scope_generation_object_refs (
+          scope_generation_public_id, object_id
+        ) VALUES ('lifecycle-generation-scope', ${objectId})
+      `;
+      const ownership = createPostgresStorageVnextOwnershipRepository(
+        sql as unknown as DatabaseClient,
+        { zeroOwnerGraceMilliseconds: 1 }
+      );
+      await expect(ownership.markDeleting(objectId))
+        .rejects.toMatchObject({ code: "owners_present" });
+      await sql`
+        DELETE FROM focowiki.projection_scope_generation_object_refs
+        WHERE scope_generation_public_id = 'lifecycle-generation-scope'
+      `;
+      await expect(ownership.markDeleting(objectId)).resolves.toBeUndefined();
+    });
+
   it("atomically replaces an exact output whose page object is no longer verified",
     async () => {
       const staleObjectId = `generated-sha256:okf-generated-markdown-v1:${

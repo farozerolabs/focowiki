@@ -40,7 +40,16 @@ export async function convergePostgresUploadDocumentOperation(
   const operation = operations[0];
   if (!operation) throw aggregateError("operation_missing");
   if (operation.operation_kind !== "upload") return "not_upload";
-  if (operation.state === "completed") return "completed";
+  if (operation.state === "completed") {
+    const pendingSummaries = await sql<Array<{ exists: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM focowiki.upload_operation_summaries
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND operation_public_id = ${input.operationPublicId}
+      ) AS exists
+    `;
+    if (pendingSummaries[0]?.exists !== true) return "completed";
+  }
 
   const aggregateRows = await sql<AggregateRow[]>`
     SELECT count(*) AS total_count,

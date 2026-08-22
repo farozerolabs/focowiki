@@ -42,7 +42,10 @@ describe("storage vNext clean bootstrap and reset contract", () => {
       "002_document_queue_throughput.sql",
       "003_document_projection_throughput.sql",
       "004_projection_output_object_lifecycle.sql",
-      "005_clean_document_indexing_boundary.sql"
+      "005_clean_document_indexing_boundary.sql",
+      "006_projection_publication_foundation.sql",
+      "007_projection_legacy_cleanup_gate.sql",
+      "008_projection_navigation_capacity.sql"
     ]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
@@ -56,6 +59,16 @@ describe("storage vNext clean bootstrap and reset contract", () => {
     expect(manifest).toContain('targetGeneration: "storage-vnext-v12-projection-object-lifecycle"');
     expect(manifest).toContain('fileName: "005_clean_document_indexing_boundary.sql"');
     expect(manifest).toContain('targetGeneration: "storage-vnext-v13-clean-document-indexing"');
+    expect(manifest).toContain('fileName: "006_projection_publication_foundation.sql"');
+    expect(manifest).toContain('fileName: "007_projection_legacy_cleanup_gate.sql"');
+    expect(manifest).toContain(
+      'targetGeneration: "storage-vnext-v15-projection-legacy-cleanup-gate"'
+    );
+    expect(manifest).toContain('fileName: "008_projection_navigation_capacity.sql"');
+    expect(manifest).toContain(
+      'targetGeneration: "storage-vnext-v16-projection-navigation-capacity"'
+    );
+    expect(manifest).toContain('targetGeneration: "storage-vnext-v14-projection-publication-coherence"');
     expect(manifest).toContain('safety: "breaking_reset"');
     expect(manifest).not.toMatch(/incremental-sharded-publication|compatible_with_persisted_work/u);
   });

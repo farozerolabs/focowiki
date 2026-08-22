@@ -189,8 +189,12 @@ export function createPostgresStorageVnextOwnershipRepository(
             WHERE artifact.object_id = registration.object_id
           )
           AND NOT EXISTS (
-            SELECT 1 FROM focowiki.projection_scope_object_refs reference
+            SELECT 1
+            FROM focowiki.projection_scope_generation_object_refs reference
             WHERE reference.object_id = registration.object_id
+          )
+          AND NOT focowiki.legacy_projection_object_is_referenced(
+            registration.object_id
           )
           ${cursor
             ? sql`AND (registration.zero_owner_since, registration.object_id)
@@ -700,12 +704,17 @@ async function readDurableReferenceCount(
          WHERE revision.object_id = ${objectId})
       + (SELECT count(*) FROM focowiki.generated_page_candidates candidate
          WHERE candidate.object_id = ${objectId})
+      + (SELECT count(*) FROM focowiki.generated_page_heads head
+         WHERE head.object_id = ${objectId})
       + (SELECT count(*) FROM focowiki.upload_entries entry
          WHERE entry.object_id = ${objectId})
       + (SELECT count(*) FROM focowiki.embedding_artifacts artifact
          WHERE artifact.object_id = ${objectId})
-      + (SELECT count(*) FROM focowiki.projection_scope_object_refs reference
+      + (SELECT count(*)
+         FROM focowiki.projection_scope_generation_object_refs reference
          WHERE reference.object_id = ${objectId})
+      + CASE WHEN focowiki.legacy_projection_object_is_referenced(${objectId})
+          THEN 1 ELSE 0 END
     ) AS reference_count
   `;
   return Number(rows[0]?.reference_count ?? 0);
@@ -727,6 +736,10 @@ function hasNoDurableReferences(sql: ReadSql, alias: string) {
       WHERE candidate.object_id = ${registration}.object_id
     )
     AND NOT EXISTS (
+      SELECT 1 FROM focowiki.generated_page_heads head
+      WHERE head.object_id = ${registration}.object_id
+    )
+    AND NOT EXISTS (
       SELECT 1 FROM focowiki.upload_entries entry
       WHERE entry.object_id = ${registration}.object_id
     )
@@ -735,8 +748,12 @@ function hasNoDurableReferences(sql: ReadSql, alias: string) {
       WHERE artifact.object_id = ${registration}.object_id
     )
     AND NOT EXISTS (
-      SELECT 1 FROM focowiki.projection_scope_object_refs reference
+      SELECT 1
+      FROM focowiki.projection_scope_generation_object_refs reference
       WHERE reference.object_id = ${registration}.object_id
+    )
+    AND NOT focowiki.legacy_projection_object_is_referenced(
+      ${registration}.object_id
     )
   `;
 }

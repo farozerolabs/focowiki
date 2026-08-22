@@ -16,6 +16,7 @@ export function runDocumentGeneration<TResult>(
     signal?: AbortSignal;
     ownerKey?: string;
     onMetric(metric: { waitTimeMs: number; serviceTimeMs: number }): void;
+    classifyResult?(result: TResult): "success" | "failure" | "rate_limited" | "timeout";
   }
 ): Promise<TResult> {
   if (input.generation) {
@@ -25,4 +26,16 @@ export function runDocumentGeneration<TResult>(
     return input.permits.run("generation_model", operation, options);
   }
   throw modelEvaluationError("MODEL_GENERATION_RUNNER_MISSING");
+}
+
+export function classifyDocumentGenerationResult<TResult extends {
+  warnings: readonly string[];
+}>(input: TResult): "success" | "failure" | "rate_limited" | "timeout" {
+  if (input.warnings.length === 0) return "success";
+  const diagnostic = input.warnings.join("\n").toLowerCase();
+  if (/(?:429|rate limit|too many requests|throttl)/u.test(diagnostic)) {
+    return "rate_limited";
+  }
+  if (/(?:timeout|timed out|deadline)/u.test(diagnostic)) return "timeout";
+  return "failure";
 }

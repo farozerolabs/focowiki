@@ -155,9 +155,9 @@ describe("document resource permits", () => {
   });
 
   it("guards fixed work and nested provider calls with bounded resource lanes", () => {
-    const processor = readFileSync(resolve(
+    const resources = readFileSync(resolve(
       import.meta.dirname,
-      "../src/document-indexing/infrastructure/production-document-fixed-processor.ts"
+      "../src/document-indexing/infrastructure/production-document-fixed-resources.ts"
     ), "utf8");
     const scheduler = readFileSync(resolve(
       import.meta.dirname,
@@ -170,14 +170,14 @@ describe("document resource permits", () => {
     const nestedHandlers = [
       "production-document-content-projection-work-handler.ts",
       "production-document-knowledge-projection-work-handler.ts",
-      "production-document-activate-work-handler.ts",
+      "production-document-publication-coordinator-runtime.ts",
       "production-document-semantic-search-projection.ts"
     ].map((file) => readFileSync(resolve(
       import.meta.dirname,
       "../src/document-indexing/infrastructure",
       file
     ), "utf8")).join("\n");
-    expect(processor).toContain("createDocumentResourceLanes");
+    expect(resources).toContain("createDocumentResourceLanes");
     expect(scheduler).toContain("tryAcquire(request.resourceLane)");
     for (const lane of [
       "postgres_s3", "coordination", "generation_model", "graphrag_adapter", "embedding",

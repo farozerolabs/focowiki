@@ -14,6 +14,7 @@ import { createPostgresDocumentPerFileGraphDirectory } from
   "./postgres-document-per-file-graph-directory.js";
 
 const MAXIMUM_DIRECTORY_RECORDS = 10_000;
+const MAXIMUM_PER_FILE_GRAPH_RESOURCE_PATHS = 256;
 
 export type PerFileGraphRow = {
   relation_public_id: string;
@@ -210,16 +211,22 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
         throw graphReaderError("per_file_graph_record_limit_exceeded");
       }
       const resourceRows = await sql<Array<{ logical_path: string }>>`
-        SELECT logical_path FROM focowiki.generated_page_heads
-        WHERE knowledge_base_id = ${input.knowledgeBaseId}
-          AND source_file_public_id = ${input.sourceFilePublicId}
-          AND left(normalized_path, char_length('_graph/by-file/'))
+        SELECT head.logical_path
+        FROM focowiki.generated_page_heads head
+        JOIN focowiki.projection_artifact_owners owner
+          ON owner.knowledge_base_id = head.knowledge_base_id
+         AND owner.normalized_path = head.normalized_path
+        WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
+          AND owner.owner_scope_identity
+            = ${`_graph:${input.sourceFilePublicId}`}
+          AND left(head.normalized_path, char_length('_graph/by-file/'))
             = '_graph/by-file/'
-          AND right(normalized_path, 5) = '.json'
-        ORDER BY normalized_path COLLATE "C" LIMIT 2
+          AND right(head.normalized_path, 5) = '.json'
+        ORDER BY head.normalized_path COLLATE "C"
+        LIMIT ${MAXIMUM_PER_FILE_GRAPH_RESOURCE_PATHS + 1}
       `;
-      if (resourceRows.length > 1) {
-        throw graphReaderError("per_file_graph_resource_ambiguous");
+      if (resourceRows.length > MAXIMUM_PER_FILE_GRAPH_RESOURCE_PATHS) {
+        throw graphReaderError("per_file_graph_resource_path_limit_exceeded");
       }
       return {
         source: sourceRows[0]

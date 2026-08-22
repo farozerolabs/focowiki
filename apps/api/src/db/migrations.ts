@@ -152,12 +152,7 @@ async function assertDocumentIndexingSchemaSignature(
           'canonical_file_relations',
           'search_family_receipts',
           'generated_page_bases',
-          'projection_dirty_scopes',
-          'projection_scope_outputs',
-          'projection_scope_object_refs',
-          'projection_scope_storage_metrics',
           'document_projection_waiting_completions',
-          'scoped_activation_owners',
           'knowledge_base_sequences',
           'generated_page_heads',
           'source_file_identity_keys',
@@ -167,7 +162,28 @@ async function assertDocumentIndexingSchemaSignature(
           'document_model_layer_executions',
           'search_document_owners',
           'upload_operation_summaries',
-          'operation_tombstones'
+          'operation_tombstones',
+          'projection_cleanup_outbox',
+          'projection_fact_epochs',
+          'knowledge_base_projection_heads',
+          'projection_publication_generations',
+          'projection_generation_documents',
+          'projection_activation_owner_reservations',
+          'projection_artifact_owners',
+          'projection_directory_owners',
+          'projection_scope_generations',
+          'projection_scope_generation_dependencies',
+          'projection_scope_snapshot_members',
+          'projection_scope_generation_pages',
+          'projection_generation_directory_claims',
+          'projection_scope_navigation_mutations',
+          'projection_scope_generation_object_refs',
+          'projection_generation_validation_results',
+          'projection_invariant_diagnostics',
+          'projection_cutover_states',
+          'projection_shadow_parity_results',
+          'projection_generation_retention'
+          ,'projection_legacy_cleanup_state'
         ]) AS required(name)
         WHERE to_regclass('focowiki.' || required.name) IS NULL
       )
@@ -199,11 +215,6 @@ async function assertDocumentIndexingSchemaSignature(
           ('document_artifact_receipts', 'output_fingerprint_sha256'),
           ('relation_candidate_pairs', 'evidence_fingerprint_sha256'),
           ('search_family_receipts', 'family'),
-          ('projection_dirty_scopes', 'scope_key'),
-          ('projection_scope_outputs', 'output_fingerprint_sha256'),
-          ('projection_scope_outputs', 'pages'),
-          ('projection_scope_storage_metrics', 'attempted_bytes'),
-          ('scoped_activation_owners', 'owner_version'),
           ('knowledge_base_sequences', 'current_sequence'),
           ('generated_page_candidates', 'owner_operation_public_id'),
           ('generated_page_heads', 'logical_path'),
@@ -225,6 +236,19 @@ async function assertDocumentIndexingSchemaSignature(
           ,('upload_operation_summaries', 'session_public_id')
           ,('upload_operation_summaries', 'received_entry_count')
           ,('upload_operation_summaries', 'expires_at')
+          ,('knowledge_base_projection_heads', 'active_generation_public_id')
+          ,('projection_publication_generations', 'target_fact_epoch')
+          ,('projection_artifact_owners', 'ownership_epoch')
+          ,('projection_scope_generations', 'lease_generation')
+          ,('projection_scope_generations', 'validation_evidence')
+          ,('projection_scope_generation_pages', 'normalized_path')
+          ,('projection_scope_generation_pages', 'logical_path')
+          ,('projection_scope_generation_pages', 'publication_generation_public_id')
+          ,('projection_scope_generation_pages', 'owner_scope_identity')
+          ,('projection_scope_navigation_mutations', 'publication_generation_public_id')
+          ,('projection_scope_navigation_mutations', 'owner_scope_identity')
+          ,('generated_page_heads', 'projection_generation_public_id')
+          ,('projection_cleanup_outbox', 'write_attempt_public_id')
         ) AS required(table_name, column_name)
         WHERE NOT EXISTS (
           SELECT 1 FROM information_schema.columns actual
@@ -250,11 +274,7 @@ async function assertDocumentIndexingSchemaSignature(
           'document_artifact_receipts_work_idx',
           'relation_candidate_pairs_claim_idx',
           'search_family_receipts_flush_idx',
-          'projection_dirty_scopes_claim_idx',
-          'projection_scope_outputs_created_idx',
-          'projection_scope_object_refs_object_idx',
           'document_projection_waiting_ready_idx',
-          'scoped_activation_owners_scope_idx',
           'source_file_active_revisions_current_idx',
           'source_file_active_revisions_active_idx',
           'source_revision_presentations_current_path_idx',
@@ -277,6 +297,18 @@ async function assertDocumentIndexingSchemaSignature(
           'operation_tombstones_expiry_idx',
           'operation_tombstones_scope_time_idx',
           'webhook_subscriptions_public_idempotency_key'
+          ,'projection_cleanup_outbox_claim_idx'
+          ,'projection_cleanup_outbox_expired_lease_idx'
+          ,'projection_publication_generations_one_candidate_idx'
+          ,'projection_activation_owner_reservations_lock_idx'
+          ,'projection_artifact_owners_scope_idx'
+          ,'projection_directory_owners_scope_idx'
+          ,'projection_scope_generations_claim_idx'
+          ,'projection_scope_generations_expired_idx'
+          ,'projection_scope_generation_dependencies_reverse_idx'
+          ,'projection_scope_generation_pages_path_idx'
+          ,'projection_scope_generation_object_refs_object_idx'
+          ,'projection_invariant_diagnostics_open_idx'
         ]) AS required(name)
         WHERE NOT EXISTS (
           SELECT 1 FROM pg_indexes actual
@@ -294,8 +326,6 @@ async function assertDocumentIndexingSchemaSignature(
           'document_artifact_receipts_identity_key',
           'relation_candidate_pairs_identity_key',
           'search_family_receipts_identity_key',
-          'projection_dirty_scopes_identity_key',
-          'scoped_activation_owners_identity_key',
           'generated_page_candidates_owner_check',
           'generated_page_candidates_operation_path_key',
           'generated_page_heads_path_key',

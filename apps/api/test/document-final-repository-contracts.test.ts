@@ -5,10 +5,6 @@ import { buildDocumentIdentityKeys } from
   "../src/document-indexing/application/document-relation-candidates.js";
 import { canonicalRelationPairInput } from
   "../src/document-indexing/infrastructure/postgres-relation-pair-repository.js";
-import { mergeDirtyScopeSequence } from
-  "../src/document-indexing/infrastructure/postgres-projection-dirty-scope-repository.js";
-import { sortScopedActivationOwners } from
-  "../src/document-indexing/infrastructure/postgres-scoped-activation-owner-repository.js";
 import { truncateDocumentUtf8 } from
   "../src/document-indexing/domain/document-bounded-text.js";
 import { modelLayerErrorCode } from
@@ -59,31 +55,6 @@ describe("final document repository contracts", () => {
       secondSourceRevisionPublicId: "source-revision-z",
       state: "waiting"
     });
-  });
-
-  it("keeps a dirty scope waiting when newer work arrives during rendering", () => {
-    expect(mergeDirtyScopeSequence({
-      currentRequiredSequence: 4,
-      currentCompletedSequence: 2,
-      incomingRequiredSequence: 7
-    })).toEqual({
-      requiredSequence: 7,
-      completedSequence: 2,
-      state: "waiting"
-    });
-  });
-
-  it("sorts and deduplicates scoped activation owners before locking", () => {
-    expect(sortScopedActivationOwners([
-      { kind: "page_head", key: "z" },
-      { kind: "source", key: "b" },
-      { kind: "source", key: "a" },
-      { kind: "source", key: "a" }
-    ])).toEqual([
-      { kind: "page_head", key: "z" },
-      { kind: "source", key: "a" },
-      { kind: "source", key: "b" }
-    ]);
   });
 
   it("deactivates PostgreSQL projection facts with the deleted source", () => {

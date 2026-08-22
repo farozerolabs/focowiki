@@ -257,6 +257,22 @@ describe("adaptive resource controller", () => {
     expect(controller.capacity()).toBe(3);
   });
 
+  it("preserves adaptive pressure reductions during an unchanged runtime refresh", () => {
+    const controller = createAdaptiveResourceController({
+      configuredMaximum: 8
+    });
+    controller.observe({
+      outcome: "rate_limited",
+      latencyMs: 1_000,
+      cpuPressure: 0.1,
+      memoryPressure: 0.1
+    });
+
+    expect(controller.capacity()).toBe(4);
+    expect(controller.updateConfiguredMaximum(8)).toBe(4);
+    expect(controller.capacity()).toBe(4);
+  });
+
   it("never exceeds the configured limit and reacts only to sustained pressure", () => {
     const controller = createAdaptiveResourceController({
       configuredMaximum: 8,

@@ -21,6 +21,8 @@ export function createDocumentWorkerObservability(input: {
   write(event: WorkerLogEvent): void;
 }) {
   let previousQueueDepth: number | null = null;
+  const previousPublicationBacklog = new Map<string, string>();
+  let previousCleanupSignature: string | null = null;
 
   return {
     work(fields: {
@@ -136,18 +138,143 @@ export function createDocumentWorkerObservability(input: {
         outcome: fields.outcome
       });
     },
+    publication(fields: {
+      event: "planned" | "validated" | "activated" | "deferred"
+        | "superseded" | "scope_failed";
+      knowledgeBaseId: string;
+      generationPublicId: string;
+      scopeKind: string | null;
+      waitingCount: number;
+      durationMs: number;
+      contentionCount: number;
+      objectPutCount: number;
+      objectReuseCount: number;
+      errorCode: string | null;
+    }) {
+      identity(fields.knowledgeBaseId);
+      identity(fields.generationPublicId);
+      if (fields.scopeKind !== null
+        && !/^[A-Za-z0-9_:-]{1,128}$/u.test(fields.scopeKind)) {
+        throw new Error("Document publication scope kind is invalid");
+      }
+      if (fields.errorCode !== null
+        && !/^[A-Za-z0-9_]{1,128}$/u.test(fields.errorCode)) {
+        throw new Error("Document publication error code is invalid");
+      }
+      write(`worker.publication_${fields.event}`, {
+        knowledgeBaseId: fields.knowledgeBaseId,
+        generationPublicId: fields.generationPublicId,
+        scopeKind: fields.scopeKind,
+        waitingCount: metric(fields.waitingCount),
+        durationMs: metric(fields.durationMs),
+        contentionCount: metric(fields.contentionCount),
+        objectPutCount: metric(fields.objectPutCount),
+        objectReuseCount: metric(fields.objectReuseCount),
+        errorCode: fields.errorCode
+      });
+    },
+    publicationBacklog(fields: {
+      knowledgeBaseId: string;
+      waitingScopeCount: number;
+      runningScopeCount: number;
+      dirtyFactCount: number;
+      oldestAgeMs: number;
+      statusRegressionCount: number;
+    }) {
+      identity(fields.knowledgeBaseId);
+      const normalized = {
+        knowledgeBaseId: fields.knowledgeBaseId,
+        waitingScopeCount: metric(fields.waitingScopeCount),
+        runningScopeCount: metric(fields.runningScopeCount),
+        dirtyFactCount: metric(fields.dirtyFactCount),
+        oldestAgeMs: metric(fields.oldestAgeMs),
+        statusRegressionCount: metric(fields.statusRegressionCount)
+      };
+      const signature = JSON.stringify(normalized);
+      if (previousPublicationBacklog.get(fields.knowledgeBaseId) === signature) {
+        return;
+      }
+      previousPublicationBacklog.set(fields.knowledgeBaseId, signature);
+      write("worker.publication_backlog", normalized);
+    },
+    publicationScope(fields: {
+      event: "claimed" | "completed" | "failed" | "fenced" | "recovered";
+      knowledgeBaseId: string;
+      generationPublicId: string;
+      scopeKind: string;
+      safeScopeKeyHash: string;
+      targetFactEpoch: number;
+      activeFactEpoch: number;
+      scopeGeneration: number;
+      leaseGeneration: number;
+      durationMs: number;
+      errorCode: string | null;
+    }) {
+      identity(fields.knowledgeBaseId);
+      identity(fields.generationPublicId);
+      safeToken(fields.scopeKind, "scope kind");
+      if (!/^[0-9a-f]{64}$/u.test(fields.safeScopeKeyHash)) {
+        throw new Error("Document publication scope key hash is invalid");
+      }
+      if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
+      const targetFactEpoch = metric(fields.targetFactEpoch);
+      const activeFactEpoch = metric(fields.activeFactEpoch);
+      write(`worker.publication_scope_${fields.event}`, {
+        knowledgeBaseId: fields.knowledgeBaseId,
+        generationPublicId: fields.generationPublicId,
+        scopeKind: fields.scopeKind,
+        safeScopeKeyHash: fields.safeScopeKeyHash,
+        targetFactEpoch,
+        activeFactEpoch,
+        scopeLag: Math.max(0, targetFactEpoch - activeFactEpoch),
+        scopeGeneration: metric(fields.scopeGeneration),
+        leaseGeneration: metric(fields.leaseGeneration),
+        durationMs: metric(fields.durationMs),
+        errorCode: fields.errorCode
+      });
+    },
+    publicationStorage(fields: {
+      knowledgeBaseId: string;
+      generationPublicId: string;
+      objectPutCount: number;
+      objectReuseCount: number;
+      putByteCount: number;
+    }) {
+      identity(fields.knowledgeBaseId);
+      identity(fields.generationPublicId);
+      write("worker.publication_storage", {
+        knowledgeBaseId: fields.knowledgeBaseId,
+        generationPublicId: fields.generationPublicId,
+        objectPutCount: metric(fields.objectPutCount),
+        objectReuseCount: metric(fields.objectReuseCount),
+        putByteCount: metric(fields.putByteCount)
+      });
+    },
     cleanup(fields: {
       claimed: number;
       completed: number;
       retried: number;
       failed: number;
+      backlogDepth?: number;
+      oldestAgeMs?: number;
+      verifiedReservationDebt?: number;
     }) {
-      write("worker.cleanup_metrics", {
+      const normalized = {
         claimed: metric(fields.claimed),
         completed: metric(fields.completed),
         retried: metric(fields.retried),
-        failed: metric(fields.failed)
-      });
+        failed: metric(fields.failed),
+        ...(fields.backlogDepth === undefined ? {}
+          : { backlogDepth: metric(fields.backlogDepth) }),
+        ...(fields.oldestAgeMs === undefined ? {}
+          : { oldestAgeMs: metric(fields.oldestAgeMs) }),
+        ...(fields.verifiedReservationDebt === undefined ? {}
+          : { verifiedReservationDebt: metric(fields.verifiedReservationDebt) })
+      };
+      const signature = JSON.stringify(normalized);
+      if (signature === previousCleanupSignature && fields.claimed === 0) return;
+      previousCleanupSignature = signature;
+      write("worker.cleanup_metrics", normalized);
     }
   };
 
@@ -166,6 +293,12 @@ function metric(value: number): number {
 function identity(value: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/u.test(value)) {
     throw new Error("Document worker identity is invalid");
+  }
+}
+
+function safeToken(value: string, label: string): void {
+  if (!/^[A-Za-z0-9_:-]{1,128}$/u.test(value)) {
+    throw new Error(`Document publication ${label} is invalid`);
   }
 }
 

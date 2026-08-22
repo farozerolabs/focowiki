@@ -302,21 +302,6 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       completed_count: 0,
       maximum_attempts: 5
     }]);
-    await expect(sql<Array<{
-      state: string;
-      attempt_count: number;
-      safe_error_code: string | null;
-      retryable: boolean;
-    }>>`
-      SELECT state, attempt_count, safe_error_code, retryable
-      FROM focowiki.projection_dirty_scopes
-      WHERE public_id = ${scopePublicId}
-    `).resolves.toEqual([{
-      state: "waiting",
-      attempt_count: 0,
-      safe_error_code: null,
-      retryable: false
-    }]);
     await expect(retry({
       knowledgeBaseId: "knowledge-base-retry",
       sourceFilePublicId: "source-file-retryable",

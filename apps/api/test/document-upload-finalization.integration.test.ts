@@ -363,6 +363,121 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       WHERE operation_public_id = 'operation-document-upload'
     `).resolves.toEqual([{ count: "0" }]);
   });
+
+  it("converges an all-success upload after the final cleanup work commits", async () => {
+    const current = entry(
+      "entry-cleanup-terminal",
+      "source-file-cleanup-terminal",
+      "Guides/Cleanup terminal.md",
+      "# Cleanup terminal\n"
+    );
+    await coordinator.openSession({
+      knowledgeBaseId: "knowledge-base-document-upload",
+      operationPublicId: "operation-cleanup-terminal",
+      sessionPublicId: "session-cleanup-terminal",
+      idempotencyKey: "request-cleanup-terminal",
+      settingsRevisionPublicId: "runtime-settings-document-upload",
+      entries: [current],
+      createdAt: "2026-08-14T07:00:00.000Z",
+      expiresAt: "2026-08-14T08:00:00.000Z"
+    });
+    await coordinator.putEntry({
+      knowledgeBaseId: "knowledge-base-document-upload",
+      sessionPublicId: "session-cleanup-terminal",
+      entryPublicId: current.entryPublicId,
+      body: chunks(current.body)
+    });
+    await coordinator.finalizeSession({
+      knowledgeBaseId: "knowledge-base-document-upload",
+      sessionPublicId: "session-cleanup-terminal",
+      completedAt: "2026-08-14T07:01:00.000Z"
+    });
+    const [job] = await sql<Array<{
+      public_id: string;
+      source_revision_public_id: string;
+    }>>`
+      SELECT public_id, source_revision_public_id
+      FROM focowiki.document_processing_jobs
+      WHERE operation_public_id = 'operation-cleanup-terminal'
+    `;
+    expect(job).toBeDefined();
+    await sql`
+      UPDATE focowiki.document_artifact_work
+      SET state = 'completed', attempt_count = 1,
+          started_at = '2026-08-14T07:01:00.000Z',
+          ended_at = '2026-08-14T07:01:01.000Z',
+          updated_at = '2026-08-14T07:01:01.000Z'
+      WHERE document_job_public_id = ${job!.public_id}
+        AND work_kind <> 'cleanup'
+    `;
+    const [cleanupWork] = await sql<Array<{ public_id: string }>>`
+      UPDATE focowiki.document_artifact_work
+      SET state = 'running', attempt_count = 1,
+          lease_owner = 'worker-cleanup-terminal',
+          lease_expires_at = '2026-08-14T07:03:00.000Z',
+          started_at = '2026-08-14T07:01:01.000Z',
+          updated_at = '2026-08-14T07:01:01.000Z'
+      WHERE document_job_public_id = ${job!.public_id}
+        AND work_kind = 'cleanup'
+      RETURNING public_id
+    `;
+    await sql`
+      UPDATE focowiki.document_processing_jobs
+      SET state = 'processing', started_at = accepted_at,
+          active_work_kinds = ARRAY['cleanup']::text[],
+          blocking_work_kind = 'cleanup',
+          updated_at = '2026-08-14T07:01:01.000Z'
+      WHERE public_id = ${job!.public_id}
+    `;
+    const cleanup = createDocumentCleanupReceiptHandler({
+      sql: database,
+      now: () => "2026-08-14T07:01:02.000Z"
+    });
+    const receipt = await cleanup({
+      claimed: {
+        publicId: cleanupWork!.public_id,
+        knowledgeBaseId: "knowledge-base-document-upload",
+        documentJobPublicId: job!.public_id,
+        sourceFilePublicId: current.sourceFilePublicId,
+        sourceRevisionPublicId: job!.source_revision_public_id,
+        kind: "cleanup",
+        resourceLane: "cleanup",
+        inputFingerprintSha256: "e".repeat(64),
+        attemptCount: 1,
+        maximumAttempts: 3,
+        leaseOwner: "worker-cleanup-terminal",
+        leaseExpiresAt: "2026-08-14T07:03:00.000Z",
+        startedAt: "2026-08-14T07:01:01.000Z"
+      },
+      signal: new AbortController().signal
+    });
+    await sql`
+      UPDATE focowiki.operations
+      SET state = 'completed', completed_at = '2026-08-14T07:01:01.500Z',
+          updated_at = '2026-08-14T07:01:01.500Z'
+      WHERE public_id = 'operation-cleanup-terminal'
+    `;
+    await expect(work.complete({
+      publicId: cleanupWork!.public_id,
+      workerId: "worker-cleanup-terminal",
+      now: "2026-08-14T07:01:02.000Z",
+      receipt: {
+        kind: "cleanup",
+        key: receipt.key,
+        inputFingerprintSha256: "e".repeat(64),
+        outputFingerprintSha256: receipt.outputFingerprintSha256,
+        value: receipt.value
+      }
+    })).resolves.toBe(true);
+    await expect(operationRead.get({
+      knowledgeBaseId: "knowledge-base-document-upload",
+      operationId: "operation-cleanup-terminal"
+    })).resolves.toMatchObject({ state: "completed" });
+    await expect(sql<Array<{ count: string }>>`
+      SELECT count(*)::text AS count FROM focowiki.upload_sessions
+      WHERE public_id = 'session-cleanup-terminal'
+    `).resolves.toEqual([{ count: "0" }]);
+  });
 });
 
 async function seedRequiredProcessingContract(sql: postgres.Sql): Promise<void> {

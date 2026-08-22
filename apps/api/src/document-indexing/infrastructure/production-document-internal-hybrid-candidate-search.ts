@@ -19,6 +19,8 @@ import {
 } from "../application/document-internal-hybrid-candidates.js";
 import type { createPostgresDocumentReferenceFactRepository } from
   "./postgres-document-reference-fact-repository.js";
+import type { createDocumentResourceLanes } from
+  "../application/document-resource-lanes.js";
 import {
   readSearchProjection,
   readVectorProjection
@@ -38,6 +40,7 @@ export function createProductionDocumentInternalHybridCandidateSearch(input: {
   embeddingConfigurations: EmbeddingConfigurationRepository;
   embeddingGateway: EmbeddingGateway;
   referenceFacts: ReturnType<typeof createPostgresDocumentReferenceFactRepository>;
+  lanes: ReturnType<typeof createDocumentResourceLanes>;
 }) {
   return {
     async find(request: {
@@ -111,7 +114,7 @@ export function createProductionDocumentInternalHybridCandidateSearch(input: {
         documentKind: "content" | "graph_seed"
       ) {
         const results = await Promise.all(laneQueries.map((laneQuery) =>
-          input.provider.query.query({
+          input.lanes.run("search_transport", () => input.provider.query.query({
             indexUid: searchProjection.providerIndexUid,
             query: laneQuery,
             evidenceFamilies,
@@ -137,7 +140,7 @@ export function createProductionDocumentInternalHybridCandidateSearch(input: {
             deadlineMs: INTERNAL_CANDIDATE_DEADLINE_MS,
             matchingStrategy,
             distinctBy: "sourceFilePublicId"
-          })));
+          }), request.signal)));
         return {
           family,
           hits: interleaveProviderHits(results.map((result) =>
@@ -156,6 +159,7 @@ export function createProductionDocumentInternalHybridCandidateSearch(input: {
           || configuration.validationStatus !== "valid") {
           throw new Error("Document internal hybrid embedding configuration is unavailable");
         }
+        const resolvedDimension = configuration.resolvedDimension;
         const contract = await readVectorProjection(input.sql, {
           knowledgeBaseId: request.knowledgeBaseId,
           semanticGenerationPublicId: request.semanticGenerationPublicId,
@@ -169,25 +173,29 @@ export function createProductionDocumentInternalHybridCandidateSearch(input: {
           signal: request.signal
         });
         if (!vector) throw new Error("Document internal hybrid query vector is unavailable");
-        const result = await input.provider.vector.query({
-          indexUid: semanticVectorIndexUid({
-            indexPrefix: input.config.search.indexPrefix,
+        const result = await input.lanes.run(
+          "search_transport",
+          () => input.provider.vector!.query({
+            indexUid: semanticVectorIndexUid({
+              indexPrefix: input.config.search!.indexPrefix,
+              knowledgeBaseId: request.knowledgeBaseId,
+              semanticGenerationPublicId: request.semanticGenerationPublicId,
+              mappingFingerprintSha256: contract.mappingFingerprintSha256
+            }),
             knowledgeBaseId: request.knowledgeBaseId,
             semanticGenerationPublicId: request.semanticGenerationPublicId,
-            mappingFingerprintSha256: contract.mappingFingerprintSha256
+            embeddingConfigurationRevisionPublicId:
+              configuration.vectorProducingRevisionPublicId,
+            family: "content",
+            fileKind: "page",
+            dimension: resolvedDimension,
+            vector,
+            limit: laneLimit,
+            minimumRelevance: INTERNAL_CANDIDATE_VECTOR_MINIMUM_RELEVANCE,
+            deadlineMs: INTERNAL_CANDIDATE_DEADLINE_MS
           }),
-          knowledgeBaseId: request.knowledgeBaseId,
-          semanticGenerationPublicId: request.semanticGenerationPublicId,
-          embeddingConfigurationRevisionPublicId:
-            configuration.vectorProducingRevisionPublicId,
-          family: "content",
-          fileKind: "page",
-          dimension: configuration.resolvedDimension,
-          vector,
-          limit: laneLimit,
-          minimumRelevance: INTERNAL_CANDIDATE_VECTOR_MINIMUM_RELEVANCE,
-          deadlineMs: INTERNAL_CANDIDATE_DEADLINE_MS
-        });
+          request.signal
+        );
         return {
           family: "content_vector" as const,
           hits: result.hits.map((hit) => ({

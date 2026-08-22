@@ -1,97 +1,10 @@
 import type { LexicalTokenizer } from
   "../../application/ports/lexical-tokenizer.js";
-import { collectDocumentGeneratedLinkPaths,
-  validateDocumentGeneratedLinks,
-  validateDocumentProgressiveNavigation } from
-  "../application/document-generated-link-validation.js";
 import { selectDocumentNavigationTerms } from
   "../application/document-navigation-terms.js";
-import { validateDocumentOkfMarkdownMetadata } from
-  "../application/document-okf-validation.js";
-import { collectDocumentPortableReferencedPagePaths,
-  validateDocumentPortableCandidate } from
-  "../application/document-portable-candidate-validation.js";
 import { documentSourcePagePath } from
   "../application/document-machine-record.js";
-import type { createPostgresGeneratedPageRepository } from
-  "./postgres-generated-page-repository.js";
-import { documentProjectionHeadLookupPaths } from
-  "./document-knowledge-projection-support.js";
-import { normalizeLogicalPath } from
-  "./production-document-processor-support.js";
 import { posix } from "node:path";
-
-type DesiredPage = Readonly<{
-  logicalPath: string;
-  normalizedPath: string;
-  entryKind: string;
-  bytes: Uint8Array;
-  checksumSha256: string;
-  byteCount: number;
-  sourceFilePublicId: string | null;
-  sourceRevisionPublicId: string | null;
-}>;
-
-export async function readDocumentProjectionPersistenceState(input: {
-  pages: ReturnType<typeof createPostgresGeneratedPageRepository>;
-  knowledgeBaseId: string;
-  sourceFilePublicId: string;
-  desiredPages: readonly DesiredPage[];
-  removedPaths: readonly string[];
-}) {
-  for (const page of input.desiredPages) {
-    if (!page.normalizedPath.endsWith(".md")) continue;
-    validateDocumentOkfMarkdownMetadata({
-      logicalPath: page.logicalPath,
-      kind: page.entryKind,
-      body: new TextDecoder().decode(page.bytes)
-    });
-  }
-  const priorSourceHeads = await input.pages.readSourceHeads({
-    knowledgeBaseId: input.knowledgeBaseId,
-    sourceFilePublicId: input.sourceFilePublicId,
-    limit: 1
-  });
-  const affectedPaths = [...new Set([
-    ...input.desiredPages.map((page) => page.normalizedPath),
-    ...priorSourceHeads.map((page) => page.normalizedPath),
-    ...input.removedPaths.map(normalizeLogicalPath)
-  ])].sort();
-  const currentHeads = await input.pages.readHeads({
-    knowledgeBaseId: input.knowledgeBaseId,
-    normalizedPaths: affectedPaths,
-    limit: Math.max(1, affectedPaths.length)
-  });
-  const validationPages = input.desiredPages.map((page) => ({
-    logicalPath: page.logicalPath,
-    bytes: page.bytes,
-    allowUnresolved: page.entryKind === "source",
-    contentType: page.normalizedPath.endsWith(".json")
-      ? "application/json; charset=utf-8"
-      : "text/markdown; charset=utf-8"
-  }));
-  const linked = [...new Set([
-    ...collectDocumentGeneratedLinkPaths(validationPages),
-    ...collectDocumentPortableReferencedPagePaths(input.desiredPages)
-  ])];
-  const linkedHeads = await input.pages.readHeads({
-    knowledgeBaseId: input.knowledgeBaseId,
-    normalizedPaths: documentProjectionHeadLookupPaths(linked),
-    limit: Math.max(1, linked.length)
-  });
-  const activeLogicalPaths = linkedHeads.map((head) => head.logicalPath);
-  validateDocumentGeneratedLinks({ pages: validationPages, activeLogicalPaths });
-  validateDocumentProgressiveNavigation({
-    pages: validationPages,
-    activeLogicalPaths
-  });
-  validateDocumentPortableCandidate({
-    pages: input.desiredPages,
-    activeReadablePagePaths: activeLogicalPaths,
-    removedReadablePagePaths: input.removedPaths
-  });
-  return { affectedPaths, currentHeads };
-}
 
 export function buildDocumentProjectionFact(input: {
   knowledgeBaseId: string;

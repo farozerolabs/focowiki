@@ -1,6 +1,4 @@
 import type { DatabaseClient } from "../../db/client.js";
-import { releasePostgresProjectionScopeOutputsForDocument } from
-  "./postgres-projection-scope-output-release.js";
 
 export type ReleasedDocumentPageCandidates = {
   releasedCandidateCount: number;
@@ -77,17 +75,7 @@ export async function releasePostgresDocumentPageCandidates(input: {
   if (deleted.length === 0) {
     return finishRelease(input, 0, 0);
   }
-  const deletedCandidatePublicIds = deleted.map((candidate) => candidate.public_id);
   const objectIds = [...new Set(deleted.map((candidate) => candidate.object_id))];
-  await sql`
-    UPDATE focowiki.scoped_activation_owners owner
-    SET active_page_candidate_public_id = NULL,
-        updated_at = ${input.releasedAt}
-    WHERE owner.knowledge_base_id = ${input.knowledgeBaseId}
-      AND owner.active_page_candidate_public_id
-        = ANY(${deletedCandidatePublicIds}::text[])
-  `;
-
   const zeroOwnerObjects = await sql<Array<{ object_id: string }>>`
     UPDATE focowiki.object_registrations registration
     SET zero_owner_since = coalesce(registration.zero_owner_since, ${input.releasedAt})
@@ -114,7 +102,8 @@ export async function releasePostgresDocumentPageCandidates(input: {
         WHERE artifact.object_id = registration.object_id
       )
       AND NOT EXISTS (
-        SELECT 1 FROM focowiki.projection_scope_object_refs reference
+        SELECT 1
+        FROM focowiki.projection_scope_generation_object_refs reference
         WHERE reference.object_id = registration.object_id
       )
     RETURNING registration.object_id
@@ -152,15 +141,9 @@ export async function releasePostgresDocumentPageCandidates(input: {
 }
 
 async function finishRelease(
-  input: Parameters<typeof releasePostgresDocumentPageCandidates>[0],
+  _input: Parameters<typeof releasePostgresDocumentPageCandidates>[0],
   releasedCandidateCount: number,
   queuedObjectCount: number
 ): Promise<ReleasedDocumentPageCandidates> {
-  await releasePostgresProjectionScopeOutputsForDocument({
-    transaction: input.transaction,
-    knowledgeBaseId: input.knowledgeBaseId,
-    documentJobPublicId: input.documentJobPublicId,
-    releasedAt: input.releasedAt
-  });
   return { releasedCandidateCount, queuedObjectCount };
 }

@@ -396,12 +396,7 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         "source-file-projection-first"
       ]
     })).resolves.toMatchObject({
-      records: [{
-        from: "pages/moved/renamed.md",
-        to: "pages/reference/second.md",
-        direction: "outgoing",
-        relationType: "references"
-      }]
+      records: []
     });
     await sql`
       UPDATE focowiki.document_projection_records
@@ -472,6 +467,120 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         "source-file-projection-second"
       ]
     })).resolves.toEqual({ relationshipCount: 1 });
+    const priorGraphObjectId = `generated-sha256:okf-generated-json-v1:${
+      "7".repeat(64)}`;
+    await sql`
+      INSERT INTO focowiki.object_registrations (
+        object_id, storage_key, checksum_sha256, byte_count, content_type,
+        object_format, state, write_attempt_public_id, verified_at
+      ) VALUES (
+        ${priorGraphObjectId}, 'generated/prior-file-graph.json',
+        ${"7".repeat(64)}, 10, 'application/json; charset=utf-8',
+        'okf-generated-json-v1', 'verified', 'prior-file-graph-write', now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.operations (
+        public_id, knowledge_base_id, operation_kind, state,
+        target_kind, target_public_id, completed_at
+      ) VALUES (
+        'prior-file-graph-operation', 'kb-projection-facts',
+        'projection_test', 'completed', 'source_file',
+        'source-file-projection-first', now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.generated_page_candidates (
+        public_id, knowledge_base_id, owner_operation_public_id,
+        logical_path, normalized_path, entry_kind, object_id,
+        checksum_sha256, byte_count, base_activation_revision, state
+      ) VALUES (
+        'prior-file-graph-candidate', 'kb-projection-facts',
+        'prior-file-graph-operation',
+        '_graph/by-file/guides/first.json',
+        '_graph/by-file/guides/first.json', 'related_files',
+        ${priorGraphObjectId}, ${"7".repeat(64)}, 10, 0, 'active'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.generated_page_heads (
+        knowledge_base_id, logical_path, normalized_path, entry_kind,
+        page_candidate_public_id, object_id, checksum_sha256,
+        byte_count, activation_revision
+      ) VALUES (
+        'kb-projection-facts', '_graph/by-file/guides/first.json',
+        '_graph/by-file/guides/first.json', 'related_files',
+        'prior-file-graph-candidate', ${priorGraphObjectId},
+        ${"7".repeat(64)}, 10, 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.projection_publication_generations (
+        public_id, knowledge_base_id, target_fact_epoch,
+        renderer_contract_version, deterministic_changed_at, state,
+        input_fingerprint_sha256, completed_at
+      ) VALUES (
+        'prior-file-graph-generation', 'kb-projection-facts', 1,
+        'portable-okf-v2', now(), 'active', ${"6".repeat(64)}, now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.projection_artifact_owners (
+        knowledge_base_id, normalized_path, owner_scope_identity,
+        artifact_family, ownership_epoch, generation_public_id
+      ) VALUES (
+        'kb-projection-facts', '_graph/by-file/guides/first.json',
+        '_graph:source-file-projection-first', 'graph', 1,
+        'prior-file-graph-generation'
+      )
+    `;
+    const olderGraphObjectId = `generated-sha256:okf-generated-json-v1:${
+      "8".repeat(64)}`;
+    await sql`
+      INSERT INTO focowiki.object_registrations (
+        object_id, storage_key, checksum_sha256, byte_count, content_type,
+        object_format, state, write_attempt_public_id, verified_at
+      ) VALUES (
+        ${olderGraphObjectId}, 'generated/older-file-graph.json',
+        ${"8".repeat(64)}, 10, 'application/json; charset=utf-8',
+        'okf-generated-json-v1', 'verified', 'older-file-graph-write', now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.generated_page_candidates (
+        public_id, knowledge_base_id, owner_operation_public_id,
+        logical_path, normalized_path, entry_kind, object_id,
+        checksum_sha256, byte_count, base_activation_revision, state
+      ) VALUES (
+        'older-file-graph-candidate', 'kb-projection-facts',
+        'prior-file-graph-operation',
+        '_graph/by-file/legacy/first.json',
+        '_graph/by-file/legacy/first.json', 'related_files',
+        ${olderGraphObjectId}, ${"8".repeat(64)}, 10, 0, 'active'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.generated_page_heads (
+        knowledge_base_id, logical_path, normalized_path, entry_kind,
+        page_candidate_public_id, object_id, checksum_sha256,
+        byte_count, activation_revision
+      ) VALUES (
+        'kb-projection-facts', '_graph/by-file/legacy/first.json',
+        '_graph/by-file/legacy/first.json', 'related_files',
+        'older-file-graph-candidate', ${olderGraphObjectId},
+        ${"8".repeat(64)}, 10, 1
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.projection_artifact_owners (
+        knowledge_base_id, normalized_path, owner_scope_identity,
+        artifact_family, ownership_epoch, generation_public_id
+      ) VALUES (
+        'kb-projection-facts', '_graph/by-file/legacy/first.json',
+        '_graph:source-file-projection-first', 'graph', 1,
+        'prior-file-graph-generation'
+      )
+    `;
     await expect(reader.readPerFileGraphState({
       knowledgeBaseId: "kb-projection-facts",
       sourceFilePublicId: "source-file-projection-first",
@@ -491,7 +600,10 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         direction: "outgoing",
         relationType: "references"
       }],
-      resourcePaths: []
+      resourcePaths: [
+        "_graph/by-file/guides/first.json",
+        "_graph/by-file/legacy/first.json"
+      ]
     });
     await expect(reader.readPerFileGraphState({
       knowledgeBaseId: "kb-projection-facts",

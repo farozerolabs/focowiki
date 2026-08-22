@@ -43,6 +43,24 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v12-projection-object-lifecycle",
     targetGeneration: "storage-vnext-v13-clean-document-indexing",
     safety: "breaking_reset"
+  },
+  {
+    fileName: "006_projection_publication_foundation.sql",
+    sourceGeneration: "storage-vnext-v13-clean-document-indexing",
+    targetGeneration: "storage-vnext-v14-projection-publication-coherence",
+    safety: "compatible"
+  },
+  {
+    fileName: "007_projection_legacy_cleanup_gate.sql",
+    sourceGeneration: "storage-vnext-v14-projection-publication-coherence",
+    targetGeneration: "storage-vnext-v15-projection-legacy-cleanup-gate",
+    safety: "compatible"
+  },
+  {
+    fileName: "008_projection_navigation_capacity.sql",
+    sourceGeneration: "storage-vnext-v15-projection-legacy-cleanup-gate",
+    targetGeneration: "storage-vnext-v16-projection-navigation-capacity",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
@@ -116,11 +134,6 @@ export function validateMigrationManifest(
     ) {
       throw new MigrationManifestValidationError(
         `migration ${migration.fileName} does not continue the generation chain`
-      );
-    }
-    if (migration.safety === "breaking_reset" && index !== manifest.length - 1) {
-      throw new MigrationManifestValidationError(
-        `migration ${migration.fileName} must terminate the generation chain`
       );
     }
   }

@@ -89,7 +89,8 @@ def normalize_extraction(
     for chunk, output in zip(chunks, outputs, strict=True):
         if not isinstance(output, str) or len(output) > limits.maximum_model_output_characters:
             raise AdapterContractError("MODEL_OUTPUT_TOO_LARGE", "model output exceeds its bound")
-        entities, relationships = parse(output, chunk["id"])
+        framed_output = output.split(COMPLETION_DELIMITER, maxsplit=1)[0]
+        entities, relationships = parse(framed_output, chunk["id"])
         if "<|COMPLETE|>" not in output and not entities and not relationships:
             raise AdapterContractError("INVALID_MODEL_OUTPUT", "model output is incomplete")
         raw_entities.extend(entities)

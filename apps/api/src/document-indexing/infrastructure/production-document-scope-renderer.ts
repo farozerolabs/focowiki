@@ -9,25 +9,22 @@ import type { StorageVnextOwnershipRepository } from
   "../../storage-vnext/ownership/ports.js";
 import type { DocumentProjectionScopeClaim } from
   "../application/document-scope-projector-runtime.js";
+import type { DocumentPublicationImmutableScopeSnapshot } from
+  "../application/document-publication-scope-generation-runtime.js";
 import {
-  buildDocumentNavigationTermBucketResources,
-  buildDocumentTermCatalogPage
+  normalizeDocumentPublicationScopeOutput,
+  selectDocumentPublicationRemovedPaths
 } from
-  "../application/document-page-term-projection.js";
-import type { DocumentTermBucket } from
-  "../application/document-term-routing.js";
+  "../application/document-publication-scope-output.js";
+import {
+  validateDocumentProjectionScopeOutputOwnership
+} from "../application/document-projection-path-ownership.js";
 import type { createPostgresDocumentMachineProjectionReader } from
   "./postgres-document-machine-projection-reader.js";
-import type { createPostgresProjectionScopeSnapshot } from
-  "./postgres-projection-scope-snapshot.js";
-import type { createPostgresProjectionScopeContributions } from
-  "./postgres-projection-scope-contributions.js";
 import type { createPostgresDocumentDirectoryNavigation } from
   "./postgres-document-directory-navigation.js";
 import type { OrderedDirectoryLeafLimits } from
   "../domain/document-directory-leaves.js";
-import { MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER } from
-  "../domain/document-projection-limits.js";
 import {
   materializeMachineDirectoryNavigation,
   materializePerFileGraphDirectoryNavigation,
@@ -61,42 +58,26 @@ import {
   writeAttemptId,
   zeroStorageRequests
 } from "./production-document-scope-renderer-support.js";
-
-export type DocumentSourceScopeProjection = {
-  project(input: {
-    knowledgeBaseId: string;
-    sourceFilePublicId: string;
-    includedSourceRevisionPublicIds: readonly string[];
-    excludedActiveSourceFilePublicIds: readonly string[];
-    signal: AbortSignal;
-  }): Promise<{
-    pages: readonly {
-      logicalPath: string;
-      normalizedPath: string;
-      entryKind: string;
-      sourceFilePublicId: string | null;
-      sourceRevisionPublicId: string | null;
-      bytes: Uint8Array;
-      checksumSha256: string;
-      byteCount: number;
-    }[];
-    removedLogicalPaths: readonly string[];
-    factCount: number;
-  }>;
-};
-
+import {
+  projectTermBucket,
+  projectTermCatalog,
+  publicationScopeClaim,
+  requireSourceProjection,
+  selectChangedPages,
+  type DocumentSourceScopeProjection
+} from "./production-document-scope-renderer-helpers.js";
+export type { DocumentSourceScopeProjection } from "./production-document-scope-renderer-helpers.js";
+type DocumentScopeContributor = Readonly<{ sourceFilePublicId: string; sourceRevisionPublicId: string | null; requiredSequence: number }>;
+type DocumentScopeRenderOptions = Readonly<{ pageIntegrityOverrides?:
+  readonly DocumentPageIntegrityOverride[]; contributors?:
+  readonly DocumentScopeContributor[] }>;
 export function createProductionDocumentScopeRenderer(input: {
-  snapshots: ReturnType<typeof createPostgresProjectionScopeSnapshot>;
   machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
-  scopeContributions: ReturnType<typeof createPostgresProjectionScopeContributions>;
   sourceProjection?: DocumentSourceScopeProjection;
   directoryNavigation?: ReturnType<typeof createPostgresDocumentDirectoryNavigation>;
   directoryLeafLimits?: OrderedDirectoryLeafLimits;
-  rootLimits?: {
-    rootSummaryLimit: number;
-    okfLogMaxEntries: number;
-    okfLogMaxBytes: number;
-  };
+  rootLimits?: { rootSummaryLimit: number; okfLogMaxEntries: number;
+    okfLogMaxBytes: number };
   objectWriter: StorageVnextImmutableObjectWriter;
   ownership?: StorageVnextOwnershipRepository;
   maximumRecordsPerShard: number;
@@ -108,10 +89,9 @@ export function createProductionDocumentScopeRenderer(input: {
   async function project(
     scope: DocumentProjectionScopeClaim,
     signal: AbortSignal,
-    options: Readonly<{
-      pageIntegrityOverrides?: readonly DocumentPageIntegrityOverride[];
-    }> = {}
+    options: DocumentScopeRenderOptions = {}
   ) {
+    const deterministicEventTime = scope.deterministicEventTime ?? clock();
     const sourceFile = sourceFileScope(scope);
     const bucket = termBucket(scope);
     const pageDirectory = pageDirectoryScope(scope);
@@ -129,14 +109,11 @@ export function createProductionDocumentScopeRenderer(input: {
       && !termCatalog && !indexCatalog && !perFileGraphSource) {
       return null;
     }
-    const coveredContributors = await input.scopeContributions.listCovered({
-      scopePublicId: scope.publicId,
-      renderedSequence: scope.renderedSequence,
-      limit: MAXIMUM_PROJECTION_SCOPE_CONTRIBUTORS_PER_RENDER
-    });
+    const coveredContributors = options.contributors ?? [];
     const contributors = latestContributors(coveredContributors);
-    const includedSourceRevisionPublicIds = contributors.map((contributor) =>
-      contributor.sourceRevisionPublicId);
+    const includedSourceRevisionPublicIds = contributors.flatMap((contributor) =>
+      contributor.sourceRevisionPublicId
+        ? [contributor.sourceRevisionPublicId] : []);
     const excludedActiveSourceFilePublicIds = contributors.map((contributor) =>
       contributor.sourceFilePublicId);
     const projected = sourceFile
@@ -202,7 +179,7 @@ export function createProductionDocumentScopeRenderer(input: {
             knowledgeBaseId: scope.knowledgeBaseId,
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds,
-            changedAt: clock()
+            changedAt: deterministicEventTime
           })
       : perFileGraphSource
         ? await projectPerFileGraph({
@@ -224,7 +201,7 @@ export function createProductionDocumentScopeRenderer(input: {
           dependencies: input,
           scope,
           projected: projected as Awaited<ReturnType<typeof projectRoot>>,
-          changedAt: clock()
+          changedAt: deterministicEventTime
         })
       : pageDirectory
       ? await materializeMachineDirectoryNavigation({
@@ -232,7 +209,8 @@ export function createProductionDocumentScopeRenderer(input: {
           scope,
           directoryPath: portableIndexDirectoryPath(pageDirectory),
           projected,
-          changedAt: clock()
+          changedAt: deterministicEventTime,
+          removeWhenEmpty: pageDirectory !== "pages"
         })
       : semanticDirectory
         ? await materializeSemanticDirectoryNavigation({
@@ -242,7 +220,7 @@ export function createProductionDocumentScopeRenderer(input: {
             projected: projected as Awaited<
               ReturnType<typeof projectSemanticDirectory>
             >,
-            changedAt: clock()
+            changedAt: deterministicEventTime
           })
       : graphDirectory
         ? await materializeMachineDirectoryNavigation({
@@ -250,7 +228,7 @@ export function createProductionDocumentScopeRenderer(input: {
             scope,
             directoryPath: portableGraphDirectoryPath(graphDirectory),
             projected,
-            changedAt: clock(),
+            changedAt: deterministicEventTime,
             removeWhenEmpty: true
           })
       : perFileGraphDirectory
@@ -261,7 +239,7 @@ export function createProductionDocumentScopeRenderer(input: {
             projected: projected as Awaited<ReturnType<
               typeof projectPerFileGraphDirectory
             >>,
-            changedAt: clock()
+            changedAt: deterministicEventTime
           })
       : termCatalog
         ? await materializeMachineDirectoryNavigation({
@@ -269,7 +247,7 @@ export function createProductionDocumentScopeRenderer(input: {
             scope,
             directoryPath: "_index/terms",
             projected,
-            changedAt: clock(),
+            changedAt: deterministicEventTime,
             title: "Navigation terms"
           })
       : bucket
@@ -278,7 +256,7 @@ export function createProductionDocumentScopeRenderer(input: {
             scope,
             directoryPath: `_index/terms/${bucket}`,
             projected,
-            changedAt: clock(),
+            changedAt: deterministicEventTime,
             title: `${bucket} terms`,
             removeWhenEmpty: true
           })
@@ -287,16 +265,23 @@ export function createProductionDocumentScopeRenderer(input: {
             removedLogicalPaths: projected.removedLogicalPaths,
             navigationMutations: []
           };
+    validateDocumentProjectionScopeOutputOwnership({
+      scope,
+      pages: materialized.pages,
+      removedLogicalPaths: materialized.removedLogicalPaths,
+      navigationMutations: materialized.navigationMutations
+    });
     return {
       ...materialized,
       factCount: "factCount" in projected
         ? projected.factCount : projected.records.length
     };
   }
-  return {
-    async project(scope: DocumentProjectionScopeClaim, options: Readonly<{
-      pageIntegrityOverrides?: readonly DocumentPageIntegrityOverride[];
-    }> = {}) {
+  const renderer = {
+    async project(
+      scope: DocumentProjectionScopeClaim,
+      options: DocumentScopeRenderOptions = {}
+    ) {
       const projected = await project(
         scope,
         new AbortController().signal,
@@ -305,11 +290,27 @@ export function createProductionDocumentScopeRenderer(input: {
       if (!projected) throw scopeRenderError("projection_scope_not_materialized");
       return projected;
     },
-    async render(scope: DocumentProjectionScopeClaim, signal: AbortSignal) {
-      const materialized = await project(scope, signal);
+    async render(
+      scope: DocumentProjectionScopeClaim,
+      signal: AbortSignal,
+      options: Pick<DocumentScopeRenderOptions, "contributors"> = {}
+    ) {
+      const materialized = await project(scope, signal, options);
       if (!materialized) {
         return {
-          ...await input.snapshots.render(scope),
+          outputFingerprintSha256: createHash("sha256")
+            .update(canonicalJson({
+              kind: scope.kind,
+              key: scope.key,
+              renderedSequence: scope.renderedSequence,
+              deterministicEventTime: scope.deterministicEventTime ?? null,
+              contributors: options.contributors ?? []
+            })).digest("hex"),
+          factCount: options.contributors?.length ?? 0,
+          pages: [],
+          removedNormalizedPaths: [],
+          navigationMutations: [],
+          storageRequests: zeroStorageRequests(),
           verifiedReservations: []
         };
       }
@@ -399,91 +400,99 @@ export function createProductionDocumentScopeRenderer(input: {
         storageRequests,
         factCount: materialized.factCount
       };
+    },
+    async renderPublication(
+      snapshot: DocumentPublicationImmutableScopeSnapshot,
+      signal: AbortSignal
+    ) {
+      const validationEvidence = {
+        scopeIdentity: snapshot.scopeIdentity,
+        memberCount: snapshot.members.length,
+        basePageCount: snapshot.basePages.length
+      };
+      if (snapshot.scopeKind === "validation") {
+        const normalized = normalizeDocumentPublicationScopeOutput({
+          scope: { kind: "validation", key: snapshot.scopeKey },
+          inputSnapshotFingerprintSha256:
+            snapshot.inputSnapshotFingerprintSha256,
+          rendererContractVersion: snapshot.rendererContractVersion,
+          pages: [], navigationMutations: [], validationEvidence
+        });
+        return { ...normalized, verifiedReservations: [] };
+      }
+      const scope = publicationScopeClaim(snapshot);
+      const contributors = snapshot.members.flatMap((member) => member.sourceFilePublicId ? [{
+          sourceFilePublicId: member.sourceFilePublicId,
+          sourceRevisionPublicId: member.kind === "source_revision"
+            ? member.publicId : null,
+          requiredSequence: Number(member.version)
+        }] : []);
+      const sourceTombstone = snapshot.scopeKind === "source"
+        && snapshot.members.some((member) =>
+          member.kind === "tombstone"
+            && member.sourceFilePublicId === snapshot.scopeKey)
+        && !snapshot.members.some((member) =>
+          member.kind === "source_revision"
+            && member.sourceFilePublicId === snapshot.scopeKey);
+      const rendered = sourceTombstone ? {
+          pages: [],
+          removedNormalizedPaths: [],
+          navigationMutations: [],
+          verifiedReservations: []
+        }
+        : await renderer.render(scope, signal, { contributors });
+      const removedNormalizedPaths = selectDocumentPublicationRemovedPaths({
+        basePages: snapshot.basePages,
+        renderedPaths: rendered.pages.map((page) => page.normalizedPath),
+        explicitRemovedPaths: rendered.removedNormalizedPaths,
+        deleteOmittedBasePages: snapshot.scopeKind === "source"
+      });
+      const pages = [
+        ...rendered.pages.map((page) => ({
+          logicalPath: page.logicalPath,
+          normalizedPath: page.normalizedPath,
+          action: "put" as const,
+          entryKind: page.entryKind,
+          objectId: page.objectId,
+          checksumSha256: page.checksumSha256,
+          byteCount: page.byteCount
+        })),
+        ...removedNormalizedPaths.map((normalizedPath) => ({
+          logicalPath: normalizedPath,
+          normalizedPath,
+          action: "delete" as const,
+          entryKind: null,
+          objectId: null,
+          checksumSha256: null,
+          byteCount: null
+        }))
+      ];
+      const normalized = normalizeDocumentPublicationScopeOutput({
+        scope: {
+          kind: snapshot.scopeKind as DocumentProjectionScopeClaim["kind"],
+          key: snapshot.scopeKey
+        },
+        sourceFilePublicId: snapshot.scopeKind === "source"
+          ? snapshot.scopeKey : null,
+        inputSnapshotFingerprintSha256:
+          snapshot.inputSnapshotFingerprintSha256,
+        rendererContractVersion: snapshot.rendererContractVersion,
+        pages,
+        navigationMutations: rendered.navigationMutations.map(
+          (mutation, order) => ({
+            directoryPath: mutation.directoryPath,
+            order,
+            action: "upsert" as const,
+            mutation
+          })
+        ),
+        validationEvidence
+      });
+      return {
+        ...normalized,
+        verifiedReservations: rendered.verifiedReservations
+      };
     }
   };
-}
-
-function requireSourceProjection(input: {
-  sourceProjection?: DocumentSourceScopeProjection;
-}): DocumentSourceScopeProjection {
-  if (!input.sourceProjection) {
-    throw scopeRenderError("projection_scope_source_projection_missing");
-  }
-  return input.sourceProjection;
-}
-
-const CHECKSUM_FILTER_THRESHOLD = 32;
-
-async function selectChangedPages<TPage extends {
-  logicalPath: string;
-  checksumSha256: string;
-}>(input: {
-  machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
-  knowledgeBaseId: string;
-  pages: readonly TPage[];
-}): Promise<readonly TPage[]> {
-  if (input.pages.length <= CHECKSUM_FILTER_THRESHOLD) return input.pages;
-  const active = await input.machineProjection.readGeneratedPageChecksums({
-    knowledgeBaseId: input.knowledgeBaseId,
-    logicalPaths: input.pages.map((page) => page.logicalPath)
-  });
-  const checksumByPath = new Map(active.map((head) => [
-    head.logicalPath, head.checksumSha256
-  ]));
-  return input.pages.filter((page) => checksumByPath.get(page.logicalPath)
-    !== page.checksumSha256);
-}
-
-async function projectTermCatalog(input: {
-  input: Parameters<typeof createProductionDocumentScopeRenderer>[0];
-  knowledgeBaseId: string;
-  includedSourceRevisionPublicIds: readonly string[];
-  excludedActiveSourceFilePublicIds: readonly string[];
-}) {
-  const state = await input.input.machineProjection.readNavigationTermCatalogState({
-    knowledgeBaseId: input.knowledgeBaseId,
-    includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
-    excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
-  });
-  return {
-    pages: [buildDocumentTermCatalogPage(state.buckets)],
-    removedLogicalPaths: [] as string[],
-    records: [] as Record<string, unknown>[],
-    childDirectories: state.buckets.map((bucket) => ({
-      scopePath: `_index/terms/${bucket}`,
-      title: bucket,
-      path: `_index/terms/${bucket}/index.json`
-    })),
-    factCount: state.buckets.length
-  };
-}
-async function projectTermBucket(input: {
-  input: Parameters<typeof createProductionDocumentScopeRenderer>[0];
-  knowledgeBaseId: string;
-  bucket: DocumentTermBucket;
-  includedSourceRevisionPublicIds: readonly string[];
-  excludedActiveSourceFilePublicIds: readonly string[];
-}) {
-  const [records, previousPaths] = await Promise.all([
-    input.input.machineProjection.listNavigationTermRecords({
-      knowledgeBaseId: input.knowledgeBaseId,
-      bucket: input.bucket,
-      includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
-      excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
-    }),
-    input.input.machineProjection.listTermPartPaths({
-      knowledgeBaseId: input.knowledgeBaseId,
-      bucket: input.bucket
-    })
-  ]);
-  return {
-    ...buildDocumentNavigationTermBucketResources({
-      bucket: input.bucket,
-      records,
-      previousPaths,
-      maximumRecordsPerShard: input.input.maximumRecordsPerShard,
-      maximumShardBytes: input.input.maximumShardBytes
-    }),
-    records
-  };
+  return renderer;
 }

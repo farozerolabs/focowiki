@@ -13,6 +13,7 @@ export function createPostgresProjectionScopeCompletion(sql: DatabaseClient) {
       publicId: string;
       workerId: string;
       renderedSequence: number;
+      leaseGeneration?: number;
       outputFingerprintSha256: string;
       storageRequests: DocumentProjectionStorageRequests;
       now: string;

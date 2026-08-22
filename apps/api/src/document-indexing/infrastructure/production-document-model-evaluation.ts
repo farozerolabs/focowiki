@@ -32,7 +32,10 @@ import {
   modelEvaluationError,
   validateModelEvaluationWarnings
 } from "./document-model-evaluation-validation.js";
-import { runDocumentGeneration } from
+import {
+  classifyDocumentGenerationResult,
+  runDocumentGeneration
+} from
   "./production-document-generation-runner.js";
 import {
   confirmationFromDocumentFact as confirmationFromFact,
@@ -137,7 +140,8 @@ export function createProductionDocumentModelEvaluation(input: {
             onMetric(metric) {
               waitTimeMs += metric.waitTimeMs;
               serviceTimeMs += metric.serviceTimeMs;
-            }
+            },
+            classifyResult: classifyDocumentGenerationResult
           });
         if (result.suggestions === null) {
           return {
@@ -330,7 +334,8 @@ export function createProductionDocumentModelEvaluation(input: {
               onMetric(metric) {
                 waitTimeMs += metric.waitTimeMs;
                 serviceTimeMs += metric.serviceTimeMs;
-              }
+              },
+              classifyResult: classifyDocumentGenerationResult
             });
           const evaluatedWarnings = validateModelEvaluationWarnings(result.warnings);
           if (evaluatedWarnings.length > 0 && result.confirmations.length === 0) {

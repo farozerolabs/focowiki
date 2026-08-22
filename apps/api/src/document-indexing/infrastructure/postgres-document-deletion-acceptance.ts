@@ -5,6 +5,8 @@ import { enqueuePostgresDocumentWebhookEvent } from
   "./postgres-document-webhook-event.js";
 import { terminalizePostgresDocumentWork } from
   "./postgres-document-work-terminalization.js";
+import { writePostgresDocumentDeletionPublicationFacts } from
+  "./postgres-document-deletion-publication-facts.js";
 
 export type DocumentDeletionTargetKind =
   "source_file" | "source_directory" | "knowledge_base";
@@ -88,6 +90,13 @@ export function createPostgresDocumentDeletionAcceptance(sql: DatabaseClient) {
           ${input.operationPublicId}, ${input.expiresAt}, ${input.requestedAt}
         )
       `;
+      const publicationFactCount = input.targetKind === "knowledge_base" ? 0
+        : await writePostgresDocumentDeletionPublicationFacts({
+          transaction,
+          knowledgeBaseId: input.knowledgeBaseId,
+          operationPublicId: input.operationPublicId,
+          createdAt: input.requestedAt
+        });
       await commitAuthoritativeVisibility(transaction, input);
       if (affectedSourceCount > 0) {
         const deletingJobs = await transaction<Array<{
@@ -140,73 +149,14 @@ export function createPostgresDocumentDeletionAcceptance(sql: DatabaseClient) {
             expiresAt: input.expiresAt
           });
         }
-        await transaction`
-          UPDATE focowiki.source_file_active_revisions
-          SET active_source_revision_public_id = NULL,
-              updated_at = ${input.requestedAt}
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            )
-        `;
-        await transaction`
-          UPDATE focowiki.search_document_owners
-          SET state = 'obsolete', updated_at = ${input.requestedAt}
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            )
-            AND state IN ('staged', 'active')
-        `;
-        await transaction`
-          UPDATE focowiki.relation_directed_evidence
-          SET active = false, retired_at = ${input.requestedAt}
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND (source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            ) OR target_source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            ))
-            AND active AND retired_at IS NULL
-        `;
-        await transaction`
-          UPDATE focowiki.canonical_file_relations relation
-          SET active = false, retired_at = ${input.requestedAt}
-          WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
-            AND relation.active AND relation.retired_at IS NULL
-            AND ((relation.first_source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            ) OR relation.second_source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            )) OR NOT EXISTS (
-              SELECT 1 FROM focowiki.relation_directed_evidence evidence
-              WHERE evidence.knowledge_base_id = relation.knowledge_base_id
-                AND evidence.pair_public_id = relation.pair_public_id
-                AND evidence.active AND evidence.retired_at IS NULL
-            ))
-        `;
-        await transaction`
-          UPDATE focowiki.unresolved_file_references
-          SET resolution_state = 'obsolete', updated_at = ${input.requestedAt}
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            )
-            AND resolution_state <> 'obsolete'
-        `;
-        await transaction`
-          DELETE FROM focowiki.generated_page_heads
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND source_file_public_id IN (
-              SELECT public_id FROM document_deletion_sources
-            )
-        `;
       }
       await enqueueDeletionCleanup(
         transaction,
         input,
         affectedSourceCount,
-        requestHash
+        requestHash,
+        publicationFactCount > 0
+          ? "reconcile_projection" : "deactivate"
       );
       return {
         operationPublicId: input.operationPublicId,
@@ -320,7 +270,8 @@ async function enqueueDeletionCleanup(
   sql: TransactionSql,
   input: { knowledgeBaseId: string; operationPublicId: string; targetKind: DocumentDeletionTargetKind; targetPublicId: string; requestedAt: string; maximumAttempts: number },
   affectedSourceCount: number,
-  requestHash: string
+  requestHash: string,
+  phase: "deactivate" | "reconcile_projection"
 ): Promise<void> {
   await sql`
     INSERT INTO focowiki.cleanup_actions (
@@ -334,7 +285,7 @@ async function enqueueDeletionCleanup(
       ${input.operationPublicId}, 'document_resource_deletion', 'postgres',
       ${input.targetKind}, ${input.targetPublicId}, true, 10, 0,
       ${`document-deletion-${requestHash}`}, ${requestHash},
-      ${sql.json({ affectedSourceCount, cursor: null })}, 'queued', 0,
+      ${sql.json({ phase, affectedSourceCount, cursor: null })}, 'queued', 0,
       ${input.maximumAttempts},
       ${input.requestedAt}, ${input.requestedAt}, ${input.requestedAt}
     )

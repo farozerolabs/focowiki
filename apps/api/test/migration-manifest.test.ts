@@ -39,16 +39,34 @@ describe("document indexing migration manifest", () => {
       sourceGeneration: "storage-vnext-v12-projection-object-lifecycle",
       targetGeneration: "storage-vnext-v13-clean-document-indexing",
       safety: "breaking_reset"
+    }, {
+      fileName: "006_projection_publication_foundation.sql",
+      sourceGeneration: "storage-vnext-v13-clean-document-indexing",
+      targetGeneration: "storage-vnext-v14-projection-publication-coherence",
+      safety: "compatible"
+    }, {
+      fileName: "007_projection_legacy_cleanup_gate.sql",
+      sourceGeneration: "storage-vnext-v14-projection-publication-coherence",
+      targetGeneration: "storage-vnext-v15-projection-legacy-cleanup-gate",
+      safety: "compatible"
+    }, {
+      fileName: "008_projection_navigation_capacity.sql",
+      sourceGeneration: "storage-vnext-v15-projection-legacy-cleanup-gate",
+      targetGeneration: "storage-vnext-v16-projection-navigation-capacity",
+      safety: "compatible"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
       "002_document_queue_throughput.sql",
       "003_document_projection_throughput.sql",
       "004_projection_output_object_lifecycle.sql",
-      "005_clean_document_indexing_boundary.sql"
+      "005_clean_document_indexing_boundary.sql",
+      "006_projection_publication_foundation.sql",
+      "007_projection_legacy_cleanup_gate.sql",
+      "008_projection_navigation_capacity.sql"
     ]);
     expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      "storage-vnext-v13-clean-document-indexing"
+      "storage-vnext-v16-projection-navigation-capacity"
     );
   });
 
@@ -69,7 +87,10 @@ describe("document indexing migration manifest", () => {
       "002_document_queue_throughput.sql",
       "003_document_projection_throughput.sql",
       "004_projection_output_object_lifecycle.sql",
-      "005_clean_document_indexing_boundary.sql"
+      "005_clean_document_indexing_boundary.sql",
+      "006_projection_publication_foundation.sql",
+      "007_projection_legacy_cleanup_gate.sql",
+      "008_projection_navigation_capacity.sql"
     ]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     for (const generation of [
