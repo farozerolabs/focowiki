@@ -143,7 +143,9 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
       objectPutCount: 0,
       objectReuseCount: 0,
       errorCode: outcome.state === "deferred"
-        ? "publication_activation_contention_deferred"
+        ? "reason" in outcome && outcome.reason === "deadline"
+          ? "publication_activation_deadline_deferred"
+          : "publication_activation_contention_deferred"
         : outcome.state === "superseded"
           ? "publication_generation_stale_base" : null
     });

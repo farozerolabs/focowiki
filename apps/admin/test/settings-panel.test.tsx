@@ -68,6 +68,7 @@ vi.mock("@/lib/admin-api", () => ({
       },
       worker: {
         sourceFileConcurrency: 2,
+        s3Concurrency: 6,
         jobMaxAttempts: 3,
         jobRetryDelayMs: 30000,
         completedJobRetentionDays: 7
@@ -550,12 +551,18 @@ describe("SettingsPanel", () => {
     const maximumAttempts = document.getElementById(
       "worker-jobMaxAttempts"
     ) as HTMLInputElement;
+    const s3Concurrency = document.getElementById(
+      "worker-s3Concurrency"
+    ) as HTMLInputElement;
+    expect(s3Concurrency.value).toBe("6");
+    fireEvent.change(s3Concurrency, { target: { value: "12" } });
     fireEvent.change(maximumAttempts, { target: { value: "4" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(updateWorkerSettings).toHaveBeenCalledWith(expect.objectContaining({
         sourceFileConcurrency: 2,
+        s3Concurrency: 12,
         jobMaxAttempts: 4
       }));
     });

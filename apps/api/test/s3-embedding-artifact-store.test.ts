@@ -86,7 +86,12 @@ class MemoryS3Client {
     if (command instanceof GetObjectCommand) {
       const object = this.objects.get(command.input.Key!);
       if (!object) throw missing();
-      return { Body: Readable.from([object.bytes.subarray(0, 3), object.bytes.subarray(3)]) };
+      return {
+        ContentLength: object.bytes.byteLength,
+        ContentType: object.contentType,
+        Metadata: object.metadata,
+        Body: Readable.from([object.bytes.subarray(0, 3), object.bytes.subarray(3)])
+      };
     }
     if (command instanceof DeleteObjectCommand) {
       this.objects.delete(command.input.Key!);

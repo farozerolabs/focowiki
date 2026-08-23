@@ -451,6 +451,7 @@ export function createRuntimeSettingsService(input: {
         rateLimits: snapshot.rateLimits,
         worker: {
           sourceFileConcurrency: snapshot.worker.sourceFileConcurrency,
+          s3Concurrency: snapshot.worker.sourceObjectReadConcurrency,
           jobMaxAttempts: snapshot.worker.jobMaxAttempts,
           jobRetryDelayMs: snapshot.worker.jobRetryDelayMs,
           completedJobRetentionDays: snapshot.worker.completedJobRetentionDays

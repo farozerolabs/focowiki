@@ -5,6 +5,7 @@ import {
   createRevisionScopedChatCompletionsClient,
   requestGraphRelationshipConfirmations,
   requestModelGraphAnalysis,
+  resolveChatCompletionsThinkingControl,
   validateModelGraphAnalysis
 } from "../src/model.js";
 import { estimateTokenCount } from "../src/model-source-view.js";
@@ -516,7 +517,7 @@ describe("model graph analysis", () => {
     const observations: unknown[] = [];
     const create = vi.fn(async (_request: {
       response_format: unknown;
-      reasoning_effort: "none";
+      reasoning_effort?: "none";
     }) => ({
       id: "chat-request-1",
       choices: [{
@@ -819,6 +820,82 @@ describe("model graph analysis", () => {
 
     expect(create).toHaveBeenCalledOnce();
     expect(result.warnings[0]).toContain("local schema validation");
+  });
+
+  it("accepts an exact flat suggestion object from JSON-object compatibility",
+    async () => {
+      const create = vi.fn(async () => ({
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+          title: "Climate Operations",
+          type: "guide",
+          description: "Operations guidance.",
+          tags: ["climate"],
+          keywords: ["maintenance"]
+        }) } }]
+      }));
+      const client = createRevisionScopedChatCompletionsClient(create);
+      Object.defineProperty(client, "structuredOutputCapability", {
+        get: () => "json_object_compatibility"
+      });
+
+      const result = await requestModelGraphAnalysis({
+        ...input,
+        receiveTimeouts: { maxMs: 5_000, idleMs: 5_000 },
+        client
+      });
+
+      expect(result).toMatchObject({
+        suggestions: { title: "Climate Operations" },
+        warnings: []
+      });
+      expect(create).toHaveBeenCalledOnce();
+    });
+
+  it("uses the official DeepSeek non-thinking request control", async () => {
+    expect(resolveChatCompletionsThinkingControl("https://api.deepseek.com"))
+      .toBe("deepseek_disabled");
+    expect(resolveChatCompletionsThinkingControl("https://api.openai.com/v1"))
+      .toBe("openai_reasoning_effort_none");
+    const requests: Array<Record<string, unknown>> = [];
+    const create = vi.fn(async (request: Record<string, unknown>) => {
+      requests.push(request);
+      return { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+        suggestions: {
+          title: "Climate Operations",
+          type: "guide",
+          description: "Operations guidance.",
+          tags: [],
+          keywords: []
+        }
+      }) } }] };
+    });
+    const client = createRevisionScopedChatCompletionsClient(create as never, {
+      thinkingControl: "deepseek_disabled"
+    });
+
+    await requestModelGraphAnalysis({
+      ...input,
+      modelName: "deepseek-v4-flash",
+      receiveTimeouts: { maxMs: 5_000, idleMs: 5_000 },
+      client
+    });
+
+    await client.chat.completions.create({
+      model: "deepseek-v4-flash",
+      reasoning_effort: "none",
+      messages: [{ role: "user", content: "Return tuple records." }],
+      stream: true
+    } as never);
+
+    expect(requests[0]).toMatchObject({
+      thinking: { type: "disabled" }
+    });
+    expect(requests[0]).not.toHaveProperty("reasoning_effort");
+    expect(requests[1]).toMatchObject({
+      thinking: { type: "disabled" },
+      stream: true
+    });
+    expect(requests[1]).not.toHaveProperty("reasoning_effort");
   });
 
   it("retries one transient rate limit without changing structured capability", async () => {

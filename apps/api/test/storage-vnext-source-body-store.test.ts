@@ -263,7 +263,15 @@ describe("storage vNext S3 source body store", () => {
                   "object-format": "source-markdown-v1"
                 }
               }
-            : { Body: body })
+            : {
+                ContentLength: bytes.byteLength,
+                ContentType: "text/markdown; charset=utf-8",
+                Metadata: {
+                  "checksum-sha256": checksum,
+                  "object-format": "source-markdown-v1"
+                },
+                Body: body
+              })
       } as never,
       bucket: "owned-bucket",
       prefix: "runs/svnext-catalog01"
@@ -308,6 +316,12 @@ describe("storage vNext S3 source body store", () => {
                 }
               }
             : {
+                ContentLength: expected.byteLength,
+                ContentType: "text/markdown; charset=utf-8",
+                Metadata: {
+                  "checksum-sha256": checksum,
+                  "object-format": "source-markdown-v1"
+                },
                 Body: body
               })
       } as never,

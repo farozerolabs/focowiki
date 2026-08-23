@@ -249,7 +249,10 @@ export type OpenAIResponsesClient = {
 
 export type ChatCompletionsJsonRequest = {
   model: string;
-  reasoning_effort: "none";
+  reasoning_effort?: "none";
+  thinking?: {
+    type: "disabled";
+  };
   messages: Array<{
     role: "system" | "user";
     content: string;
@@ -367,7 +370,10 @@ export function createOpenAIModelClient(
       (request, options) => client.chat.completions.create(
         request as never,
         options
-      )
+      ),
+      {
+        thinkingControl: resolveChatCompletionsThinkingControl(config.baseUrl)
+      }
     );
   }
 
@@ -381,7 +387,10 @@ export function createRevisionScopedChatCompletionsClient(
   create: (
     request: ChatCompletionsJsonRequest,
     options?: ModelRequestOptions
-  ) => Promise<unknown>
+  ) => Promise<unknown>,
+  profile: {
+    thinkingControl?: "openai_reasoning_effort_none" | "deepseek_disabled";
+  } = {}
 ): OpenAIChatCompletionsClient {
   let capability: StructuredOutputCapability = "auto";
   return {
@@ -391,14 +400,18 @@ export function createRevisionScopedChatCompletionsClient(
     },
     chat: {
       completions: {
-        async create(request, options) {
+        async create(request, requestOptions) {
           const usesJsonSchema = request.response_format?.type === "json_schema";
-          const effectiveRequest = capability === "json_object_compatibility"
+          const compatibilityRequest = capability === "json_object_compatibility"
             && usesJsonSchema
             ? toJsonObjectCompatibilityRequest(request)
             : request;
+          const effectiveRequest = applyThinkingControl(
+            compatibilityRequest,
+            profile.thinkingControl ?? "openai_reasoning_effort_none"
+          );
           try {
-            const response = await create(effectiveRequest, options);
+            const response = await create(effectiveRequest, requestOptions);
             if (capability === "auto"
               && usesJsonSchema) {
               capability = "native_json_schema";
@@ -411,7 +424,10 @@ export function createRevisionScopedChatCompletionsClient(
               throw error;
             }
             capability = "json_object_compatibility";
-            return create(toJsonObjectCompatibilityRequest(request), options);
+            return create(applyThinkingControl(
+              toJsonObjectCompatibilityRequest(request),
+              profile.thinkingControl ?? "openai_reasoning_effort_none"
+            ), requestOptions);
           }
         }
       }
@@ -855,7 +871,10 @@ async function runModelGraphAnalysisAttempt(input: {
       observeProviderAttempt(input, response, startedAt, "schema_validation");
       return modelGraphWarning("Model graph analysis failed local schema validation");
     }
-    const value = validateModelGraphAnalysis(parseModelOutputJson(outputText));
+    const value = validateCompatibleModelGraphAnalysis(
+      input.client,
+      parseModelOutputJson(outputText)
+    );
     const result = {
       suggestions: value.suggestions,
       confirmations: value.confirmations,
@@ -956,6 +975,47 @@ function toJsonObjectCompatibilityRequest(
     ...request,
     response_format: { type: "json_object" }
   };
+}
+
+function applyThinkingControl(
+  request: ChatCompletionsJsonRequest,
+  control: "openai_reasoning_effort_none" | "deepseek_disabled"
+): ChatCompletionsJsonRequest {
+  if (control === "openai_reasoning_effort_none") return request;
+  const { reasoning_effort: _reasoningEffort, ...withoutReasoningEffort } = request;
+  return {
+    ...withoutReasoningEffort,
+    thinking: { type: "disabled" }
+  };
+}
+
+export function resolveChatCompletionsThinkingControl(
+  baseUrl: string
+): "openai_reasoning_effort_none" | "deepseek_disabled" {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === "api.deepseek.com"
+      ? "deepseek_disabled" : "openai_reasoning_effort_none";
+  } catch {
+    return "openai_reasoning_effort_none";
+  }
+}
+
+function validateCompatibleModelGraphAnalysis(
+  client: OpenAIModelClient,
+  value: unknown
+): ReturnType<typeof validateModelGraphAnalysis> {
+  const standard = modelGraphAnalysisSchema.safeParse(value);
+  if (standard.success) {
+    return { suggestions: standard.data.suggestions, confirmations: [] };
+  }
+  if (isChatCompletionsClient(client)
+    && client.structuredOutputCapability === "json_object_compatibility") {
+    const flat = modelSuggestionsSchema.safeParse(value);
+    if (flat.success) {
+      return { suggestions: flat.data, confirmations: [] };
+    }
+  }
+  throw standard.error;
 }
 
 function readModelInputText(input: ModelRequestInput): string {

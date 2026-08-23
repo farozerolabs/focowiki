@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RuntimeConfig, WorkerRuntimeConfig } from "../../config.js";
+import type { RuntimeConfig } from "../../config.js";
 import { resolveWorkerConfig } from "../../config.js";
 import { closeDatabaseClient, createDatabaseClient } from "../../db/client.js";
 import { assertRuntimeSchemaGeneration } from "../../db/migrations.js";
@@ -29,6 +29,8 @@ import { createContinuousBackgroundWindow } from
 import { createDocumentWorkerObservability } from
   "../application/document-worker-observability.js";
 import { deriveDocumentWorkerRuntimeSettings } from
+  "../application/document-worker-settings.js";
+import type { ResolvedDocumentWorkerRuntimeSettings } from
   "../application/document-worker-settings.js";
 import { createProductionBackgroundRuntime } from
   "./production-background-runtime.js";
@@ -322,7 +324,7 @@ export async function settleDocumentWorkerRuntime(input: Readonly<{
 }
 
 type DocumentWorkerRuntimeState = {
-  workerConfig: Required<WorkerRuntimeConfig>;
+  workerConfig: ResolvedDocumentWorkerRuntimeSettings;
   resourceCapacity: DocumentResourceCapacityInput;
 };
 
@@ -362,7 +364,7 @@ function runtimeStateFingerprint(state: DocumentWorkerRuntimeState): string {
 async function readDocumentResourceCapacity(
   sql: ReturnType<typeof createDatabaseClient>,
   config: RuntimeConfig,
-  settings: ReturnType<typeof resolveWorkerConfig>
+  settings: ResolvedDocumentWorkerRuntimeSettings
 ): Promise<DocumentResourceCapacityInput | null> {
   const runtime = createRuntimeSettingsRepository(sql);
   const [model, embeddingConfigurations, searchRecord] = await Promise.all([
@@ -381,7 +383,7 @@ async function readDocumentResourceCapacity(
   } as never);
   return {
     documentConcurrency: settings.sourceFileConcurrency,
-    sourceObjectReadConcurrency: settings.sourceFileConcurrency,
+    sourceObjectReadConcurrency: settings.sourceObjectReadConcurrency,
     generationModelConcurrency: model.suggestionConcurrency,
     graphRagConcurrency: resolveGraphRagPoolSize(settings.sourceFileConcurrency),
     embeddingConcurrency: embedding.concurrency,
@@ -428,7 +430,7 @@ export async function waitForDocumentResourceCapacity(input: {
 async function readWorkerSettings(
   sql: ReturnType<typeof createDatabaseClient>,
   defaults: ReturnType<typeof resolveWorkerConfig>
-): Promise<ReturnType<typeof resolveWorkerConfig>> {
+): Promise<ResolvedDocumentWorkerRuntimeSettings> {
   const record = await createRuntimeSettingsRepository(sql).getSetting("worker");
   const stored = !record || validateWorkerSettings(record.value).length > 0
     ? null : sanitizeWorkerSettings(record.value as RuntimeWorkerSettings);
@@ -436,6 +438,7 @@ async function readWorkerSettings(
     deployment: defaults,
     stored: stored ? {
       sourceFileConcurrency: stored.sourceFileConcurrency,
+      s3Concurrency: stored.sourceObjectReadConcurrency,
       jobMaxAttempts: stored.jobMaxAttempts,
       jobRetryDelayMs: stored.jobRetryDelayMs,
       completedJobRetentionDays: stored.completedJobRetentionDays

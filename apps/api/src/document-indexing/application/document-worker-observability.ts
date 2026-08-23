@@ -233,6 +233,24 @@ export function createDocumentWorkerObservability(input: {
         errorCode: fields.errorCode
       });
     },
+    publicationScopeStage(fields: {
+      knowledgeBaseId: string | null;
+      generationPublicId: string | null;
+      scopeGenerationPublicId: string;
+      stage: "snapshot_load" | "render" | "database_persist";
+      outcome: "completed" | "failed";
+      durationMs: number;
+      errorCode: string | null;
+    }) {
+      if (fields.knowledgeBaseId !== null) identity(fields.knowledgeBaseId);
+      if (fields.generationPublicId !== null) identity(fields.generationPublicId);
+      identity(fields.scopeGenerationPublicId);
+      if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
+      write("worker.publication_scope_stage", {
+        ...fields,
+        durationMs: metric(fields.durationMs)
+      });
+    },
     publicationStorage(fields: {
       knowledgeBaseId: string;
       generationPublicId: string;
@@ -248,6 +266,22 @@ export function createDocumentWorkerObservability(input: {
         objectPutCount: metric(fields.objectPutCount),
         objectReuseCount: metric(fields.objectReuseCount),
         putByteCount: metric(fields.putByteCount)
+      });
+    },
+    storageRequest(fields: {
+      operation: "put" | "head" | "get";
+      safeObjectKeyHash: string;
+      durationMs: number;
+      outcome: "completed" | "failed";
+      errorCode: string | null;
+    }) {
+      if (!/^[0-9a-f]{64}$/u.test(fields.safeObjectKeyHash)) {
+        throw new Error("Storage object key hash is invalid");
+      }
+      if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
+      write("worker.storage_request", {
+        ...fields,
+        durationMs: metric(Math.round(fields.durationMs))
       });
     },
     cleanup(fields: {

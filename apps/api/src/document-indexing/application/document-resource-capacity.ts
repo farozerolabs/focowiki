@@ -41,6 +41,30 @@ export function resolveDocumentProjectionCapacities(input: {
   };
 }
 
+export function resolveDocumentPublicationS3Capacities(input: {
+  documentConcurrency: number;
+  sourceObjectReadConcurrency: number;
+}): { scopeProjection: number; readsPerScope: number } {
+  const projection = resolveDocumentProjectionCapacities({
+    documentConcurrency: input.documentConcurrency
+  });
+  if (
+    !Number.isSafeInteger(input.sourceObjectReadConcurrency)
+    || input.sourceObjectReadConcurrency < 1
+    || input.sourceObjectReadConcurrency > 1_000
+  ) {
+    throw new Error("Document publication S3 capacity input is invalid");
+  }
+  const readsPerScope = Math.min(4, input.sourceObjectReadConcurrency);
+  return {
+    scopeProjection: Math.min(
+      projection.scopeProjection,
+      Math.max(1, Math.floor(input.sourceObjectReadConcurrency / readsPerScope))
+    ),
+    readsPerScope
+  };
+}
+
 export function resolveDocumentResourceLaneCapacities(
   input: DocumentResourceCapacityInput
 ): {

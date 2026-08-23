@@ -6,6 +6,7 @@ import { createDocumentResourcePermits } from
 import {
   deriveDocumentResourceCapacities,
   resolveDocumentFinalizationCapacity,
+  resolveDocumentPublicationS3Capacities,
   resolveDocumentProjectionCapacities,
   resolveDocumentResourceLaneCapacities
 } from
@@ -40,6 +41,14 @@ describe("document resource permits", () => {
       .toEqual({ documentPreparation: 24, scopeProjection: 6 });
     expect(resolveDocumentProjectionCapacities({ documentConcurrency: 1 }))
       .toEqual({ documentPreparation: 1, scopeProjection: 1 });
+    expect(resolveDocumentPublicationS3Capacities({
+      documentConcurrency: 32,
+      sourceObjectReadConcurrency: 12
+    })).toEqual({ scopeProjection: 3, readsPerScope: 4 });
+    expect(resolveDocumentPublicationS3Capacities({
+      documentConcurrency: 32,
+      sourceObjectReadConcurrency: 1
+    })).toEqual({ scopeProjection: 1, readsPerScope: 1 });
   });
 
   it("bounds configured search concurrency by the active document window", () => {

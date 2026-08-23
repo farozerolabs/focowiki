@@ -134,7 +134,9 @@ export function createS3StorageVnextSourceBodyStore(input: {
         byteCount: request.byteCount,
         contentType: SOURCE_CONTENT_TYPE
       };
-      const existing = await headObject(input.client, bucket, identity.storageKey);
+      const existing = await headObject(
+        input.client, bucket, identity.storageKey, request.signal
+      );
       if (existing) {
         assertVerifiedMetadata(existing, expected);
         await consumeVerifiedUploadStream(request);
@@ -151,8 +153,10 @@ export function createS3StorageVnextSourceBodyStore(input: {
           "checksum-sha256": request.checksum,
           "object-format": SOURCE_OBJECT_FORMAT
         }
-      }));
-      const verified = await headObject(input.client, bucket, identity.storageKey);
+      }), request.signal ? { abortSignal: request.signal } : undefined);
+      const verified = await headObject(
+        input.client, bucket, identity.storageKey, request.signal
+      );
       if (!verified) throw new StorageVnextSourceBodyStoreError("object_missing");
       assertVerifiedMetadata(verified, expected);
       return descriptor(identity, request.byteCount, "stored");
@@ -167,17 +171,13 @@ export function createS3StorageVnextSourceBodyStore(input: {
       if (request.byteCount > request.maxBytes) {
         throw new StorageVnextSourceBodyStoreError("object_too_large");
       }
-      const metadata = await headObject(input.client, bucket, identity.storageKey);
-      if (!metadata) throw new StorageVnextSourceBodyStoreError("object_missing");
-      assertVerifiedMetadata(metadata, request);
-      if (Number(metadata.ContentLength ?? 0) > request.maxBytes) {
+      const response = await getObject(
+        input.client, bucket, identity.storageKey, request.signal
+      );
+      assertVerifiedMetadata(response, request);
+      if (Number(response.ContentLength ?? 0) > request.maxBytes) {
         throw new StorageVnextSourceBodyStoreError("object_too_large");
       }
-      const response = await input.client.send(new GetObjectCommand({
-        Bucket: bucket,
-        Key: identity.storageKey,
-        ...(request.signal ? { AbortSignal: request.signal } : {})
-      }));
       if (!response.Body) throw new StorageVnextSourceBodyStoreError("body_unavailable");
       const bytes = await response.Body.transformToByteArray();
       if (bytes.byteLength !== request.byteCount || checksumBytes(bytes) !== request.checksum) {
@@ -197,17 +197,13 @@ export function createS3StorageVnextSourceBodyStore(input: {
       if (request.byteCount > request.maxBytes) {
         throw new StorageVnextSourceBodyStoreError("object_too_large");
       }
-      const metadata = await headObject(input.client, bucket, identity.storageKey);
-      if (!metadata) throw new StorageVnextSourceBodyStoreError("object_missing");
-      assertVerifiedMetadata(metadata, request);
-      if (Number(metadata.ContentLength ?? 0) > request.maxBytes) {
+      const response = await getObject(
+        input.client, bucket, identity.storageKey, request.signal
+      );
+      assertVerifiedMetadata(response, request);
+      if (Number(response.ContentLength ?? 0) > request.maxBytes) {
         throw new StorageVnextSourceBodyStoreError("object_too_large");
       }
-      const response = await input.client.send(new GetObjectCommand({
-        Bucket: bucket,
-        Key: identity.storageKey,
-        ...(request.signal ? { AbortSignal: request.signal } : {})
-      }));
       if (!response.Body || !isAsyncIterable(response.Body)) {
         throw new StorageVnextSourceBodyStoreError("body_unavailable");
       }
@@ -336,12 +332,35 @@ function descriptor(
 async function headObject(
   client: S3Client,
   bucket: string,
-  storageKey: string
+  storageKey: string,
+  signal?: AbortSignal
 ) {
   try {
-    return await client.send(new HeadObjectCommand({ Bucket: bucket, Key: storageKey }));
+    return await client.send(
+      new HeadObjectCommand({ Bucket: bucket, Key: storageKey }),
+      signal ? { abortSignal: signal } : undefined
+    );
   } catch (error) {
     if (isMissingObject(error)) return null;
+    throw error;
+  }
+}
+
+async function getObject(
+  client: S3Client,
+  bucket: string,
+  storageKey: string,
+  signal?: AbortSignal
+) {
+  try {
+    return await client.send(
+      new GetObjectCommand({ Bucket: bucket, Key: storageKey }),
+      signal ? { abortSignal: signal } : undefined
+    );
+  } catch (error) {
+    if (isMissingObject(error)) {
+      throw new StorageVnextSourceBodyStoreError("object_missing");
+    }
     throw error;
   }
 }

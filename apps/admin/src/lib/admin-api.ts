@@ -292,6 +292,7 @@ export type RateLimitSettings = {
 
 export type WorkerSettings = {
   sourceFileConcurrency: number;
+  s3Concurrency: number;
   jobMaxAttempts: number;
   jobRetryDelayMs: number;
   completedJobRetentionDays: number;
