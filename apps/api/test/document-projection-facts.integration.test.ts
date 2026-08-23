@@ -716,6 +716,39 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       childDirectories: [],
       resourcePaths: []
     });
+    await sql`
+      INSERT INTO focowiki.relation_directed_evidence (
+        public_id, knowledge_base_id, pair_public_id,
+        source_file_public_id, source_revision_public_id,
+        target_source_file_public_id, target_source_revision_public_id,
+        evidence_kind, evidence_fingerprint_sha256, evidence, active
+      )
+      SELECT 'evidence-projection-scale-' || sequence::text,
+             'kb-projection-facts', 'pair-projection',
+             'source-file-projection-first',
+             'source-revision-projection-first',
+             'source-file-projection-second',
+             'source-revision-projection-second',
+             'explicit_reference',
+             md5(sequence::text) || md5(sequence::text),
+             jsonb_build_object('sourceExcerpt', 'See Second.'), true
+      FROM generate_series(1, 10001) sequence
+    `;
+    await expect(reader.readGraphDirectoryState({
+      knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages/moved"
+    })).resolves.toMatchObject({
+      records: [{
+        from: "pages/moved/renamed.md",
+        to: "pages/reference/second.md",
+        direction: "outgoing",
+        relationType: "references"
+      }]
+    });
+    await sql`
+      DELETE FROM focowiki.relation_directed_evidence
+      WHERE public_id LIKE 'evidence-projection-scale-%'
+    `;
     await expect(reader.readGraphDirectoryState({
       knowledgeBaseId: "kb-projection-facts",
       scopePath: "pages"

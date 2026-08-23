@@ -15,6 +15,10 @@ import {
   persistDocumentScopeGenerationOutput,
   reuseCompletedDocumentScopeGenerationOutput
 } from "./postgres-document-scope-generation-output.js";
+import {
+  supersedeDocumentScopeGenerationSiblings,
+  transitionFailedDocumentScopeGeneration
+} from "./postgres-document-scope-generation-failure.js";
 
 export function createPostgresDocumentScopeGenerationRepository(
   sql: DatabaseClient
@@ -72,6 +76,9 @@ export function createPostgresDocumentScopeGenerationRepository(
           SELECT scope.knowledge_base_id, 'scope', count(*),
                  min(scope.created_at), ${now}
           FROM focowiki.projection_scope_generations scope
+          JOIN focowiki.projection_publication_generations generation
+            ON generation.public_id = scope.publication_generation_public_id
+           AND generation.state IN ('planned', 'rendering', 'validating', 'ready')
           JOIN focowiki.knowledge_bases knowledge_base
             ON knowledge_base.public_id = scope.knowledge_base_id
            AND knowledge_base.deleted_at IS NULL
@@ -101,6 +108,11 @@ export function createPostgresDocumentScopeGenerationRepository(
                    ) AS knowledge_base_rank,
                    credit.last_selected_at
             FROM focowiki.projection_scope_generations scope
+            JOIN focowiki.projection_publication_generations generation
+              ON generation.public_id = scope.publication_generation_public_id
+             AND generation.state IN (
+               'planned', 'rendering', 'validating', 'ready'
+             )
             JOIN focowiki.projection_scheduler_credits credit
               ON credit.knowledge_base_id = scope.knowledge_base_id
              AND credit.lane = 'scope'
@@ -132,6 +144,9 @@ export function createPostgresDocumentScopeGenerationRepository(
             JOIN focowiki.projection_publication_generations generation
               ON generation.public_id
                    = scope.publication_generation_public_id
+             AND generation.state IN (
+               'planned', 'rendering', 'validating', 'ready'
+             )
             JOIN focowiki.knowledge_base_projection_heads head
               ON head.knowledge_base_id = scope.knowledge_base_id
             ORDER BY eligible.knowledge_base_rank,
@@ -164,12 +179,24 @@ export function createPostgresDocumentScopeGenerationRepository(
                 waiting_count = (
                   SELECT count(*)
                   FROM focowiki.projection_scope_generations scope
+                  JOIN focowiki.projection_publication_generations generation
+                    ON generation.public_id
+                         = scope.publication_generation_public_id
+                   AND generation.state IN (
+                     'planned', 'rendering', 'validating', 'ready'
+                   )
                   WHERE scope.knowledge_base_id = credit.knowledge_base_id
                     AND scope.state = 'waiting'
                 ),
                 oldest_waiting_at = (
-                  SELECT min(created_at)
+                  SELECT min(scope.created_at)
                   FROM focowiki.projection_scope_generations scope
+                  JOIN focowiki.projection_publication_generations generation
+                    ON generation.public_id
+                         = scope.publication_generation_public_id
+                   AND generation.state IN (
+                     'planned', 'rendering', 'validating', 'ready'
+                   )
                   WHERE scope.knowledge_base_id = credit.knowledge_base_id
                     AND scope.state = 'waiting'
                 )
@@ -272,9 +299,16 @@ export function createPostgresDocumentScopeGenerationRepository(
           return "superseded" as const;
         }
         if (input.recoveryAction === "quarantine") {
-          await transitionFailedScope(transaction as unknown as DatabaseClient, {
-            publicId, state: "quarantined", errorCode, now
-          });
+          await transitionFailedDocumentScopeGeneration(
+            transaction as unknown as DatabaseClient,
+            { publicId, state: "quarantined", errorCode, now }
+          );
+          await supersedeDocumentScopeGenerationSiblings(
+            transaction as unknown as DatabaseClient,
+            scope.publication_generation_public_id,
+            publicId,
+            now
+          );
           await transaction`
             UPDATE focowiki.projection_publication_generations
             SET state = 'quarantined', safe_error_code = ${errorCode},
@@ -302,9 +336,16 @@ export function createPostgresDocumentScopeGenerationRepository(
           return "quarantined" as const;
         }
         if (input.recoveryAction === "terminal") {
-          await transitionFailedScope(transaction as unknown as DatabaseClient, {
-            publicId, state: "error", errorCode, now
-          });
+          await transitionFailedDocumentScopeGeneration(
+            transaction as unknown as DatabaseClient,
+            { publicId, state: "error", errorCode, now }
+          );
+          await supersedeDocumentScopeGenerationSiblings(
+            transaction as unknown as DatabaseClient,
+            scope.publication_generation_public_id,
+            publicId,
+            now
+          );
           await transaction`
             UPDATE focowiki.projection_publication_generations
             SET state = 'quarantined', safe_error_code = ${errorCode},
@@ -314,9 +355,10 @@ export function createPostgresDocumentScopeGenerationRepository(
           `;
           return "error" as const;
         }
-        await transitionFailedScope(transaction as unknown as DatabaseClient, {
-          publicId, state: "waiting", errorCode, now
-        });
+        await transitionFailedDocumentScopeGeneration(
+          transaction as unknown as DatabaseClient,
+          { publicId, state: "waiting", errorCode, now }
+        );
         return "waiting" as const;
       });
     },
@@ -393,27 +435,6 @@ export function createPostgresDocumentScopeGenerationRepository(
       await persistDocumentScopeGenerationOutput(sql, input);
     }
   };
-}
-
-async function transitionFailedScope(
-  sql: DatabaseClient,
-  input: Readonly<{
-    publicId: string;
-    state: "waiting" | "error" | "quarantined";
-    errorCode: string;
-    now: string;
-  }>
-): Promise<void> {
-  await sql`
-    UPDATE focowiki.projection_scope_generations
-    SET state = ${input.state}, lease_owner = NULL,
-        lease_expires_at = NULL, heartbeat_at = NULL,
-        updated_at = ${input.now},
-        validation_evidence = jsonb_build_object(
-          'safeErrorCode', (${input.errorCode})::text
-        )
-    WHERE public_id = ${input.publicId}
-  `;
 }
 
 function assertSafeErrorCode(value: string): string {

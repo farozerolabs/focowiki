@@ -658,9 +658,10 @@ describe("production document scope renderer", () => {
       }));
       const renderer = createProductionDocumentScopeRenderer({
         machineProjection: {
-          async readGraphDirectoryState(request: {
+          async scanGraphDirectoryState(request: {
             includedSourceRevisionPublicIds: readonly string[];
             excludedActiveSourceFilePublicIds: readonly string[];
+            onRecords(records: readonly Record<string, unknown>[]): void;
           }) {
             expect(request.includedSourceRevisionPublicIds).toEqual([
               "revision-new"
@@ -668,8 +669,7 @@ describe("production document scope renderer", () => {
             expect(request.excludedActiveSourceFilePublicIds).toEqual([
               "source-new"
             ]);
-            return {
-              records: [documentRelationProjectionRecord({
+            const records = [documentRelationProjectionRecord({
                 fromPath: "guides/overview.md",
                 toPath: "guides/operations.md",
                 fromTitle: "Overview",
@@ -677,7 +677,10 @@ describe("production document scope renderer", () => {
                 relationType: "references",
                 evidenceKind: "markdown_link",
                 evidenceValue: { sourceExcerpt: "See Operations." }
-              })],
+              })];
+            request.onRecords(records);
+            return {
+              recordCount: records.length,
               childDirectories: [{
                 title: "advanced",
                 scopePath: "pages/guides/advanced",
@@ -745,9 +748,9 @@ describe("production document scope renderer", () => {
       const putVerified = vi.fn();
       const renderer = createProductionDocumentScopeRenderer({
         machineProjection: {
-          async readGraphDirectoryState() {
+          async scanGraphDirectoryState() {
             return {
-              records: [],
+              recordCount: 0,
               childDirectories: [],
               resourcePaths: [
                 "_graph/by-directory/guides/guides-relationships.json"

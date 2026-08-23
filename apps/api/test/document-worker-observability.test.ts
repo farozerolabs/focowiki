@@ -75,6 +75,11 @@ describe("document worker observability", () => {
       oldestAgeMs: 1_500,
       statusRegressionCount: 0
     });
+    observer.publicationRecovery({
+      generationCount: 2,
+      releasedFactCount: 8,
+      supersededScopeCount: 11
+    });
     observer.publicationScope({
       event: "completed",
       knowledgeBaseId: "kb-one",
@@ -166,6 +171,11 @@ describe("document worker observability", () => {
         dirtyFactCount: 3,
         oldestAgeMs: 1_500,
         statusRegressionCount: 0
+      }),
+      log("worker.publication_recovery", {
+        generationCount: 2,
+        releasedFactCount: 8,
+        supersededScopeCount: 11
       }),
       log("worker.publication_scope_completed", {
         knowledgeBaseId: "kb-one",

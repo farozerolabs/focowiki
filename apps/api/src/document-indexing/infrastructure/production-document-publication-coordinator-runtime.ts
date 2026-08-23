@@ -23,20 +23,27 @@ import { readGenerationFactDeltas } from
 const RENDERER_CONTRACT_VERSION = "portable-okf-v2";
 const CONTRIBUTOR_CAP = 256;
 const STRANDED_PLAN_LEASE_MILLISECONDS = 30_000;
+const REMEDIATED_QUARANTINE_RECOVERY_LIMIT = 16;
+const REMEDIATED_QUARANTINE_POLL_MILLISECONDS = 30_000;
 
 export function createProductionDocumentPublicationCoordinatorRuntime(input: {
   sql: DatabaseClient;
   idlePollMilliseconds?: number;
   observability?: Pick<DocumentWorkerObservability,
-    "publication" | "publicationBacklog">;
+    "publication" | "publicationBacklog"> & Partial<Pick<
+      DocumentWorkerObservability,
+      "publicationRecovery"
+    >>;
 }) {
   const coordinator = createPostgresDocumentPublicationCoordinator(input.sql);
   const validator = createPostgresDocumentPublicationValidator(input.sql);
+  const recovery = createPostgresDocumentPublicationRecovery(input.sql);
   const activation = createDocumentPublicationActivationCoordinator({
     activation: createPostgresDocumentPublicationActivation({ sql: input.sql }),
-    recovery: createPostgresDocumentPublicationRecovery(input.sql)
+    recovery
   });
   let nextBacklogObservationAt = 0;
+  let nextRemediatedRecoveryAt = 0;
 
   async function planOne(now: string): Promise<boolean> {
     const stranded = await coordinator.claimStrandedPlan({
@@ -154,17 +161,35 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
 
   return {
     async runOne(now = new Date().toISOString()): Promise<boolean> {
+      const nowMilliseconds = Date.parse(now);
+      const recovered = nowMilliseconds >= nextRemediatedRecoveryAt
+        ? await recovery.recoverRemediatedQuarantines({
+          recoveredAt: now,
+          limit: REMEDIATED_QUARANTINE_RECOVERY_LIMIT
+        }) : {
+          generationCount: 0,
+          releasedFactCount: 0,
+          supersededScopeCount: 0
+        };
+      if (nowMilliseconds >= nextRemediatedRecoveryAt) {
+        nextRemediatedRecoveryAt = recovered.generationCount
+          === REMEDIATED_QUARANTINE_RECOVERY_LIMIT
+          ? nowMilliseconds
+          : nowMilliseconds + REMEDIATED_QUARANTINE_POLL_MILLISECONDS;
+      }
+      if (recovered.generationCount > 0) {
+        input.observability?.publicationRecovery?.(recovered);
+      }
       const [planned, validated, activated] = await Promise.all([
         planOne(now), validateOne(now), activateOne(now)
       ]);
-      const nowMilliseconds = Date.parse(now);
       if (input.observability && nowMilliseconds >= nextBacklogObservationAt) {
         const backlogs = await readPublicationBacklogs(input.sql, now);
         backlogs.forEach((backlog) =>
           input.observability?.publicationBacklog(backlog));
         nextBacklogObservationAt = nowMilliseconds + 1_000;
       }
-      return planned || validated || activated;
+      return recovered.generationCount > 0 || planned || validated || activated;
     },
     async run(signal: AbortSignal): Promise<void> {
       while (!signal.aborted) {
@@ -190,9 +215,15 @@ async function readPublicationBacklogs(sql: DatabaseClient, now: string) {
     status_regression_count: number | string;
   }>>`
     SELECT cutover.knowledge_base_id,
-           count(DISTINCT scope.public_id) FILTER (WHERE scope.state = 'waiting')
+           count(DISTINCT scope.public_id) FILTER (
+             WHERE scope.state = 'waiting'
+               AND scope_generation.public_id IS NOT NULL
+           )
              AS waiting_scope_count,
-           count(DISTINCT scope.public_id) FILTER (WHERE scope.state = 'running')
+           count(DISTINCT scope.public_id) FILTER (
+             WHERE scope.state = 'running'
+               AND scope_generation.public_id IS NOT NULL
+           )
              AS running_scope_count,
            count(DISTINCT epoch.fact_epoch) FILTER (WHERE epoch.state = 'ready')
              AS dirty_fact_count,
@@ -200,6 +231,7 @@ async function readPublicationBacklogs(sql: DatabaseClient, now: string) {
              ${now}::timestamptz - least(
                min(scope.created_at) FILTER (
                  WHERE scope.state IN ('waiting', 'running')
+                   AND scope_generation.public_id IS NOT NULL
                ),
                min(epoch.created_at) FILTER (WHERE epoch.state = 'ready')
              )
@@ -218,6 +250,11 @@ async function readPublicationBacklogs(sql: DatabaseClient, now: string) {
     LEFT JOIN focowiki.projection_scope_generations scope
       ON scope.knowledge_base_id = cutover.knowledge_base_id
      AND scope.state IN ('waiting', 'running')
+    LEFT JOIN focowiki.projection_publication_generations scope_generation
+      ON scope_generation.public_id = scope.publication_generation_public_id
+     AND scope_generation.state IN (
+       'planned', 'rendering', 'validating', 'ready'
+     )
     LEFT JOIN focowiki.projection_fact_epochs epoch
       ON epoch.knowledge_base_id = cutover.knowledge_base_id
      AND epoch.state = 'ready'

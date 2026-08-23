@@ -11,6 +11,8 @@ import {
 } from "../src/document-indexing/domain/document-publication-identifiers.js";
 import { createPostgresDocumentPublicationRepository } from
   "../src/document-indexing/infrastructure/postgres-document-publication-repository.js";
+import { createPostgresDocumentPublicationRecovery } from
+  "../src/document-indexing/infrastructure/postgres-document-publication-recovery.js";
 import { createPostgresDocumentPublicationValidator } from
   "../src/document-indexing/infrastructure/postgres-document-publication-validator.js";
 import { createPostgresDocumentScopeGenerationRepository } from
@@ -193,6 +195,16 @@ const enabled = Boolean(databaseUrl && runOwner
 
   it("persists immutable scope input and fences concurrent output", async () => {
     const repository = createPostgresDocumentScopeGenerationRepository(database);
+    await sql`
+      UPDATE focowiki.projection_publication_generations
+      SET state = 'quarantined'
+      WHERE public_id = 'generation-3'
+    `;
+    await sql`
+      UPDATE focowiki.projection_publication_generations
+      SET state = 'rendering'
+      WHERE public_id = 'generation-2'
+    `;
     await repository.create({
       publicId: "scope-generation-1",
       publicationGenerationId: documentPublicationGenerationId("generation-2"),
@@ -299,16 +311,6 @@ const enabled = Boolean(databaseUrl && runOwner
       navigationMutations: [],
       verifiedReservations: []
     })).rejects.toMatchObject({ code: "scope_generation_lease_lost" });
-    await sql`
-      UPDATE focowiki.projection_publication_generations
-      SET state = 'quarantined'
-      WHERE public_id = 'generation-3'
-    `;
-    await sql`
-      UPDATE focowiki.projection_publication_generations
-      SET state = 'rendering'
-      WHERE public_id = 'generation-2'
-    `;
     await expect(createPostgresDocumentPublicationValidator(database).validate({
       generationPublicId: "generation-2",
       checkedAt: "2026-08-21T12:05:04.000Z"
@@ -520,6 +522,17 @@ const enabled = Boolean(databaseUrl && runOwner
         inputSnapshotFingerprintSha256: "8".repeat(64),
         createdAt: "2026-08-21T12:06:04.000Z"
       });
+      await repository.create({
+        publicId: "scope-generation-quarantine-dependent",
+        publicationGenerationId: quarantineGenerationId,
+        knowledgeBaseId: "publication-kb",
+        scopeIdentity: "root:index-quarantine",
+        scopeKind: "root",
+        scopeKey: "index",
+        scopeGeneration: documentScopeGeneration(5),
+        inputSnapshotFingerprintSha256: "9".repeat(64),
+        createdAt: "2026-08-21T12:06:04.001Z"
+      });
       const quarantineClaim = (await repository.claim({
         workerId: "scope-worker-quarantine",
         now: "2026-08-21T12:06:04.100Z",
@@ -547,11 +560,123 @@ const enabled = Boolean(databaseUrl && runOwner
         JOIN focowiki.projection_invariant_diagnostics diagnostic
           ON diagnostic.generation_public_id = generation.public_id
         WHERE generation.public_id = 'generation-7'
+        ORDER BY scope.public_id
       `).resolves.toEqual([{
         generation_state: "quarantined",
         scope_state: "quarantined",
         invariant_code: "projection_scope_page_conflict"
+      }, {
+        generation_state: "quarantined",
+        scope_state: "superseded",
+        invariant_code: "projection_scope_page_conflict"
       }]);
+    });
+
+  it("recovers remediated graph directory quarantines in bounded batches",
+    async () => {
+      const publications = createPostgresDocumentPublicationRepository(database);
+      const generationId = documentPublicationGenerationId("generation-8");
+      await publications.createGeneration(generation(
+        generationId,
+        documentPublicationGenerationId("generation-4"),
+        14
+      ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 14, 'publication-recovery-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${generationId}, 'publication-recovery-mutation',
+          'publication-job-1', 'source-1', 'revision-1', 14
+        )
+      `;
+      const scopes = createPostgresDocumentScopeGenerationRepository(database);
+      for (const [suffix, kind, key] of [
+        ["graph", "_graph", "directory:pages/library"],
+        ["root", "root", "index"]
+      ] as const) {
+        await scopes.create({
+          publicId: `scope-generation-recovery-${suffix}`,
+          publicationGenerationId: generationId,
+          knowledgeBaseId: "publication-kb",
+          scopeIdentity: `${kind}:${key}`,
+          scopeKind: kind,
+          scopeKey: key,
+          scopeGeneration: documentScopeGeneration(6),
+          inputSnapshotFingerprintSha256: suffix === "graph"
+            ? "a".repeat(64) : "b".repeat(64),
+          createdAt: "2026-08-21T12:07:00.000Z"
+        });
+      }
+      await sql`
+        UPDATE focowiki.projection_scope_generations
+        SET state = CASE WHEN scope_kind = '_graph'
+          THEN 'quarantined' ELSE 'waiting' END
+        WHERE publication_generation_public_id = ${generationId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined',
+            safe_error_code = 'graph_directory_record_limit_exceeded'
+        WHERE public_id = ${generationId}
+      `;
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+      await expect(recovery.recoverRemediatedQuarantines({
+        recoveredAt: "2026-08-21T12:07:01.000Z",
+        limit: 1
+      })).resolves.toEqual({
+        generationCount: 1,
+        releasedFactCount: 1,
+        supersededScopeCount: 2
+      });
+      await expect(sql<Array<{
+        generation_state: string;
+        fact_state: string;
+        waiting_scope_count: number | string;
+      }>>`
+        SELECT generation.state AS generation_state,
+               epoch.state AS fact_state,
+               count(scope.public_id) FILTER (
+                 WHERE scope.state = 'waiting'
+               ) AS waiting_scope_count
+        FROM focowiki.projection_publication_generations generation
+        JOIN focowiki.projection_generation_documents document
+          ON document.generation_public_id = generation.public_id
+        JOIN focowiki.projection_fact_epochs epoch
+          ON epoch.knowledge_base_id = generation.knowledge_base_id
+         AND epoch.mutation_public_id = document.mutation_public_id
+         AND epoch.fact_epoch = document.fact_epoch
+        JOIN focowiki.projection_scope_generations scope
+          ON scope.publication_generation_public_id = generation.public_id
+        WHERE generation.public_id = ${generationId}
+        GROUP BY generation.state, epoch.state
+      `).resolves.toEqual([{
+        generation_state: "obsolete",
+        fact_state: "ready",
+        waiting_scope_count: "0"
+      }]);
+      await expect(recovery.recoverRemediatedQuarantines({
+        recoveredAt: "2026-08-21T12:07:02.000Z",
+        limit: 1
+      })).resolves.toEqual({
+        generationCount: 0,
+        releasedFactCount: 0,
+        supersededScopeCount: 0
+      });
+      await expect(sql<Array<{ state: string }>>`
+        SELECT state
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = 'generation-7'
+      `).resolves.toEqual([{ state: "quarantined" }]);
     });
 });
 
