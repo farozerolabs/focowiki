@@ -8,22 +8,101 @@ import type { DocumentPageBaseSnapshot } from
 export function createDocumentPageBaseLoader(input: {
   bodies: StorageVnextImmutableBodyStore;
   maximumBytes: number;
+  cacheMaximumEntries?: number;
+  cacheMaximumBytes?: number;
 }) {
+  const cacheMaximumEntries = input.cacheMaximumEntries ?? 256;
+  const cacheMaximumBytes = input.cacheMaximumBytes ?? 32 * 1_048_576;
+  if (!Number.isSafeInteger(cacheMaximumEntries) || cacheMaximumEntries < 0
+    || cacheMaximumEntries > 10_000
+    || !Number.isSafeInteger(cacheMaximumBytes) || cacheMaximumBytes < 0
+    || cacheMaximumBytes > 256 * 1_048_576) {
+    throw loaderError("generated_page_base_cache_capacity_invalid");
+  }
+  const cache = new Map<string, {
+    snapshot: DocumentPageBaseSnapshot;
+    byteCount: number;
+  }>();
+  let cachedBytes = 0;
+  const inFlight = new Map<string, {
+    controller: AbortController;
+    promise: Promise<DocumentPageBaseSnapshot>;
+    subscribers: number;
+    settled: boolean;
+  }>();
   return async (request: {
     base: GeneratedPageBase;
     signal: AbortSignal;
   }): Promise<DocumentPageBaseSnapshot> => {
+    request.signal.throwIfAborted();
+    const key = request.base.object.objectId;
+    const cached = cache.get(key);
+    if (cached) {
+      cache.delete(key);
+      cache.set(key, cached);
+      return cached.snapshot;
+    }
+    let pending = inFlight.get(key);
+    if (!pending) {
+      const controller = new AbortController();
+      const entry = {
+        controller,
+        subscribers: 0,
+        settled: false,
+        promise: load(request.base, controller.signal)
+      };
+      pending = entry;
+      inFlight.set(key, entry);
+      void entry.promise.then((snapshot) => {
+        if (cacheMaximumEntries > 0 && cacheMaximumBytes > 0
+          && request.base.object.byteCount <= cacheMaximumBytes) {
+          const existing = cache.get(key);
+          if (existing) cachedBytes -= existing.byteCount;
+          cache.set(key, {
+            snapshot,
+            byteCount: request.base.object.byteCount
+          });
+          cachedBytes += request.base.object.byteCount;
+          while (cache.size > cacheMaximumEntries
+            || cachedBytes > cacheMaximumBytes) {
+            const oldestKey = cache.keys().next().value;
+            if (oldestKey === undefined) break;
+            const removed = cache.get(oldestKey);
+            cache.delete(oldestKey);
+            cachedBytes -= removed?.byteCount ?? 0;
+          }
+        }
+      }).finally(() => {
+        entry.settled = true;
+        if (inFlight.get(key) === entry) inFlight.delete(key);
+      }).catch(() => undefined);
+    }
+    pending.subscribers += 1;
+    try {
+      return await awaitWithSignal(pending.promise, request.signal);
+    } finally {
+      pending.subscribers -= 1;
+      if (pending.subscribers === 0 && !pending.settled) {
+        pending.controller.abort(loaderError("generated_page_base_read_aborted"));
+      }
+    }
+  };
+
+  async function load(
+    base: GeneratedPageBase,
+    signal: AbortSignal
+  ): Promise<DocumentPageBaseSnapshot> {
     const bytes = await input.bodies.readVerified({
       descriptor: {
-        objectId: request.base.object.objectId,
-        storageKey: request.base.object.storageKey,
-        checksum: request.base.object.checksumSha256,
-        byteCount: request.base.object.byteCount,
-        contentType: request.base.object.contentType,
-        objectFormat: request.base.object.objectFormat
+        objectId: base.object.objectId,
+        storageKey: base.object.storageKey,
+        checksum: base.object.checksumSha256,
+        byteCount: base.object.byteCount,
+        contentType: base.object.contentType,
+        objectFormat: base.object.objectFormat
       },
       maximumBytes: input.maximumBytes,
-      signal: request.signal
+      signal
     });
     let value: unknown;
     try {
@@ -33,8 +112,8 @@ export function createDocumentPageBaseLoader(input: {
     }
     if (!isRecord(value)
       || value.schemaVersion !== "document-page-base-v1"
-      || value.sourceFilePublicId !== request.base.sourceFilePublicId
-      || value.sourceRevisionPublicId !== request.base.sourceRevisionPublicId
+      || value.sourceFilePublicId !== base.sourceFilePublicId
+      || value.sourceRevisionPublicId !== base.sourceRevisionPublicId
       || typeof value.logicalPath !== "string"
       || typeof value.title !== "string"
       || typeof value.body !== "string"
@@ -44,7 +123,21 @@ export function createDocumentPageBaseLoader(input: {
       throw loaderError("generated_page_base_invalid");
     }
     return value as unknown as DocumentPageBaseSnapshot;
-  };
+  }
+}
+
+async function awaitWithSignal<T>(
+  promise: Promise<T>,
+  signal: AbortSignal
+): Promise<T> {
+  signal.throwIfAborted();
+  return await new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    void promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", abort);
+    });
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

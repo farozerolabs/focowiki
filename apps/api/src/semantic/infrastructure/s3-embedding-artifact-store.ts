@@ -51,7 +51,9 @@ export function createS3EmbeddingArtifactStore(input: {
         || createHash("sha256").update(request.bytes).digest("hex")
           !== request.descriptor.checksumSha256
       ) throw new Error("Embedding artifact write integrity validation failed");
-      const existing = await head(input.client, bucket, request.descriptor.storageKey);
+      const existing = await head(
+        input.client, bucket, request.descriptor.storageKey, request.signal
+      );
       if (existing) {
         assertMetadata(existing, request.descriptor);
         return "reused";
@@ -65,10 +67,11 @@ export function createS3EmbeddingArtifactStore(input: {
         Metadata: {
           "checksum-sha256": request.descriptor.checksumSha256,
           "object-format": OBJECT_FORMAT
-        },
-        ...(request.signal ? { AbortSignal: request.signal } : {})
-      }));
-      const verified = await head(input.client, bucket, request.descriptor.storageKey);
+        }
+      }), request.signal ? { abortSignal: request.signal } : undefined);
+      const verified = await head(
+        input.client, bucket, request.descriptor.storageKey, request.signal
+      );
       if (!verified) throw new Error("Embedding artifact object is unavailable after write");
       assertMetadata(verified, request.descriptor);
       return "stored";
@@ -80,15 +83,13 @@ export function createS3EmbeddingArtifactStore(input: {
         || request.maximumBytes <= 0
         || request.descriptor.byteCount > request.maximumBytes
       ) throw new Error("Embedding artifact read bound is invalid");
-      const metadata = await head(input.client, bucket, request.descriptor.storageKey);
-      if (!metadata) throw new EmbeddingArtifactObjectUnavailableError();
-      assertMetadata(metadata, request.descriptor);
       const response = await getObject(
         input.client,
         bucket,
         request.descriptor.storageKey,
         request.signal
       );
+      assertMetadata(response, request.descriptor);
       if (!response.Body || !isAsyncIterable(response.Body)) {
         throw new Error("Embedding artifact body is unavailable");
       }
@@ -123,9 +124,8 @@ export function createS3EmbeddingArtifactStore(input: {
       assertDescriptor(request.descriptor);
       await input.client.send(new DeleteObjectCommand({
         Bucket: bucket,
-        Key: request.descriptor.storageKey,
-        ...(request.signal ? { AbortSignal: request.signal } : {})
-      }));
+        Key: request.descriptor.storageKey
+      }), request.signal ? { abortSignal: request.signal } : undefined);
     }
   };
 }
@@ -139,18 +139,25 @@ async function getObject(
   try {
     return await client.send(new GetObjectCommand({
       Bucket: bucket,
-      Key: key,
-      ...(signal ? { AbortSignal: signal } : {})
-    }));
+      Key: key
+    }), signal ? { abortSignal: signal } : undefined);
   } catch (error) {
     if (isMissing(error)) throw new EmbeddingArtifactObjectUnavailableError();
     throw error;
   }
 }
 
-async function head(client: S3Client, bucket: string, key: string) {
+async function head(
+  client: S3Client,
+  bucket: string,
+  key: string,
+  signal?: AbortSignal
+) {
   try {
-    return await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return await client.send(
+      new HeadObjectCommand({ Bucket: bucket, Key: key }),
+      signal ? { abortSignal: signal } : undefined
+    );
   } catch (error) {
     if (isMissing(error)) return null;
     throw error;

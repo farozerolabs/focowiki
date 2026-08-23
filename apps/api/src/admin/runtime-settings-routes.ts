@@ -10,7 +10,8 @@ import {
   type RuntimeRateLimitSettings,
   type RuntimeSemanticSettings,
   type RuntimeSearchSettings,
-  type RuntimeSettingsSnapshot
+  type RuntimeSettingsSnapshot,
+  type RuntimeWorkerPublicSettings
 } from "../runtime-settings/types.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 
@@ -62,17 +63,21 @@ export function registerAdminRuntimeSettingsRoutes(
       writeSettingsResponse(context, async (service, body) => {
         assertExactFields(body, [
           "sourceFileConcurrency",
+          "s3Concurrency",
           "jobMaxAttempts",
           "jobRetryDelayMs",
           "completedJobRetentionDays"
         ]);
         const snapshot = await service.getSnapshot();
-        const publicWorker = body as RuntimeSettingsSnapshot["worker"];
+        const publicWorker = body as RuntimeWorkerPublicSettings;
         return service.updateWorker({
           value: {
             ...snapshot.worker,
-            ...publicWorker,
-            sourceObjectReadConcurrency: publicWorker.sourceFileConcurrency,
+            sourceFileConcurrency: publicWorker.sourceFileConcurrency,
+            sourceObjectReadConcurrency: publicWorker.s3Concurrency,
+            jobMaxAttempts: publicWorker.jobMaxAttempts,
+            jobRetryDelayMs: publicWorker.jobRetryDelayMs,
+            completedJobRetentionDays: publicWorker.completedJobRetentionDays,
             claimBatchSize: Math.max(
               snapshot.worker.claimBatchSize,
               publicWorker.sourceFileConcurrency

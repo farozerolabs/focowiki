@@ -6,6 +6,7 @@ import {
   type RuntimeConfig
 } from "../config.js";
 import {
+  DEFAULT_WORKER_S3_CONCURRENCY,
   modelApiModeValues,
   rateLimitKeys,
   type RuntimeGeneratedSettings,
@@ -21,6 +22,7 @@ import {
 } from "./types.js";
 
 const MAX_WORKER_RESOURCE_CONCURRENCY = 32;
+export const MAX_WORKER_S3_CONCURRENCY = 48;
 
 export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   reconciliationEnabled: true,
@@ -67,7 +69,7 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
     rateLimits: resolveSecurityConfig(config).rateLimits,
     worker: sanitizeWorkerSettings({
       ...worker,
-      sourceObjectReadConcurrency: worker.sourceFileConcurrency
+      sourceObjectReadConcurrency: DEFAULT_WORKER_S3_CONCURRENCY
     }),
     generated: sanitizeGeneratedSettings({
       directoryIndexMaxEntries: generated.directoryIndexMaxEntries,
@@ -250,23 +252,14 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     });
   }
 
-  for (const field of ["sourceObjectReadConcurrency"] as const) {
-    if (Number.isInteger(value[field]) && Number(value[field]) > MAX_WORKER_RESOURCE_CONCURRENCY) {
-      issues.push({
-        field,
-        message: `${field} must be less than or equal to ${MAX_WORKER_RESOURCE_CONCURRENCY}`
-      });
-    }
-    if (
-      Number.isInteger(value[field])
-      && Number.isInteger(value.sourceFileConcurrency)
-      && Number(value[field]) > Number(value.sourceFileConcurrency)
-    ) {
-      issues.push({
-        field,
-        message: `${field} must be less than or equal to sourceFileConcurrency`
-      });
-    }
+  if (
+    Number.isInteger(value.sourceObjectReadConcurrency)
+    && Number(value.sourceObjectReadConcurrency) > MAX_WORKER_S3_CONCURRENCY
+  ) {
+    issues.push({
+      field: "sourceObjectReadConcurrency",
+      message: `sourceObjectReadConcurrency must be less than or equal to ${MAX_WORKER_S3_CONCURRENCY}`
+    });
   }
 
   return issues;

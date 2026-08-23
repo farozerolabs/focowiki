@@ -472,6 +472,75 @@ const enabled = Boolean(databaseUrl && runOwner
       }]);
     });
 
+  it("durably defers an activation that reaches the hard transaction deadline",
+    async () => {
+      await seedKnowledgeBase("deadline-kb");
+      await seedReadyGeneration({
+        knowledgeBaseId: "deadline-kb",
+        generationPublicId: "deadline-generation-1",
+        baseGenerationPublicId: null,
+        targetFactEpoch: 1,
+        objectId: "deadline-object-1"
+      });
+      const activation = createPostgresDocumentPublicationActivation({
+        sql: database,
+        beforeHeadAdvance: async () => {
+          throw Object.assign(new Error("canceling statement due to statement timeout"), {
+            code: "57014"
+          });
+        }
+      });
+
+      await expect(activation.activate({
+        generationPublicId: "deadline-generation-1",
+        expectedHeadVersion: 0,
+        activatedAt: "2026-08-23T02:01:00.000Z"
+      })).rejects.toMatchObject({
+        code: "publication_activation_deadline_deferred"
+      });
+      await expect(sql<Array<{
+        state: string;
+        safe_error_code: string | null;
+        activation_next_eligible_at: Date | null;
+      }>>`
+        SELECT state, safe_error_code, activation_next_eligible_at
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = 'deadline-generation-1'
+      `).resolves.toEqual([{
+        state: "ready",
+        safe_error_code: "publication_activation_deadline_exceeded",
+        activation_next_eligible_at: expect.any(Date)
+      }]);
+    });
+
+  it("lets PostgreSQL terminate a genuinely overlong activation transaction",
+    async () => {
+      await seedKnowledgeBase("real-deadline-kb");
+      await seedReadyGeneration({
+        knowledgeBaseId: "real-deadline-kb",
+        generationPublicId: "real-deadline-generation-1",
+        baseGenerationPublicId: null,
+        targetFactEpoch: 1,
+        objectId: "real-deadline-object-1"
+      });
+      const activation = createPostgresDocumentPublicationActivation({
+        sql: database,
+        activationTimeoutMs: 50,
+        beforeHeadAdvance: async ({ transaction }) => {
+          await transaction`SELECT pg_sleep(0.15)`;
+        }
+      });
+
+      await expect(activation.activate({
+        generationPublicId: "real-deadline-generation-1",
+        expectedHeadVersion: 0,
+        activatedAt: "2026-08-23T02:02:00.000Z"
+      })).rejects.toMatchObject({
+        code: "publication_activation_deadline_deferred"
+      });
+      await expect(readVisible("real-deadline-kb")).resolves.toEqual([]);
+    });
+
   it("activates disjoint knowledge bases concurrently", async () => {
     await Promise.all(["quiet-a", "quiet-b"].map(async (knowledgeBaseId) => {
       await seedKnowledgeBase(knowledgeBaseId);

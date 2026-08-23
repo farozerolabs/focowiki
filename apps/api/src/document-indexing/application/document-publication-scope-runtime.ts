@@ -47,7 +47,7 @@ export function createDocumentPublicationScopeRuntime(input: {
   }>): Promise<void>;
   now(): string;
   wait(milliseconds: number, signal: AbortSignal): Promise<void>;
-  classifyError(error: unknown): {
+  classifyError(error: unknown, claim: ScopeClaim): {
     code: string;
     recoveryAction: DocumentPublicationRecoveryDecision["action"];
   };
@@ -91,7 +91,7 @@ export function createDocumentPublicationScopeRuntime(input: {
       });
     } catch (error) {
       if (signal.aborted) return;
-      const classification = input.classifyError(error);
+      const classification = input.classifyError(error, claim);
       await input.repository.fail({
         publicId: claim.publicId,
         workerId: input.workerId,

@@ -134,7 +134,13 @@ describe("runtime settings service", () => {
     expect(snapshot).not.toHaveProperty("uploadGeneration");
     expect(snapshot.worker).toMatchObject({
       sourceFileConcurrency: 2,
-      sourceObjectReadConcurrency: 2
+      sourceObjectReadConcurrency: 40
+    });
+    await expect(service.getPublicSnapshot()).resolves.toMatchObject({
+      worker: {
+        sourceFileConcurrency: 2,
+        s3Concurrency: 40
+      }
     });
     expect(snapshot.generated).toMatchObject({
       directoryIndexMaxEntries: 200,
@@ -374,7 +380,7 @@ describe("runtime settings service", () => {
 
     expect(snapshot.worker).toMatchObject({
       sourceFileConcurrency: 3,
-      sourceObjectReadConcurrency: 2
+      sourceObjectReadConcurrency: 40
     });
     expect(snapshot.generated).toMatchObject({
       directoryIndexMaxBytes: 65_536
@@ -438,7 +444,7 @@ describe("runtime settings service", () => {
     expect((await service.getSnapshot()).maintenance).toEqual(updated.maintenance);
   });
 
-  it("rejects resource budgets that exceed their owning role or I/O bounds", async () => {
+  it("rejects resource budgets that exceed their independent I/O bounds", async () => {
     const service = createRuntimeSettingsService({
       config: createConfig({ modelEnabled: false }),
       repository: new MemoryRuntimeSettingsRepository(),
@@ -451,7 +457,7 @@ describe("runtime settings service", () => {
     await expect(service.updateWorker({
       value: {
         ...snapshot.worker,
-        sourceObjectReadConcurrency: snapshot.worker.sourceFileConcurrency + 1
+        sourceObjectReadConcurrency: 49
       }
     })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
     await expect(service.updateGenerated({
@@ -498,7 +504,7 @@ describe("runtime settings service", () => {
       value: {
         ...minimum.worker,
         sourceFileConcurrency: 32,
-        sourceObjectReadConcurrency: 32,
+        sourceObjectReadConcurrency: 48,
         claimBatchSize: 32
       }
     });
@@ -518,7 +524,7 @@ describe("runtime settings service", () => {
       }
     });
 
-    expect(maximumMaintenance.worker.sourceObjectReadConcurrency).toBe(32);
+    expect(maximumMaintenance.worker.sourceObjectReadConcurrency).toBe(48);
     expect(maximumMaintenance.generated.directoryIndexMaxEntries).toBe(10_000);
     expect(maximumMaintenance.maintenance.hardDeleteConcurrency).toBe(16);
     expect(maximumMaintenance.maintenance.hardDeleteDatabaseBatchSize).toBe(10_000);
@@ -1375,6 +1381,13 @@ const runtimeSettingFieldCases: readonly RuntimeSettingFieldCase[] = [
     route: "worker",
     path: ["sourceFileConcurrency"],
     value: 1
+  },
+  {
+    id: "worker.s3Concurrency",
+    section: "worker",
+    route: "worker",
+    path: ["s3Concurrency"],
+    value: 3
   },
   { id: "worker.jobMaxAttempts", section: "worker", route: "worker", path: ["jobMaxAttempts"], value: 4 },
   { id: "worker.jobRetryDelayMs", section: "worker", route: "worker", path: ["jobRetryDelayMs"], value: 30_001 },

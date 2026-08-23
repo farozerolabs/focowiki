@@ -26,11 +26,12 @@ These limits apply inside Focowiki. Configure compatible limits at the reverse p
 | Setting | Purpose | Default or starting value |
 | --- | --- | --- |
 | Document concurrency | Maximum document jobs processed at the same time. Model, GraphRAG, embedding, storage, database, and search limits can reduce effective concurrency. | `2`; increase gradually after measuring. Maximum `32`. |
+| S3 concurrency | Maximum concurrent S3-compatible object operations used by document processing and generated knowledge-base updates. Configure it independently from document concurrency. | Default `40`. Lower it if storage latency or throttling rises. Maximum `48`. |
 | Processing maximum attempts | Attempts allowed before a file remains failed. | `3` |
 | Processing retry delay milliseconds | Delay before retrying a temporary failure. | `30000` |
 | Completed record retention days | Days to keep completed processing records. | `7` |
 
-Lower document concurrency first when CPU, database latency, provider latency, or storage latency rises during large imports.
+Lower document concurrency when CPU, database latency, or model-provider latency rises during large imports. Lower S3 concurrency when object-storage latency or throttling rises.
 
 ## Generated Knowledge Base
 

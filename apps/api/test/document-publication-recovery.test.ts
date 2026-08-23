@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { decideDocumentPublicationRecovery } from
+import {
+  decideDocumentPublicationRecovery,
+  limitDocumentPublicationRecovery
+} from
   "../src/document-indexing/application/document-publication-recovery.js";
 
 describe("document publication recovery", () => {
@@ -20,5 +23,15 @@ describe("document publication recovery", () => {
       action,
       consumesBusinessAttempt: recoveryClass === "permanent_input"
     });
+  });
+
+  it("quarantines a provider-stalled scope after three bounded attempts", () => {
+    const decision = decideDocumentPublicationRecovery("provider_unavailable");
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 1 }))
+      .toBe("retry_provider");
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 2 }))
+      .toBe("retry_provider");
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 3 }))
+      .toBe("quarantine");
   });
 });

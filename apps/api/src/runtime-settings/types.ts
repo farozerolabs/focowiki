@@ -1,5 +1,7 @@
 import type { RateLimitConfig, RuntimeSecurityConfig } from "../config.js";
 
+export const DEFAULT_WORKER_S3_CONCURRENCY = 40;
+
 export type RuntimeSettingKey =
   | "rate_limits"
   | "worker"
@@ -14,12 +16,13 @@ export type ModelApiMode = "responses" | "chat_completions";
 export type RuntimeRateLimitSettings = RuntimeSecurityConfig["rateLimits"];
 export type RuntimeWorkerPublicSettings = {
   sourceFileConcurrency: number;
+  s3Concurrency: number;
   jobMaxAttempts: number;
   jobRetryDelayMs: number;
   completedJobRetentionDays: number;
 };
 
-export type RuntimeWorkerSettings = RuntimeWorkerPublicSettings & {
+export type RuntimeWorkerSettings = Omit<RuntimeWorkerPublicSettings, "s3Concurrency"> & {
   sourceObjectReadConcurrency: number;
   claimBatchSize: number;
   pollIntervalMs: number;

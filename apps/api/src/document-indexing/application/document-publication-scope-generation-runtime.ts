@@ -1,6 +1,8 @@
 import type { DocumentLeaseGeneration } from
   "../domain/document-publication-identifiers.js";
 
+export const DOCUMENT_PUBLICATION_SCOPE_EXECUTION_TIMEOUT_MS = 180_000;
+
 export type DocumentPublicationImmutableScopeSnapshot = Readonly<{
   publicId: string;
   publicationGenerationPublicId: string;
@@ -79,6 +81,7 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
   };
   heartbeatIntervalMs?: number;
   leaseDurationMs?: number;
+  maximumExecutionMs?: number;
   now?: () => string;
   render(
     snapshot: DocumentPublicationImmutableScopeSnapshot,
@@ -90,7 +93,18 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
     objectReuseCount: number;
     putByteCount: number;
   }>): void;
+  onStage?(input: Readonly<{
+    snapshot: DocumentPublicationImmutableScopeSnapshot | null;
+    scopeGenerationPublicId: string;
+    stage: "snapshot_load" | "render" | "database_persist";
+    outcome: "completed" | "failed";
+    durationMs: number;
+    errorCode: string | null;
+  }>): void;
 }) {
+  const maximumExecutionMs = boundedExecutionMs(
+    input.maximumExecutionMs ?? DOCUMENT_PUBLICATION_SCOPE_EXECUTION_TIMEOUT_MS
+  );
   return {
     async execute(request: Readonly<{
       claim: Readonly<{
@@ -104,6 +118,10 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
       const controller = new AbortController();
       const abort = () => controller.abort(request.signal.reason);
       request.signal.addEventListener("abort", abort, { once: true });
+      const deadline = setTimeout(() => {
+        controller.abort(runtimeError("scope_generation_deadline_exceeded"));
+      }, maximumExecutionMs);
+      deadline.unref?.();
       const heartbeat = async () => {
         if (!input.leases) return;
         const renewed = await input.leases.heartbeat({
@@ -129,19 +147,40 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
           }), input.heartbeatIntervalMs ?? 10_000);
           timer.unref?.();
         }
-        const snapshot = await input.snapshots.readScope(request.claim.publicId);
+        const snapshot = await observeStage({
+          input,
+          snapshot: null,
+          scopeGenerationPublicId: request.claim.publicId,
+          stage: "snapshot_load",
+          signal: controller.signal,
+          operation: () => input.snapshots.readScope(request.claim.publicId)
+        });
         if (snapshot.publicId !== request.claim.publicId) {
           throw runtimeError("scope_generation_snapshot_identity_mismatch");
         }
-        const rendered = await input.render(snapshot, controller.signal);
+        const rendered = await observeStage({
+          input,
+          snapshot,
+          scopeGenerationPublicId: request.claim.publicId,
+          stage: "render",
+          signal: controller.signal,
+          operation: () => input.render(snapshot, controller.signal)
+        });
         await heartbeat();
         controller.signal.throwIfAborted();
-        await input.outputs.persistOutput({
+        await observeStage({
+          input,
+          snapshot,
           scopeGenerationPublicId: request.claim.publicId,
-          workerId: request.workerId,
-          leaseGeneration: request.claim.leaseGeneration,
-          checkedAt: input.now?.() ?? request.checkedAt,
-          ...rendered
+          stage: "database_persist",
+          signal: controller.signal,
+          operation: () => input.outputs.persistOutput({
+            scopeGenerationPublicId: request.claim.publicId,
+            workerId: request.workerId,
+            leaseGeneration: request.claim.leaseGeneration,
+            checkedAt: input.now?.() ?? request.checkedAt,
+            ...rendered
+          })
         });
         const putPages = rendered.pages.filter((page) => page.action === "put");
         const objectPutCount = rendered.verifiedReservations.length;
@@ -156,10 +195,72 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
         });
       } finally {
         if (timer) clearInterval(timer);
+        clearTimeout(deadline);
         request.signal.removeEventListener("abort", abort);
       }
     }
   };
+}
+
+async function observeStage<T>(request: {
+  input: Parameters<typeof createDocumentPublicationScopeGenerationExecutor>[0];
+  snapshot: DocumentPublicationImmutableScopeSnapshot | null;
+  scopeGenerationPublicId: string;
+  stage: "snapshot_load" | "render" | "database_persist";
+  signal: AbortSignal;
+  operation(): Promise<T>;
+}): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    const result = await raceWithSignal(request.operation(), request.signal);
+    request.input.onStage?.({
+      snapshot: request.snapshot,
+      scopeGenerationPublicId: request.scopeGenerationPublicId,
+      stage: request.stage,
+      outcome: "completed",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      errorCode: null
+    });
+    return result;
+  } catch (error) {
+    request.input.onStage?.({
+      snapshot: request.snapshot,
+      scopeGenerationPublicId: request.scopeGenerationPublicId,
+      stage: request.stage,
+      outcome: "failed",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      errorCode: safeCode(error)
+    });
+    throw error;
+  }
+}
+
+async function raceWithSignal<T>(
+  operation: Promise<T>,
+  signal: AbortSignal
+): Promise<T> {
+  signal.throwIfAborted();
+  return await new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    void operation.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", abort);
+    });
+  });
+}
+
+function safeCode(error: unknown): string {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? error.code : null;
+  return typeof code === "string" && /^[A-Za-z0-9_]{1,128}$/u.test(code)
+    ? code : "DOCUMENT_PROCESSING_FAILED";
+}
+
+function boundedExecutionMs(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 1_800_000) {
+    throw runtimeError("scope_generation_deadline_invalid");
+  }
+  return value;
 }
 
 function runtimeError(code: string): Error & { code: string } {

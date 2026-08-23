@@ -191,6 +191,7 @@ export const resources = {
           },
           worker: {
             sourceFileConcurrency: "Base concurrency for source reads and worker admission. Fixed stages overlap, so the total processing document count can be higher; generation, GraphRAG, embedding, and search use their own limits. Recommended: 8 to 16 on an 8C/32G server after measuring dependency latency.",
+            s3Concurrency: "Maximum concurrent S3-compatible storage requests used by document processing and generated-content publication. Default: 40. Lower it if the storage service reports increased latency or throttling. Maximum: 48.",
             jobMaxAttempts: "Maximum attempts before a job moves to dead letter. Recommended: 3.",
             jobRetryDelayMs: "Delay before retrying a failed job. Recommended: 30000 to 120000 ms.",
             completedJobRetentionDays: "Days to keep completed job records. Recommended: 7 to 30."
@@ -283,6 +284,7 @@ export const resources = {
           max: "Max requests",
           windowSeconds: "Window seconds",
           sourceFileConcurrency: "Source file concurrency",
+          s3Concurrency: "S3 concurrency",
           jobMaxAttempts: "Job max attempts",
           jobRetryDelayMs: "Job retry delay ms",
           completedJobRetentionDays: "Completed retention days",
@@ -1171,6 +1173,7 @@ export const resources = {
           },
           worker: {
             sourceFileConcurrency: "来源读取与 Worker 接纳的基础并发。固定阶段会重叠执行，因此处理中总文档数可能更高；生成模型、GraphRAG、嵌入和搜索分别使用各自的并发上限。完成依赖延迟评估后，8C/32G 服务器推荐 8 到 16。",
+            s3Concurrency: "文档处理和生成内容发布使用的 S3 兼容存储最大并发请求数。默认值 40；如果存储服务延迟升高或发生限流，请降低该值。最大值 48。",
             jobMaxAttempts: "任务进入死信前的最大尝试次数。推荐 3 次。",
             jobRetryDelayMs: "失败任务再次重试前的等待时间。推荐 30000 到 120000 毫秒。",
             completedJobRetentionDays: "完成任务记录保留天数。推荐 7 到 30 天。"
@@ -1263,6 +1266,7 @@ export const resources = {
           max: "最大请求数",
           windowSeconds: "窗口秒数",
           sourceFileConcurrency: "来源文件并发",
+          s3Concurrency: "S3 并发",
           jobMaxAttempts: "任务最大尝试次数",
           jobRetryDelayMs: "任务重试延迟毫秒",
           completedJobRetentionDays: "完成任务保留天数",

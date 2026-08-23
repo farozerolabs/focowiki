@@ -1,4 +1,5 @@
 import { S3Client } from "@aws-sdk/client-s3";
+import { createHash } from "node:crypto";
 import type { RuntimeConfig } from "../../config.js";
 import type { DatabaseClient } from "../../db/client.js";
 import type { createNodeJiebaTokenizer } from
@@ -52,14 +53,26 @@ export function createProductionDocumentFixedResources(input: {
   resourceCapacity: DocumentResourceCapacityInput;
   tokenizer: ReturnType<typeof createNodeJiebaTokenizer>;
   searchProvider: ReturnType<typeof createRuntimeSearchProvider>;
-  observability?: Pick<DocumentWorkerObservability, "providerFailure">;
+  observability?: Pick<DocumentWorkerObservability,
+    "providerFailure" | "storageRequest">;
 }) {
   const s3 = new S3Client(createS3ClientConfig(input.config.storage));
   const ownership = createPostgresStorageVnextOwnershipRepository(input.sql);
   const bodies = createS3StorageVnextImmutableBodyStore({
     client: s3,
     bucket: input.config.storage.bucket,
-    prefix: input.config.storage.prefix
+    prefix: input.config.storage.prefix,
+    onRequest(event) {
+      if (event.outcome === "completed" && event.durationMs < 1_000) return;
+      input.observability?.storageRequest({
+        operation: event.operation,
+        safeObjectKeyHash: createHash("sha256")
+          .update(event.storageKey).digest("hex"),
+        durationMs: event.durationMs,
+        outcome: event.outcome,
+        errorCode: event.errorCode
+      });
+    }
   });
   const writer = createStorageVnextImmutableObjectWriter({
     registrations: ownership,
