@@ -280,11 +280,7 @@ export function createPostgresDocumentMachineProjectionReader(
             OR (record.active AND record.source_file_public_id
                  <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
         ORDER BY record.normalized_path COLLATE "C"
-        LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
       `;
-      if (rows.length > MAXIMUM_DIRECTORY_RECORDS) {
-        throw projectionReaderError("document_directory_record_limit_exceeded");
-      }
       const relationshipState = await graphProjection
         .readPerFileGraphDirectoryState({
           knowledgeBaseId: input.knowledgeBaseId,
@@ -295,7 +291,12 @@ export function createPostgresDocumentMachineProjectionReader(
       const relationshipPagePaths = new Set(
         relationshipState.relationshipPagePaths);
       const descendantRows = await sql<Array<{ directory_path: string }>>`
-        SELECT DISTINCT membership.directory_path COLLATE "C" AS directory_path
+        SELECT DISTINCT (
+          ${input.scopePath} || '/' || split_part(
+            substring(membership.directory_path
+              from char_length(${input.scopePath}) + 2), '/', 1
+          )
+        ) COLLATE "C" AS directory_path
         FROM focowiki.document_semantic_directory_memberships membership
         JOIN focowiki.document_projection_records record
           ON record.knowledge_base_id = membership.knowledge_base_id
@@ -308,11 +309,7 @@ export function createPostgresDocumentMachineProjectionReader(
             OR (record.active AND record.source_file_public_id
                  <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
         ORDER BY directory_path
-        LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
       `;
-      if (descendantRows.length > MAXIMUM_DIRECTORY_RECORDS) {
-        throw projectionReaderError("document_directory_child_limit_exceeded");
-      }
       const machineDirectory = portableIndexDirectoryPath(input.scopePath);
       const headRows = await sql<Array<{ logical_path: string }>>`
         SELECT logical_path
@@ -320,31 +317,23 @@ export function createPostgresDocumentMachineProjectionReader(
         WHERE knowledge_base_id = ${input.knowledgeBaseId}
           AND left(normalized_path, char_length(${machineDirectory}) + 1)
             = ${`${machineDirectory}/`}
+          AND position('/' in substring(normalized_path
+                from char_length(${machineDirectory}) + 2)) = 0
           AND right(normalized_path, 5) = '.json'
         ORDER BY normalized_path COLLATE "C"
-        LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
       `;
-      if (headRows.length > MAXIMUM_DIRECTORY_RECORDS) {
-        throw projectionReaderError("document_directory_part_limit_exceeded");
-      }
-      const childScopes = [...new Set(descendantRows.flatMap((row) => {
-        const relative = row.directory_path.slice(input.scopePath.length + 1);
-        const child = relative.split("/")[0];
-        return child ? [`${input.scopePath}/${child}`] : [];
-      }))].sort();
       return {
         records: rows.map((row) => documentRecord({
           ...row,
           relationship_count: relationshipPagePaths.has(row.page_path) ? 1 : 0
         })),
-        childDirectories: childScopes.map((scopePath) => ({
+        childDirectories: descendantRows.map(({ directory_path: scopePath }) => ({
           title: posix.basename(scopePath),
           scopePath,
           path: `${portableIndexDirectoryPath(scopePath)}/index.json`
         })),
         resourcePaths: headRows.map((row) => row.logical_path).filter((path) =>
-          posix.dirname(path) === machineDirectory
-          && posix.basename(path) !== "index.json")
+          posix.basename(path) !== "index.json")
       };
     },
 
