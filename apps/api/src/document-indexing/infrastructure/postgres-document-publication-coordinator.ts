@@ -381,8 +381,7 @@ export function createPostgresDocumentPublicationCoordinator(
           INSERT INTO focowiki.projection_scope_generations (
             public_id, publication_generation_public_id, knowledge_base_id,
             scope_identity, scope_kind, scope_key, scope_generation,
-            input_snapshot_fingerprint_sha256, next_eligible_at,
-            created_at, updated_at
+            input_snapshot_fingerprint_sha256, next_eligible_at, created_at, updated_at
           )
           SELECT public_id, publication_generation_public_id,
                  knowledge_base_id, scope_identity, scope_kind, scope_key,
