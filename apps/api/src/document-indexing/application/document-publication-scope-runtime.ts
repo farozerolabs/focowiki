@@ -66,7 +66,9 @@ export function createDocumentPublicationScopeRuntime(input: {
   }>): void;
   onRecovered?(input: Readonly<{ count: number }>): void;
 }) {
-  let maximumConcurrency = positiveCapacity(input.maximumConcurrency);
+  let configuredMaximumConcurrency = positiveCapacity(input.maximumConcurrency);
+  let effectiveMaximumConcurrency = configuredMaximumConcurrency;
+  let recoverySuccessCount = 0;
   const active = new Set<Promise<void>>();
 
   function launch(claim: ScopeClaim, signal: AbortSignal): void {
@@ -89,9 +91,22 @@ export function createDocumentPublicationScopeRuntime(input: {
         claim,
         durationMs: Math.max(0, Date.now() - startedAt)
       });
+      recoverySuccessCount += 1;
+      if (effectiveMaximumConcurrency < configuredMaximumConcurrency
+        && recoverySuccessCount >= effectiveMaximumConcurrency * 4) {
+        effectiveMaximumConcurrency += 1;
+        recoverySuccessCount = 0;
+      }
     } catch (error) {
       if (signal.aborted) return;
       const classification = input.classifyError(error, claim);
+      if (classification.recoveryAction === "retry_infrastructure") {
+        effectiveMaximumConcurrency = Math.max(
+          1,
+          Math.floor(effectiveMaximumConcurrency / 2)
+        );
+        recoverySuccessCount = 0;
+      }
       await input.repository.fail({
         publicId: claim.publicId,
         workerId: input.workerId,
@@ -107,7 +122,9 @@ export function createDocumentPublicationScopeRuntime(input: {
   return {
     activeCount: () => active.size,
     updateMaximumConcurrency(value: number): void {
-      maximumConcurrency = positiveCapacity(value);
+      configuredMaximumConcurrency = positiveCapacity(value);
+      effectiveMaximumConcurrency = configuredMaximumConcurrency;
+      recoverySuccessCount = 0;
     },
     async run(signal: AbortSignal): Promise<void> {
       let nextRecoveryAt = 0;
@@ -116,13 +133,13 @@ export function createDocumentPublicationScopeRuntime(input: {
         if (now >= nextRecoveryAt) {
           const recovered = await input.repository.recoverExpired({
             now: input.now(),
-            limit: Math.max(maximumConcurrency * 4, 16)
+            limit: Math.max(effectiveMaximumConcurrency * 4, 16)
           });
           if (recovered > 0) input.onRecovered?.({ count: recovered });
           nextRecoveryAt = now
             + (input.recoveryIntervalMilliseconds ?? 5_000);
         }
-        const capacity = maximumConcurrency - active.size;
+        const capacity = effectiveMaximumConcurrency - active.size;
         if (capacity > 0) {
           const claims = await input.repository.claim({
             workerId: input.workerId,

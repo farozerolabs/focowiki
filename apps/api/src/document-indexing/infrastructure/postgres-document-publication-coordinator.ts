@@ -381,12 +381,12 @@ export function createPostgresDocumentPublicationCoordinator(
           INSERT INTO focowiki.projection_scope_generations (
             public_id, publication_generation_public_id, knowledge_base_id,
             scope_identity, scope_kind, scope_key, scope_generation,
-            input_snapshot_fingerprint_sha256, created_at, updated_at
+            input_snapshot_fingerprint_sha256, next_eligible_at, created_at, updated_at
           )
           SELECT public_id, publication_generation_public_id,
                  knowledge_base_id, scope_identity, scope_kind, scope_key,
                  scope_generation, input_snapshot_fingerprint_sha256,
-                 created_at, created_at
+                 created_at, created_at, created_at
           FROM jsonb_to_recordset(${transaction.json(records as never)}::jsonb)
             AS desired(
               public_id text, publication_generation_public_id text,

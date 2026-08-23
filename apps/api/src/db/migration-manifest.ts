@@ -61,6 +61,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v15-projection-legacy-cleanup-gate",
     targetGeneration: "storage-vnext-v16-projection-navigation-capacity",
     safety: "compatible"
+  },
+  {
+    fileName: "009_projection_resource_recovery.sql",
+    sourceGeneration: "storage-vnext-v16-projection-navigation-capacity",
+    targetGeneration: "storage-vnext-v17-projection-resource-recovery",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

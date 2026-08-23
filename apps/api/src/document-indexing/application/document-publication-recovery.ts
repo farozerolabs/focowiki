@@ -1,9 +1,10 @@
 export type DocumentPublicationRecoveryDecision = Readonly<{
   recoveryClass: "permanent_input" | "invariant" | "supersession"
-    | "contention" | "lease_loss" | "provider_transient" | "cleanup_debt";
+    | "contention" | "lease_loss" | "database_resource"
+    | "provider_transient" | "cleanup_debt";
   action: "terminal" | "quarantine" | "recompute_scope"
     | "defer_activation" | "inspect_or_reclaim" | "retry_provider"
-    | "retry_cleanup";
+    | "retry_infrastructure" | "retry_cleanup";
   consumesBusinessAttempt: boolean;
 }>;
 
@@ -41,6 +42,8 @@ const CLEANUP_DEBT = new Set([
   "projection_cleanup_retry_exhausted"
 ]);
 
+const DATABASE_RESOURCE_SQLSTATE = /^53[0-9]{3}$/u;
+
 export function decideDocumentPublicationRecovery(
   code: string
 ): DocumentPublicationRecoveryDecision {
@@ -61,6 +64,9 @@ export function decideDocumentPublicationRecovery(
   );
   if (CLEANUP_DEBT.has(code)) return decision(
     "cleanup_debt", "retry_cleanup", false
+  );
+  if (DATABASE_RESOURCE_SQLSTATE.test(code)) return decision(
+    "database_resource", "retry_infrastructure", false
   );
   return decision("provider_transient", "retry_provider", false);
 }

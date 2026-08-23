@@ -19,6 +19,10 @@ import {
   supersedeDocumentScopeGenerationSiblings,
   transitionFailedDocumentScopeGeneration
 } from "./postgres-document-scope-generation-failure.js";
+import {
+  recomputeDocumentScopeGeneration,
+  recoverDocumentScopeGenerationResourceFailure
+} from "./postgres-document-scope-generation-resource-recovery.js";
 
 export function createPostgresDocumentScopeGenerationRepository(
   sql: DatabaseClient
@@ -29,7 +33,8 @@ export function createPostgresDocumentScopeGenerationRepository(
         INSERT INTO focowiki.projection_scope_generations (
           public_id, publication_generation_public_id, knowledge_base_id,
           scope_identity, scope_kind, scope_key, scope_generation,
-          input_snapshot_fingerprint_sha256, created_at, updated_at
+          input_snapshot_fingerprint_sha256, next_eligible_at,
+          created_at, updated_at
         ) VALUES (
           ${assertRepositoryIdentity(input.publicId, "public_id")},
           ${input.publicationGenerationId},
@@ -39,8 +44,8 @@ export function createPostgresDocumentScopeGenerationRepository(
           ${assertRepositorySha256(
             input.inputSnapshotFingerprintSha256,
             "input_snapshot_fingerprint"
-          )},
-          ${assertRepositoryTimestamp(input.createdAt, "created_at")},
+          )}, ${assertRepositoryTimestamp(input.createdAt, "created_at")},
+          ${input.createdAt},
           ${input.createdAt}
         )
         ON CONFLICT (public_id) DO UPDATE SET public_id = excluded.public_id
@@ -83,6 +88,7 @@ export function createPostgresDocumentScopeGenerationRepository(
             ON knowledge_base.public_id = scope.knowledge_base_id
            AND knowledge_base.deleted_at IS NULL
           WHERE scope.state = 'waiting'
+            AND scope.next_eligible_at <= ${now}
           GROUP BY scope.knowledge_base_id
           ON CONFLICT (knowledge_base_id, lane) DO UPDATE
           SET waiting_count = excluded.waiting_count,
@@ -122,6 +128,7 @@ export function createPostgresDocumentScopeGenerationRepository(
             LEFT JOIN focowiki.projection_cutover_states cutover
               ON cutover.knowledge_base_id = scope.knowledge_base_id
             WHERE scope.state = 'waiting'
+              AND scope.next_eligible_at <= ${now}
               AND (cutover.knowledge_base_id IS NULL
                 OR cutover.writer_mode = 'coherent')
               AND NOT EXISTS (
@@ -152,7 +159,8 @@ export function createPostgresDocumentScopeGenerationRepository(
             ORDER BY eligible.knowledge_base_rank,
                      eligible.last_selected_at NULLS FIRST,
                      eligible.knowledge_base_id COLLATE "C",
-                     scope.created_at, scope.public_id COLLATE "C"
+                     scope.next_eligible_at, scope.created_at,
+                     scope.public_id COLLATE "C"
             FOR UPDATE OF scope SKIP LOCKED
             LIMIT ${assertRepositoryPositiveInteger(input.limit, "limit", 256)}
           )
@@ -256,9 +264,10 @@ export function createPostgresDocumentScopeGenerationRepository(
           publication_generation_public_id: string;
           knowledge_base_id: string;
           scope_identity: string;
+          resource_failure_started_at: Date | string | null;
         }>>`
           SELECT publication_generation_public_id, knowledge_base_id,
-                 scope_identity
+                 scope_identity, resource_failure_started_at
           FROM focowiki.projection_scope_generations
           WHERE public_id = ${publicId}
             AND state = 'running'
@@ -268,34 +277,29 @@ export function createPostgresDocumentScopeGenerationRepository(
         `;
         const scope = rows[0];
         if (!scope) return null;
+        if (input.recoveryAction === "retry_infrastructure") {
+          return recoverDocumentScopeGenerationResourceFailure(
+            transaction as unknown as DatabaseClient,
+            {
+              publicId,
+              generationPublicId: scope.publication_generation_public_id,
+              knowledgeBaseId: scope.knowledge_base_id,
+              resourceFailureStartedAt: scope.resource_failure_started_at,
+              errorCode,
+              now
+            }
+          );
+        }
         if (input.recoveryAction === "recompute_scope") {
-          await transaction`
-            UPDATE focowiki.projection_scope_generations
-            SET state = 'superseded', lease_owner = NULL,
-                lease_expires_at = NULL, heartbeat_at = NULL,
-                updated_at = ${now}
-            WHERE publication_generation_public_id
-                    = ${scope.publication_generation_public_id}
-              AND state IN ('waiting', 'running', 'error')
-          `;
-          await transaction`
-            UPDATE focowiki.projection_fact_epochs epoch
-            SET state = 'ready'
-            FROM focowiki.projection_generation_documents document
-            WHERE document.generation_public_id
-                    = ${scope.publication_generation_public_id}
-              AND epoch.knowledge_base_id = ${scope.knowledge_base_id}
-              AND epoch.mutation_public_id = document.mutation_public_id
-              AND epoch.fact_epoch = document.fact_epoch
-              AND epoch.state = 'included'
-          `;
-          await transaction`
-            UPDATE focowiki.projection_publication_generations
-            SET state = 'obsolete', safe_error_code = ${errorCode},
-                completed_at = ${now}, updated_at = ${now}
-            WHERE public_id = ${scope.publication_generation_public_id}
-              AND state IN ('planned', 'rendering', 'validating', 'ready')
-          `;
+          await recomputeDocumentScopeGeneration(
+            transaction as unknown as DatabaseClient,
+            {
+              generationPublicId: scope.publication_generation_public_id,
+              knowledgeBaseId: scope.knowledge_base_id,
+              errorCode,
+              now
+            }
+          );
           return "superseded" as const;
         }
         if (input.recoveryAction === "quarantine") {
@@ -376,7 +380,7 @@ export function createPostgresDocumentScopeGenerationRepository(
         )
         UPDATE focowiki.projection_scope_generations scope
         SET state = 'waiting', lease_owner = NULL, lease_expires_at = NULL,
-            heartbeat_at = NULL, updated_at = ${now}
+            heartbeat_at = NULL, next_eligible_at = ${now}, updated_at = ${now}
         FROM expired
         WHERE scope.public_id = expired.public_id
         RETURNING scope.public_id

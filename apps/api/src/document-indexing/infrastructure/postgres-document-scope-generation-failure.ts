@@ -13,7 +13,9 @@ export async function transitionFailedDocumentScopeGeneration(
     UPDATE focowiki.projection_scope_generations
     SET state = ${input.state}, lease_owner = NULL,
         lease_expires_at = NULL, heartbeat_at = NULL,
-        updated_at = ${input.now},
+        next_eligible_at = ${input.now},
+        resource_failure_started_at = NULL,
+        resource_failure_count = 0, updated_at = ${input.now},
         validation_evidence = jsonb_build_object(
           'safeErrorCode', (${input.errorCode})::text
         )
