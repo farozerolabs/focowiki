@@ -71,6 +71,8 @@ The production template binds Admin UI, Admin API, and Developer OpenAPI to `127
 | `POSTGRES_DB` | Compose | Database created by the PostgreSQL service. |
 | `POSTGRES_USER` | Compose | Database user created by the PostgreSQL service. |
 | `POSTGRES_PASSWORD` | Compose | Strong database password. URL-encode special characters when placing the password in `DATABASE_URL`. |
+| `POSTGRES_SHM_SIZE` | Bundled Compose | PostgreSQL shared-memory allocation. Default: `512m`. |
+| `POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER` | Bundled Compose | Maximum parallel workers used by one PostgreSQL query. Default: `0`. |
 | `DATABASE_URL` | Yes | API database URL. The production Compose network uses `postgres://USER:PASSWORD@postgres:5432/DB`. |
 | `DATABASE_POOL_MAX` | Optional | Maximum PostgreSQL connections used by one API process. Default: `10`. |
 

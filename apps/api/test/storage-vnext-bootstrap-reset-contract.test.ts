@@ -45,7 +45,8 @@ describe("storage vNext clean bootstrap and reset contract", () => {
       "005_clean_document_indexing_boundary.sql",
       "006_projection_publication_foundation.sql",
       "007_projection_legacy_cleanup_gate.sql",
-      "008_projection_navigation_capacity.sql"
+      "008_projection_navigation_capacity.sql",
+      "009_projection_resource_recovery.sql"
     ]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
@@ -67,6 +68,10 @@ describe("storage vNext clean bootstrap and reset contract", () => {
     expect(manifest).toContain('fileName: "008_projection_navigation_capacity.sql"');
     expect(manifest).toContain(
       'targetGeneration: "storage-vnext-v16-projection-navigation-capacity"'
+    );
+    expect(manifest).toContain('fileName: "009_projection_resource_recovery.sql"');
+    expect(manifest).toContain(
+      'targetGeneration: "storage-vnext-v17-projection-resource-recovery"'
     );
     expect(manifest).toContain('targetGeneration: "storage-vnext-v14-projection-publication-coherence"');
     expect(manifest).toContain('safety: "breaking_reset"');

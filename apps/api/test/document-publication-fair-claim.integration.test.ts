@@ -122,12 +122,14 @@ const enabled = Boolean(databaseUrl && runOwner
       INSERT INTO focowiki.projection_scope_generations (
         public_id, publication_generation_public_id, knowledge_base_id,
         scope_identity, scope_kind, scope_key, scope_generation,
-        input_snapshot_fingerprint_sha256, state, created_at, updated_at
+        input_snapshot_fingerprint_sha256, state, next_eligible_at,
+        created_at, updated_at
       ) VALUES (
         ${`${knowledgeBaseId}-scope-${index}`},
         ${`${knowledgeBaseId}-generation`}, ${knowledgeBaseId},
         ${`source:${knowledgeBaseId}-${index}`}, 'source',
         ${`${knowledgeBaseId}-${index}`}, 1, ${"c".repeat(64)}, 'waiting',
+        '2026-08-21T16:00:00.000Z',
         '2026-08-21T16:00:00.000Z', '2026-08-21T16:00:00.000Z'
       )
     `;

@@ -92,4 +92,49 @@ describe("document publication scope runtime", () => {
       }));
       expect(failRequests[0]).not.toHaveProperty("retryable");
     });
+
+  it("reduces claim pressure after database resource exhaustion", async () => {
+    const claimLimits: number[] = [];
+    let claimRound = 0;
+    const runtime = createDocumentPublicationScopeRuntime({
+      workerId: "worker-resource-pressure",
+      leaseDurationMs: 1_000,
+      maximumConcurrency: 8,
+      repository: {
+        claim: vi.fn(async ({ limit }: { limit: number }) => {
+          claimLimits.push(limit);
+          claimRound += 1;
+          if (claimRound === 1) return Array.from({ length: limit }, (_, index) => ({
+            publicId: `scope-pressure-${index}`,
+            leaseGeneration: documentLeaseGeneration(1)
+          }));
+          return [];
+        }),
+        fail: vi.fn(async () => "waiting" as const),
+        recoverExpired: vi.fn(async () => 0)
+      },
+      execute: vi.fn(async () => {
+        throw Object.assign(new Error("database resource exhausted"), {
+          code: "53100"
+        });
+      }),
+      now: () => "2026-08-23T10:00:00.000Z",
+      wait: async (_milliseconds, signal) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        void signal;
+      },
+      classifyError: () => ({
+        code: "53100",
+        recoveryAction: "retry_infrastructure"
+      })
+    });
+    const controller = new AbortController();
+    const running = runtime.run(controller.signal);
+    await vi.waitFor(() => expect(claimLimits.length).toBeGreaterThan(1));
+    controller.abort();
+    await running;
+
+    expect(claimLimits[0]).toBe(8);
+    expect(claimLimits.at(-1)).toBe(1);
+  });
 });

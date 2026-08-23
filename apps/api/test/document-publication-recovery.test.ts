@@ -15,6 +15,11 @@ describe("document publication recovery", () => {
     ["publication_generation_stale_base", "supersession", "recompute_scope"],
     ["40P01", "contention", "defer_activation"],
     ["scope_generation_lease_lost", "lease_loss", "inspect_or_reclaim"],
+    ["53000", "database_resource", "retry_infrastructure"],
+    ["53100", "database_resource", "retry_infrastructure"],
+    ["53200", "database_resource", "retry_infrastructure"],
+    ["53300", "database_resource", "retry_infrastructure"],
+    ["53400", "database_resource", "retry_infrastructure"],
     ["provider_unavailable", "provider_transient", "retry_provider"],
     ["projection_cleanup_failed", "cleanup_debt", "retry_cleanup"]
   ] as const)("classifies %s as %s", (code, recoveryClass, action) => {
@@ -33,5 +38,13 @@ describe("document publication recovery", () => {
       .toBe("retry_provider");
     expect(limitDocumentPublicationRecovery({ decision, attempt: 3 }))
       .toBe("quarantine");
+  });
+
+  it("keeps database resource exhaustion retryable beyond provider limits", () => {
+    const decision = decideDocumentPublicationRecovery("53100");
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 3 }))
+      .toBe("retry_infrastructure");
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 100 }))
+      .toBe("retry_infrastructure");
   });
 });

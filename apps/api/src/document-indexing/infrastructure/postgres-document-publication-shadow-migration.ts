@@ -236,7 +236,8 @@ export function createPostgresDocumentPublicationShadowMigration(
             INSERT INTO focowiki.projection_scope_generations (
               public_id, publication_generation_public_id, knowledge_base_id,
               scope_identity, scope_kind, scope_key, scope_generation,
-              state, input_snapshot_fingerprint_sha256, created_at, updated_at
+              state, input_snapshot_fingerprint_sha256, next_eligible_at,
+              created_at, updated_at
             ) VALUES (
               ${scopePublicId}, ${state.shadow_generation_public_id},
               ${knowledgeBaseId}, ${scopeIdentity}, ${first.scopeKind},
@@ -245,7 +246,7 @@ export function createPostgresDocumentPublicationShadowMigration(
                 state.shadow_generation_public_id,
                 scopeIdentity
               ])},
-              ${now}, ${now}
+              ${now}, ${now}, ${now}
             ) ON CONFLICT (public_id) DO NOTHING
           `;
           const sourceRevisionPublicId = items.find((item) =>

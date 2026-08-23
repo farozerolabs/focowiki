@@ -23,8 +23,8 @@ import { readGenerationFactDeltas } from
 const RENDERER_CONTRACT_VERSION = "portable-okf-v2";
 const CONTRIBUTOR_CAP = 256;
 const STRANDED_PLAN_LEASE_MILLISECONDS = 30_000;
-const REMEDIATED_QUARANTINE_RECOVERY_LIMIT = 16;
-const REMEDIATED_QUARANTINE_POLL_MILLISECONDS = 30_000;
+const RECOVERABLE_QUARANTINE_RECOVERY_LIMIT = 16;
+const RECOVERABLE_QUARANTINE_POLL_MILLISECONDS = 30_000;
 
 export function createProductionDocumentPublicationCoordinatorRuntime(input: {
   sql: DatabaseClient;
@@ -163,9 +163,9 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
     async runOne(now = new Date().toISOString()): Promise<boolean> {
       const nowMilliseconds = Date.parse(now);
       const recovered = nowMilliseconds >= nextRemediatedRecoveryAt
-        ? await recovery.recoverRemediatedQuarantines({
+        ? await recovery.recoverRecoverableQuarantines({
           recoveredAt: now,
-          limit: REMEDIATED_QUARANTINE_RECOVERY_LIMIT
+          limit: RECOVERABLE_QUARANTINE_RECOVERY_LIMIT
         }) : {
           generationCount: 0,
           releasedFactCount: 0,
@@ -173,9 +173,9 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
         };
       if (nowMilliseconds >= nextRemediatedRecoveryAt) {
         nextRemediatedRecoveryAt = recovered.generationCount
-          === REMEDIATED_QUARANTINE_RECOVERY_LIMIT
+          === RECOVERABLE_QUARANTINE_RECOVERY_LIMIT
           ? nowMilliseconds
-          : nowMilliseconds + REMEDIATED_QUARANTINE_POLL_MILLISECONDS;
+          : nowMilliseconds + RECOVERABLE_QUARANTINE_POLL_MILLISECONDS;
       }
       if (recovered.generationCount > 0) {
         input.observability?.publicationRecovery?.(recovered);

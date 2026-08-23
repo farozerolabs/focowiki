@@ -69,7 +69,8 @@ const enabled = Boolean(databaseUrl && runOwner
         pendingFiles: [
           "006_projection_publication_foundation.sql",
           "007_projection_legacy_cleanup_gate.sql",
-          "008_projection_navigation_capacity.sql"
+          "008_projection_navigation_capacity.sql",
+          "009_projection_resource_recovery.sql"
         ]
       });
       await expect(sql.begin(async (transaction) => {

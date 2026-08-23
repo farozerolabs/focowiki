@@ -630,7 +630,7 @@ const enabled = Boolean(databaseUrl && runOwner
         WHERE public_id = ${generationId}
       `;
       const recovery = createPostgresDocumentPublicationRecovery(database);
-      await expect(recovery.recoverRemediatedQuarantines({
+      await expect(recovery.recoverRecoverableQuarantines({
         recoveredAt: "2026-08-21T12:07:01.000Z",
         limit: 1
       })).resolves.toEqual({
@@ -664,8 +664,34 @@ const enabled = Boolean(databaseUrl && runOwner
         fact_state: "ready",
         waiting_scope_count: "0"
       }]);
-      await expect(recovery.recoverRemediatedQuarantines({
+      await sql`
+        UPDATE focowiki.projection_fact_epochs
+        SET state = 'included'
+        WHERE knowledge_base_id = 'publication-kb'
+          AND fact_epoch = 14
+      `;
+      await sql`
+        UPDATE focowiki.projection_scope_generations
+        SET state = CASE WHEN scope_kind = '_graph'
+          THEN 'quarantined' ELSE 'waiting' END
+        WHERE publication_generation_public_id = ${generationId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined', safe_error_code = '53100',
+            completed_at = NULL
+        WHERE public_id = ${generationId}
+      `;
+      await expect(recovery.recoverRecoverableQuarantines({
         recoveredAt: "2026-08-21T12:07:02.000Z",
+        limit: 1
+      })).resolves.toEqual({
+        generationCount: 1,
+        releasedFactCount: 1,
+        supersededScopeCount: 2
+      });
+      await expect(recovery.recoverRecoverableQuarantines({
+        recoveredAt: "2026-08-21T12:07:03.000Z",
         limit: 1
       })).resolves.toEqual({
         generationCount: 0,
@@ -677,6 +703,86 @@ const enabled = Boolean(databaseUrl && runOwner
         FROM focowiki.projection_publication_generations
         WHERE public_id = 'generation-7'
       `).resolves.toEqual([{ state: "quarantined" }]);
+    });
+
+  it("backs off database resource exhaustion and releases an expired generation",
+    async () => {
+      const publications = createPostgresDocumentPublicationRepository(database);
+      const generationId = documentPublicationGenerationId("generation-resource");
+      await publications.createGeneration(generation(
+        generationId,
+        documentPublicationGenerationId("generation-4"),
+        15
+      ));
+      const scopes = createPostgresDocumentScopeGenerationRepository(database);
+      await scopes.create({
+        publicId: "scope-generation-resource",
+        publicationGenerationId: generationId,
+        knowledgeBaseId: "publication-kb",
+        scopeIdentity: "source:resource",
+        scopeKind: "source",
+        scopeKey: "resource",
+        scopeGeneration: documentScopeGeneration(7),
+        inputSnapshotFingerprintSha256: "c".repeat(64),
+        createdAt: "2026-08-21T12:08:00.000Z"
+      });
+      const firstClaim = (await scopes.claim({
+        workerId: "scope-worker-resource",
+        now: "2026-08-21T12:08:01.000Z",
+        leaseDurationMs: 1_000,
+        limit: 1
+      }))[0]!;
+      await expect(scopes.fail({
+        publicId: firstClaim.publicId,
+        workerId: "scope-worker-resource",
+        leaseGeneration: firstClaim.leaseGeneration,
+        now: "2026-08-21T12:08:01.100Z",
+        errorCode: "53100",
+        recoveryAction: "retry_infrastructure"
+      })).resolves.toBe("waiting");
+      await expect(sql<Array<{
+        state: string;
+        resource_failure_count: number;
+        retry_delayed: boolean;
+      }>>`
+        SELECT state, resource_failure_count,
+               next_eligible_at > '2026-08-21T12:08:01.100Z'::timestamptz
+                 AS retry_delayed
+        FROM focowiki.projection_scope_generations
+        WHERE public_id = 'scope-generation-resource'
+      `).resolves.toEqual([{
+        state: "waiting",
+        resource_failure_count: 1,
+        retry_delayed: true
+      }]);
+      await sql`
+        UPDATE focowiki.projection_scope_generations
+        SET resource_failure_started_at = '2026-08-21T11:38:00.000Z',
+            next_eligible_at = '2026-08-21T12:08:02.000Z'
+        WHERE public_id = 'scope-generation-resource'
+      `;
+      const expiredClaim = (await scopes.claim({
+        workerId: "scope-worker-resource-expired",
+        now: "2026-08-21T12:08:02.000Z",
+        leaseDurationMs: 1_000,
+        limit: 1
+      }))[0]!;
+      await expect(scopes.fail({
+        publicId: expiredClaim.publicId,
+        workerId: "scope-worker-resource-expired",
+        leaseGeneration: expiredClaim.leaseGeneration,
+        now: "2026-08-21T12:08:02.100Z",
+        errorCode: "53100",
+        recoveryAction: "retry_infrastructure"
+      })).resolves.toBe("superseded");
+      await expect(sql<Array<{ state: string; safe_error_code: string }>>`
+        SELECT state, safe_error_code
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = ${generationId}
+      `).resolves.toEqual([{
+        state: "obsolete",
+        safe_error_code: "53100"
+      }]);
     });
 });
 

@@ -71,6 +71,8 @@ Focowiki 会把运行日志写入 `./logs`，同时继续向容器的标准输�
 | `POSTGRES_DB` | Compose 必填 | PostgreSQL 服务创建的数据库名。 |
 | `POSTGRES_USER` | Compose 必填 | PostgreSQL 服务创建的数据库用户。 |
 | `POSTGRES_PASSWORD` | Compose 必填 | 强数据库密码。密码写入 `DATABASE_URL` 时需要对特殊字符进行 URL 编码。 |
+| `POSTGRES_SHM_SIZE` | 内置 Compose | PostgreSQL 共享内存容量，默认 `512m`。 |
+| `POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER` | 内置 Compose | PostgreSQL 单条查询最多使用的并行工作进程数，默认 `0`。 |
 | `DATABASE_URL` | 是 | API 数据库连接地址。生产 Compose 网络使用 `postgres://USER:PASSWORD@postgres:5432/DB`。 |
 | `DATABASE_POOL_MAX` | 可选 | 单个 API 进程最多使用的 PostgreSQL 连接数。默认 `10`。 |
 
