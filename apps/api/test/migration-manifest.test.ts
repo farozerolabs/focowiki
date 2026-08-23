@@ -54,6 +54,11 @@ describe("document indexing migration manifest", () => {
       sourceGeneration: "storage-vnext-v15-projection-legacy-cleanup-gate",
       targetGeneration: "storage-vnext-v16-projection-navigation-capacity",
       safety: "compatible"
+    }, {
+      fileName: "009_projection_resource_recovery.sql",
+      sourceGeneration: "storage-vnext-v16-projection-navigation-capacity",
+      targetGeneration: "storage-vnext-v17-projection-resource-recovery",
+      safety: "compatible"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
@@ -63,10 +68,11 @@ describe("document indexing migration manifest", () => {
       "005_clean_document_indexing_boundary.sql",
       "006_projection_publication_foundation.sql",
       "007_projection_legacy_cleanup_gate.sql",
-      "008_projection_navigation_capacity.sql"
+      "008_projection_navigation_capacity.sql",
+      "009_projection_resource_recovery.sql"
     ]);
     expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      "storage-vnext-v16-projection-navigation-capacity"
+      "storage-vnext-v17-projection-resource-recovery"
     );
   });
 
@@ -90,7 +96,8 @@ describe("document indexing migration manifest", () => {
       "005_clean_document_indexing_boundary.sql",
       "006_projection_publication_foundation.sql",
       "007_projection_legacy_cleanup_gate.sql",
-      "008_projection_navigation_capacity.sql"
+      "008_projection_navigation_capacity.sql",
+      "009_projection_resource_recovery.sql"
     ]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     for (const generation of [
