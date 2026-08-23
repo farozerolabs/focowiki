@@ -1,8 +1,18 @@
 import {
+  portableDirectoryResourceSubject,
+  portableGraphDirectoryPath
+} from "@focowiki/okf";
+import {
   buildDocumentGraphCatalogPage,
-  buildDocumentGraphDirectoryScopeResources,
+  buildDocumentGraphDirectoryScopeResourcesFromPacket,
+  documentGraphRelationshipKey,
   buildDocumentPerFileGraphScopeResource
 } from "../application/document-graph-projection.js";
+import { createDocumentSemanticPacketAccumulator } from
+  "../application/document-semantic-resource-packets.js";
+import {
+  directoryResourceTitle
+} from "../application/document-machine-projection-shared.js";
 import type { createPostgresDocumentMachineProjectionReader } from
   "./postgres-document-machine-projection-reader.js";
 
@@ -58,22 +68,36 @@ export async function projectGraphDirectory(input: {
   dependencies: Dependencies;
   scopePath: string;
 } & Visibility) {
-  const state = await input.dependencies.machineProjection.readGraphDirectoryState({
+  const machineDirectory = portableGraphDirectoryPath(input.scopePath);
+  const packetAccumulator = createDocumentSemanticPacketAccumulator({
+    family: "relationship_packet",
+    directoryPath: machineDirectory,
+    subject: portableDirectoryResourceSubject(input.scopePath),
+    title: directoryResourceTitle(input.scopePath, "relationships"),
+    scopePath: input.scopePath,
+    recordKey: documentGraphRelationshipKey,
+    maximumRecords: input.dependencies.maximumRecordsPerShard,
+    maximumBytes: input.dependencies.maximumShardBytes
+  });
+  const state = await input.dependencies.machineProjection.scanGraphDirectoryState({
     knowledgeBaseId: input.knowledgeBaseId,
     scopePath: input.scopePath,
     includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
-    excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
+    excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds,
+    onRecords(records) {
+      packetAccumulator.append(records);
+    }
   });
   return {
-    ...buildDocumentGraphDirectoryScopeResources({
+    ...buildDocumentGraphDirectoryScopeResourcesFromPacket({
       scopePath: input.scopePath,
-      records: state.records,
+      packet: packetAccumulator.finish(),
+      recordCount: state.recordCount,
       childDirectories: state.childDirectories,
-      previousPaths: state.resourcePaths,
-      maximumRecordsPerShard: input.dependencies.maximumRecordsPerShard,
-      maximumShardBytes: input.dependencies.maximumShardBytes
+      previousPaths: state.resourcePaths
     }),
-    records: state.records,
+    records: [] as Record<string, unknown>[],
+    factCount: state.recordCount,
     childDirectories: state.childDirectories
   };
 }

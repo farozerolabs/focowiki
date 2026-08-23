@@ -197,6 +197,17 @@ export function createDocumentWorkerObservability(input: {
       previousPublicationBacklog.set(fields.knowledgeBaseId, signature);
       write("worker.publication_backlog", normalized);
     },
+    publicationRecovery(fields: {
+      generationCount: number;
+      releasedFactCount: number;
+      supersededScopeCount: number;
+    }) {
+      write("worker.publication_recovery", {
+        generationCount: metric(fields.generationCount),
+        releasedFactCount: metric(fields.releasedFactCount),
+        supersededScopeCount: metric(fields.supersededScopeCount)
+      });
+    },
     publicationScope(fields: {
       event: "claimed" | "completed" | "failed" | "fenced" | "recovered";
       knowledgeBaseId: string;

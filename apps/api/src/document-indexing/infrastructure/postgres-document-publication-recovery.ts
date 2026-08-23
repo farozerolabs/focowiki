@@ -1,6 +1,7 @@
 import type { DatabaseClient } from "../../db/client.js";
 import {
   assertRepositoryIdentity,
+  assertRepositoryPositiveInteger,
   assertRepositoryTimestamp,
   repositoryContractError
 } from "./document-repository-validation.js";
@@ -9,6 +10,77 @@ export function createPostgresDocumentPublicationRecovery(
   sql: DatabaseClient
 ) {
   return {
+    async recoverRemediatedQuarantines(input: Readonly<{
+      recoveredAt: string;
+      limit: number;
+    }>) {
+      const recoveredAt = assertRepositoryTimestamp(
+        input.recoveredAt,
+        "recovered_at"
+      );
+      const limit = assertRepositoryPositiveInteger(input.limit, "limit", 256);
+      return sql.begin(async (transaction) => {
+        const generations = await transaction<Array<{
+          public_id: string;
+          knowledge_base_id: string;
+        }>>`
+          SELECT public_id, knowledge_base_id
+          FROM focowiki.projection_publication_generations
+          WHERE state = 'quarantined'
+            AND safe_error_code = 'graph_directory_record_limit_exceeded'
+          ORDER BY updated_at, public_id COLLATE "C"
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${limit}
+        `;
+        if (generations.length === 0) {
+          return {
+            generationCount: 0,
+            releasedFactCount: 0,
+            supersededScopeCount: 0
+          };
+        }
+        const generationIds = generations.map((item) => item.public_id);
+        const superseded = await transaction<Array<{ public_id: string }>>`
+          UPDATE focowiki.projection_scope_generations
+          SET state = 'superseded', lease_owner = NULL,
+              lease_expires_at = NULL, heartbeat_at = NULL,
+              updated_at = ${recoveredAt}
+          WHERE publication_generation_public_id = ANY(${generationIds}::text[])
+            AND state IN ('waiting', 'running', 'error', 'quarantined')
+          RETURNING public_id
+        `;
+        const released = await transaction<Array<{
+          knowledge_base_id: string;
+          fact_epoch: number | string;
+        }>>`
+          UPDATE focowiki.projection_fact_epochs epoch
+          SET state = 'ready'
+          FROM focowiki.projection_generation_documents document
+          JOIN focowiki.projection_publication_generations generation
+            ON generation.public_id = document.generation_public_id
+          WHERE document.generation_public_id = ANY(${generationIds}::text[])
+            AND epoch.knowledge_base_id = generation.knowledge_base_id
+            AND epoch.mutation_public_id = document.mutation_public_id
+            AND epoch.fact_epoch = document.fact_epoch
+            AND epoch.state = 'included'
+          RETURNING epoch.knowledge_base_id, epoch.fact_epoch
+        `;
+        await transaction`
+          UPDATE focowiki.projection_publication_generations
+          SET state = 'obsolete', completed_at = ${recoveredAt},
+              activation_next_eligible_at = NULL,
+              safe_error_code = 'graph_directory_record_limit_remediated',
+              updated_at = ${recoveredAt}
+          WHERE public_id = ANY(${generationIds}::text[])
+        `;
+        return {
+          generationCount: generations.length,
+          releasedFactCount: released.length,
+          supersededScopeCount: superseded.length
+        };
+      });
+    },
+
     async recoverStaleBase(input: Readonly<{
       generationPublicId: string;
       recoveredAt: string;
