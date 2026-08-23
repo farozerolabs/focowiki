@@ -626,7 +626,7 @@ const enabled = Boolean(databaseUrl && runOwner
       await sql`
         UPDATE focowiki.projection_publication_generations
         SET state = 'quarantined',
-            safe_error_code = 'graph_directory_record_limit_exceeded'
+            safe_error_code = 'per_file_graph_directory_limit_exceeded'
         WHERE public_id = ${generationId}
       `;
       const recovery = createPostgresDocumentPublicationRecovery(database);
@@ -640,10 +640,12 @@ const enabled = Boolean(databaseUrl && runOwner
       });
       await expect(sql<Array<{
         generation_state: string;
+        safe_error_code: string;
         fact_state: string;
         waiting_scope_count: number | string;
       }>>`
         SELECT generation.state AS generation_state,
+               generation.safe_error_code,
                epoch.state AS fact_state,
                count(scope.public_id) FILTER (
                  WHERE scope.state = 'waiting'
@@ -658,9 +660,10 @@ const enabled = Boolean(databaseUrl && runOwner
         JOIN focowiki.projection_scope_generations scope
           ON scope.publication_generation_public_id = generation.public_id
         WHERE generation.public_id = ${generationId}
-        GROUP BY generation.state, epoch.state
+        GROUP BY generation.state, generation.safe_error_code, epoch.state
       `).resolves.toEqual([{
         generation_state: "obsolete",
+        safe_error_code: "graph_directory_record_limit_remediated",
         fact_state: "ready",
         waiting_scope_count: "0"
       }]);

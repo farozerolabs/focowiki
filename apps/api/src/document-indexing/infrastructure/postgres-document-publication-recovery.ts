@@ -27,7 +27,10 @@ export function createPostgresDocumentPublicationRecovery(
           SELECT public_id, knowledge_base_id
           FROM focowiki.projection_publication_generations
           WHERE state = 'quarantined'
-            AND (safe_error_code = 'graph_directory_record_limit_exceeded'
+            AND (safe_error_code IN (
+              'graph_directory_record_limit_exceeded',
+              'per_file_graph_directory_limit_exceeded'
+            )
               OR safe_error_code IN ('53000', '53100', '53200', '53300', '53400'))
           ORDER BY updated_at, public_id COLLATE "C"
           FOR UPDATE SKIP LOCKED
@@ -71,7 +74,10 @@ export function createPostgresDocumentPublicationRecovery(
           SET state = 'obsolete', completed_at = ${recoveredAt},
               activation_next_eligible_at = NULL,
               safe_error_code = CASE
-                WHEN safe_error_code = 'graph_directory_record_limit_exceeded'
+                WHEN safe_error_code IN (
+                  'graph_directory_record_limit_exceeded',
+                  'per_file_graph_directory_limit_exceeded'
+                )
                   THEN 'graph_directory_record_limit_remediated'
                 ELSE 'database_resource_exhaustion_remediated'
               END,

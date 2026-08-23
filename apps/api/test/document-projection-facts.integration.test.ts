@@ -637,10 +637,7 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         "source-file-projection-second"
       ]
     })).resolves.toEqual({
-      relationshipPagePaths: [
-        "pages/moved/renamed.md",
-        "pages/reference/second.md"
-      ],
+      relationshipPagePaths: [],
       records: [],
       childDirectories: [{
         title: "moved",
@@ -651,6 +648,25 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         scopePath: "pages/reference",
         path: "_graph/by-file/reference/index.md"
       }]
+    });
+    await expect(reader.readPerFileGraphDirectoryState({
+      knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages/moved",
+      includedSourceRevisionPublicIds: [
+        "source-revision-projection-first",
+        "source-revision-projection-second"
+      ],
+      excludedActiveSourceFilePublicIds: [
+        "source-file-projection-first",
+        "source-file-projection-second"
+      ]
+    })).resolves.toEqual({
+      relationshipPagePaths: ["pages/moved/renamed.md"],
+      records: [{
+        path: "_graph/by-file/moved/renamed.json",
+        title: "Renamed"
+      }],
+      childDirectories: []
     });
     await sql`
       UPDATE focowiki.relation_directed_evidence
@@ -860,6 +876,146 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       WHERE source_revision_public_id = 'source-revision-projection-first'
     `).resolves.toEqual([{ count: "0" }]);
   });
+
+  it("reads more than ten thousand direct relationship files without a directory cap",
+    async () => {
+      const count = 10_001;
+      const checksum = "9".repeat(64);
+      const objectId = `source-sha256:${checksum}`;
+      await sql`
+        INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+        VALUES ('kb-large-flat-directory', 'Large flat directory', 1)
+      `;
+      await sql`
+        INSERT INTO focowiki.object_registrations (
+          object_id, storage_key, checksum_sha256, byte_count, content_type,
+          object_format, state, write_attempt_public_id, verified_at
+        ) VALUES (
+          ${objectId}, 'runs/projection/large-flat.md', ${checksum}, 10,
+          'text/markdown; charset=utf-8', 'source_markdown', 'verified',
+          'write-large-flat-directory', now()
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.source_files (
+          public_id, knowledge_base_id, logical_path, normalized_path,
+          title, metadata, revision
+        )
+        SELECT source_file_public_id, 'kb-large-flat-directory', logical_path,
+               logical_path, title, '{}'::jsonb, 1
+        FROM (
+          SELECT 'source-a-' || lpad(value::text, 5, '0') source_file_public_id,
+                 'file-' || lpad(value::text, 5, '0') || '.md' logical_path,
+                 'File ' || lpad(value::text, 5, '0') title
+          FROM generate_series(1, ${count}) value
+          UNION ALL
+          SELECT 'source-z-anchor', 'anchor.md', 'Anchor'
+        ) sources
+      `;
+      await sql`
+        INSERT INTO focowiki.source_revisions (
+          public_id, knowledge_base_id, source_file_public_id, object_id,
+          checksum_sha256, byte_count, content_type
+        )
+        SELECT 'revision-' || source.public_id, 'kb-large-flat-directory',
+               source.public_id, ${objectId}, ${checksum}, 10,
+               'text/markdown; charset=utf-8'
+        FROM focowiki.source_files source
+        WHERE source.knowledge_base_id = 'kb-large-flat-directory'
+      `;
+      await sql`
+        INSERT INTO focowiki.document_projection_records (
+          knowledge_base_id, source_file_public_id, source_revision_public_id,
+          logical_path, normalized_path, title, summary, metadata, headings,
+          entities, content_type, checksum_sha256, byte_count,
+          tokenizer_contract_version, navigation_term_fingerprint_sha256,
+          active
+        )
+        SELECT 'kb-large-flat-directory', source.public_id,
+               'revision-' || source.public_id, source.logical_path,
+               source.normalized_path, source.title, '', '{}'::jsonb,
+               '{}'::text[], '{}'::text[], 'text/markdown; charset=utf-8',
+               ${checksum}, 10, 'nodejieba-test-v1', ${checksum}, true
+        FROM focowiki.source_files source
+        WHERE source.knowledge_base_id = 'kb-large-flat-directory'
+      `;
+      await sql`
+        INSERT INTO focowiki.document_semantic_directory_memberships (
+          knowledge_base_id, source_revision_public_id, directory_path,
+          page_path
+        )
+        SELECT 'kb-large-flat-directory', 'revision-' || source.public_id,
+               'pages', 'pages/' || source.logical_path
+        FROM focowiki.source_files source
+        WHERE source.knowledge_base_id = 'kb-large-flat-directory'
+      `;
+      await sql`
+        INSERT INTO focowiki.relation_candidate_pairs (
+          public_id, knowledge_base_id, first_source_file_public_id,
+          first_source_revision_public_id, second_source_file_public_id,
+          second_source_revision_public_id, evidence_fingerprint_sha256,
+          state, next_eligible_at
+        )
+        SELECT 'pair-' || source.public_id, 'kb-large-flat-directory',
+               source.public_id, 'revision-' || source.public_id,
+               'source-z-anchor', 'revision-source-z-anchor', ${checksum},
+               'resolved', now()
+        FROM focowiki.source_files source
+        WHERE source.knowledge_base_id = 'kb-large-flat-directory'
+          AND source.public_id <> 'source-z-anchor'
+      `;
+      await sql`
+        INSERT INTO focowiki.relation_directed_evidence (
+          public_id, knowledge_base_id, pair_public_id,
+          source_file_public_id, source_revision_public_id,
+          target_source_file_public_id, target_source_revision_public_id,
+          evidence_kind, evidence_fingerprint_sha256, evidence, active
+        )
+        SELECT 'evidence-' || source.public_id, 'kb-large-flat-directory',
+               'pair-' || source.public_id, source.public_id,
+               'revision-' || source.public_id, 'source-z-anchor',
+               'revision-source-z-anchor', 'explicit_reference', ${checksum},
+               '{}'::jsonb, true
+        FROM focowiki.source_files source
+        WHERE source.knowledge_base_id = 'kb-large-flat-directory'
+          AND source.public_id <> 'source-z-anchor'
+      `;
+      await sql`
+        INSERT INTO focowiki.canonical_file_relations (
+          public_id, knowledge_base_id, pair_public_id,
+          first_source_file_public_id, first_source_revision_public_id,
+          second_source_file_public_id, second_source_revision_public_id,
+          relation_kind, direction, active, activated_sequence
+        )
+        SELECT 'relation-' || source.public_id, 'kb-large-flat-directory',
+               'pair-' || source.public_id, source.public_id,
+               'revision-' || source.public_id, 'source-z-anchor',
+               'revision-source-z-anchor', 'references', 'first_to_second',
+               true, 1
+        FROM focowiki.source_files source
+        WHERE source.knowledge_base_id = 'kb-large-flat-directory'
+          AND source.public_id <> 'source-z-anchor'
+      `;
+
+      const reader = createPostgresDocumentMachineProjectionReader(
+        sql as unknown as DatabaseClient
+      );
+      const graphDirectory = await reader.readPerFileGraphDirectoryState({
+        knowledgeBaseId: "kb-large-flat-directory",
+        scopePath: "pages"
+      });
+      expect(graphDirectory.records).toHaveLength(count + 1);
+      expect(graphDirectory.childDirectories).toEqual([]);
+      expect(graphDirectory.relationshipPagePaths).toHaveLength(count + 1);
+      const pageDirectory = await reader.readDocumentDirectoryState({
+        knowledgeBaseId: "kb-large-flat-directory",
+        scopePath: "pages"
+      });
+      expect(pageDirectory.records).toHaveLength(count + 1);
+      expect(pageDirectory.records.every((record) =>
+        record.relationshipCount === 1)).toBe(true);
+      expect(pageDirectory.childDirectories).toEqual([]);
+    }, 120_000);
 });
 
 function fact(
