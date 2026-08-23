@@ -7,7 +7,9 @@ import {
 } from "@focowiki/okf";
 import {
   buildDocumentSemanticPacketPages,
-  jsonDocumentSemanticPage
+  jsonDocumentSemanticPage,
+  type DocumentSemanticMachinePage,
+  type DocumentSemanticPartDescriptor
 } from "./document-semantic-resource-packets.js";
 import {
   asString,
@@ -38,19 +40,39 @@ export function buildDocumentGraphDirectoryScopeResources(input: {
     title: directoryResourceTitle(input.scopePath, "relationships"),
     scopePath: input.scopePath,
     records: input.records,
-    recordKey: relationshipKey,
+    recordKey: documentGraphRelationshipKey,
     maximumRecords: input.maximumRecordsPerShard,
     maximumBytes: input.maximumShardBytes
   });
+  return buildDocumentGraphDirectoryScopeResourcesFromPacket({
+    scopePath: input.scopePath,
+    packet,
+    recordCount: input.records.length,
+    childDirectories: input.childDirectories,
+    previousPaths: input.previousPaths
+  });
+}
+
+export function buildDocumentGraphDirectoryScopeResourcesFromPacket(input: {
+  scopePath: string;
+  packet: Readonly<{
+    pages: readonly DocumentSemanticMachinePage[];
+    descriptors: readonly DocumentSemanticPartDescriptor[];
+  }>;
+  recordCount: number;
+  childDirectories: DirectoryState["childDirectories"];
+  previousPaths: readonly string[];
+}) {
+  const machineDirectory = portableGraphDirectoryPath(input.scopePath);
   const removedLogicalPaths = new Set<string>();
   removeStalePaths(input.previousPaths,
-    packet.descriptors.map((descriptor) => descriptor.path),
+    input.packet.descriptors.map((descriptor) => descriptor.path),
     removedLogicalPaths);
   const state: DirectoryState = {
     scopePath: input.scopePath,
     childDirectories: [...input.childDirectories],
-    resources: [...packet.descriptors],
-    count: input.records.length
+    resources: [...input.packet.descriptors],
+    count: input.recordCount
   };
   if (isEmptyDirectoryState(state)) {
     removedLogicalPaths.add(`${machineDirectory}/index.json`);
@@ -68,8 +90,8 @@ export function buildDocumentGraphDirectoryScopeResources(input: {
       portableGraphDirectoryPath)
   });
   return {
-    pages: [...packet.pages, router],
-    descriptors: packet.descriptors,
+    pages: [...input.packet.pages, router],
+    descriptors: input.packet.descriptors,
     removedLogicalPaths: [...removedLogicalPaths].sort(compareText)
   };
 }
@@ -144,7 +166,9 @@ export function buildDocumentGraphCatalogPage(relationshipCount: number) {
   });
 }
 
-function relationshipKey(record: Readonly<ProjectionRecord>): string {
+export function documentGraphRelationshipKey(
+  record: Readonly<ProjectionRecord>
+): string {
   return [record.from, record.to, record.relationType].map(asString).join("\0");
 }
 

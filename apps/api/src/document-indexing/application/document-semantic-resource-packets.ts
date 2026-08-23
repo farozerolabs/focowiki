@@ -17,6 +17,18 @@ export type DocumentSemanticPartDescriptor = Readonly<{
 
 type PacketFamily = "document_packet" | "term_postings" | "relationship_packet";
 
+type DocumentSemanticPacketConfiguration = Readonly<{
+  family: PacketFamily;
+  directoryPath: string;
+  subject: string;
+  title: string;
+  scopePath?: string;
+  prefix?: string;
+  recordKey(record: Readonly<Record<string, unknown>>): string;
+  maximumRecords: number;
+  maximumBytes: number;
+}>;
+
 export function buildDocumentSemanticPacketPages(input: Readonly<{
   family: PacketFamily;
   directoryPath: string;
@@ -32,63 +44,107 @@ export function buildDocumentSemanticPacketPages(input: Readonly<{
   pages: readonly DocumentSemanticMachinePage[];
   descriptors: readonly DocumentSemanticPartDescriptor[];
 }> {
+  const ordered = expandOversizedTermRecords(input, input.records.slice().sort(
+    (left, right) => compareText(input.recordKey(left), input.recordKey(right))
+  ));
+  const accumulator = createDocumentSemanticPacketAccumulator(input);
+  accumulator.append(ordered);
+  return accumulator.finish();
+}
+
+export function createDocumentSemanticPacketAccumulator(
+  input: DocumentSemanticPacketConfiguration
+) {
   if (!Number.isSafeInteger(input.maximumRecords) || input.maximumRecords < 1
     || !Number.isSafeInteger(input.maximumBytes) || input.maximumBytes < 1_024) {
     throw packetError("packet_limits_invalid");
   }
-  if (input.records.length === 0) return { pages: [], descriptors: [] };
-  const ordered = expandOversizedTermRecords(input, input.records.slice().sort(
-    (left, right) => compareText(input.recordKey(left), input.recordKey(right))
-  ));
-  const chunks: Record<string, unknown>[][] = [];
+  const chunks: Array<{
+    bytes: Uint8Array;
+    recordCount: number;
+    firstKey: string;
+    lastKey: string;
+  }> = [];
   let current: Record<string, unknown>[] = [];
   let currentBytes = packetByteLength(input, []);
-  for (const record of ordered) {
-    if (current.length > 0
-      && input.recordKey(current.at(-1)!) === input.recordKey(record)) {
-      chunks.push(current);
-      current = [];
-      currentBytes = packetByteLength(input, []);
-    }
-    const candidateBytes = currentBytes + (current.length > 0 ? 1 : 0)
-      + jsonByteLength(record);
-    if (current.length + 1 > input.maximumRecords
-      || candidateBytes > input.maximumBytes) {
-      if (current.length === 0) throw packetError("packet_record_too_large");
-      chunks.push(current);
-      current = [record];
-      currentBytes = packetByteLength(input, current);
-      if (currentBytes > input.maximumBytes) {
-        throw packetError("packet_record_too_large");
-      }
-    } else {
-      current.push(record);
-      currentBytes = candidateBytes;
-    }
-  }
-  if (current.length > 0) chunks.push(current);
+  let lastKey: string | null = null;
+  let finished = false;
 
-  const pages = chunks.map((records, index) => {
-    const logicalPath = `${input.directoryPath}/${portableSemanticResourceFileName({
-      subject: input.subject,
-      family: packetResourceFamily(input.family),
-      ...(chunks.length === 1 ? {} : { partNumber: index + 1 })
-    })}`;
-    return semanticMachinePage(
-      logicalPath,
-      input.family === "relationship_packet" ? "graph" : "index",
-      encodePacket(input, records)
-    );
-  });
+  function flush(): void {
+    if (current.length === 0) return;
+    chunks.push({
+      bytes: encodePacket(input, current),
+      recordCount: current.length,
+      firstKey: input.recordKey(current[0]!),
+      lastKey: input.recordKey(current.at(-1)!)
+    });
+    current = [];
+    currentBytes = packetByteLength(input, []);
+  }
+
   return {
-    pages,
-    descriptors: pages.map((page, index) => ({
-      path: page.logicalPath,
-      recordCount: chunks[index]!.length,
-      firstKey: input.recordKey(chunks[index]![0]!),
-      lastKey: input.recordKey(chunks[index]!.at(-1)!),
-      byteCount: page.byteCount
-    }))
+    append(records: readonly Record<string, unknown>[]): void {
+      if (finished) throw packetError("packet_accumulator_finished");
+      for (const record of records) {
+        const key = input.recordKey(record);
+        if (lastKey !== null && compareText(lastKey, key) > 0) {
+          throw packetError("packet_records_unordered");
+        }
+        if (current.length > 0
+          && input.recordKey(current.at(-1)!) === key) {
+          flush();
+        }
+        const candidateBytes = currentBytes + (current.length > 0 ? 1 : 0)
+          + jsonByteLength(record);
+        if (current.length + 1 > input.maximumRecords
+          || candidateBytes > input.maximumBytes) {
+          if (current.length === 0) {
+            throw packetError("packet_record_too_large");
+          }
+          flush();
+          current = [record];
+          currentBytes = packetByteLength(input, current);
+          if (currentBytes > input.maximumBytes) {
+            throw packetError("packet_record_too_large");
+          }
+        } else {
+          current.push(record);
+          currentBytes = candidateBytes;
+        }
+        lastKey = key;
+      }
+    },
+    finish(): Readonly<{
+      pages: readonly DocumentSemanticMachinePage[];
+      descriptors: readonly DocumentSemanticPartDescriptor[];
+    }> {
+      if (finished) throw packetError("packet_accumulator_finished");
+      finished = true;
+      flush();
+      const pages = chunks.map((chunk, index) => {
+        const logicalPath = `${input.directoryPath}/${
+          portableSemanticResourceFileName({
+            subject: input.subject,
+            family: packetResourceFamily(input.family),
+            ...(chunks.length === 1 ? {} : { partNumber: index + 1 })
+          })}`;
+        return semanticMachinePage(
+          logicalPath,
+          input.family === "relationship_packet" ? "graph" : "index",
+          chunk.bytes
+        );
+      });
+      return {
+        pages,
+        descriptors: pages.map((page, index) => ({
+          path: page.logicalPath,
+          recordCount: chunks[index]!.recordCount,
+          firstKey: chunks[index]!.firstKey,
+          lastKey: chunks[index]!.lastKey,
+          byteCount: page.byteCount
+        }))
+      };
+    }
   };
 }
 
