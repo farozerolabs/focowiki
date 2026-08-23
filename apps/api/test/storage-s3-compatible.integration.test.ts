@@ -10,6 +10,8 @@ import { writeStorageVnextUploadBody } from
   "../src/storage-vnext/api/admin-upload-body-writer.js";
 import { createS3StorageVnextSourceBodyStore } from
   "../src/storage-vnext/catalog/s3-source-body-store.js";
+import { createS3StorageVnextImmutableBodyStore } from
+  "../src/storage-vnext/ownership/s3-immutable-body-store.js";
 import { createS3StorageVnextObjectInventory } from
   "../src/storage-vnext/ownership/s3-object-inventory.js";
 import type { StorageVnextOwnershipRepository } from
@@ -154,6 +156,32 @@ describeExternal("external S3-compatible storage contract", () => {
       abortedMultipartUploads: 0
     });
     await expect(storage.headObjectMetadata(first.storageKey)).resolves.toBeNull();
+  }, 60_000);
+
+  it("completes a burst larger than the shared socket capacity", async () => {
+    const bodyStore = createS3StorageVnextImmutableBodyStore({
+      client,
+      bucket: storageConfig.bucket,
+      prefix
+    });
+    const objects = Array.from({ length: 96 }, (_, index) => {
+      const bytes = new TextEncoder().encode(`bounded-object-${index}`);
+      return {
+        bytes,
+        descriptor: bodyStore.describe({
+          bytes,
+          objectFormat: "okf-generated-json-v1"
+        })
+      };
+    });
+
+    await Promise.all(objects.map(({ descriptor, bytes }) =>
+      bodyStore.putVerified({ descriptor, bytes })));
+    const reads = await Promise.all(objects.map(({ descriptor }) =>
+      bodyStore.readVerified({ descriptor, maximumBytes: 1_024 })));
+
+    expect(reads).toHaveLength(96);
+    expect(reads.every((bytes) => bytes.byteLength > 0)).toBe(true);
   }, 60_000);
 
   it("streams an admin upload through copy, verification, and temporary cleanup", async () => {

@@ -131,6 +131,62 @@ describe("production document source scope projection", () => {
       signal: new AbortController().signal
     })).resolves.toEqual({ pages: [], removedLogicalPaths: [], factCount: 0 });
   });
+
+  it("bounds nested related-source reads even when runtime capacity is higher",
+    async () => {
+      const sourceIds = Array.from({ length: 12 }, (_, index) =>
+        `source-${index}`);
+      const bases = sourceIds.map((id) => base(id, `revision-${id}`));
+      const relations = sourceIds.slice(1).map((target, index) => canonicalFileRelation({
+        knowledgeBaseId: "knowledge-base-a",
+        sourceFilePublicId: sourceIds[0]!,
+        targetSourceFilePublicId: target,
+        relationKind: "related",
+        evidenceKind: "semantic",
+        sourceRevisionPublicId: "revision-source-0",
+        evidenceChecksumSha256: index.toString(16).padStart(64, "a"),
+        evidence: { reason: "related fixture" }
+      }));
+      let active = 0;
+      let peak = 0;
+      const projection = createProductionDocumentSourceScopeProjection({
+        relations: {
+          async listVisibleForSource() { return relations; }
+        } as never,
+        bases: {
+          async listVisibleForSources(request: {
+            sourceFilePublicIds: readonly string[];
+          }) {
+            return request.sourceFilePublicIds.length === 1
+              ? [bases[0]!] : bases;
+          }
+        } as never,
+        async loadBase({ base: selected }) {
+          active += 1;
+          peak = Math.max(peak, active);
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          active -= 1;
+          return source(
+            selected.sourceFilePublicId,
+            selected.sourceRevisionPublicId,
+            `${selected.sourceFilePublicId}.md`,
+            selected.sourceFilePublicId
+          );
+        },
+        readConcurrency: 32
+      });
+
+      await projection.project({
+        knowledgeBaseId: "knowledge-base-a",
+        sourceFilePublicId: sourceIds[0]!,
+        includedSourceRevisionPublicIds: bases.map((item) =>
+          item.sourceRevisionPublicId),
+        excludedActiveSourceFilePublicIds: sourceIds,
+        signal: new AbortController().signal
+      });
+
+      expect(peak).toBe(4);
+    });
 });
 
 function base(sourceFilePublicId: string, sourceRevisionPublicId: string) {

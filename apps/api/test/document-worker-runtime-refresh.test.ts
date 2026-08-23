@@ -52,6 +52,7 @@ function runtimeState(sourceFileConcurrency: number) {
   return {
     workerConfig: {
       sourceFileConcurrency,
+      sourceObjectReadConcurrency: sourceFileConcurrency,
       claimBatchSize: sourceFileConcurrency * 2,
       pollIntervalMs: 100,
       lockTtlSeconds: 30,

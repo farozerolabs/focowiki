@@ -12,6 +12,7 @@ import type { DocumentResourceCapacityInput } from
   "../application/document-resource-capacity.js";
 import {
   resolveDocumentResourceLaneCapacities,
+  resolveDocumentPublicationS3Capacities,
   resolveDocumentProjectionCapacities
 } from
   "../application/document-resource-capacity.js";
@@ -85,13 +86,17 @@ export function createProductionDocumentFixedProcessor(input: {
     DocumentWorkerObservability,
     "work" | "providerFailure" | "ingestionFailure" | "publication"
       | "publicationBacklog" | "publicationScope" | "publicationStorage"
-      | "cleanup"
+      | "publicationScopeStage" | "storageRequest" | "cleanup"
   >;
 }) {
   let currentResourceCapacity = { ...input.resourceCapacity };
   const resources = createProductionDocumentFixedResources(input);
   const projectionCapacities = resolveDocumentProjectionCapacities({
     documentConcurrency: input.resourceCapacity.documentConcurrency
+  });
+  let publicationS3Capacities = resolveDocumentPublicationS3Capacities({
+    documentConcurrency: input.resourceCapacity.documentConcurrency,
+    sourceObjectReadConcurrency: input.resourceCapacity.sourceObjectReadConcurrency
   });
   const repositories = createProductionDocumentFixedRepositories(
     input.sql,
@@ -277,7 +282,10 @@ export function createProductionDocumentFixedProcessor(input: {
       bases: repositories.bases,
       relations: repositories.relations,
       loadBase: loaders.pageBase,
-      readConcurrency: () => currentResourceCapacity.sourceObjectReadConcurrency
+      readConcurrency: () => Math.min(
+        publicationS3Capacities.readsPerScope,
+        currentResourceCapacity.sourceObjectReadConcurrency
+      )
     }),
     directoryNavigation: repositories.directoryNavigation,
     directoryLeafLimits: {
@@ -302,7 +310,10 @@ export function createProductionDocumentFixedProcessor(input: {
       workerId: input.workerId,
       leaseDurationMs: input.workerConfig.lockTtlSeconds * 1_000,
       heartbeatIntervalMs: input.workerConfig.heartbeatIntervalMs,
-      maximumConcurrency: projectionCapacities.scopeProjection,
+      maximumConcurrency: Math.min(
+        projectionCapacities.scopeProjection,
+        publicationS3Capacities.scopeProjection
+      ),
       renderer: scopeRenderer,
       ...(input.observability
         ? { observability: input.observability } : {})
@@ -351,6 +362,11 @@ export function createProductionDocumentFixedProcessor(input: {
       const capacities = resolveDocumentResourceLaneCapacities(
         next.resourceCapacity
       );
+      publicationS3Capacities = resolveDocumentPublicationS3Capacities({
+        documentConcurrency: next.resourceCapacity.documentConcurrency,
+        sourceObjectReadConcurrency:
+          next.resourceCapacity.sourceObjectReadConcurrency
+      });
       await resources.graphRag.resize(next.resourceCapacity.graphRagConcurrency);
       resources.lanes.updateCapacities(capacities);
       generation.updateLimits(
@@ -362,7 +378,7 @@ export function createProductionDocumentFixedProcessor(input: {
         projectionBacklogLimit(next.resourceCapacity.documentConcurrency)
       );
       publicationScopeRuntime.updateMaximumConcurrency(
-        projection.scopeProjection
+        Math.min(projection.scopeProjection, publicationS3Capacities.scopeProjection)
       );
       Object.assign(input.workerConfig, next.workerConfig);
       currentResourceCapacity = { ...next.resourceCapacity };

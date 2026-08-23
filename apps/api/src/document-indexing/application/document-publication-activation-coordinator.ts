@@ -46,6 +46,9 @@ export function createDocumentPublicationActivationCoordinator<
         if (code === "publication_activation_contention_deferred") {
           return { state: "deferred" as const };
         }
+        if (code === "publication_activation_deadline_deferred") {
+          return { state: "deferred" as const, reason: "deadline" as const };
+        }
         throw error;
       }
     }

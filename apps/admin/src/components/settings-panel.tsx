@@ -83,6 +83,7 @@ const rateLimitGroups = [
 
 const workerNumberFields = [
   "sourceFileConcurrency",
+  "s3Concurrency",
   "jobMaxAttempts",
   "jobRetryDelayMs",
   "completedJobRetentionDays"
@@ -616,6 +617,7 @@ export function SettingsPanel({ section = "runtime" }: SettingsPanelProps) {
                               key={field}
                               id={`worker-${field}`}
                               label={t(`settings.fields.${field}`)}
+                              {...(field === "s3Concurrency" ? { max: 48 } : {})}
                               value={worker[field]}
                               required
                               onChange={(value) => setWorker({ ...worker, [field]: value })}

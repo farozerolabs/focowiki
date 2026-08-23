@@ -15,6 +15,7 @@ import type { DocumentSourceScopeProjection } from
   "./production-document-scope-renderer.js";
 
 const MAXIMUM_SOURCE_SCOPE_RECORDS = 10_000;
+const MAXIMUM_SOURCE_SCOPE_READ_CONCURRENCY = 4;
 
 export function createProductionDocumentSourceScopeProjection(input: {
   bases: ReturnType<typeof createPostgresGeneratedPageBaseRepository>;
@@ -120,7 +121,7 @@ function resolveReadConcurrency(value: number | (() => number)): number {
   if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > 1_000) {
     throw sourceProjectionError("source_scope_read_concurrency_invalid");
   }
-  return resolved;
+  return Math.min(resolved, MAXIMUM_SOURCE_SCOPE_READ_CONCURRENCY);
 }
 
 function sourceProjectionError(code: string): Error & { code: string } {

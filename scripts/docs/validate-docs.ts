@@ -969,9 +969,10 @@ async function validateDeploymentDocumentation() {
       settings: path.join(docsRoot, "deployment", "admin-settings.md"),
       agent: path.join(docsRoot, "deployment", "agent-deployment.md"),
       privateInfrastructureText: "PostgreSQL and Redis are not published to host ports",
+      s3ConcurrencyText: "| S3 concurrency |",
       settingsSections: {
         "API Rate Limits": 6,
-        Worker: 4,
+        Worker: 5,
         "Generated Knowledge Base": 5,
         Graph: 9,
         Maintenance: 10,
@@ -987,9 +988,10 @@ async function validateDeploymentDocumentation() {
       settings: path.join(docsRoot, "zh-CN", "deployment", "admin-settings.md"),
       agent: path.join(docsRoot, "zh-CN", "deployment", "agent-deployment.md"),
       privateInfrastructureText: "PostgreSQL 和 Redis 不会映射到宿主机端口",
+      s3ConcurrencyText: "| S3 并发 |",
       settingsSections: {
         "API 限流": 6,
-        Worker: 4,
+        Worker: 5,
         生成知识库: 5,
         图关系: 9,
         维护: 10,
@@ -1057,6 +1059,9 @@ async function validateDeploymentDocumentation() {
           `Admin settings section ${heading} has ${actualRows} documented fields; expected ${expectedRows} in ${relative(locale.settings)}.`
         );
       }
+    }
+    if (!settings.includes(locale.s3ConcurrencyText)) {
+      throw new Error(`Admin settings documentation is missing the S3 concurrency field in ${relative(locale.settings)}.`);
     }
 
     for (const file of [locale.environment, locale.compose, locale.settings, locale.agent]) {

@@ -20,6 +20,7 @@ describe("document indexing runtime settings boundary", () => {
   it("exposes only actionable worker controls", () => {
     for (const field of [
       "sourceFileConcurrency",
+      "s3Concurrency",
       "jobMaxAttempts",
       "jobRetryDelayMs",
       "completedJobRetentionDays"
@@ -38,6 +39,7 @@ describe("document indexing runtime settings boundary", () => {
       expect(adminApi).not.toContain(field);
       expect(settingsPanel).not.toContain(field);
     }
+    expect(settingsRoutes).toContain("sourceObjectReadConcurrency");
   });
 
   it("keeps generated directory limits in a non-publication section", () => {

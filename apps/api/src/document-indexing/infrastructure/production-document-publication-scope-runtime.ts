@@ -1,9 +1,15 @@
 import type { DatabaseClient } from "../../db/client.js";
-import { createDocumentPublicationScopeGenerationExecutor } from
+import {
+  DOCUMENT_PUBLICATION_SCOPE_EXECUTION_TIMEOUT_MS,
+  createDocumentPublicationScopeGenerationExecutor
+} from
   "../application/document-publication-scope-generation-runtime.js";
 import { createDocumentPublicationScopeRuntime } from
   "../application/document-publication-scope-runtime.js";
-import { decideDocumentPublicationRecovery } from
+import {
+  decideDocumentPublicationRecovery,
+  limitDocumentPublicationRecovery
+} from
   "../application/document-publication-recovery.js";
 import { createPostgresDocumentPublicationSnapshot } from
   "./postgres-document-publication-snapshot.js";
@@ -26,7 +32,7 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
   maximumConcurrency: number;
   renderer: ReturnType<typeof createProductionDocumentScopeRenderer>;
   observability?: Pick<DocumentWorkerObservability,
-    "publicationScope" | "publicationStorage">;
+    "publicationScope" | "publicationScopeStage" | "publicationStorage">;
 }) {
   const workerId = `${input.workerId}:publication-scope`;
   const repository = createPostgresDocumentScopeGenerationRepository(input.sql);
@@ -36,6 +42,7 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
     leases: repository,
     leaseDurationMs: input.leaseDurationMs,
     heartbeatIntervalMs: input.heartbeatIntervalMs,
+    maximumExecutionMs: DOCUMENT_PUBLICATION_SCOPE_EXECUTION_TIMEOUT_MS,
     now: () => new Date().toISOString(),
     render: (snapshot, signal) =>
       input.renderer.renderPublication(snapshot, signal),
@@ -47,6 +54,18 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
         objectReuseCount: event.objectReuseCount,
         putByteCount: event.putByteCount
       });
+    },
+    onStage(event) {
+      const snapshot = event.snapshot;
+      input.observability?.publicationScopeStage({
+        knowledgeBaseId: snapshot?.knowledgeBaseId ?? null,
+        generationPublicId: snapshot?.publicationGenerationPublicId ?? null,
+        scopeGenerationPublicId: event.scopeGenerationPublicId,
+        stage: event.stage,
+        outcome: event.outcome,
+        durationMs: event.durationMs,
+        errorCode: event.errorCode
+      });
     }
   });
   return createDocumentPublicationScopeRuntime({
@@ -57,12 +76,15 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
     execute: (request) => executor.execute(request),
     now: () => new Date().toISOString(),
     wait: waitForDocumentWork,
-    classifyError(error) {
+    classifyError(error, claim) {
       const code = safeErrorCode(error);
       const decision = decideDocumentPublicationRecovery(code);
       return {
         code,
-        recoveryAction: decision.action
+        recoveryAction: limitDocumentPublicationRecovery({
+          decision,
+          attempt: Number(claim.leaseGeneration)
+        })
       };
     },
     onClaim: ({ claim }) => observeScope(input.observability, {

@@ -7,6 +7,8 @@ export type DocumentPublicationRecoveryDecision = Readonly<{
   consumesBusinessAttempt: boolean;
 }>;
 
+export const DOCUMENT_PUBLICATION_PROVIDER_MAXIMUM_ATTEMPTS = 3;
+
 const PERMANENT_INPUT = new Set([
   "source_body_empty", "source_frontmatter_invalid", "source_utf8_invalid",
   "source_size_limit", "invalid_source_contract", "metadata_too_large",
@@ -27,7 +29,8 @@ const SUPERSESSION = new Set([
 ]);
 const CONTENTION = new Set([
   "40P01", "40001", "55P03",
-  "publication_activation_contention_deferred"
+  "publication_activation_contention_deferred",
+  "publication_activation_deadline_deferred"
 ]);
 const LEASE_LOSS = new Set([
   "scope_generation_lease_lost", "projection_scope_lease_lost",
@@ -60,6 +63,19 @@ export function decideDocumentPublicationRecovery(
     "cleanup_debt", "retry_cleanup", false
   );
   return decision("provider_transient", "retry_provider", false);
+}
+
+export function limitDocumentPublicationRecovery(input: {
+  decision: DocumentPublicationRecoveryDecision;
+  attempt: number;
+}): DocumentPublicationRecoveryDecision["action"] {
+  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
+    throw new Error("Document publication recovery attempt is invalid");
+  }
+  return input.decision.action === "retry_provider"
+    && input.attempt >= DOCUMENT_PUBLICATION_PROVIDER_MAXIMUM_ATTEMPTS
+    ? "quarantine"
+    : input.decision.action;
 }
 
 function decision(

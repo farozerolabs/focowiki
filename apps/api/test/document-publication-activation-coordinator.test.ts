@@ -68,4 +68,24 @@ describe("document publication activation coordinator", () => {
       })).resolves.toEqual({ state: "deferred" });
       expect(recovery).not.toHaveBeenCalled();
     });
+
+  it("returns durable deadline deferral without blocking later activations",
+    async () => {
+      const recovery = vi.fn();
+      const coordinator = createDocumentPublicationActivationCoordinator({
+        activation: { activate: vi.fn().mockRejectedValue(Object.assign(
+          new Error("deadline"), {
+            code: "publication_activation_deadline_deferred"
+          }
+        )) },
+        recovery: { recoverStaleBase: recovery }
+      });
+      await expect(coordinator.activate({
+        operation: "create",
+        generationPublicId: "generation-deadline",
+        expectedHeadVersion: 2,
+        activatedAt: "2026-08-23T02:00:00.000Z"
+      })).resolves.toEqual({ state: "deferred", reason: "deadline" });
+      expect(recovery).not.toHaveBeenCalled();
+    });
 });

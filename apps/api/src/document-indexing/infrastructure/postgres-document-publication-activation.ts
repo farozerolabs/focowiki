@@ -9,19 +9,35 @@ import { completePostgresDocumentPublicationWork } from
   "./postgres-document-publication-work-activation.js";
 import { releaseSupersededPublicationGenerationReferences } from
   "./postgres-document-publication-retention.js";
+import {
+  createActivationDeadlineSql,
+  DOCUMENT_PUBLICATION_ACTIVATION_TIMEOUT_MS,
+  isActivationDeadlineError
+} from "./document-publication-activation-deadline.js";
+
+const DOCUMENT_PUBLICATION_ACTIVATION_DEADLINE_RETRY_DELAY_MS = 30_000;
 
 export function createPostgresDocumentPublicationActivation(input: {
   sql: DatabaseClient;
   maximumContentionAttempts?: number;
+  activationTimeoutMs?: number;
   random?: () => number;
+  clock?: () => string;
   wait?: (milliseconds: number) => Promise<void>;
   beforeHeadAdvance?: (input: Readonly<{
     generationPublicId: string;
     knowledgeBaseId: string;
+    transaction: DatabaseClient;
   }>) => Promise<void>;
 }) {
   const maximumAttempts = input.maximumContentionAttempts ?? 4;
+  const activationTimeoutMs = input.activationTimeoutMs
+    ?? DOCUMENT_PUBLICATION_ACTIVATION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(activationTimeoutMs) || activationTimeoutMs < 1) {
+    throw new Error("Document publication activation timeout is invalid");
+  }
   const random = input.random ?? Math.random;
+  const clock = input.clock ?? (() => new Date().toISOString());
   const wait = input.wait ?? ((milliseconds: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   return {
@@ -31,9 +47,29 @@ export function createPostgresDocumentPublicationActivation(input: {
       activatedAt: string;
     }>) {
       for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+        const activationStartedAt = Date.now();
         try {
-          return await activateOnce(input.sql, request, input.beforeHeadAdvance);
+          return await activateOnce(
+            input.sql,
+            request,
+            activationTimeoutMs,
+            input.beforeHeadAdvance
+          );
         } catch (error) {
+          if (isActivationDeadlineError({
+            error,
+            elapsedMilliseconds: Math.max(0, Date.now() - activationStartedAt),
+            timeoutMilliseconds: activationTimeoutMs
+          })) {
+            await persistDeadlineDeferral({
+              sql: input.sql,
+              generationPublicId: request.generationPublicId,
+              deferredAt: clock()
+            });
+            throw activationError("publication_activation_deadline_deferred", {
+              cause: error
+            });
+          }
           const decision = documentPublicationContentionDecision({
             code: errorCode(error), attempt, maximumAttempts, random: random()
           });
@@ -67,151 +103,169 @@ async function activateOnce(
     expectedHeadVersion: number;
     activatedAt: string;
   }>,
+  activationTimeoutMs: number,
   beforeHeadAdvance?: (input: Readonly<{
     generationPublicId: string;
     knowledgeBaseId: string;
+    transaction: DatabaseClient;
   }>) => Promise<void>
 ) {
   return sql.begin(async (rawTransaction) => {
-    const transaction = rawTransaction as unknown as DatabaseClient;
-    await transaction`SET LOCAL lock_timeout = '2s'`;
-    const identities = await transaction<Array<{
-      knowledge_base_id: string;
-    }>>`
-      SELECT knowledge_base_id
-      FROM focowiki.projection_publication_generations
-      WHERE public_id = ${input.generationPublicId}
-    `;
-    const identity = identities[0];
-    if (!identity) throw activationError("publication_generation_not_ready");
-    const heads = await transaction<Array<{
-      active_generation_public_id: string | null;
-      head_version: number | string;
-    }>>`
-      SELECT active_generation_public_id, head_version
-      FROM focowiki.knowledge_base_projection_heads
-      WHERE knowledge_base_id = ${identity.knowledge_base_id}
-      FOR UPDATE
-    `;
-    const generations = await transaction<Array<{
-      knowledge_base_id: string;
-      base_generation_public_id: string | null;
-      target_fact_epoch: number | string;
-      output_fingerprint_sha256: string | null;
-      state: string;
-    }>>`
-      SELECT knowledge_base_id, base_generation_public_id,
-             target_fact_epoch, output_fingerprint_sha256, state
-      FROM focowiki.projection_publication_generations
-      WHERE public_id = ${input.generationPublicId}
-      FOR UPDATE
-    `;
-    const generation = generations[0];
-    if (!generation || generation.knowledge_base_id !== identity.knowledge_base_id
-      || generation.state !== "ready"
-      || !generation.output_fingerprint_sha256) {
-      throw activationError("publication_generation_not_ready");
-    }
-    const head = heads[0];
-    if (!head || head.active_generation_public_id
+    const deadline = createActivationDeadlineSql(
+      rawTransaction as unknown as DatabaseClient,
+      activationTimeoutMs
+    );
+    const transaction = deadline.sql;
+    try {
+      await transaction`SET LOCAL lock_timeout = '2s'`;
+      await transaction`
+        SELECT set_config(
+          'statement_timeout',
+          ${String(activationTimeoutMs)},
+          true
+        )
+      `;
+      const identities = await transaction<Array<{
+        knowledge_base_id: string;
+      }>>`
+        SELECT knowledge_base_id
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = ${input.generationPublicId}
+      `;
+      const identity = identities[0];
+      if (!identity) throw activationError("publication_generation_not_ready");
+      const heads = await transaction<Array<{
+        active_generation_public_id: string | null;
+        head_version: number | string;
+      }>>`
+        SELECT active_generation_public_id, head_version
+        FROM focowiki.knowledge_base_projection_heads
+        WHERE knowledge_base_id = ${identity.knowledge_base_id}
+        FOR UPDATE
+      `;
+      const generations = await transaction<Array<{
+        knowledge_base_id: string;
+        base_generation_public_id: string | null;
+        target_fact_epoch: number | string;
+        output_fingerprint_sha256: string | null;
+        state: string;
+      }>>`
+        SELECT knowledge_base_id, base_generation_public_id,
+               target_fact_epoch, output_fingerprint_sha256, state
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = ${input.generationPublicId}
+        FOR UPDATE
+      `;
+      const generation = generations[0];
+      if (!generation || generation.knowledge_base_id !== identity.knowledge_base_id
+        || generation.state !== "ready"
+        || !generation.output_fingerprint_sha256) {
+        throw activationError("publication_generation_not_ready");
+      }
+      const head = heads[0];
+      if (!head || head.active_generation_public_id
           !== generation.base_generation_public_id
-      || Number(head.head_version) !== input.expectedHeadVersion) {
-      throw activationError("publication_generation_stale_base");
+        || Number(head.head_version) !== input.expectedHeadVersion) {
+        throw activationError("publication_generation_stale_base");
+      }
+      await lockActivationReservations(transaction, input.generationPublicId);
+      await assertGenerationClosure(transaction, input.generationPublicId);
+      const targetFactEpoch = Number(generation.target_fact_epoch);
+      await advanceActivationEpoch({
+        sql: transaction,
+        knowledgeBaseId: generation.knowledge_base_id,
+        targetFactEpoch,
+        activatedAt: input.activatedAt
+      });
+      const pages = await activatePostgresDocumentPublicationPages({
+        transaction,
+        generationPublicId: input.generationPublicId,
+        knowledgeBaseId: generation.knowledge_base_id,
+        targetFactEpoch,
+        activatedAt: input.activatedAt
+      });
+      const sources = await activatePostgresDocumentPublicationSources({
+        transaction,
+        generationPublicId: input.generationPublicId,
+        knowledgeBaseId: generation.knowledge_base_id,
+        targetFactEpoch,
+        activatedAt: input.activatedAt
+      });
+      const documentCount = await completePostgresDocumentPublicationWork({
+        transaction,
+        generationPublicId: input.generationPublicId,
+        knowledgeBaseId: generation.knowledge_base_id,
+        outputFingerprintSha256: generation.output_fingerprint_sha256,
+        activatedAt: input.activatedAt
+      });
+      await beforeHeadAdvance?.({
+        generationPublicId: input.generationPublicId,
+        knowledgeBaseId: generation.knowledge_base_id,
+        transaction
+      });
+      const advanced = await transaction<Array<{ head_version: number | string }>>`
+        UPDATE focowiki.knowledge_base_projection_heads
+        SET active_generation_public_id = ${input.generationPublicId},
+            active_fact_epoch = ${targetFactEpoch},
+            head_version = head_version + 1,
+            updated_at = ${input.activatedAt}
+        WHERE knowledge_base_id = ${generation.knowledge_base_id}
+          AND active_generation_public_id
+                IS NOT DISTINCT FROM ${generation.base_generation_public_id}
+          AND head_version = ${input.expectedHeadVersion}
+        RETURNING head_version
+      `;
+      if (!advanced[0]) {
+        throw activationError("publication_generation_stale_base");
+      }
+      await transaction`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = ${input.activatedAt},
+            updated_at = ${input.activatedAt}
+        WHERE public_id = ${generation.base_generation_public_id}
+          AND state = 'active'
+      `;
+      await transaction`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'active', completed_at = ${input.activatedAt},
+            updated_at = ${input.activatedAt},
+            activation_next_eligible_at = NULL, safe_error_code = NULL
+        WHERE public_id = ${input.generationPublicId} AND state = 'ready'
+      `;
+      await transaction`
+        INSERT INTO focowiki.projection_generation_retention (
+          generation_public_id, retention_state, retain_until,
+          reason, updated_at
+        )
+        SELECT ${generation.base_generation_public_id}, 'retained',
+               ${input.activatedAt}::timestamptz + interval '7 days',
+               'previous-active-generation', ${input.activatedAt}
+        WHERE ${generation.base_generation_public_id}::text IS NOT NULL
+        ON CONFLICT (generation_public_id) DO UPDATE
+        SET retention_state = 'retained',
+            retain_until = excluded.retain_until,
+            reason = excluded.reason,
+            updated_at = excluded.updated_at
+      `;
+      await releaseSupersededPublicationGenerationReferences({
+        transaction,
+        knowledgeBaseId: generation.knowledge_base_id,
+        releaseGenerationPublicId: input.generationPublicId,
+        retainedGenerationPublicId: generation.base_generation_public_id,
+        releasedAt: input.activatedAt
+      });
+      return {
+        generationPublicId: input.generationPublicId,
+        knowledgeBaseId: generation.knowledge_base_id,
+        targetFactEpoch,
+        headVersion: Number(advanced[0].head_version),
+        documentCount,
+        sourceCount: sources.length,
+        ...pages
+      };
+    } finally {
+      deadline.dispose();
     }
-    await lockActivationReservations(transaction, input.generationPublicId);
-    await assertGenerationClosure(transaction, input.generationPublicId);
-    const targetFactEpoch = Number(generation.target_fact_epoch);
-    await advanceActivationEpoch({
-      sql: transaction,
-      knowledgeBaseId: generation.knowledge_base_id,
-      targetFactEpoch,
-      activatedAt: input.activatedAt
-    });
-    const pages = await activatePostgresDocumentPublicationPages({
-      transaction,
-      generationPublicId: input.generationPublicId,
-      knowledgeBaseId: generation.knowledge_base_id,
-      targetFactEpoch,
-      activatedAt: input.activatedAt
-    });
-    const sources = await activatePostgresDocumentPublicationSources({
-      transaction,
-      generationPublicId: input.generationPublicId,
-      knowledgeBaseId: generation.knowledge_base_id,
-      targetFactEpoch,
-      activatedAt: input.activatedAt
-    });
-    const documentCount = await completePostgresDocumentPublicationWork({
-      transaction,
-      generationPublicId: input.generationPublicId,
-      knowledgeBaseId: generation.knowledge_base_id,
-      outputFingerprintSha256: generation.output_fingerprint_sha256,
-      activatedAt: input.activatedAt
-    });
-    await beforeHeadAdvance?.({
-      generationPublicId: input.generationPublicId,
-      knowledgeBaseId: generation.knowledge_base_id
-    });
-    const advanced = await transaction<Array<{ head_version: number | string }>>`
-      UPDATE focowiki.knowledge_base_projection_heads
-      SET active_generation_public_id = ${input.generationPublicId},
-          active_fact_epoch = ${targetFactEpoch},
-          head_version = head_version + 1,
-          updated_at = ${input.activatedAt}
-      WHERE knowledge_base_id = ${generation.knowledge_base_id}
-        AND active_generation_public_id
-              IS NOT DISTINCT FROM ${generation.base_generation_public_id}
-        AND head_version = ${input.expectedHeadVersion}
-      RETURNING head_version
-    `;
-    if (!advanced[0]) {
-      throw activationError("publication_generation_stale_base");
-    }
-    await transaction`
-      UPDATE focowiki.projection_publication_generations
-      SET state = 'obsolete', completed_at = ${input.activatedAt},
-          updated_at = ${input.activatedAt}
-      WHERE public_id = ${generation.base_generation_public_id}
-        AND state = 'active'
-    `;
-    await transaction`
-      UPDATE focowiki.projection_publication_generations
-      SET state = 'active', completed_at = ${input.activatedAt},
-          updated_at = ${input.activatedAt},
-          activation_next_eligible_at = NULL, safe_error_code = NULL
-      WHERE public_id = ${input.generationPublicId} AND state = 'ready'
-    `;
-    await transaction`
-      INSERT INTO focowiki.projection_generation_retention (
-        generation_public_id, retention_state, retain_until,
-        reason, updated_at
-      )
-      SELECT ${generation.base_generation_public_id}, 'retained',
-             ${input.activatedAt}::timestamptz + interval '7 days',
-             'previous-active-generation', ${input.activatedAt}
-      WHERE ${generation.base_generation_public_id}::text IS NOT NULL
-      ON CONFLICT (generation_public_id) DO UPDATE
-      SET retention_state = 'retained',
-          retain_until = excluded.retain_until,
-          reason = excluded.reason,
-          updated_at = excluded.updated_at
-    `;
-    await releaseSupersededPublicationGenerationReferences({
-      transaction,
-      knowledgeBaseId: generation.knowledge_base_id,
-      releaseGenerationPublicId: input.generationPublicId,
-      retainedGenerationPublicId: generation.base_generation_public_id,
-      releasedAt: input.activatedAt
-    });
-    return {
-      generationPublicId: input.generationPublicId,
-      knowledgeBaseId: generation.knowledge_base_id,
-      targetFactEpoch,
-      headVersion: Number(advanced[0].head_version),
-      documentCount,
-      sourceCount: sources.length,
-      ...pages
-    };
   });
 }
 
@@ -229,6 +283,24 @@ async function persistContentionDeferral(input: Readonly<{
         activation_next_eligible_at = ${input.deferredAt}::timestamptz
           + (${delayMilliseconds} * interval '1 millisecond'),
         safe_error_code = ${input.errorCode},
+        updated_at = ${input.deferredAt}
+    WHERE public_id = ${input.generationPublicId}
+      AND state = 'ready'
+  `;
+}
+
+async function persistDeadlineDeferral(input: Readonly<{
+  sql: DatabaseClient;
+  generationPublicId: string;
+  deferredAt: string;
+}>): Promise<void> {
+  await input.sql`
+    UPDATE focowiki.projection_publication_generations
+    SET activation_contention_count = activation_contention_count + 1,
+        activation_next_eligible_at = ${input.deferredAt}::timestamptz
+          + (${DOCUMENT_PUBLICATION_ACTIVATION_DEADLINE_RETRY_DELAY_MS}
+            * interval '1 millisecond'),
+        safe_error_code = 'publication_activation_deadline_exceeded',
         updated_at = ${input.deferredAt}
     WHERE public_id = ${input.generationPublicId}
       AND state = 'ready'

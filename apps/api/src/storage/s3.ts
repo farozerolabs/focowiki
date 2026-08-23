@@ -12,6 +12,8 @@ import {
   type S3ClientConfig
 } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
+import { Agent as HttpAgent } from "node:http";
+import { Agent as HttpsAgent } from "node:https";
 import type { Readable } from "node:stream";
 import type { RuntimeConfig } from "../config.js";
 import {
@@ -112,6 +114,24 @@ export const S3_HTTP_TIMEOUTS = {
   throwOnRequestTimeout: true
 } as const;
 
+export const S3_CONNECTION_CAPACITY = 48;
+
+function createS3RequestHandler(): NodeHttpHandler {
+  return new NodeHttpHandler({
+    ...S3_HTTP_TIMEOUTS,
+    httpAgent: new HttpAgent({
+      keepAlive: true,
+      maxSockets: S3_CONNECTION_CAPACITY,
+      maxFreeSockets: 16
+    }),
+    httpsAgent: new HttpsAgent({
+      keepAlive: true,
+      maxSockets: S3_CONNECTION_CAPACITY,
+      maxFreeSockets: 16
+    })
+  });
+}
+
 export function createS3ClientConfig(
   storage: RuntimeConfig["storage"]
 ): S3ClientConfig {
@@ -122,8 +142,10 @@ export function createS3ClientConfig(
       accessKeyId: storage.accessKeyId,
       secretAccessKey: storage.secretAccessKey
     },
+    maxAttempts: 3,
+    retryMode: "standard",
     forcePathStyle: storage.forcePathStyle,
-    requestHandler: new NodeHttpHandler(S3_HTTP_TIMEOUTS)
+    requestHandler: createS3RequestHandler()
   };
 }
 

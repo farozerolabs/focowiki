@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { describe, expect, it, vi } from "vitest";
 import {
+  S3_CONNECTION_CAPACITY,
   S3_HTTP_TIMEOUTS,
   S3StorageAdapter,
   createS3ClientConfig
@@ -19,6 +20,9 @@ describe("S3 storage adapter", () => {
     } as never);
 
     expect(config.requestHandler).toBeInstanceOf(NodeHttpHandler);
+    expect(config.maxAttempts).toBe(3);
+    expect(config.retryMode).toBe("standard");
+    expect(S3_CONNECTION_CAPACITY).toBe(48);
     expect(S3_HTTP_TIMEOUTS).toEqual({
       connectionTimeout: 10_000,
       requestTimeout: 60_000,

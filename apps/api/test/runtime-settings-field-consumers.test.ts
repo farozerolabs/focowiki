@@ -20,6 +20,12 @@ const consumers: readonly FieldConsumer[] = [
   ...rateLimitConsumers("adminApi", "admin/security.ts"),
   ...rateLimitConsumers("publicOpenApi", "developer-openapi/security.ts"),
   worker("sourceFileConcurrency", "document-indexing/infrastructure/production-runtime.ts", "settings.sourceFileConcurrency"),
+  {
+    id: "worker.s3Concurrency",
+    adminTokens: ["s3Concurrency"],
+    source: "document-indexing/infrastructure/production-runtime.ts",
+    tokens: ["settings.sourceObjectReadConcurrency"]
+  },
   worker("jobMaxAttempts", "document-indexing/application/document-worker-settings.ts", "jobMaxAttempts"),
   worker("jobRetryDelayMs", "document-indexing/application/document-worker-settings.ts", "jobRetryDelayMs"),
   worker("completedJobRetentionDays", "document-indexing/infrastructure/production-background-runtime.ts", "workerConfig.completedJobRetentionDays"),
@@ -80,7 +86,7 @@ const consumers: readonly FieldConsumer[] = [
 
 describe("runtime settings field consumers", () => {
   it("covers every exposed settings field exactly once", () => {
-    expect(consumers).toHaveLength(63);
+    expect(consumers).toHaveLength(64);
     expect(new Set(consumers.map((entry) => entry.id)).size).toBe(consumers.length);
   });
 
