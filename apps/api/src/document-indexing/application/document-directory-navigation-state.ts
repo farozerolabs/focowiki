@@ -1,6 +1,7 @@
 import type { PersistentDirectoryLeaf } from
   "../../application/ports/directory-navigation-repository.js";
 import {
+  buildDirectoryLeaves,
   compareOrderedDirectoryEntries,
   insertDirectoryEntry,
   removeDirectoryEntry,
@@ -39,27 +40,35 @@ export function reconcileDocumentDirectoryNavigation(input: {
       ? current !== undefined
       : !current || JSON.stringify(current) !== JSON.stringify(change.desiredEntry);
   }).sort((left, right) => compareText(left.entryId, right.entryId));
-  for (const change of orderedChanges) {
-    leaves = removeDirectoryEntry({
-      leaves,
-      entryId: change.entryId,
-      limits: input.limits
-    }).leaves;
-  }
-  const retainedLeafIds = new Set(leaves.map((leaf) => leaf.id));
-  const reusableLeafIds = input.previous
-    .filter((leaf) => !retainedLeafIds.has(leaf.id))
-    .map((leaf) => leaf.id);
   const additions = orderedChanges.flatMap((change) =>
     change.desiredEntry ? [change.desiredEntry] : [])
     .sort(compareOrderedDirectoryEntries);
-  for (const entry of additions) {
-    leaves = insertDirectoryEntry({
-      leaves,
-      entry,
+  if (leaves.length === 0) {
+    leaves = buildDirectoryLeaves({
+      entries: additions,
       limits: input.limits,
-      createLeafId: () => reusableLeafIds.shift() ?? input.createLeafId()
-    }).leaves;
+      createLeafId: input.createLeafId
+    });
+  } else {
+    for (const change of orderedChanges) {
+      leaves = removeDirectoryEntry({
+        leaves,
+        entryId: change.entryId,
+        limits: input.limits
+      }).leaves;
+    }
+    const retainedLeafIds = new Set(leaves.map((leaf) => leaf.id));
+    const reusableLeafIds = input.previous
+      .filter((leaf) => !retainedLeafIds.has(leaf.id))
+      .map((leaf) => leaf.id);
+    for (const entry of additions) {
+      leaves = insertDirectoryEntry({
+        leaves,
+        entry,
+        limits: input.limits,
+        createLeafId: () => reusableLeafIds.shift() ?? input.createLeafId()
+      }).leaves;
+    }
   }
 
   const previous = new Map(input.previous.map((leaf) => [leaf.id, leaf]));
@@ -123,12 +132,11 @@ function validatePrevious(leaves: readonly PersistentDirectoryLeaf[]): void {
 }
 
 function validateChanges(changes: readonly DocumentDirectoryNavigationChange[]): void {
-  if (changes.length > 10_000
-    || new Set(changes.map((change) => change.entryId)).size !== changes.length
+  if (new Set(changes.map((change) => change.entryId)).size !== changes.length
     || changes.some((change) => !change.entryId
       || (change.desiredEntry !== null
         && change.desiredEntry.id !== change.entryId))) {
-    throw navigationStateError("changes_invalid");
+    throw navigationStateError("navigation_changes_invalid");
   }
 }
 

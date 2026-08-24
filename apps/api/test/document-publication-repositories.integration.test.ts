@@ -708,6 +708,149 @@ const enabled = Boolean(databaseUrl && runOwner
       `).resolves.toEqual([{ state: "quarantined" }]);
     });
 
+  it("recovers legacy navigation capacity quarantines for large directories",
+    async () => {
+      const generationId = documentPublicationGenerationId(
+        "generation-navigation-capacity"
+      );
+      const publications = createPostgresDocumentPublicationRepository(database);
+      await publications.createGeneration(generation(
+        generationId,
+        documentPublicationGenerationId("generation-4"),
+        16
+      ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 16, 'navigation-capacity-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${generationId}, 'navigation-capacity-mutation',
+          'publication-job-1', 'source-1', 'revision-1', 16
+        )
+      `;
+      const scopes = createPostgresDocumentScopeGenerationRepository(database);
+      await scopes.create({
+        publicId: "scope-generation-navigation-capacity",
+        publicationGenerationId: generationId,
+        knowledgeBaseId: "publication-kb",
+        scopeIdentity: "directory:pages/large",
+        scopeKind: "directory",
+        scopeKey: "pages/large",
+        scopeGeneration: documentScopeGeneration(7),
+        inputSnapshotFingerprintSha256: "c".repeat(64),
+        createdAt: "2026-08-21T12:08:00.000Z"
+      });
+      await sql.begin(async (transaction) => {
+        await transaction`SET LOCAL session_replication_role = replica`;
+        await transaction`
+          INSERT INTO focowiki.document_projection_records (
+            knowledge_base_id, source_file_public_id, source_revision_public_id,
+            logical_path, normalized_path, title, summary, metadata, headings,
+            entities, content_type, checksum_sha256, byte_count,
+            tokenizer_contract_version, navigation_term_fingerprint_sha256,
+            active
+          )
+          SELECT 'publication-kb', 'capacity-source-' || value,
+                 'capacity-revision-' || value,
+                 'large/file-' || lpad(value::text, 5, '0') || '.md',
+                 'large/file-' || lpad(value::text, 5, '0') || '.md',
+                 'Capacity file ' || value, '', '{}'::jsonb, '{}'::text[],
+                 '{}'::text[], 'text/markdown; charset=utf-8', ${"e".repeat(64)},
+                 1, 'nodejieba-test-v1', ${"f".repeat(64)}, true
+          FROM generate_series(1, 10001) value
+        `;
+        await transaction`
+          INSERT INTO focowiki.document_semantic_directory_memberships (
+            knowledge_base_id, source_revision_public_id, directory_path,
+            page_path
+          )
+          SELECT 'publication-kb', 'capacity-revision-' || value,
+                 'pages/large',
+                 'pages/large/file-' || lpad(value::text, 5, '0') || '.md'
+          FROM generate_series(1, 10001) value
+        `;
+      });
+      await sql`
+        UPDATE focowiki.projection_scope_generations
+        SET state = 'quarantined'
+        WHERE publication_generation_public_id = ${generationId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined', safe_error_code = 'changes_invalid'
+        WHERE public_id = ${generationId}
+      `;
+
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+      await expect(recovery.recoverRecoverableQuarantines({
+        recoveredAt: "2026-08-21T12:08:01.000Z",
+        limit: 1
+      })).resolves.toEqual({
+        generationCount: 1,
+        releasedFactCount: 1,
+        supersededScopeCount: 1
+      });
+      await expect(sql<Array<{
+        generation_state: string;
+        safe_error_code: string;
+        fact_state: string;
+      }>>`
+        SELECT generation.state AS generation_state,
+               generation.safe_error_code, epoch.state AS fact_state
+        FROM focowiki.projection_publication_generations generation
+        JOIN focowiki.projection_generation_documents document
+          ON document.generation_public_id = generation.public_id
+        JOIN focowiki.projection_fact_epochs epoch
+          ON epoch.knowledge_base_id = generation.knowledge_base_id
+         AND epoch.mutation_public_id = document.mutation_public_id
+         AND epoch.fact_epoch = document.fact_epoch
+        WHERE generation.public_id = ${generationId}
+      `).resolves.toEqual([{
+        generation_state: "obsolete",
+        safe_error_code: "navigation_change_limit_remediated",
+        fact_state: "ready"
+      }]);
+      await sql`
+        UPDATE focowiki.projection_scope_generations
+        SET state = 'quarantined'
+        WHERE publication_generation_public_id = ${generationId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined',
+            safe_error_code = 'navigation_changes_invalid'
+        WHERE public_id = ${generationId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_fact_epochs
+        SET state = 'included'
+        WHERE knowledge_base_id = 'publication-kb'
+          AND fact_epoch = 16
+      `;
+      await expect(recovery.recoverRecoverableQuarantines({
+        recoveredAt: "2026-08-21T12:08:02.000Z",
+        limit: 1
+      })).resolves.toEqual({
+        generationCount: 0,
+        releasedFactCount: 0,
+        supersededScopeCount: 0
+      });
+      await sql`
+        DELETE FROM focowiki.document_projection_records
+        WHERE knowledge_base_id = 'publication-kb'
+          AND source_file_public_id LIKE 'capacity-source-%'
+      `;
+    }, 120_000);
+
   it("backs off database resource exhaustion and releases an expired generation",
     async () => {
       const publications = createPostgresDocumentPublicationRepository(database);
