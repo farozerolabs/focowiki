@@ -1,15 +1,21 @@
 import type { DatabaseClient } from "../../db/client.js";
 import { posix } from "node:path";
-import {
-  portableByFileGraphPath,
-  portableIndexDirectoryPath
-} from "@focowiki/okf";
+import { portableIndexDirectoryPath } from "@focowiki/okf";
 import type { DocumentTermBucket } from
   "../application/document-term-routing.js";
+import { mapDocumentProjectionRecord } from
+  "./document-projection-record.js";
 import {
   createPostgresDocumentGraphProjectionReader
 } from
   "./postgres-document-graph-projection-reader.js";
+import {
+  createPostgresDocumentSemanticDirectoryReader
+} from "./postgres-document-semantic-directory-reader.js";
+import {
+  visibleDocumentGraphEvidence,
+  visibleDocumentGraphRelation
+} from "./postgres-document-graph-visibility.js";
 
 const MAXIMUM_TERM_RECORDS = 100_000;
 const MAXIMUM_TERM_PARTS = 10_000;
@@ -21,8 +27,10 @@ export function createPostgresDocumentMachineProjectionReader(
   sql: DatabaseClient
 ) {
   const graphProjection = createPostgresDocumentGraphProjectionReader(sql);
+  const semanticDirectory = createPostgresDocumentSemanticDirectoryReader(sql);
   return {
     ...graphProjection,
+    ...semanticDirectory,
     async readGeneratedPageChecksums(input: {
       knowledgeBaseId: string;
       logicalPaths: readonly string[];
@@ -244,6 +252,7 @@ export function createPostgresDocumentMachineProjectionReader(
     async readDocumentDirectoryState(input: {
       knowledgeBaseId: string;
       scopePath: string;
+      publicationGenerationPublicId?: string;
       includedSourceRevisionPublicIds?: readonly string[];
       excludedActiveSourceFilePublicIds?: readonly string[];
     }) {
@@ -266,11 +275,59 @@ export function createPostgresDocumentMachineProjectionReader(
         SELECT membership.page_path, record.title, record.summary,
                record.metadata, record.headings, record.entities,
                record.content_type, record.checksum_sha256, record.byte_count,
-               0 AS relationship_count
+               CASE
+                 WHEN overlay.source_revision_public_id IS NOT NULL
+                   THEN CASE WHEN overlay.incoming_count
+                          + overlay.outgoing_count > 0 THEN 1 ELSE 0 END
+                 WHEN ${input.publicationGenerationPublicId ?? null}::text
+                        IS NOT NULL
+                   THEN CASE WHEN coalesce(active_degree.incoming_count, 0)
+                          + coalesce(active_degree.outgoing_count, 0) > 0
+                        THEN 1 ELSE 0 END
+                 WHEN EXISTS (
+                   SELECT 1
+                   FROM focowiki.canonical_file_relations relation
+                   WHERE relation.knowledge_base_id
+                           = record.knowledge_base_id
+                     AND (
+                       relation.first_source_revision_public_id
+                         = record.source_revision_public_id
+                       OR relation.second_source_revision_public_id
+                         = record.source_revision_public_id
+                     )
+                     AND (${visibleDocumentGraphRelation(
+                       sql,
+                       includedSourceRevisionPublicIds,
+                       excludedActiveSourceFilePublicIds
+                     )})
+                     AND EXISTS (
+                       SELECT 1
+                       FROM focowiki.relation_directed_evidence evidence
+                       WHERE evidence.knowledge_base_id
+                               = relation.knowledge_base_id
+                         AND evidence.pair_public_id = relation.pair_public_id
+                         AND (${visibleDocumentGraphEvidence(
+                           sql,
+                           includedSourceRevisionPublicIds,
+                           excludedActiveSourceFilePublicIds
+                         )})
+                     )
+                 ) THEN 1 ELSE 0
+               END AS relationship_count
         FROM focowiki.document_semantic_directory_memberships membership
         JOIN focowiki.document_projection_records record
           ON record.knowledge_base_id = membership.knowledge_base_id
          AND record.source_revision_public_id = membership.source_revision_public_id
+        LEFT JOIN focowiki.projection_generation_graph_degrees overlay
+          ON overlay.publication_generation_public_id
+               = ${input.publicationGenerationPublicId ?? null}
+         AND overlay.knowledge_base_id = record.knowledge_base_id
+         AND overlay.source_revision_public_id
+               = record.source_revision_public_id
+        LEFT JOIN focowiki.document_graph_degrees active_degree
+          ON active_degree.knowledge_base_id = record.knowledge_base_id
+         AND active_degree.source_revision_public_id
+               = record.source_revision_public_id
         WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
           AND membership.directory_path = ${input.scopePath}
           AND position('/' in substring(membership.page_path
@@ -281,15 +338,6 @@ export function createPostgresDocumentMachineProjectionReader(
                  <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
         ORDER BY record.normalized_path COLLATE "C"
       `;
-      const relationshipState = await graphProjection
-        .readPerFileGraphDirectoryState({
-          knowledgeBaseId: input.knowledgeBaseId,
-          scopePath: input.scopePath,
-          includedSourceRevisionPublicIds,
-          excludedActiveSourceFilePublicIds
-        });
-      const relationshipPagePaths = new Set(
-        relationshipState.relationshipPagePaths);
       const descendantRows = await sql<Array<{ directory_path: string }>>`
         SELECT DISTINCT (
           ${input.scopePath} || '/' || split_part(
@@ -323,10 +371,7 @@ export function createPostgresDocumentMachineProjectionReader(
         ORDER BY normalized_path COLLATE "C"
       `;
       return {
-        records: rows.map((row) => documentRecord({
-          ...row,
-          relationship_count: relationshipPagePaths.has(row.page_path) ? 1 : 0
-        })),
+        records: rows.map(mapDocumentProjectionRecord),
         childDirectories: descendantRows.map(({ directory_path: scopePath }) => ({
           title: posix.basename(scopePath),
           scopePath,
@@ -403,62 +448,6 @@ export function createPostgresDocumentMachineProjectionReader(
       return rows.map((row) => row.logical_path);
     }
   };
-}
-
-function documentRecord(row: {
-  page_path: string;
-  title: string;
-  summary: string;
-  metadata: Record<string, unknown>;
-  headings: string[];
-  entities: string[];
-  content_type: string;
-  checksum_sha256: string;
-  byte_count: number | string;
-  relationship_count: number | string;
-}): Record<string, unknown> {
-  const path = row.page_path;
-  return {
-    path,
-    title: row.title,
-    summary: row.summary,
-    type: metadataString(row.metadata, "type") ?? "document",
-    ...(metadataString(row.metadata, "description")
-      ? { description: metadataString(row.metadata, "description") } : {}),
-    subjects: metadataStrings(row.metadata, "subjects"),
-    tags: metadataStrings(row.metadata, "tags"),
-    metadata: row.metadata,
-    headings: row.headings,
-    keywords: metadataStrings(row.metadata, "keywords"),
-    ...(metadataString(row.metadata, "language")
-      ? { language: metadataString(row.metadata, "language") } : {}),
-    entities: row.entities,
-    contentType: row.content_type,
-    checksumSha256: row.checksum_sha256,
-    byteCount: Number(row.byte_count),
-    relationshipCount: Number(row.relationship_count),
-    ...(Number(row.relationship_count) > 0
-      ? { graphPath: portableByFileGraphPath(path) } : {})
-  };
-}
-
-function metadataString(
-  metadata: Readonly<Record<string, unknown>>,
-  key: string
-): string | null {
-  const value = metadata[key];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function metadataStrings(
-  metadata: Readonly<Record<string, unknown>>,
-  key: string
-): string[] {
-  const value = metadata[key];
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  return Array.isArray(value) ? value.filter((item): item is string =>
-    typeof item === "string" && item.trim().length > 0)
-    .map((item) => item.trim()) : [];
 }
 
 function sortedUnique(values: readonly string[]): string[] {

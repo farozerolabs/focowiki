@@ -1,11 +1,8 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
-import type { DocumentPublicationFactDelta } from
-  "../application/document-publication-planner.js";
-import { documentPublicationScopeMembers } from
-  "../application/document-publication-snapshot-members.js";
-import { selectReadyDocumentPublicationWindow } from
-  "../application/document-publication-window.js";
+import type { DocumentPublicationFactDelta } from "../application/document-publication-planner.js";
+import { documentPublicationScopeMembers } from "../application/document-publication-snapshot-members.js";
+import { selectReadyDocumentPublicationWindow } from "../application/document-publication-window.js";
 import {
   assertRepositoryIdentity,
   assertRepositoryPositiveInteger,
@@ -14,7 +11,8 @@ import {
 } from "./document-repository-validation.js";
 import { readRelatedSourceRevisionSnapshots } from
   "./postgres-document-publication-related-snapshots.js";
-
+import { replacePostgresDocumentGenerationGraphDegrees } from
+  "./postgres-document-generation-graph-degrees.js";
 export function createPostgresDocumentPublicationCoordinator(
   sql: DatabaseClient
 ) {
@@ -425,6 +423,12 @@ export function createPostgresDocumentPublicationCoordinator(
               )
           `;
         }
+        await replacePostgresDocumentGenerationGraphDegrees({
+          transaction: transaction as unknown as DatabaseClient,
+          generationPublicId: input.generationPublicId,
+          knowledgeBaseId: generation.knowledge_base_id,
+          documents: input.documents, createdAt: input.createdAt
+        });
         const dependencies = input.scopes.flatMap((scope) =>
           scope.dependsOn.map((dependency) => ({
             scope_generation_public_id: publicIdByIdentity.get(scope.identity)!,
@@ -461,12 +465,9 @@ export function createPostgresDocumentPublicationCoordinator(
   };
 }
 type ReadyFactRow = {
-  fact_epoch: number | string;
-  mutation_public_id: string;
-  document_job_public_id: string | null;
-  source_file_public_id: string;
-  source_revision_public_id: string;
-  created_at: Date | string;
+  fact_epoch: number | string; mutation_public_id: string;
+  document_job_public_id: string | null; source_file_public_id: string;
+  source_revision_public_id: string; created_at: Date | string;
 };
 function mapReadyFact(row: ReadyFactRow) {
   return {
@@ -478,7 +479,6 @@ function mapReadyFact(row: ReadyFactRow) {
     readyAt: new Date(row.created_at).toISOString()
   };
 }
-
 function scopePublicId(generationPublicId: string, identity: string): string {
   return `projection-scope-generation-${canonicalHash({
     generationPublicId,

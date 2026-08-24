@@ -20,14 +20,31 @@ export function reconcileDocumentDirectoryNavigation(input: {
   limits: OrderedDirectoryLeafLimits;
   createLeafId(): string;
   changedAt?: string;
+  window?: Readonly<{
+    totalEntryCount: number;
+    firstLeafId: string | null;
+  }>;
 }): {
   leaves: PersistentDirectoryLeaf[];
   touchedLeafIds: string[];
   removedLeafIds: string[];
   entryCount: number;
+  firstLeafId: string | null;
 } {
-  validatePrevious(input.previous);
+  validatePrevious(input.previous, input.window !== undefined);
   validateChanges(input.changes);
+  if (input.window && input.previous.length === 0
+    && input.changes.length === 0) {
+    return {
+      leaves: [], touchedLeafIds: [], removedLeafIds: [],
+      entryCount: input.window.totalEntryCount,
+      firstLeafId: input.window.firstLeafId
+    };
+  }
+  const leftBoundaryLeafId = input.window
+    ? input.previous[0]?.previousLeafId ?? null : null;
+  const rightBoundaryLeafId = input.window
+    ? input.previous.at(-1)?.nextLeafId ?? null : null;
   let leaves = input.previous.map((leaf) => ({
     id: leaf.id,
     entries: leaf.entries.map((entry) => ({ ...entry }))
@@ -76,8 +93,8 @@ export function reconcileDocumentDirectoryNavigation(input: {
     const before = previous.get(leaf.id);
     const value = {
       id: leaf.id,
-      previousLeafId: leaves[index - 1]?.id ?? null,
-      nextLeafId: leaves[index + 1]?.id ?? null,
+      previousLeafId: leaves[index - 1]?.id ?? leftBoundaryLeafId,
+      nextLeafId: leaves[index + 1]?.id ?? rightBoundaryLeafId,
       entries: leaf.entries,
       revision: before?.revision ?? 0,
       ...(before?.changedAt ? { changedAt: before.changedAt } : {})
@@ -90,6 +107,17 @@ export function reconcileDocumentDirectoryNavigation(input: {
     };
   });
   const finalIds = new Set(finalLeaves.map((leaf) => leaf.id));
+  const localPreviousEntryCount = input.previous.reduce(
+    (total, leaf) => total + leaf.entries.length, 0);
+  const localFinalEntryCount = finalLeaves.reduce(
+    (total, leaf) => total + leaf.entries.length, 0);
+  const entryCount = input.window
+    ? input.window.totalEntryCount - localPreviousEntryCount
+      + localFinalEntryCount
+    : localFinalEntryCount;
+  const firstLeafId = leftBoundaryLeafId === null
+    ? finalLeaves[0]?.id ?? rightBoundaryLeafId
+    : input.window?.firstLeafId ?? finalLeaves[0]?.id ?? null;
   return {
     leaves: finalLeaves,
     touchedLeafIds: finalLeaves.filter((leaf) => {
@@ -98,7 +126,8 @@ export function reconcileDocumentDirectoryNavigation(input: {
     }).map((leaf) => leaf.id),
     removedLeafIds: input.previous.filter((leaf) => !finalIds.has(leaf.id))
       .map((leaf) => leaf.id).sort(compareText),
-    entryCount: finalLeaves.reduce((total, leaf) => total + leaf.entries.length, 0)
+    entryCount,
+    firstLeafId
   };
 }
 
@@ -111,13 +140,21 @@ function sameLeaf(
     && JSON.stringify(left.entries) === JSON.stringify(right.entries);
 }
 
-function validatePrevious(leaves: readonly PersistentDirectoryLeaf[]): void {
+function validatePrevious(
+  leaves: readonly PersistentDirectoryLeaf[],
+  allowExternalBoundaries: boolean
+): void {
   const leafIds = new Set<string>();
   const entryIds = new Set<string>();
   for (const [index, leaf] of leaves.entries()) {
     if (!leaf.id || leafIds.has(leaf.id)
-      || leaf.previousLeafId !== (leaves[index - 1]?.id ?? null)
-      || leaf.nextLeafId !== (leaves[index + 1]?.id ?? null)
+      || (index > 0 && leaf.previousLeafId !== leaves[index - 1]!.id)
+      || (index < leaves.length - 1
+        && leaf.nextLeafId !== leaves[index + 1]!.id)
+      || (!allowExternalBoundaries && index === 0
+        && leaf.previousLeafId !== null)
+      || (!allowExternalBoundaries && index === leaves.length - 1
+        && leaf.nextLeafId !== null)
       || !Number.isSafeInteger(leaf.revision) || leaf.revision < 1) {
       throw navigationStateError("previous_state_invalid");
     }

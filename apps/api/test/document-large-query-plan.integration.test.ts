@@ -245,7 +245,9 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
         "canonical_file_relations_first_active_idx",
         "canonical_file_relations_second_active_idx",
         "canonical_file_relations_first_pending_projection_idx",
-        "canonical_file_relations_second_pending_projection_idx"
+        "canonical_file_relations_second_pending_projection_idx",
+        "canonical_file_relations_first_revision_visible_idx",
+        "canonical_file_relations_second_revision_visible_idx"
       ],
       query: `
         WITH closure AS (
@@ -276,10 +278,77 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
         SELECT public_id FROM closure ORDER BY public_id
         LIMIT 501
       `
+    },
+    {
+      name: "directory-local revision membership",
+      expectedIndexes: [
+        "document_semantic_memberships_directory_revision_idx"
+      ],
+      query: `
+        SELECT source_revision_public_id, page_path
+        FROM focowiki.document_semantic_directory_memberships
+        WHERE knowledge_base_id = 'knowledge-base-plan'
+          AND directory_path = 'pages/large'
+        ORDER BY source_revision_public_id
+        LIMIT 501
+      `
+    },
+    {
+      name: "first revision relationship endpoint",
+      expectedIndexes: [
+        "canonical_file_relations_first_revision_visible_idx",
+        "canonical_file_relations_second_revision_visible_idx",
+        "canonical_file_relations_first_file_history_idx",
+        "canonical_file_relations_second_file_history_idx"
+      ],
+      query: `
+        SELECT pair_public_id, second_source_revision_public_id
+        FROM focowiki.canonical_file_relations
+        WHERE knowledge_base_id = 'knowledge-base-plan'
+          AND first_source_revision_public_id = 'source-revision-plan'
+          AND retired_at IS NULL
+        ORDER BY public_id
+        LIMIT 501
+      `
+    },
+    {
+      name: "second revision relationship endpoint",
+      expectedIndexes: [
+        "canonical_file_relations_second_revision_visible_idx",
+        "canonical_file_relations_first_revision_visible_idx",
+        "canonical_file_relations_first_file_history_idx",
+        "canonical_file_relations_second_file_history_idx"
+      ],
+      query: `
+        SELECT pair_public_id, first_source_revision_public_id
+        FROM focowiki.canonical_file_relations
+        WHERE knowledge_base_id = 'knowledge-base-plan'
+          AND second_source_revision_public_id = 'source-revision-plan'
+          AND retired_at IS NULL
+        ORDER BY public_id
+        LIMIT 501
+      `
+    },
+    {
+      name: "visible evidence pair",
+      expectedIndexes: ["relation_directed_evidence_pair_visible_idx"],
+      query: `
+        SELECT source_revision_public_id, target_source_revision_public_id
+        FROM focowiki.relation_directed_evidence
+        WHERE knowledge_base_id = 'knowledge-base-plan'
+          AND pair_public_id = 'pair-plan'
+          AND retired_at IS NULL
+        ORDER BY public_id
+        LIMIT 501
+      `
     }
   ])("uses bounded indexes for $name", async ({ name, expectedIndexes, query }) => {
     const plans = await sql.begin(async (transaction) => {
       await transaction`SET LOCAL enable_seqscan = off`;
+      if (name === "first revision relationship endpoint"
+        || name === "second revision relationship endpoint") {
+        await transaction`SET LOCAL enable_indexonlyscan = off`;
+      }
       return transaction.unsafe(`EXPLAIN (${
         name === "deep waiting-work claim" ? "ANALYZE, BUFFERS, " : ""
       }FORMAT JSON) ${query}`);

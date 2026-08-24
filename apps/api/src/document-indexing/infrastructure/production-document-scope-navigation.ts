@@ -22,20 +22,17 @@ import type { createPostgresDocumentMachineProjectionReader } from
   "./postgres-document-machine-projection-reader.js";
 import { createDirectoryLeafId } from
   "./production-document-processor-support.js";
-
 type RootLimits = {
   rootSummaryLimit: number;
   okfLogMaxEntries: number;
   okfLogMaxBytes: number;
 };
-
 export type DocumentScopeNavigationDependencies = {
   machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
   directoryNavigation?: ReturnType<typeof createPostgresDocumentDirectoryNavigation>;
   directoryLeafLimits?: OrderedDirectoryLeafLimits;
   rootLimits?: RootLimits;
 };
-
 type ProjectedPage = {
   logicalPath: string;
   normalizedPath: string;
@@ -83,6 +80,9 @@ export async function materializeSemanticDirectoryNavigation(input: {
     directoryPath: input.directoryPath,
     projected: input.projected,
     desiredEntries: semanticDirectoryEntries(input.projected),
+    ...(input.projected.navigationCandidateEntryIds
+      ? { candidateEntryIds: input.projected.navigationCandidateEntryIds }
+      : {}),
     changedAt: input.changedAt,
     leafPrefix: "directory-leaf",
     rootEntryKind: "directory",
@@ -250,17 +250,12 @@ async function materializeDirectoryNavigation(input: {
     targetPath: string;
     kind: "file" | "directory";
   }>;
+  candidateEntryIds?: readonly string[];
   leafPrefix?: "directory-leaf" | "extension-leaf";
   rootEntryKind?: string;
   leafEntryKind?: string;
   title?: string;
 }) {
-  const previous = await input.dependencies.directoryNavigation.read({
-    knowledgeBaseId: input.scope.knowledgeBaseId,
-    directoryPath: input.directoryPath,
-    maximumLeaves: 10_000,
-    maximumEntries: 100_000
-  });
   const desiredEntries = input.desiredEntries ?? [
     ...input.projected.pages
       .filter((page) => posix.dirname(page.logicalPath) === input.directoryPath)
@@ -282,8 +277,30 @@ async function materializeDirectoryNavigation(input: {
       kind: "directory" as const
     }))
   ];
+  const delta = input.scope.publicationGenerationPublicId
+    ? await input.dependencies.directoryNavigation.readDelta({
+        knowledgeBaseId: input.scope.knowledgeBaseId,
+        directoryPath: input.directoryPath,
+        desiredEntries: input.candidateEntryIds
+          ? desiredEntries.filter((entry) =>
+              input.candidateEntryIds!.includes(entry.id))
+          : desiredEntries,
+        ...(input.candidateEntryIds
+          ? { candidateEntryIds: input.candidateEntryIds } : {}),
+        maximumChanges: 2_048,
+        maximumLeaves: 10_000,
+        maximumEntries: 100_000
+      })
+    : null;
+  const previous = delta?.mode === "window" ? delta.leaves
+    : await input.dependencies.directoryNavigation.read({
+        knowledgeBaseId: input.scope.knowledgeBaseId,
+        directoryPath: input.directoryPath,
+        maximumLeaves: 10_000,
+        maximumEntries: 100_000
+      });
   const desiredById = new Map(desiredEntries.map((entry) => [entry.id, entry]));
-  const changes = [
+  const changes = delta?.mode === "window" ? [...delta.changes] : [
     ...previous.flatMap((leaf) => leaf.entries)
       .filter((entry) => !desiredById.has(entry.id))
       .map((entry) => ({ entryId: entry.id, desiredEntry: null })),
@@ -294,6 +311,10 @@ async function materializeDirectoryNavigation(input: {
   const navigation = reconcileDocumentDirectoryNavigation({
     previous,
     changes,
+    ...(delta?.mode === "window" ? { window: {
+      totalEntryCount: delta.totalEntryCount,
+      firstLeafId: delta.firstLeafId
+    } } : {}),
     limits: input.dependencies.directoryLeafLimits,
     changedAt: input.changedAt,
     createLeafId: () => createDirectoryLeafId({
@@ -308,11 +329,15 @@ async function materializeDirectoryNavigation(input: {
   const touchedLeaves = navigation.leaves.filter((leaf) =>
     touchedLeafIds.has(leaf.id));
   const removeDirectory = input.removeWhenEmpty && navigation.entryCount === 0;
-  const navigationPages = removeDirectory ? []
+  const navigationChanged = navigation.touchedLeafIds.length > 0
+    || navigation.removedLeafIds.length > 0;
+  const navigationPages = removeDirectory
+    || (!navigationChanged && delta?.mode === "window" && delta.rootExists)
+    ? []
     : renderDocumentDirectoryMutationPages({
         directoryPath: input.directoryPath,
         entryCount: navigation.entryCount,
-        firstLeafId: navigation.leaves[0]?.id ?? null,
+        firstLeafId: navigation.firstLeafId,
         touchedLeaves,
         title: input.title ?? posix.basename(input.directoryPath),
         rootEntryKind: input.rootEntryKind ?? "extension_version",
@@ -371,19 +396,34 @@ export async function projectSemanticDirectory(input: {
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
 }) {
-  const state = await input.dependencies.machineProjection
-    .readDocumentDirectoryState({
-      knowledgeBaseId: input.knowledgeBaseId,
-      scopePath: input.scopePath,
-      includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
-      excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
-    });
+  const state = input.excludedActiveSourceFilePublicIds.length > 0
+    ? await input.dependencies.machineProjection.readSemanticDirectoryDeltaState({
+        knowledgeBaseId: input.knowledgeBaseId,
+        scopePath: input.scopePath,
+        affectedSourceFilePublicIds:
+          input.excludedActiveSourceFilePublicIds,
+        includedSourceRevisionPublicIds:
+          input.includedSourceRevisionPublicIds
+      })
+    : await input.dependencies.machineProjection.readSemanticDirectoryState({
+        knowledgeBaseId: input.knowledgeBaseId,
+        scopePath: input.scopePath,
+        includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
+        excludedActiveSourceFilePublicIds:
+          input.excludedActiveSourceFilePublicIds
+      });
+  const navigationCandidateEntryIds = "navigationCandidateEntryIds" in state
+    && Array.isArray(state.navigationCandidateEntryIds)
+    && state.navigationCandidateEntryIds.every((value) =>
+      typeof value === "string")
+    ? state.navigationCandidateEntryIds as string[] : undefined;
   return {
     scopePath: input.scopePath,
     pages: [] as ProjectedPage[],
     removedLogicalPaths: [] as string[],
     records: state.records,
-    childDirectories: state.childDirectories
+    childDirectories: state.childDirectories,
+    navigationCandidateEntryIds
   };
 }
 
@@ -450,7 +490,6 @@ function requireDirectoryNavigation(
   return { ...input, directoryNavigation: input.directoryNavigation,
     directoryLeafLimits: limits };
 }
-
 function scopeNavigationError(code: string): Error & { code: string } {
   return Object.assign(new Error(`Projection scope navigation error: ${code}`), {
     code
