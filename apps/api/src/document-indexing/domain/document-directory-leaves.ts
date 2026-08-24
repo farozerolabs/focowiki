@@ -33,6 +33,37 @@ export type OrderedDirectoryEntryComparator = (
   right: OrderedDirectoryEntry
 ) => number;
 
+export function buildDirectoryLeaves(input: {
+  entries: readonly OrderedDirectoryEntry[];
+  limits: OrderedDirectoryLeafLimits;
+  createLeafId: () => string;
+  compareEntries?: OrderedDirectoryEntryComparator;
+}): OrderedDirectoryLeaf[] {
+  validateLimits(input.limits);
+  const compareEntries = input.compareEntries ?? compareOrderedDirectoryEntries;
+  const entries = [...input.entries].sort(compareEntries);
+  const leaves: OrderedDirectoryLeaf[] = [];
+  let current: OrderedDirectoryLeaf | undefined;
+  let currentBytes = 2;
+  for (const entry of entries) {
+    const entryBytes = Buffer.byteLength(JSON.stringify(entry), "utf8");
+    if (entryBytes + 2 > input.limits.maxBytes) {
+      throw new Error("A directory entry exceeds the configured leaf byte limit");
+    }
+    const nextBytes = currentBytes + entryBytes
+      + (current?.entries.length ? 1 : 0);
+    if (!current || current.entries.length >= input.limits.maxEntries
+      || nextBytes > input.limits.maxBytes) {
+      current = { id: input.createLeafId(), entries: [] };
+      leaves.push(current);
+      currentBytes = 2;
+    }
+    current.entries.push(entry);
+    currentBytes += entryBytes + (current.entries.length > 1 ? 1 : 0);
+  }
+  return leaves;
+}
+
 export function insertDirectoryEntry(input: {
   leaves: OrderedDirectoryLeaf[];
   entry: OrderedDirectoryEntry;
