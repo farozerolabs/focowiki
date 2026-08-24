@@ -10,9 +10,14 @@ import {
   visibleDocumentGraphRecord as visibleRecord,
   visibleDocumentGraphRelation as visibleRelation
 } from "./postgres-document-graph-visibility.js";
+import {
+  readAffectedGraphChildScopes,
+  readBaseGraphDirectoryRecordKeys,
+  readGraphChildScopes,
+  readMachineResourcePaths
+} from "./postgres-document-graph-directory-scope-reader.js";
 
 const GRAPH_DIRECTORY_READ_PAGE_SIZE = 1_000;
-const MAXIMUM_DIRECTORY_RECORDS = 10_000;
 
 type GraphDirectoryRow = PerFileGraphRow & {
   local_path: string;
@@ -40,11 +45,23 @@ export function createPostgresDocumentGraphDirectoryScanner(
     scopePath: string;
     includedSourceRevisionPublicIds?: readonly string[];
     excludedActiveSourceFilePublicIds?: readonly string[];
+    affectedSourceFilePublicIds?: readonly string[];
+    baseDeterministicChangedAt?: string | null;
+    affectedLogicalPaths?: readonly string[];
     signal?: AbortSignal;
+    checkpoint?: () => Promise<void>;
     onRecords(records: readonly Record<string, unknown>[]): Promise<void> | void;
   }) {
     const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
     const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds ?? []);
+    const affected = input.affectedSourceFilePublicIds === undefined
+      ? null : sortedUnique(input.affectedSourceFilePublicIds);
+    if (affected !== null && affected.length === 0) {
+      return {
+        recordCount: 0, childDirectories: [], resourcePaths: [],
+        removedRecordKeys: []
+      };
+    }
     return sql.begin(async (rawTransaction) => {
       const transaction = rawTransaction as unknown as DatabaseClient;
       await transaction`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`;
@@ -58,6 +75,7 @@ export function createPostgresDocumentGraphDirectoryScanner(
           scopePath: input.scopePath,
           includedSourceRevisionPublicIds: included,
           excludedActiveSourceFilePublicIds: excluded,
+          affectedSourceFilePublicIds: affected,
           cursor,
           ...(input.signal ? { signal: input.signal } : {})
         });
@@ -67,6 +85,7 @@ export function createPostgresDocumentGraphDirectoryScanner(
           await input.onRecords(records);
           recordCount += records.length;
         }
+        await input.checkpoint?.();
         const last = rows.at(-1)!;
         cursor = {
           local_path: last.local_path,
@@ -82,17 +101,36 @@ export function createPostgresDocumentGraphDirectoryScanner(
         await input.onRecords(finalRecords);
         recordCount += finalRecords.length;
       }
-      const [childScopes, resourcePaths] = await Promise.all([
-        readGraphChildScopes(transaction, {
+      const [childScopes, resourcePaths, removedRecordKeys] = await Promise.all([
+        affected !== null && input.affectedLogicalPaths
+          ? readAffectedGraphChildScopes(transaction, {
+              knowledgeBaseId: input.knowledgeBaseId,
+              scopePath: input.scopePath,
+              affectedLogicalPaths: input.affectedLogicalPaths,
+              includedSourceRevisionPublicIds: included,
+              excludedActiveSourceFilePublicIds: excluded
+            })
+          : readGraphChildScopes(transaction, {
           knowledgeBaseId: input.knowledgeBaseId,
           scopePath: input.scopePath,
           includedSourceRevisionPublicIds: included,
-          excludedActiveSourceFilePublicIds: excluded
-        }),
-        readMachineResourcePaths(transaction, {
-          knowledgeBaseId: input.knowledgeBaseId,
-          machineDirectory: portableGraphDirectoryPath(input.scopePath)
-        })
+          excludedActiveSourceFilePublicIds: excluded,
+          affectedSourceFilePublicIds: affected
+          }),
+        affected === null
+          ? readMachineResourcePaths(transaction, {
+              knowledgeBaseId: input.knowledgeBaseId,
+              machineDirectory: portableGraphDirectoryPath(input.scopePath)
+            })
+          : Promise.resolve([]),
+        affected !== null && input.baseDeterministicChangedAt
+          ? readBaseGraphDirectoryRecordKeys(transaction, {
+              knowledgeBaseId: input.knowledgeBaseId,
+              scopePath: input.scopePath,
+              affectedSourceFilePublicIds: affected,
+              baseDeterministicChangedAt: input.baseDeterministicChangedAt
+            })
+          : Promise.resolve([])
       ]);
       return {
         recordCount,
@@ -101,13 +139,28 @@ export function createPostgresDocumentGraphDirectoryScanner(
           scopePath,
           path: `${portableGraphDirectoryPath(scopePath)}/index.json`
         })),
-        resourcePaths
+        resourcePaths,
+        removedRecordKeys
       };
     });
   }
 
   return {
     scanGraphDirectoryState,
+    async scanGraphDirectoryDeltaState(input: {
+      knowledgeBaseId: string;
+      scopePath: string;
+      affectedSourceFilePublicIds: readonly string[];
+      includedSourceRevisionPublicIds?: readonly string[];
+      excludedActiveSourceFilePublicIds?: readonly string[];
+      signal?: AbortSignal;
+      checkpoint?: () => Promise<void>;
+      baseDeterministicChangedAt?: string | null;
+      affectedLogicalPaths?: readonly string[];
+      onRecords(records: readonly Record<string, unknown>[]): Promise<void> | void;
+    }) {
+      return scanGraphDirectoryState(input);
+    },
     async readGraphDirectoryState(input: {
       knowledgeBaseId: string;
       scopePath: string;
@@ -135,6 +188,7 @@ async function readGraphDirectoryPage(sql: DatabaseClient, input: {
   scopePath: string;
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
+  affectedSourceFilePublicIds: readonly string[] | null;
   cursor: GraphDirectoryCursor | null;
   signal?: AbortSignal;
 }): Promise<GraphDirectoryRow[]> {
@@ -196,6 +250,11 @@ async function readGraphDirectoryPage(sql: DatabaseClient, input: {
       ) second_page ON true
       WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
         AND (${visibleRelation(sql, included, excluded)})
+        AND (${input.affectedSourceFilePublicIds === null}
+          OR relation.first_source_file_public_id
+               = ANY(${input.affectedSourceFilePublicIds ?? []}::text[])
+          OR relation.second_source_file_public_id
+               = ANY(${input.affectedSourceFilePublicIds ?? []}::text[]))
     ), scoped_rows AS (
       SELECT graph_rows.*,
              CASE WHEN first_direct THEN first_path ELSE second_path END
@@ -334,79 +393,6 @@ function finishRelationshipGroup(
       : group.directions.has("outgoing") ? "outgoing" : "incoming",
     evidence: group.evidence
   };
-}
-
-async function readGraphChildScopes(sql: DatabaseClient, input: {
-  knowledgeBaseId: string;
-  scopePath: string;
-  includedSourceRevisionPublicIds: readonly string[];
-  excludedActiveSourceFilePublicIds: readonly string[];
-}): Promise<string[]> {
-  const included = input.includedSourceRevisionPublicIds;
-  const excluded = input.excludedActiveSourceFilePublicIds;
-  const rows = await sql<Array<{ directory_path: string }>>`
-    SELECT DISTINCT membership.directory_path COLLATE "C" AS directory_path
-    FROM focowiki.canonical_file_relations relation
-    JOIN focowiki.relation_directed_evidence evidence
-      ON evidence.knowledge_base_id = relation.knowledge_base_id
-     AND evidence.pair_public_id = relation.pair_public_id
-     AND (${visibleEvidence(sql, included, excluded)})
-    JOIN focowiki.document_projection_records first_record
-      ON first_record.knowledge_base_id = relation.knowledge_base_id
-     AND first_record.source_revision_public_id
-       = relation.first_source_revision_public_id
-     AND (${visibleRecord(sql, "first_record", included, excluded)})
-    JOIN focowiki.document_projection_records second_record
-      ON second_record.knowledge_base_id = relation.knowledge_base_id
-     AND second_record.source_revision_public_id
-       = relation.second_source_revision_public_id
-     AND (${visibleRecord(sql, "second_record", included, excluded)})
-    JOIN LATERAL (
-      SELECT endpoint.directory_path
-      FROM focowiki.document_semantic_directory_memberships endpoint
-      WHERE endpoint.knowledge_base_id = relation.knowledge_base_id
-        AND endpoint.source_revision_public_id IN (
-          first_record.source_revision_public_id,
-          second_record.source_revision_public_id
-        )
-    ) membership ON true
-    WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (${visibleRelation(sql, included, excluded)})
-      AND left(membership.directory_path, char_length(${input.scopePath}) + 1)
-        = ${`${input.scopePath}/`}
-    ORDER BY directory_path
-    LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
-  `;
-  if (rows.length > MAXIMUM_DIRECTORY_RECORDS) {
-    throw scannerError("graph_directory_child_limit_exceeded");
-  }
-  return [...new Set(rows.flatMap((row) => {
-    const relative = row.directory_path.slice(input.scopePath.length + 1);
-    const child = relative.split("/")[0];
-    return child ? [`${input.scopePath}/${child}`] : [];
-  }))].sort();
-}
-
-async function readMachineResourcePaths(sql: DatabaseClient, input: {
-  knowledgeBaseId: string;
-  machineDirectory: string;
-}): Promise<string[]> {
-  const rows = await sql<Array<{ logical_path: string }>>`
-    SELECT logical_path
-    FROM focowiki.generated_page_heads
-    WHERE knowledge_base_id = ${input.knowledgeBaseId}
-      AND left(normalized_path, char_length(${input.machineDirectory}) + 1)
-        = ${`${input.machineDirectory}/`}
-      AND right(normalized_path, 5) = '.json'
-    ORDER BY normalized_path COLLATE "C"
-    LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
-  `;
-  if (rows.length > MAXIMUM_DIRECTORY_RECORDS) {
-    throw scannerError("machine_resource_path_limit_exceeded");
-  }
-  return rows.map((row) => row.logical_path).filter((path) =>
-    posix.dirname(path) === input.machineDirectory
-    && posix.basename(path) !== "index.json");
 }
 
 function machineEvidenceKind(value: PerFileGraphRow["evidence_kind"]):

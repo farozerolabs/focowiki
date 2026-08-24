@@ -23,6 +23,8 @@ export function createPostgresDocumentPublicationSnapshot(
           renderer_contract_version: string;
           deterministic_changed_at: Date | string;
           base_generation_public_id: string | null;
+          planning_mode: "initial" | "delta" | "repair";
+          base_deterministic_changed_at: Date | string | null;
         }>>`
           SELECT scope.public_id, scope.publication_generation_public_id,
                  scope.knowledge_base_id, scope.scope_identity,
@@ -31,10 +33,15 @@ export function createPostgresDocumentPublicationSnapshot(
                  scope.input_snapshot_fingerprint_sha256,
                  generation.renderer_contract_version,
                  generation.deterministic_changed_at,
-                 generation.base_generation_public_id
+                 generation.base_generation_public_id,
+                 generation.planning_mode,
+                 base_generation.deterministic_changed_at
+                   AS base_deterministic_changed_at
           FROM focowiki.projection_scope_generations scope
           JOIN focowiki.projection_publication_generations generation
             ON generation.public_id = scope.publication_generation_public_id
+          LEFT JOIN focowiki.projection_publication_generations base_generation
+            ON base_generation.public_id = generation.base_generation_public_id
           WHERE scope.public_id = ${scopeGenerationPublicId}
         `;
         const scope = scopes[0];
@@ -63,6 +70,35 @@ export function createPostgresDocumentPublicationSnapshot(
         if (members.length > MAXIMUM_SCOPE_MEMBERS) {
           throw repositoryContractError("scope_snapshot_member_limit");
         }
+        const affectedSources = await transaction<Array<{
+          source_file_public_id: string;
+        }>>`
+          SELECT DISTINCT source_file_public_id COLLATE "C"
+                 AS source_file_public_id
+          FROM focowiki.projection_generation_affected_members
+          WHERE publication_generation_public_id
+                  = ${scope.publication_generation_public_id}
+            AND source_file_public_id IS NOT NULL
+          ORDER BY source_file_public_id
+          LIMIT ${MAXIMUM_SCOPE_MEMBERS + 1}
+        `;
+        if (affectedSources.length > MAXIMUM_SCOPE_MEMBERS) {
+          throw repositoryContractError("affected_source_closure_limit");
+        }
+        const affectedPaths = await transaction<Array<{
+          member_public_id: string;
+        }>>`
+          SELECT member_public_id
+          FROM focowiki.projection_generation_affected_members
+          WHERE publication_generation_public_id
+                  = ${scope.publication_generation_public_id}
+            AND member_kind IN ('prior_path', 'successor_path')
+          ORDER BY member_kind, member_public_id COLLATE "C"
+          LIMIT ${MAXIMUM_SCOPE_MEMBERS + 1}
+        `;
+        if (affectedPaths.length > MAXIMUM_SCOPE_MEMBERS) {
+          throw repositoryContractError("affected_path_closure_limit");
+        }
         const basePages = scope.base_generation_public_id === null ? []
           : await transaction<Array<{
             normalized_path: string;
@@ -72,14 +108,24 @@ export function createPostgresDocumentPublicationSnapshot(
             object_id: string | null;
             checksum_sha256: string | null;
             byte_count: number | string | null;
+            storage_key: string | null;
+            content_type: string | null;
+            object_format: string | null;
           }>>`
              SELECT page.logical_path, page.normalized_path, page.action,
                     page.entry_kind, page.object_id, page.checksum_sha256,
-                    page.byte_count
-             FROM focowiki.projection_scope_generation_pages page
-             WHERE page.publication_generation_public_id
-                     = ${scope.base_generation_public_id}
-               AND page.owner_scope_identity = ${scope.scope_identity}
+                    page.byte_count, registration.storage_key,
+                    registration.content_type, registration.object_format
+             FROM focowiki.projection_artifact_owners owner
+             JOIN focowiki.projection_scope_generation_pages page
+               ON page.publication_generation_public_id
+                    = owner.generation_public_id
+              AND page.normalized_path = owner.normalized_path
+              AND page.owner_scope_identity = owner.owner_scope_identity
+             LEFT JOIN focowiki.object_registrations registration
+               ON registration.object_id = page.object_id
+             WHERE owner.knowledge_base_id = ${scope.knowledge_base_id}
+               AND owner.owner_scope_identity = ${scope.scope_identity}
              ORDER BY page.normalized_path COLLATE "C"
             LIMIT ${MAXIMUM_BASE_ACTIONS + 1}
           `;
@@ -99,9 +145,17 @@ export function createPostgresDocumentPublicationSnapshot(
           inputSnapshotFingerprintSha256:
             scope.input_snapshot_fingerprint_sha256,
           rendererContractVersion: scope.renderer_contract_version,
+          planningMode: scope.planning_mode,
+          affectedSourceFilePublicIds: affectedSources.map((item) =>
+            item.source_file_public_id),
           deterministicChangedAt:
             new Date(scope.deterministic_changed_at).toISOString(),
           baseGenerationPublicId: scope.base_generation_public_id,
+          baseDeterministicChangedAt: scope.base_deterministic_changed_at
+            ? new Date(scope.base_deterministic_changed_at).toISOString()
+            : null,
+          affectedLogicalPaths: affectedPaths.map((item) =>
+            item.member_public_id),
           members: members.map((member) => ({
             kind: member.member_kind,
             publicId: member.member_public_id,
@@ -116,7 +170,10 @@ export function createPostgresDocumentPublicationSnapshot(
             entryKind: page.entry_kind,
             objectId: page.object_id,
             checksumSha256: page.checksum_sha256,
-            byteCount: page.byte_count === null ? null : Number(page.byte_count)
+            byteCount: page.byte_count === null ? null : Number(page.byte_count),
+            storageKey: page.storage_key,
+            contentType: page.content_type,
+            objectFormat: page.object_format
           }))
         };
       });

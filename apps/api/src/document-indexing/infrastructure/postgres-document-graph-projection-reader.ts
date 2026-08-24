@@ -147,11 +147,31 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
 
     async readGraphCatalogState(input: {
       knowledgeBaseId: string;
+      publicationGenerationPublicId?: string;
       includedSourceRevisionPublicIds?: readonly string[];
       excludedActiveSourceFilePublicIds?: readonly string[];
     }) {
       const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
       const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds ?? []);
+      if (input.publicationGenerationPublicId) {
+        const statistics = await sql<Array<{
+          relationship_count: number | string;
+        }>>`
+          SELECT relationship_count
+          FROM focowiki.projection_generation_statistics
+          WHERE publication_generation_public_id
+                  = ${input.publicationGenerationPublicId}
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+        `;
+        const relationshipCount = Number(
+          statistics[0]?.relationship_count ?? -1
+        );
+        if (!Number.isSafeInteger(relationshipCount)
+          || relationshipCount < 0) {
+          throw graphReaderError("graph_catalog_statistics_missing");
+        }
+        return { relationshipCount };
+      }
       const rows = await sql<Array<{ relationship_count: number | string }>>`
         SELECT count(DISTINCT relation.public_id) AS relationship_count
         FROM focowiki.canonical_file_relations relation

@@ -1,8 +1,6 @@
 import type { DatabaseClient } from "../../db/client.js";
 import { posix } from "node:path";
 import { portableIndexDirectoryPath } from "@focowiki/okf";
-import type { DocumentTermBucket } from
-  "../application/document-term-routing.js";
 import { mapDocumentProjectionRecord } from
   "./document-projection-record.js";
 import {
@@ -16,10 +14,9 @@ import {
   visibleDocumentGraphEvidence,
   visibleDocumentGraphRelation
 } from "./postgres-document-graph-visibility.js";
+import { createPostgresDocumentNavigationTermReader } from
+  "./postgres-document-navigation-term-reader.js";
 
-const MAXIMUM_TERM_RECORDS = 100_000;
-const MAXIMUM_TERM_PARTS = 10_000;
-const MAXIMUM_DIRECTORY_RECORDS = 10_000;
 const MAXIMUM_ROOT_RECORDS = 100_000;
 const MAXIMUM_CHECKSUM_PATHS = 100_000;
 
@@ -28,9 +25,34 @@ export function createPostgresDocumentMachineProjectionReader(
 ) {
   const graphProjection = createPostgresDocumentGraphProjectionReader(sql);
   const semanticDirectory = createPostgresDocumentSemanticDirectoryReader(sql);
+  const navigationTerms = createPostgresDocumentNavigationTermReader(sql);
   return {
     ...graphProjection,
     ...semanticDirectory,
+    ...navigationTerms,
+    async resolveSourceFilePublicIdsForRevisions(input: {
+      knowledgeBaseId: string;
+      sourceRevisionPublicIds: readonly string[];
+    }): Promise<string[]> {
+      const revisions = sortedUnique(input.sourceRevisionPublicIds);
+      if (revisions.length === 0) return [];
+      if (revisions.length > 10_000) {
+        throw projectionReaderError("affected_revision_limit_exceeded");
+      }
+      const rows = await sql<Array<{ source_file_public_id: string }>>`
+        SELECT DISTINCT source_file_public_id COLLATE "C"
+               AS source_file_public_id
+        FROM focowiki.document_projection_records
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND source_revision_public_id = ANY(${revisions}::text[])
+        ORDER BY source_file_public_id
+        LIMIT ${revisions.length + 1}
+      `;
+      if (rows.length > revisions.length) {
+        throw projectionReaderError("affected_source_limit_exceeded");
+      }
+      return rows.map((row) => row.source_file_public_id);
+    },
     async readGeneratedPageChecksums(input: {
       knowledgeBaseId: string;
       logicalPaths: readonly string[];
@@ -55,6 +77,7 @@ export function createPostgresDocumentMachineProjectionReader(
 
     async readRootProjectionState(input: {
       knowledgeBaseId: string;
+      publicationGenerationPublicId?: string;
       includedSourceRevisionPublicIds?: readonly string[];
       excludedActiveSourceFilePublicIds?: readonly string[];
       logLimit: number;
@@ -63,6 +86,98 @@ export function createPostgresDocumentMachineProjectionReader(
         input.includedSourceRevisionPublicIds ?? []);
       const excludedActiveSourceFilePublicIds = sortedUnique(
         input.excludedActiveSourceFilePublicIds ?? []);
+      if (input.publicationGenerationPublicId) {
+        const [knowledgeBases, statistics, currentRecords, previousLogs] =
+          await Promise.all([
+            sql<Array<{
+              public_id: string; name: string; description: string | null;
+            }>>`
+              SELECT public_id, name, description
+              FROM focowiki.knowledge_bases
+              WHERE public_id = ${input.knowledgeBaseId}
+                AND deleted_at IS NULL
+              LIMIT 1
+            `,
+            sql<Array<{
+              source_file_count: number | string;
+              relationship_count: number | string;
+              root_entry_count: number | string;
+            }>>`
+              SELECT source_file_count, relationship_count, root_entry_count
+              FROM focowiki.projection_generation_statistics
+              WHERE publication_generation_public_id
+                      = ${input.publicationGenerationPublicId}
+                AND knowledge_base_id = ${input.knowledgeBaseId}
+            `,
+            sql<Array<{
+              source_revision_public_id: string;
+              logical_path: string;
+              title: string;
+              created_at: Date | string;
+            }>>`
+              SELECT source_revision_public_id, logical_path, title, created_at
+              FROM focowiki.document_projection_records
+              WHERE knowledge_base_id = ${input.knowledgeBaseId}
+                AND source_revision_public_id
+                      = ANY(${includedSourceRevisionPublicIds}::text[])
+              ORDER BY normalized_path COLLATE "C"
+              LIMIT ${Math.max(1, includedSourceRevisionPublicIds.length + 1)}
+            `,
+            input.logLimit > 0 ? sql<Array<{
+              terminal_at: Date | string;
+              logical_path: string;
+              title: string;
+            }>>`
+              SELECT job.terminal_at, record.logical_path, record.title
+              FROM focowiki.document_processing_jobs job
+              JOIN focowiki.document_projection_records record
+                ON record.knowledge_base_id = job.knowledge_base_id
+               AND record.source_file_public_id = job.source_file_public_id
+               AND record.source_revision_public_id
+                     = job.source_revision_public_id
+               AND record.active
+              WHERE job.knowledge_base_id = ${input.knowledgeBaseId}
+                AND job.state = 'available'
+                AND job.terminal_at IS NOT NULL
+                AND job.source_file_public_id
+                      <> ALL(${excludedActiveSourceFilePublicIds}::text[])
+              ORDER BY job.terminal_at DESC, job.public_id COLLATE "C"
+              LIMIT ${Math.min(input.logLimit, 10_000)}
+            ` : Promise.resolve([])
+          ]);
+        const knowledgeBase = knowledgeBases[0];
+        const statistic = statistics[0];
+        if (!knowledgeBase || !statistic
+          || currentRecords.length > includedSourceRevisionPublicIds.length) {
+          throw projectionReaderError("root_projection_statistics_missing");
+        }
+        return {
+          knowledgeBase: {
+            id: knowledgeBase.public_id,
+            name: knowledgeBase.name,
+            description: knowledgeBase.description
+          },
+          sourceFileCount: Number(statistic.source_file_count),
+          graphEdgeCount: Number(statistic.relationship_count),
+          rootEntryCount: Number(statistic.root_entry_count),
+          currentLogEntries: currentRecords.map((record) => ({
+            occurredAt: normalizeTimestamp(record.created_at),
+            action: "Updated page",
+            message: `Updated pages/${record.logical_path}.`,
+            links: [{
+              path: `pages/${record.logical_path}`, title: record.title
+            }]
+          })),
+          previousLogEntries: previousLogs.map((record) => ({
+            occurredAt: normalizeTimestamp(record.terminal_at),
+            action: "Updated page",
+            message: `Updated pages/${record.logical_path}.`,
+            links: [{
+              path: `pages/${record.logical_path}`, title: record.title
+            }]
+          }))
+        };
+      }
       const [knowledgeBases, records, graph, previousLogs] = await Promise.all([
         sql<Array<{ public_id: string; name: string; description: string | null }>>`
           SELECT public_id, name, description
@@ -152,103 +267,6 @@ export function createPostgresDocumentMachineProjectionReader(
         }))
       };
     },
-    async readNavigationTermBucketState(input: {
-      knowledgeBaseId: string;
-      affectedSourceFilePublicIds: readonly string[];
-    }): Promise<{
-      catalogBuckets: DocumentTermBucket[];
-      affectedBuckets: DocumentTermBucket[];
-    }> {
-      const affectedSourceFilePublicIds = sortedUnique(
-        input.affectedSourceFilePublicIds);
-      const rows = await sql<Array<{
-        bucket: string;
-        affected: boolean;
-        unaffected: boolean;
-      }>>`
-        SELECT term.bucket,
-               bool_or(record.source_file_public_id
-                 = ANY(${affectedSourceFilePublicIds}::text[])) AS affected,
-               bool_or(record.source_file_public_id
-                 <> ALL(${affectedSourceFilePublicIds}::text[])) AS unaffected
-        FROM focowiki.document_navigation_terms term
-        JOIN focowiki.document_projection_records record
-          ON record.knowledge_base_id = term.knowledge_base_id
-         AND record.source_revision_public_id = term.source_revision_public_id
-        WHERE term.knowledge_base_id = ${input.knowledgeBaseId}
-          AND record.active
-        GROUP BY term.bucket
-        ORDER BY term.bucket COLLATE "C"
-      `;
-      if (rows.some((row) => !isDocumentTermBucket(row.bucket))) {
-        throw projectionReaderError("navigation_term_bucket_invalid");
-      }
-      return {
-        catalogBuckets: rows.filter((row) => row.unaffected)
-          .map((row) => row.bucket as DocumentTermBucket),
-        affectedBuckets: rows.filter((row) => row.affected)
-          .map((row) => row.bucket as DocumentTermBucket)
-      };
-    },
-
-    async listNavigationTermBucketsForSources(input: {
-      knowledgeBaseId: string;
-      sourceFilePublicIds: readonly string[];
-    }): Promise<DocumentTermBucket[]> {
-      const sourceFilePublicIds = sortedUnique(input.sourceFilePublicIds);
-      if (sourceFilePublicIds.length === 0) return [];
-      if (sourceFilePublicIds.length > MAXIMUM_DIRECTORY_RECORDS) {
-        throw projectionReaderError("navigation_term_source_limit_exceeded");
-      }
-      const rows = await sql<Array<{ bucket: string }>>`
-        SELECT DISTINCT term.bucket COLLATE "C" AS bucket
-        FROM focowiki.document_navigation_terms term
-        JOIN focowiki.document_projection_records record
-          ON record.knowledge_base_id = term.knowledge_base_id
-         AND record.source_revision_public_id = term.source_revision_public_id
-        WHERE term.knowledge_base_id = ${input.knowledgeBaseId}
-          AND record.source_file_public_id
-                = ANY(${sourceFilePublicIds}::text[])
-        ORDER BY bucket
-        LIMIT 7
-      `;
-      if (rows.length > 6 || rows.some((row) =>
-        !isDocumentTermBucket(row.bucket))) {
-        throw projectionReaderError("navigation_term_bucket_invalid");
-      }
-      return rows.map((row) => row.bucket as DocumentTermBucket);
-    },
-
-    async readNavigationTermCatalogState(input: {
-      knowledgeBaseId: string;
-      includedSourceRevisionPublicIds?: readonly string[];
-      excludedActiveSourceFilePublicIds?: readonly string[];
-    }): Promise<{ buckets: DocumentTermBucket[] }> {
-      const includedSourceRevisionPublicIds = sortedUnique(
-        input.includedSourceRevisionPublicIds ?? []);
-      const excludedActiveSourceFilePublicIds = sortedUnique(
-        input.excludedActiveSourceFilePublicIds ?? []);
-      const rows = await sql<Array<{ bucket: string }>>`
-        SELECT DISTINCT term.bucket COLLATE "C" AS bucket
-        FROM focowiki.document_navigation_terms term
-        JOIN focowiki.document_projection_records record
-          ON record.knowledge_base_id = term.knowledge_base_id
-         AND record.source_revision_public_id = term.source_revision_public_id
-        WHERE term.knowledge_base_id = ${input.knowledgeBaseId}
-          AND (record.source_revision_public_id
-                 = ANY(${includedSourceRevisionPublicIds}::text[])
-            OR (record.active AND record.source_file_public_id
-                 <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
-        ORDER BY bucket
-        LIMIT 7
-      `;
-      if (rows.length > 6 || rows.some((row) =>
-        !isDocumentTermBucket(row.bucket))) {
-        throw projectionReaderError("navigation_term_catalog_invalid");
-      }
-      return { buckets: rows.map((row) => row.bucket as DocumentTermBucket) };
-    },
-
     async readDocumentDirectoryState(input: {
       knowledgeBaseId: string;
       scopePath: string;
@@ -380,72 +398,6 @@ export function createPostgresDocumentMachineProjectionReader(
         resourcePaths: headRows.map((row) => row.logical_path).filter((path) =>
           posix.basename(path) !== "index.json")
       };
-    },
-
-    async listNavigationTermRecords(input: {
-      knowledgeBaseId: string;
-      bucket: DocumentTermBucket;
-      includedSourceRevisionPublicIds?: readonly string[];
-      excludedActiveSourceFilePublicIds?: readonly string[];
-    }): Promise<ReadonlyArray<Record<string, unknown>>> {
-      const includedSourceRevisionPublicIds = sortedUnique(
-        input.includedSourceRevisionPublicIds ?? []);
-      const excludedActiveSourceFilePublicIds = sortedUnique(
-        input.excludedActiveSourceFilePublicIds ?? []);
-      return sql<Array<{ term: string; postings: unknown }>>`
-        SELECT term.term,
-               jsonb_agg(
-                 jsonb_build_object(
-                   'path', posting.page_path,
-                   'fields', posting.fields
-                 ) ORDER BY posting.page_path COLLATE "C"
-               ) AS postings
-        FROM focowiki.document_navigation_terms term
-        JOIN focowiki.document_navigation_postings posting
-          ON posting.knowledge_base_id = term.knowledge_base_id
-         AND posting.source_revision_public_id = term.source_revision_public_id
-         AND posting.term = term.term
-        JOIN focowiki.document_projection_records record
-          ON record.knowledge_base_id = term.knowledge_base_id
-         AND record.source_revision_public_id = term.source_revision_public_id
-        WHERE term.knowledge_base_id = ${input.knowledgeBaseId}
-          AND term.bucket = ${input.bucket}
-          AND (record.source_revision_public_id
-                 = ANY(${includedSourceRevisionPublicIds}::text[])
-            OR (record.active AND record.source_file_public_id
-                 <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
-        GROUP BY term.term
-        ORDER BY term.term COLLATE "C"
-        LIMIT ${MAXIMUM_TERM_RECORDS + 1}
-      `.then((rows) => {
-        if (rows.length > MAXIMUM_TERM_RECORDS) {
-          throw projectionReaderError("navigation_term_record_limit_exceeded");
-        }
-        return rows.map((row) => ({
-          term: row.term,
-          postings: Array.isArray(row.postings) ? row.postings : []
-        }));
-      });
-    },
-
-    async listTermPartPaths(input: {
-      knowledgeBaseId: string;
-      bucket: DocumentTermBucket;
-    }): Promise<readonly string[]> {
-      const prefix = `_index/terms/${input.bucket}/${input.bucket}-terms-part-`;
-      const rows = await sql<Array<{ logical_path: string }>>`
-        SELECT logical_path
-        FROM focowiki.generated_page_heads
-        WHERE knowledge_base_id = ${input.knowledgeBaseId}
-          AND left(normalized_path, char_length(${prefix})) = ${prefix}
-          AND normalized_path LIKE '%.json'
-        ORDER BY normalized_path COLLATE "C"
-        LIMIT ${MAXIMUM_TERM_PARTS + 1}
-      `;
-      if (rows.length > MAXIMUM_TERM_PARTS) {
-        throw projectionReaderError("navigation_term_part_limit_exceeded");
-      }
-      return rows.map((row) => row.logical_path);
     }
   };
 }
@@ -453,11 +405,6 @@ export function createPostgresDocumentMachineProjectionReader(
 function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort((left, right) =>
     left.localeCompare(right, "en-US"));
-}
-
-function isDocumentTermBucket(value: string): value is DocumentTermBucket {
-  return ["latin", "han", "kana", "hangul", "number", "other"]
-    .includes(value);
 }
 
 function projectionReaderError(code: string): Error & { code: string } {

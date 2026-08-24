@@ -13,12 +13,88 @@ import { documentDirectoryEntryId } from
   "../src/document-indexing/domain/document-directory-entry-identity.js";
 import { createProductionDocumentScopeRenderer } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer.js";
-import { projectGraphCatalog } from
+import { projectTermCatalog } from
+  "../src/document-indexing/infrastructure/production-document-scope-renderer-helpers.js";
+import { projectGraphCatalog, projectGraphDirectory,
+  projectPerFileGraphDirectory } from
   "../src/document-indexing/infrastructure/production-document-scope-graph.js";
-import { projectRoot } from
+import { projectRoot, projectSemanticDirectory } from
   "../src/document-indexing/infrastructure/production-document-scope-navigation.js";
 
 describe("production document scope renderer", () => {
+  it("treats included pure-create revisions as a semantic directory delta",
+    async () => {
+      const readSemanticDirectoryState = vi.fn(async () => {
+        throw new Error("Pure create must not read complete directory state");
+      });
+      const readSemanticDirectoryDeltaState = vi.fn(async () => ({
+        records: [], childDirectories: [], navigationCandidateEntryIds: []
+      }));
+      const resolveSourceFilePublicIdsForRevisions = vi.fn(async () =>
+        ["source-new"]);
+
+      await projectSemanticDirectory({
+        dependencies: {
+          machineProjection: {
+            readSemanticDirectoryState,
+            readSemanticDirectoryDeltaState,
+            resolveSourceFilePublicIdsForRevisions
+          } as never
+        },
+        knowledgeBaseId: "kb-baseline",
+        scopePath: "pages",
+        includedSourceRevisionPublicIds: ["revision-new"],
+        excludedActiveSourceFilePublicIds: []
+      });
+
+      expect(readSemanticDirectoryDeltaState).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-baseline",
+        scopePath: "pages",
+        affectedSourceFilePublicIds: ["source-new"],
+        includedSourceRevisionPublicIds: ["revision-new"]
+      });
+      expect(readSemanticDirectoryState).not.toHaveBeenCalled();
+    });
+
+  it("projects an ordinary graph directory from bounded relationship deltas",
+    async () => {
+      const scanGraphDirectoryState = vi.fn(async () => {
+        throw new Error("Ordinary graph projection must not scan full state");
+      });
+      const scanGraphDirectoryDeltaState = vi.fn(async () => ({
+        recordCount: 0,
+        childDirectories: [],
+        resourcePaths: []
+      }));
+
+      await projectGraphDirectory({
+        dependencies: {
+          machineProjection: {
+            scanGraphDirectoryState,
+            scanGraphDirectoryDeltaState,
+            resolveSourceFilePublicIdsForRevisions: vi.fn(async () =>
+              ["source-new"])
+          } as never,
+          maximumRecordsPerShard: 100,
+          maximumShardBytes: 1_048_576
+        },
+        knowledgeBaseId: "kb-baseline",
+        scopePath: "pages",
+        includedSourceRevisionPublicIds: ["revision-new"],
+        excludedActiveSourceFilePublicIds: ["source-new"]
+      });
+
+      expect(scanGraphDirectoryDeltaState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          knowledgeBaseId: "kb-baseline",
+          scopePath: "pages",
+          affectedSourceFilePublicIds: ["source-new"],
+          includedSourceRevisionPublicIds: ["revision-new"]
+        })
+      );
+      expect(scanGraphDirectoryState).not.toHaveBeenCalled();
+    });
+
   it("assigns the relationship catalog only to its graph scope", async () => {
     const root = await projectRoot({
       dependencies: {
@@ -147,7 +223,9 @@ describe("production document scope renderer", () => {
       });
       const putVerified = vi.fn();
       const renderer = createProductionDocumentScopeRenderer({
-        machineProjection: {} as never,
+        machineProjection: {
+          readGeneratedPageChecksums: vi.fn(async () => [])
+        } as never,
         sourceProjection: { project },
         objectWriter: { putVerified } as never,
         maximumRecordsPerShard: 100,
@@ -165,6 +243,8 @@ describe("production document scope renderer", () => {
         targetFactEpoch: 9,
         inputSnapshotFingerprintSha256: "a".repeat(64),
         rendererContractVersion: "portable-okf-v2",
+        planningMode: "delta",
+        affectedSourceFilePublicIds: ["source-deleted"],
         deterministicChangedAt: "2026-08-21T12:00:00.000Z",
         baseGenerationPublicId: "generation-active",
         members: [{
@@ -559,6 +639,80 @@ describe("production document scope renderer", () => {
       expect(putVerified).not.toHaveBeenCalled();
     });
 
+  it("bounds immutable object writes while yielding between projection chunks",
+    async () => {
+      const pages = Array.from({ length: 65 }, (_, index) => {
+        const bytes = new TextEncoder().encode(`Page ${index}`);
+        return {
+          logicalPath: `pages/chunks/page-${index}.md`,
+          normalizedPath: `pages/chunks/page-${index}.md`,
+          entryKind: "source",
+          sourceFilePublicId: "source-chunks",
+          sourceRevisionPublicId: "revision-chunks",
+          bytes,
+          checksumSha256: createHash("sha256").update(bytes).digest("hex"),
+          byteCount: bytes.byteLength
+        };
+      });
+      let activeWrites = 0;
+      let maximumActiveWrites = 0;
+      const checkpoint = vi.fn(async () => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      });
+      const renderer = createProductionDocumentScopeRenderer({
+        machineProjection: {
+          readGeneratedPageChecksums: vi.fn(async () => [])
+        } as never,
+        sourceProjection: {
+          project: vi.fn(async () => ({
+            pages, removedLogicalPaths: [], factCount: pages.length
+          }))
+        },
+        objectWriter: {
+          async putVerified(input: { bytes: Uint8Array }) {
+            activeWrites += 1;
+            maximumActiveWrites = Math.max(maximumActiveWrites, activeWrites);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            activeWrites -= 1;
+            return {
+              objectId: createHash("sha256").update(input.bytes).digest("hex"),
+              storageKey: "generated/safe-object",
+              checksum: createHash("sha256").update(input.bytes).digest("hex"),
+              byteCount: input.bytes.byteLength,
+              contentType: "text/markdown; charset=utf-8",
+              objectFormat: "okf-generated-markdown-v1" as const,
+              outcome: "stored" as const,
+              requests: { put: 1, head: 0, verification: 0,
+                attemptedBytes: input.bytes.byteLength, retries: 0,
+                latencyMilliseconds: 1 }
+            };
+          }
+        } as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      });
+
+      const result = await renderer.render({
+        publicId: "scope-source-chunks",
+        knowledgeBaseId: "kb-1",
+        kind: "source",
+        key: "source-chunks",
+        requiredSequence: 1,
+        renderedSequence: 1
+      }, new AbortController().signal, {
+        contributors: [{
+          sourceFilePublicId: "source-chunks",
+          sourceRevisionPublicId: "revision-chunks",
+          requiredSequence: 1
+        }],
+        checkpoint
+      });
+
+      expect(result.pages).toHaveLength(65);
+      expect(maximumActiveWrites).toBe(32);
+      expect(checkpoint.mock.calls.length).toBeGreaterThanOrEqual(68);
+    });
+
   it("renders one semantic Markdown directory from the same PostgreSQL snapshot",
     async () => {
       const putVerified = vi.fn(async (input: { bytes: Uint8Array }) => ({
@@ -718,7 +872,9 @@ describe("production document scope renderer", () => {
           sourceFilePublicId: "source-overview",
           sourceRevisionPublicId: "revision-overview",
           requiredSequence: 10
-        }]
+        }],
+        planningMode: "delta",
+        affectedSourceFilePublicIds: ["source-overview"]
       });
 
       expect(projected.navigationMutations).toHaveLength(1);
@@ -731,6 +887,129 @@ describe("production document scope renderer", () => {
         ])
       }));
     });
+
+  it("rejects an oversized ordinary navigation delta without a full fallback",
+    async () => {
+      const renderer = createProductionDocumentScopeRenderer({
+        machineProjection: {
+          async readSemanticDirectoryDeltaState() {
+            return {
+              records: [], childDirectories: [],
+              navigationCandidateEntryIds: ["candidate-entry"]
+            };
+          }
+        } as never,
+        directoryNavigation: {
+          async readDelta() {
+            return {
+              mode: "full" as const, leaves: [], changes: [],
+              totalEntryCount: 0, firstLeafId: null, rootExists: false
+            };
+          },
+          async read() {
+            throw new Error("Ordinary delta must not read all navigation leaves");
+          }
+        } as never,
+        directoryLeafLimits: {
+          maxEntries: 200, maxBytes: 65_536, mergeBelowEntries: 50
+        },
+        objectWriter: {} as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      });
+
+      await expect(renderer.project({
+        publicId: "scope-directory-window-limit",
+        publicationGenerationPublicId: "generation-window-limit",
+        knowledgeBaseId: "kb-1",
+        kind: "directory",
+        key: "pages/guides",
+        requiredSequence: 11,
+        renderedSequence: 11
+      }, {
+        contributors: [{
+          sourceFilePublicId: "source-overview",
+          sourceRevisionPublicId: "revision-overview",
+          requiredSequence: 11
+        }],
+        planningMode: "delta",
+        affectedSourceFilePublicIds: ["source-overview"]
+      })).rejects.toMatchObject({ code: "navigation_delta_window_exceeded" });
+    });
+
+  it("bounds term catalog navigation to the changed buckets", async () => {
+    const projected = await projectTermCatalog({
+      input: {
+        machineProjection: {
+          async readNavigationTermCatalogDeltaState() {
+            return [
+              { bucket: "han" as const, present: true },
+              { bucket: "latin" as const, present: false }
+            ];
+          }
+        } as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      },
+      knowledgeBaseId: "kb-1",
+      includedSourceRevisionPublicIds: [],
+      excludedActiveSourceFilePublicIds: [],
+      publicationGenerationPublicId: "generation-term-catalog",
+      planningMode: "delta",
+      basePages: []
+    });
+
+    expect(projected.navigationCandidateEntryIds).toEqual([
+      documentDirectoryEntryId("file", "_index/terms/index.json"),
+      documentDirectoryEntryId("directory", "_index/terms/han/index.md"),
+      documentDirectoryEntryId("directory", "_index/terms/latin/index.md")
+    ]);
+  });
+
+  it("uses the canonical pure-create closure for by-file navigation", async () => {
+    const readPerFileGraphDirectoryState = vi.fn(async () => {
+      throw new Error("Publication delta must not enumerate all graph files");
+    });
+    const readPerFileGraphDirectoryDeltaState = vi.fn(async () => ({
+      records: [{
+        path: "_graph/by-file/guides/overview.json",
+        title: "Overview"
+      }],
+      childDirectories: []
+    }));
+
+    const projected = await projectPerFileGraphDirectory({
+      dependencies: {
+        machineProjection: {
+          readPerFileGraphDirectoryState,
+          readPerFileGraphDirectoryDeltaState
+        } as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      },
+      knowledgeBaseId: "kb-1",
+      scopePath: "pages/guides",
+      publicationGenerationPublicId: "generation-graph-files",
+      includedSourceRevisionPublicIds: ["revision-overview"],
+      excludedActiveSourceFilePublicIds: [],
+      affectedSourceFilePublicIds: ["source-overview"],
+      affectedLogicalPaths: ["pages/guides/overview.md"],
+      planningMode: "delta"
+    });
+
+    expect(readPerFileGraphDirectoryDeltaState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        affectedSourceFilePublicIds: ["source-overview"],
+        publicationGenerationPublicId: "generation-graph-files"
+      })
+    );
+    expect(readPerFileGraphDirectoryState).not.toHaveBeenCalled();
+    expect(projected.navigationCandidateEntryIds).toContain(
+      documentDirectoryEntryId(
+        "file", "_graph/by-file/guides/overview.json"
+      )
+    );
+  });
 
   it("renders one exact graph directory from fixed-sequence relationship facts",
     async () => {
@@ -750,7 +1029,7 @@ describe("production document scope renderer", () => {
       }));
       const renderer = createProductionDocumentScopeRenderer({
         machineProjection: {
-          async scanGraphDirectoryState(request: {
+          async scanGraphDirectoryDeltaState(request: {
             includedSourceRevisionPublicIds: readonly string[];
             excludedActiveSourceFilePublicIds: readonly string[];
             onRecords(records: readonly Record<string, unknown>[]): void;
@@ -840,7 +1119,7 @@ describe("production document scope renderer", () => {
       const putVerified = vi.fn();
       const renderer = createProductionDocumentScopeRenderer({
         machineProjection: {
-          async scanGraphDirectoryState() {
+          async scanGraphDirectoryDeltaState() {
             return {
               recordCount: 0,
               childDirectories: [],

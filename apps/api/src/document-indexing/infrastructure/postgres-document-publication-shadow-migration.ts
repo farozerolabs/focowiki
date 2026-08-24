@@ -2,6 +2,8 @@ import type { DatabaseClient } from "../../db/client.js";
 import {
   decideDocumentPublicationShadowContinuation
 } from "../application/document-publication-shadow-migration.js";
+import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
+  "../application/document-publication-renderer-contract.js";
 import {
   inferDocumentPublicationOwnerCandidate
 } from "../application/document-publication-cutover-preflight.js";
@@ -23,8 +25,6 @@ import {
   safeDocumentPublicationShadowErrorCode,
   type DocumentPublicationShadowPageRow
 } from "./postgres-document-publication-shadow-support.js";
-
-const SHADOW_RENDERER_CONTRACT = "portable-okf-v2-shadow-bootstrap";
 
 export function createPostgresDocumentPublicationShadowMigration(
   sql: DatabaseClient
@@ -115,7 +115,8 @@ export function createPostgresDocumentPublicationShadowMigration(
           ) VALUES (
             ${generationPublicId}, ${knowledgeBaseId},
             ${head[0]!.active_generation_public_id},
-            ${summary.targetFactEpoch}, ${SHADOW_RENDERER_CONTRACT}, ${now},
+            ${summary.targetFactEpoch},
+            ${DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION}, ${now},
             'rendering', ${generationIdentity}, ${now}, ${now}
           )
         `;

@@ -3,6 +3,43 @@ import { createDocumentWorkerObservability } from
   "../src/document-indexing/application/document-worker-observability.js";
 
 describe("document worker observability", () => {
+  it("records safe bounded publication amplification counters", () => {
+    const events: unknown[] = [];
+    const observer = createDocumentWorkerObservability({
+      write: (event) => events.push(event)
+    });
+
+    observer.publicationProjection({
+      knowledgeBaseId: "kb-one",
+      generationPublicId: "projection-generation-one",
+      planningMode: "delta",
+      rendererContractVersion: "portable-okf-v3",
+      affectedSourceCount: 18,
+      basePageCount: 100,
+      recordsRendered: 118,
+      objectPutCount: 36,
+      objectReuseCount: 82,
+      putByteCount: 4_096,
+      renewalCount: 2,
+      maximumHeartbeatAgeMs: 9_500
+    });
+
+    expect(events).toEqual([log("worker.publication_projection", {
+      knowledgeBaseId: "kb-one",
+      generationPublicId: "projection-generation-one",
+      planningMode: "delta",
+      rendererContractVersion: "portable-okf-v3",
+      affectedSourceCount: 18,
+      basePageCount: 100,
+      recordsRendered: 118,
+      objectPutCount: 36,
+      objectReuseCount: 82,
+      putByteCount: 4_096,
+      renewalCount: 2,
+      maximumHeartbeatAgeMs: 9_500
+    })]);
+  });
+
   it("records bounded queue, lifecycle, provider, activation, and cleanup facts", () => {
     const events: unknown[] = [];
     const observer = createDocumentWorkerObservability({
@@ -187,6 +224,7 @@ describe("document worker observability", () => {
         scopeLag: 2,
         scopeGeneration: 4,
         leaseGeneration: 3,
+        leaseLossCount: 0,
         durationMs: 21,
         errorCode: null
       }),

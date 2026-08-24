@@ -57,13 +57,13 @@ const enabled = Boolean(databaseUrl && runOwner
         knowledgeBaseId: "hot-kb",
         now: "2026-08-21T12:00:01.000Z",
         contributorCap: 2,
-        rendererContractVersion: "portable-okf-v2"
+        rendererContractVersion: "portable-okf-v3"
       }),
       coordinator.freezeReady({
         knowledgeBaseId: "quiet-kb",
         now: "2026-08-21T12:00:01.000Z",
         contributorCap: 8,
-        rendererContractVersion: "portable-okf-v2"
+        rendererContractVersion: "portable-okf-v3"
       })
     ]);
     expect(hot?.documents.map((item) => item.documentJobPublicId))
@@ -74,7 +74,7 @@ const enabled = Boolean(databaseUrl && runOwner
       knowledgeBaseId: "hot-kb",
       now: "2026-08-21T12:00:02.000Z",
       contributorCap: 8,
-      rendererContractVersion: "portable-okf-v2"
+      rendererContractVersion: "portable-okf-v3"
     })).toBeNull();
     await expect(sql<Array<{ state: string; mutation_public_id: string }>>`
       SELECT state, mutation_public_id
@@ -98,7 +98,7 @@ const enabled = Boolean(databaseUrl && runOwner
     });
     expect(reclaimed).toMatchObject({
       generationPublicId: expect.stringMatching(/^projection-generation-/u),
-      rendererContractVersion: "portable-okf-v2",
+      rendererContractVersion: "portable-okf-v3",
       documents: expect.arrayContaining([
         expect.objectContaining({
           documentJobPublicId: expect.stringMatching(/^(hot|quiet)-job-/u),
@@ -232,7 +232,7 @@ const enabled = Boolean(databaseUrl && runOwner
         knowledgeBaseId: "delete-kb",
         now: "2026-08-21T12:00:01.000Z",
         contributorCap: 8,
-        rendererContractVersion: "portable-okf-v2"
+        rendererContractVersion: "portable-okf-v3"
       });
     expect(frozen?.documents).toEqual([expect.objectContaining({
       mutationPublicId: "delete-mutation-1",
@@ -321,7 +321,7 @@ const enabled = Boolean(databaseUrl && runOwner
       generationPublicId: generation.public_id,
       baseGenerationPublicId: null,
       targetFactEpoch: Number(generation.target_fact_epoch),
-      rendererContractVersion: "portable-okf-v2",
+      rendererContractVersion: "portable-okf-v3",
       deterministicChangedAt:
         generation.deterministic_changed_at.toISOString(),
       documents
@@ -375,6 +375,19 @@ const enabled = Boolean(databaseUrl && runOwner
     expect(Number(summary[0]!.member_count))
       .toBeLessThanOrEqual(plan.scopes.length * documents.length);
     expect(Number(summary[0]!.dependency_count)).toBeGreaterThan(0);
+    await expect(sql<Array<{
+      source_file_count: number | string;
+      relationship_count: number | string;
+      root_entry_count: number | string;
+    }>>`
+      SELECT source_file_count, relationship_count, root_entry_count
+      FROM focowiki.projection_generation_statistics
+      WHERE publication_generation_public_id = ${generation.public_id}
+    `).resolves.toEqual([{
+      source_file_count: "2",
+      relationship_count: "1",
+      root_entry_count: "1"
+    }]);
     await expect(sql<Array<{
       source_revision_public_id: string;
       incoming_count: number;

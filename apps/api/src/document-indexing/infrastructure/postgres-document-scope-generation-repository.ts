@@ -23,11 +23,19 @@ import {
   recomputeDocumentScopeGeneration,
   recoverDocumentScopeGenerationResourceFailure
 } from "./postgres-document-scope-generation-resource-recovery.js";
+import { createPostgresDocumentScopeSnapshotMemberRepository } from
+  "./postgres-document-scope-snapshot-members.js";
+import { createPostgresDocumentScopeGenerationHeartbeat } from
+  "./postgres-document-scope-generation-heartbeat.js";
 
 export function createPostgresDocumentScopeGenerationRepository(
   sql: DatabaseClient
 ): DocumentScopeGenerationRepository {
+  const snapshotMembers = createPostgresDocumentScopeSnapshotMemberRepository(sql);
+  const heartbeat = createPostgresDocumentScopeGenerationHeartbeat(sql);
   return {
+    ...snapshotMembers,
+    ...heartbeat,
     async create(input): Promise<void> {
       const rows = await sql<Array<{ public_id: string }>>`
         INSERT INTO focowiki.projection_scope_generations (
@@ -105,6 +113,7 @@ export function createPostgresDocumentScopeGenerationRepository(
           target_fact_epoch: number | string;
           active_fact_epoch: number | string;
           lease_generation: number | string;
+          consecutive_lease_loss_count: number | string;
         }>>`
           WITH eligible AS (
             SELECT scope.public_id, scope.knowledge_base_id,
@@ -176,7 +185,8 @@ export function createPostgresDocumentScopeGenerationRepository(
                     scope.publication_generation_public_id,
                     scope.scope_identity, scope.scope_kind,
                     scope.scope_generation, claimable.target_fact_epoch,
-                    claimable.active_fact_epoch, scope.lease_generation
+                    claimable.active_fact_epoch, scope.lease_generation,
+                    scope.consecutive_lease_loss_count
         `;
         if (rows.length > 0) {
           const selectedKnowledgeBases = [...new Set(rows.map((row) =>
@@ -224,34 +234,10 @@ export function createPostgresDocumentScopeGenerationRepository(
           safeScopeKeyHash: hashIdentity([row.scope_identity]),
           targetFactEpoch: Number(row.target_fact_epoch),
           activeFactEpoch: Number(row.active_fact_epoch),
-          scopeGeneration: Number(row.scope_generation)
+          scopeGeneration: Number(row.scope_generation),
+          leaseLossCount: Number(row.consecutive_lease_loss_count)
         }));
       });
-    },
-
-    async heartbeat(input) {
-      const now = assertRepositoryTimestamp(input.now, "now");
-      const expiresAt = new Date(Date.parse(now)
-        + assertRepositoryPositiveInteger(
-          input.leaseDurationMs,
-          "lease_duration",
-          300_000
-        )).toISOString();
-      const rows = await sql<Array<{ public_id: string }>>`
-        UPDATE focowiki.projection_scope_generations
-        SET heartbeat_at = ${now}, lease_expires_at = ${expiresAt},
-            updated_at = ${now}
-        WHERE public_id = ${assertRepositoryIdentity(input.publicId, "public_id")}
-          AND state = 'running'
-          AND lease_owner = ${assertRepositoryIdentity(
-            input.workerId,
-            "worker_id"
-          )}
-          AND lease_generation = ${input.leaseGeneration}
-          AND lease_expires_at > ${now}
-        RETURNING public_id
-      `;
-      return rows.length === 1;
     },
 
     async fail(input) {
@@ -265,9 +251,11 @@ export function createPostgresDocumentScopeGenerationRepository(
           knowledge_base_id: string;
           scope_identity: string;
           resource_failure_started_at: Date | string | null;
+          consecutive_lease_loss_count: number | string;
         }>>`
           SELECT publication_generation_public_id, knowledge_base_id,
-                 scope_identity, resource_failure_started_at
+                 scope_identity, resource_failure_started_at,
+                 consecutive_lease_loss_count
           FROM focowiki.projection_scope_generations
           WHERE public_id = ${publicId}
             AND state = 'running'
@@ -277,6 +265,45 @@ export function createPostgresDocumentScopeGenerationRepository(
         `;
         const scope = rows[0];
         if (!scope) return null;
+        if (input.recoveryAction === "inspect_or_reclaim") {
+          const nextLossCount = Number(scope.consecutive_lease_loss_count) + 1;
+          if (nextLossCount >= 2) {
+            await transaction`
+              UPDATE focowiki.projection_scope_generations
+              SET consecutive_lease_loss_count = 2,
+                  progress_evidence = jsonb_build_object(
+                    'safeErrorCode', (${errorCode})::text,
+                    'recoveryClass', 'lease_loss',
+                    'outcome', 'superseded'
+                  ), updated_at = ${now}
+              WHERE public_id = ${publicId}
+            `;
+            await recomputeDocumentScopeGeneration(
+              transaction as unknown as DatabaseClient,
+              {
+                generationPublicId: scope.publication_generation_public_id,
+                knowledgeBaseId: scope.knowledge_base_id,
+                errorCode,
+                now
+              }
+            );
+            return "superseded" as const;
+          }
+          await transaction`
+            UPDATE focowiki.projection_scope_generations
+            SET state = 'waiting', lease_owner = NULL,
+                lease_expires_at = NULL, heartbeat_at = NULL,
+                consecutive_lease_loss_count = ${nextLossCount},
+                next_eligible_at = ${now}, updated_at = ${now},
+                progress_evidence = jsonb_build_object(
+                  'safeErrorCode', (${errorCode})::text,
+                  'recoveryClass', 'lease_loss',
+                  'outcome', 'reclaim'
+                )
+            WHERE public_id = ${publicId}
+          `;
+          return "waiting" as const;
+        }
         if (input.recoveryAction === "retry_infrastructure") {
           return recoverDocumentScopeGenerationResourceFailure(
             transaction as unknown as DatabaseClient,
@@ -369,63 +396,56 @@ export function createPostgresDocumentScopeGenerationRepository(
 
     async recoverExpired(input) {
       const now = assertRepositoryTimestamp(input.now, "now");
-      const rows = await sql<Array<{ public_id: string }>>`
-        WITH expired AS (
-          SELECT public_id
-          FROM focowiki.projection_scope_generations
-          WHERE state = 'running' AND lease_expires_at <= ${now}
-          ORDER BY lease_expires_at, public_id COLLATE "C"
-          FOR UPDATE SKIP LOCKED
-          LIMIT ${assertRepositoryPositiveInteger(input.limit, "limit", 256)}
-        )
-        UPDATE focowiki.projection_scope_generations scope
-        SET state = 'waiting', lease_owner = NULL, lease_expires_at = NULL,
-            heartbeat_at = NULL, next_eligible_at = ${now}, updated_at = ${now}
-        FROM expired
-        WHERE scope.public_id = expired.public_id
-        RETURNING scope.public_id
-      `;
-      return rows.length;
-    },
-
-    async persistSnapshotMembers(input): Promise<number> {
-      const records = validateMembers(input.members);
+      const limit = assertRepositoryPositiveInteger(input.limit, "limit", 256);
       return sql.begin(async (transaction) => {
-        const waiting = await transaction<Array<{ public_id: string }>>`
-          SELECT public_id FROM focowiki.projection_scope_generations
-          WHERE public_id = ${assertRepositoryIdentity(
-            input.scopeGenerationPublicId,
-            "scope_generation_public_id"
-          )} AND state = 'waiting'
-          FOR UPDATE
-        `;
-        if (!waiting[0]) {
-          throw repositoryContractError("scope_snapshot_not_mutable");
-        }
-        const rows = await transaction<Array<{ member_public_id: string }>>`
-          INSERT INTO focowiki.projection_scope_snapshot_members (
-            scope_generation_public_id, member_kind, member_public_id,
-            member_version, member_order
+        const rows = await transaction<Array<{
+          public_id: string;
+          publication_generation_public_id: string;
+          knowledge_base_id: string;
+          consecutive_lease_loss_count: number | string;
+        }>>`
+          WITH expired AS (
+            SELECT public_id
+            FROM focowiki.projection_scope_generations
+            WHERE state = 'running' AND lease_expires_at <= ${now}
+            ORDER BY lease_expires_at, public_id COLLATE "C"
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${limit}
           )
-          SELECT ${input.scopeGenerationPublicId}, desired.member_kind,
-                 desired.member_public_id, desired.member_version,
-                 desired.member_order
-          FROM jsonb_to_recordset(${transaction.json(records as never)}::jsonb)
-            AS desired(
-              member_kind text, member_public_id text,
-              member_version text, member_order integer
-            )
-          ON CONFLICT (
-            scope_generation_public_id, member_kind, member_public_id
-          ) DO UPDATE SET member_version = excluded.member_version
-          WHERE projection_scope_snapshot_members.member_version
-                  = excluded.member_version
-            AND projection_scope_snapshot_members.member_order
-                  = excluded.member_order
-          RETURNING member_public_id
+          UPDATE focowiki.projection_scope_generations scope
+          SET state = 'waiting', lease_owner = NULL, lease_expires_at = NULL,
+              heartbeat_at = NULL, next_eligible_at = ${now},
+              consecutive_lease_loss_count = least(
+                2, consecutive_lease_loss_count + 1
+              ),
+              progress_evidence = jsonb_build_object(
+                'safeErrorCode', 'scope_generation_lease_lost',
+                'recoveryClass', 'lease_loss',
+                'outcome', CASE WHEN consecutive_lease_loss_count >= 1
+                  THEN 'supersede' ELSE 'reclaim' END
+              ), updated_at = ${now}
+          FROM expired
+          WHERE scope.public_id = expired.public_id
+          RETURNING scope.public_id,
+                    scope.publication_generation_public_id,
+                    scope.knowledge_base_id,
+                    scope.consecutive_lease_loss_count
         `;
-        if (rows.length !== records.length) {
-          throw repositoryContractError("scope_snapshot_member_conflict");
+        const generations = new Map(rows.filter((row) =>
+          Number(row.consecutive_lease_loss_count) >= 2).map((row) => [
+            row.publication_generation_public_id,
+            row.knowledge_base_id
+          ]));
+        for (const [generationPublicId, knowledgeBaseId] of generations) {
+          await recomputeDocumentScopeGeneration(
+            transaction as unknown as DatabaseClient,
+            {
+              generationPublicId,
+              knowledgeBaseId,
+              errorCode: "scope_generation_lease_lost",
+              now
+            }
+          );
         }
         return rows.length;
       }) as Promise<number>;
@@ -446,29 +466,6 @@ function assertSafeErrorCode(value: string): string {
     throw repositoryContractError("scope_generation_error_code_invalid");
   }
   return value;
-}
-
-function validateMembers(input: readonly {
-  kind: string;
-  publicId: string;
-  version: string;
-  order: number;
-}[]) {
-  if (input.length > 10_000) {
-    throw repositoryContractError("scope_snapshot_member_limit");
-  }
-  const records = input.map((member) => ({
-    member_kind: member.kind,
-    member_public_id: assertRepositoryIdentity(member.publicId, "member_public_id"),
-    member_version: assertRepositoryIdentity(member.version, "member_version"),
-    member_order: member.order
-  }));
-  if (new Set(records.map((item) => item.member_order)).size !== records.length
-    || records.some((item) => !Number.isSafeInteger(item.member_order)
-      || item.member_order < 0)) {
-    throw repositoryContractError("scope_snapshot_member_order_invalid");
-  }
-  return records;
 }
 
 function assertScopeIdentity(value: string): string {

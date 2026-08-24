@@ -200,11 +200,15 @@ export function createDocumentWorkerObservability(input: {
     publicationRecovery(fields: {
       generationCount: number;
       releasedFactCount: number;
+      replannedFactCount?: number;
       supersededScopeCount: number;
     }) {
       write("worker.publication_recovery", {
         generationCount: metric(fields.generationCount),
         releasedFactCount: metric(fields.releasedFactCount),
+        ...(fields.replannedFactCount === undefined ? {} : {
+          replannedFactCount: metric(fields.replannedFactCount)
+        }),
         supersededScopeCount: metric(fields.supersededScopeCount)
       });
     },
@@ -218,6 +222,7 @@ export function createDocumentWorkerObservability(input: {
       activeFactEpoch: number;
       scopeGeneration: number;
       leaseGeneration: number;
+      leaseLossCount?: number;
       durationMs: number;
       errorCode: string | null;
     }) {
@@ -240,6 +245,7 @@ export function createDocumentWorkerObservability(input: {
         scopeLag: Math.max(0, targetFactEpoch - activeFactEpoch),
         scopeGeneration: metric(fields.scopeGeneration),
         leaseGeneration: metric(fields.leaseGeneration),
+        leaseLossCount: metric(fields.leaseLossCount ?? 0),
         durationMs: metric(fields.durationMs),
         errorCode: fields.errorCode
       });
@@ -277,6 +283,36 @@ export function createDocumentWorkerObservability(input: {
         objectPutCount: metric(fields.objectPutCount),
         objectReuseCount: metric(fields.objectReuseCount),
         putByteCount: metric(fields.putByteCount)
+      });
+    },
+    publicationProjection(fields: {
+      knowledgeBaseId: string;
+      generationPublicId: string;
+      planningMode: "initial" | "delta" | "repair";
+      rendererContractVersion: string;
+      affectedSourceCount: number;
+      basePageCount: number;
+      recordsRendered: number;
+      objectPutCount: number;
+      objectReuseCount: number;
+      putByteCount: number;
+      renewalCount: number;
+      maximumHeartbeatAgeMs: number;
+    }) {
+      identity(fields.knowledgeBaseId);
+      identity(fields.generationPublicId);
+      safeToken(fields.planningMode, "planning mode");
+      safeToken(fields.rendererContractVersion, "renderer contract");
+      write("worker.publication_projection", {
+        ...fields,
+        affectedSourceCount: metric(fields.affectedSourceCount),
+        basePageCount: metric(fields.basePageCount),
+        recordsRendered: metric(fields.recordsRendered),
+        objectPutCount: metric(fields.objectPutCount),
+        objectReuseCount: metric(fields.objectReuseCount),
+        putByteCount: metric(fields.putByteCount),
+        renewalCount: metric(fields.renewalCount),
+        maximumHeartbeatAgeMs: metric(fields.maximumHeartbeatAgeMs)
       });
     },
     storageRequest(fields: {

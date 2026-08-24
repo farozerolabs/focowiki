@@ -184,6 +184,8 @@ async function assertDocumentIndexingSchemaSignature(
           'projection_shadow_parity_results',
           'projection_generation_retention'
           ,'projection_generation_graph_degrees'
+          ,'projection_generation_affected_members'
+          ,'projection_generation_statistics'
           ,'projection_legacy_cleanup_state'
         ]) AS required(name)
         WHERE to_regclass('focowiki.' || required.name) IS NULL
@@ -253,6 +255,13 @@ async function assertDocumentIndexingSchemaSignature(
           ,('projection_scope_navigation_mutations', 'owner_scope_identity')
           ,('generated_page_heads', 'projection_generation_public_id')
           ,('projection_cleanup_outbox', 'write_attempt_public_id')
+          ,('projection_publication_generations', 'planning_mode')
+          ,('projection_publication_generations', 'affected_closure_fingerprint_sha256')
+          ,('projection_publication_generations', 'supersession_reason')
+          ,('projection_publication_generations', 'superseded_by_generation_public_id')
+          ,('projection_scope_generations', 'consecutive_lease_loss_count')
+          ,('projection_scope_generations', 'last_progress_at')
+          ,('projection_scope_generations', 'progress_evidence')
         ) AS required(table_name, column_name)
         WHERE NOT EXISTS (
           SELECT 1 FROM information_schema.columns actual
@@ -321,6 +330,11 @@ async function assertDocumentIndexingSchemaSignature(
           ,'canonical_file_relations_first_file_history_idx'
           ,'canonical_file_relations_second_file_history_idx'
           ,'relation_directed_evidence_pair_visible_idx'
+          ,'projection_generation_affected_members_source_idx'
+          ,'projection_publication_generations_contract_recovery_idx'
+          ,'projection_publication_generations_supersession_idx'
+          ,'projection_scope_generations_lease_loss_idx'
+          ,'projection_generation_statistics_knowledge_base_idx'
         ]) AS required(name)
         WHERE NOT EXISTS (
           SELECT 1 FROM pg_indexes actual
