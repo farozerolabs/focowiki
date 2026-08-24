@@ -7,6 +7,8 @@ import {
 } from "../application/document-directory-navigation-mutation.js";
 import type { DocumentDirectoryNavigationChange } from
   "../application/document-directory-navigation-state.js";
+import { partitionDocumentDirectoryNavigationWindows } from
+  "../application/document-directory-navigation-windows.js";
 import type { OrderedDirectoryEntry } from
   "../domain/document-directory-leaves.js";
 
@@ -94,9 +96,12 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
       maximumChanges: number;
       maximumLeaves: number;
       maximumEntries: number;
-    }): Promise<{
-      mode: "window" | "full";
-      leaves: readonly PersistentDirectoryLeaf[];
+    }): Promise<({
+      mode: "full"; leaves: readonly PersistentDirectoryLeaf[];
+    } | {
+      mode: "window"; leaves: readonly PersistentDirectoryLeaf[];
+    } | { mode: "windows";
+      windows: readonly (readonly PersistentDirectoryLeaf[])[]; }) & {
       changes: readonly DocumentDirectoryNavigationChange[];
       totalEntryCount: number;
       firstLeafId: string | null;
@@ -273,13 +278,6 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
           AND leaf_public_id IN ${sql(windowLeafIds)}
         ORDER BY first_sort_key COLLATE "C", leaf_public_id COLLATE "C"
       `;
-      if (leaves.some((leaf, index) => index > 0
-        && leaf.previous_leaf_public_id !== leaves[index - 1]!.leaf_public_id)) {
-        return {
-          mode: "full", leaves: [], changes: [],
-          totalEntryCount: 0, firstLeafId: null, rootExists: false
-        };
-      }
       const entries = windowLeafIds.length === 0 ? [] : await sql<EntryRow[]>`
         SELECT leaf_public_id, entry_public_id, sort_key, name,
                target_path, evidence_path, entry_kind
@@ -304,16 +302,16 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
         });
         byLeaf.set(entry.leaf_public_id, values);
       }
-      return {
-        mode: "window",
-        leaves: leaves.map((leaf) => ({
+      const mappedLeaves = leaves.map((leaf) => ({
           id: leaf.leaf_public_id,
           previousLeafId: leaf.previous_leaf_public_id,
           nextLeafId: leaf.next_leaf_public_id,
           entries: byLeaf.get(leaf.leaf_public_id) ?? [],
           revision: Number(leaf.revision),
           ...(leaf.changed_at ? { changedAt: leaf.changed_at.toISOString() } : {})
-        })),
+        }));
+      const windows = partitionDocumentDirectoryNavigationWindows(mappedLeaves);
+      const result = {
         changes: changed.map((row) => ({
           entryId: row.entry_public_id,
           desiredEntry: row.desired_sort_key === null ? null : {
@@ -330,6 +328,9 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
         firstLeafId: summary.first_leaf_public_id,
         rootExists: summary.root_exists
       };
+      return windows.length > 1
+        ? { mode: "windows" as const, windows, ...result }
+        : { mode: "window" as const, leaves: mappedLeaves, ...result };
     }
   };
 }

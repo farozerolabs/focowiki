@@ -101,7 +101,8 @@ export function createPostgresDocumentPublicationRecovery(
           WHERE generation.state = 'quarantined'
             AND (generation.safe_error_code IN (
               'graph_directory_record_limit_exceeded',
-              'per_file_graph_directory_limit_exceeded'
+              'per_file_graph_directory_limit_exceeded',
+              'navigation_delta_window_exceeded'
             )
               OR generation.safe_error_code IN (
                 '53000', '53100', '53200', '53300', '53400'
@@ -205,6 +206,8 @@ export function createPostgresDocumentPublicationRecovery(
               safe_error_code = CASE
                 WHEN safe_error_code = 'changes_invalid'
                   THEN 'navigation_change_limit_remediated'
+                WHEN safe_error_code = 'navigation_delta_window_exceeded'
+                  THEN 'navigation_delta_window_remediated'
                 WHEN safe_error_code IN (
                   'graph_directory_record_limit_exceeded',
                   'per_file_graph_directory_limit_exceeded'

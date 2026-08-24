@@ -937,6 +937,88 @@ describe("production document scope renderer", () => {
       })).rejects.toMatchObject({ code: "navigation_delta_window_exceeded" });
     });
 
+  it("materializes disconnected bounded navigation windows", async () => {
+    const entryId = documentDirectoryEntryId(
+      "file", "pages/guides/overview.md");
+    const renderer = createProductionDocumentScopeRenderer({
+      machineProjection: {
+        async readSemanticDirectoryDeltaState() {
+          return {
+            records: [{
+              path: "pages/guides/overview.md", title: "Overview",
+              summary: "Overview", metadata: {}, subjects: [], tags: [],
+              headings: [], keywords: [], entities: [], type: "document",
+              contentType: "text/markdown", checksumSha256: "a".repeat(64),
+              byteCount: 10
+            }],
+            childDirectories: [], navigationCandidateEntryIds: [entryId]
+          };
+        }
+      } as never,
+      directoryNavigation: {
+        async readDelta(request: { desiredEntries: Array<{
+          id: string; sortKey: string; name: string; targetPath: string;
+          kind: "file" | "directory";
+        }> }) {
+          return {
+            mode: "windows" as const,
+            windows: [[{
+              id: "directory-leaf-a", previousLeafId: null,
+              nextLeafId: "directory-leaf-middle",
+              revision: 1, entries: [{
+                ...request.desiredEntries[0]!, name: "Old overview"
+              }]
+            }], [{
+              id: "directory-leaf-z",
+              previousLeafId: "directory-leaf-middle", nextLeafId: null,
+              revision: 1, entries: [{
+                id: "entry-z", sortKey: "1/z.md/pages/guides/z.md",
+                name: "Z", targetPath: "pages/guides/z.md",
+                kind: "file" as const
+              }]
+            }]],
+            changes: request.desiredEntries.map((entry) => ({
+              entryId: entry.id, desiredEntry: entry
+            })),
+            totalEntryCount: 3,
+            firstLeafId: "directory-leaf-a",
+            rootExists: true
+          };
+        },
+        async read() {
+          throw new Error("Disconnected delta must not list the directory");
+        }
+      } as never,
+      directoryLeafLimits: {
+        maxEntries: 200, maxBytes: 65_536, mergeBelowEntries: 50
+      },
+      objectWriter: {} as never,
+      maximumRecordsPerShard: 100,
+      maximumShardBytes: 1_048_576
+    });
+
+    const projected = await renderer.project({
+      publicId: "scope-directory-disconnected",
+      publicationGenerationPublicId: "generation-disconnected",
+      knowledgeBaseId: "kb-1", kind: "directory", key: "pages/guides",
+      requiredSequence: 12, renderedSequence: 12
+    }, {
+      contributors: [{
+        sourceFilePublicId: "source-overview",
+        sourceRevisionPublicId: "revision-overview",
+        requiredSequence: 12
+      }],
+      planningMode: "delta",
+      affectedSourceFilePublicIds: ["source-overview"]
+    });
+
+    expect(projected.navigationMutations).toHaveLength(1);
+    expect(projected.navigationMutations[0]).toMatchObject({
+      directoryPath: "pages/guides", entryCount: 3,
+      firstLeafId: "directory-leaf-a"
+    });
+  });
+
   it("bounds term catalog navigation to the changed buckets", async () => {
     const projected = await projectTermCatalog({
       input: {
