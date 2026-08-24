@@ -903,15 +903,40 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
 
   it("keeps the latest inactive path as a deletion navigation candidate",
     async () => {
+      const facts = createPostgresDocumentProjectionFacts(
+        sql as unknown as DatabaseClient
+      );
+      await facts.activateRevision({
+        knowledgeBaseId: "kb-projection-facts",
+        sourceFilePublicId: "source-file-projection-third",
+        sourceRevisionPublicId: "source-revision-projection-third",
+        now: "2026-08-17T00:00:00.000Z"
+      });
+      const reader = createPostgresDocumentMachineProjectionReader(
+        sql as unknown as DatabaseClient
+      );
+      const relationClosureDelta = await reader.readSemanticDirectoryDeltaState({
+        knowledgeBaseId: "kb-projection-facts",
+        scopePath: "pages",
+        affectedSourceFilePublicIds: [
+          "source-file-projection-second",
+          "source-file-projection-third"
+        ],
+        includedSourceRevisionPublicIds: [
+          "source-revision-projection-second"
+        ],
+        navigationSourceFilePublicIds: ["source-file-projection-second"]
+      });
+      expect(relationClosureDelta.navigationCandidateEntryIds).toEqual([
+        documentDirectoryEntryId("directory", "pages/reference/index.md")
+      ]);
+
       await sql`
         UPDATE focowiki.document_projection_records
         SET active = false
         WHERE knowledge_base_id = 'kb-projection-facts'
           AND source_revision_public_id = 'source-revision-projection-second'
       `;
-      const reader = createPostgresDocumentMachineProjectionReader(
-        sql as unknown as DatabaseClient
-      );
       await expect(reader.readSemanticDirectoryDeltaState({
         knowledgeBaseId: "kb-projection-facts",
         scopePath: "pages/reference",

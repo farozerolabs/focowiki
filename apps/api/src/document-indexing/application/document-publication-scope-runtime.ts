@@ -54,6 +54,8 @@ export function createDocumentPublicationScopeRuntime(input: {
   };
   idlePollMilliseconds?: number;
   recoveryIntervalMilliseconds?: number;
+  canClaim?(): boolean;
+  onAdmissionDeferred?(): void;
   onFailure?(input: Readonly<{
     claim: ScopeClaim;
     code: string;
@@ -71,6 +73,7 @@ export function createDocumentPublicationScopeRuntime(input: {
   let effectiveMaximumConcurrency = configuredMaximumConcurrency;
   let recoverySuccessCount = 0;
   const active = new Set<Promise<void>>();
+  let admissionDeferred = false;
 
   function launch(claim: ScopeClaim, signal: AbortSignal): void {
     const execution = execute(claim, signal);
@@ -142,13 +145,20 @@ export function createDocumentPublicationScopeRuntime(input: {
         }
         const capacity = effectiveMaximumConcurrency - active.size;
         if (capacity > 0) {
-          const claims = await input.repository.claim({
-            workerId: input.workerId,
-            now: input.now(),
-            leaseDurationMs: input.leaseDurationMs,
-            limit: capacity
-          });
-          claims.forEach((claim) => launch(claim, signal));
+          const admitted = input.canClaim?.() ?? true;
+          if (!admitted) {
+            if (!admissionDeferred) input.onAdmissionDeferred?.();
+            admissionDeferred = true;
+          } else {
+            admissionDeferred = false;
+            const claims = await input.repository.claim({
+              workerId: input.workerId,
+              now: input.now(),
+              leaseDurationMs: input.leaseDurationMs,
+              limit: capacity
+            });
+            claims.forEach((claim) => launch(claim, signal));
+          }
         }
         if (active.size > 0) {
           await input.wait(input.idlePollMilliseconds ?? 100, signal);

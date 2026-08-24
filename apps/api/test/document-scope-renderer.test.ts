@@ -51,9 +51,39 @@ describe("production document scope renderer", () => {
         knowledgeBaseId: "kb-baseline",
         scopePath: "pages",
         affectedSourceFilePublicIds: ["source-new"],
-        includedSourceRevisionPublicIds: ["revision-new"]
+        includedSourceRevisionPublicIds: ["revision-new"],
+        navigationSourceFilePublicIds: ["source-new"]
       });
       expect(readSemanticDirectoryState).not.toHaveBeenCalled();
+    });
+
+  it("does not treat relation-only closure members as navigation removals",
+    async () => {
+      const readSemanticDirectoryDeltaState = vi.fn(async () => ({
+        records: [], childDirectories: [], navigationCandidateEntryIds: []
+      }));
+
+      await projectSemanticDirectory({
+        dependencies: {
+          machineProjection: {
+            readSemanticDirectoryDeltaState
+          } as never
+        },
+        knowledgeBaseId: "kb-delta-navigation",
+        scopePath: "pages",
+        includedSourceRevisionPublicIds: ["revision-new"],
+        excludedActiveSourceFilePublicIds: ["source-new"],
+        affectedSourceFilePublicIds: ["source-existing", "source-new"],
+        planningMode: "delta"
+      });
+
+      expect(readSemanticDirectoryDeltaState).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-delta-navigation",
+        scopePath: "pages",
+        affectedSourceFilePublicIds: ["source-existing", "source-new"],
+        includedSourceRevisionPublicIds: ["revision-new"],
+        navigationSourceFilePublicIds: ["source-new"]
+      });
     });
 
   it("projects an ordinary graph directory from bounded relationship deltas",
@@ -874,11 +904,17 @@ describe("production document scope renderer", () => {
           requiredSequence: 10
         }],
         planningMode: "delta",
-        affectedSourceFilePublicIds: ["source-overview"]
+        affectedSourceFilePublicIds: ["source-neighbor", "source-overview"]
       });
 
       expect(projected.navigationMutations).toHaveLength(1);
-      expect(readSemanticDirectoryDeltaState).toHaveBeenCalledOnce();
+      expect(readSemanticDirectoryDeltaState).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-1",
+        scopePath: "pages/guides",
+        affectedSourceFilePublicIds: ["source-neighbor", "source-overview"],
+        includedSourceRevisionPublicIds: ["revision-overview"],
+        navigationSourceFilePublicIds: ["source-overview"]
+      });
       expect(readSemanticDirectoryState).not.toHaveBeenCalled();
       expect(readDelta).toHaveBeenCalledWith(expect.objectContaining({
         maximumChanges: 2_048,

@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyDocumentGraphStableShardDelta } from
+import {
+  applyDocumentGraphStableShardDelta,
+  createDocumentGraphStableShardDeltaStream
+} from
   "../src/document-indexing/application/document-graph-stable-shard-delta.js";
 
 describe("document graph stable shard delta", () => {
+  it("rejects invalid streaming limits before scanning", () => {
+    expect(() => createDocumentGraphStableShardDeltaStream({
+      scopePath: "pages",
+      machineDirectory: "_graph/by-directory",
+      base: { relationshipCount: 0, childDirectories: [], resources: [] },
+      maximumRecords: 0,
+      maximumBytes: 4_096,
+      readRecords: async () => []
+    })).toThrow("graph_delta_stream_limits_invalid");
+  });
+
   it("loads and replaces only the shard owning a changed relationship key",
     async () => {
       const readRecords = vi.fn(async (path: string) => path.endsWith("a.json")
@@ -72,6 +86,70 @@ describe("document graph stable shard delta", () => {
         .toBe(result.descriptors.length);
       result.descriptors.slice(1).forEach((item, index) => {
         expect(result.descriptors[index]!.lastKey < item.firstKey).toBe(true);
+      });
+  });
+
+  it("applies scan pages incrementally without retaining the full change set",
+    async () => {
+      const stream = createDocumentGraphStableShardDeltaStream({
+        scopePath: "pages",
+        machineDirectory: "_graph/by-directory",
+        base: { relationshipCount: 0, childDirectories: [], resources: [] },
+        maximumRecords: 2,
+        maximumBytes: 4_096,
+        readRecords: vi.fn(async () => [])
+      });
+
+      await stream.append([
+        relationship("pages/a.md", "pages/b.md"),
+        relationship("pages/c.md", "pages/d.md")
+      ]);
+      await stream.append([
+        relationship("pages/e.md", "pages/f.md"),
+        relationship("pages/g.md", "pages/h.md")
+      ]);
+      const result = await stream.finish([]);
+
+      expect(result.relationshipCount).toBe(4);
+      expect(result.metrics).toEqual({
+        changedRecordCount: 4,
+        chunkCount: 2,
+        peakBufferedRecordCount: 2,
+        touchedShardCount: 2
+      });
+      expect(result.descriptors.reduce((total, descriptor) =>
+        total + descriptor.recordCount, 0)).toBe(4);
+    });
+
+  it("keeps a changed key when paged base removals contain the same key",
+    async () => {
+      const key = "pages/a.md\0pages/b.md\0references";
+      const stream = createDocumentGraphStableShardDeltaStream({
+        scopePath: "pages",
+        machineDirectory: "_graph/by-directory",
+        base: {
+          relationshipCount: 1,
+          childDirectories: [],
+          resources: [{
+            path: "_graph/by-directory/a.json",
+            recordCount: 1,
+            firstKey: key,
+            lastKey: key,
+            byteCount: 100
+          }]
+        },
+        maximumRecords: 100,
+        maximumBytes: 4_096,
+        readRecords: async () => [relationship("pages/a.md", "pages/b.md")]
+      });
+      await stream.append([{
+        ...relationship("pages/a.md", "pages/b.md"),
+        reason: "Updated relationship."
+      }]);
+      await stream.remove([key]);
+
+      await expect(stream.finish([])).resolves.toMatchObject({
+        relationshipCount: 1
       });
     });
 });

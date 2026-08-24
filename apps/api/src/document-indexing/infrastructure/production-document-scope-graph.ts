@@ -13,7 +13,7 @@ import {
 } from "../application/document-graph-projection.js";
 import { createDocumentSemanticPacketAccumulator } from
   "../application/document-semantic-resource-packets.js";
-import { applyDocumentGraphStableShardDelta,
+import { createDocumentGraphStableShardDeltaStream,
   type DocumentGraphBaseRouter } from
   "../application/document-graph-stable-shard-delta.js";
 import {
@@ -123,7 +123,19 @@ export async function projectGraphDirectory(input: {
     maximumRecords: input.dependencies.maximumRecordsPerShard,
     maximumBytes: input.dependencies.maximumShardBytes
   });
-  const changedRecords: Record<string, unknown>[] = [];
+  const deltaBase = input.planningMode === "delta"
+    ? await readBaseRouter(input, machineDirectory) : null;
+  const deltaStream = deltaBase
+    ? createDocumentGraphStableShardDeltaStream({
+        scopePath: input.scopePath,
+        machineDirectory,
+        base: deltaBase,
+        maximumRecords: input.dependencies.maximumRecordsPerShard,
+        maximumBytes: input.dependencies.maximumShardBytes,
+        readRecords: (path) => readBaseRecords(input, path),
+        ...(input.checkpoint ? { checkpoint: input.checkpoint } : {})
+      })
+    : null;
   const scanInput = {
     knowledgeBaseId: input.knowledgeBaseId,
     scopePath: input.scopePath,
@@ -136,9 +148,13 @@ export async function projectGraphDirectory(input: {
     ...(input.affectedLogicalPaths
       ? { affectedLogicalPaths: input.affectedLogicalPaths } : {}),
     ...(input.checkpoint ? { checkpoint: input.checkpoint } : {}),
+    ...(deltaStream ? {
+      onRemovedRecordKeys: (keys: readonly string[]) =>
+        deltaStream.remove(keys)
+    } : {}),
     async onRecords(records: readonly Record<string, unknown>[]) {
-      changedRecords.push(...records);
-      if (input.planningMode !== "delta") packetAccumulator.append(records);
+      if (deltaStream) await deltaStream.append(records);
+      else packetAccumulator.append(records);
       await input.checkpoint?.();
     }
   };
@@ -158,20 +174,12 @@ export async function projectGraphDirectory(input: {
     : await input.dependencies.machineProjection.scanGraphDirectoryDeltaState(
         scanInput);
   if (input.planningMode === "delta") {
-    const base = await readBaseRouter(input, machineDirectory);
-    const delta = await applyDocumentGraphStableShardDelta({
-      scopePath: input.scopePath,
-      machineDirectory,
-      base,
-      changedRecords,
-      removedRecordKeys: state.removedRecordKeys,
-      maximumRecords: input.dependencies.maximumRecordsPerShard,
-      maximumBytes: input.dependencies.maximumShardBytes,
-      readRecords: (path) => readBaseRecords(input, path),
-      ...(input.checkpoint ? { checkpoint: input.checkpoint } : {})
-    });
+    if (!deltaBase || !deltaStream) {
+      throw graphProjectionError("graph_delta_stream_missing");
+    }
+    const delta = await deltaStream.finish(state.removedRecordKeys);
     const childDirectories = mergeChildDirectories(
-      base.childDirectories, state.childDirectories,
+      deltaBase.childDirectories, state.childDirectories,
       input.scopePath, input.affectedLogicalPaths ?? []
     );
     const projected = buildDocumentGraphDirectoryScopeResourcesFromPacket({
@@ -179,12 +187,13 @@ export async function projectGraphDirectory(input: {
         packet: { pages: delta.pages, descriptors: delta.descriptors },
         recordCount: delta.relationshipCount,
         childDirectories,
-        previousPaths: base.resources.map((resource) => resource.path)
+        previousPaths: deltaBase.resources.map((resource) => resource.path)
       });
     return {
       ...projected,
       records: [] as Record<string, unknown>[],
       factCount: delta.relationshipCount,
+      projectionMetrics: delta.metrics,
       childDirectories,
       navigationCandidateEntryIds: graphNavigationCandidates({
         scopePath: input.scopePath,

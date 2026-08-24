@@ -8,6 +8,7 @@ export async function createMinimumCompatiblePublicationReplacement(
     rendererContractVersion: string;
     supersessionReason: string;
     recoveredAt: string;
+    recoverObsoleteStranded?: boolean;
   }>
 ): Promise<Readonly<{
   replacementGenerationPublicId: string;
@@ -29,7 +30,21 @@ export async function createMinimumCompatiblePublicationReplacement(
     JOIN focowiki.knowledge_base_projection_heads head
       ON head.knowledge_base_id = generation.knowledge_base_id
     WHERE generation.public_id = ${input.generationPublicId}
-      AND generation.state IN ('planned', 'rendering', 'validating', 'ready')
+      AND (
+        generation.state IN ('planned', 'rendering', 'validating', 'ready')
+        OR (
+          ${input.recoverObsoleteStranded === true}
+          AND generation.state = 'obsolete'
+          AND generation.recovery_evidence->>'outcome'
+                = 'minimum_replacement_planned'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM focowiki.projection_publication_generations live
+            WHERE live.knowledge_base_id = generation.knowledge_base_id
+              AND live.state IN ('planned', 'rendering', 'validating', 'ready')
+          )
+        )
+      )
       AND head.active_generation_public_id IS DISTINCT FROM generation.public_id
     FOR UPDATE OF generation, head
   `;
@@ -53,6 +68,7 @@ export async function createMinimumCompatiblePublicationReplacement(
     throw minimumReplanError("publication_replacement_documents_missing");
   }
   const identity = createHash("sha256").update(JSON.stringify({
+    supersededGenerationPublicId: generation.public_id,
     knowledgeBaseId: generation.knowledge_base_id,
     base: generation.active_generation_public_id,
     headVersion: Number(generation.head_version),
@@ -72,7 +88,7 @@ export async function createMinimumCompatiblePublicationReplacement(
         completed_at = ${input.recoveredAt}, updated_at = ${input.recoveredAt}
     WHERE public_id = ${generation.public_id}
   `;
-  await sql`
+  const inserted = await sql<Array<{ public_id: string }>>`
     INSERT INTO focowiki.projection_publication_generations (
       public_id, knowledge_base_id, base_generation_public_id,
       target_fact_epoch, renderer_contract_version,
@@ -92,8 +108,11 @@ export async function createMinimumCompatiblePublicationReplacement(
         'supersedesGenerationPublicId', (${generation.public_id})::text
       )
     )
-    ON CONFLICT (public_id) DO NOTHING
+    RETURNING public_id
   `;
+  if (inserted[0]?.public_id !== replacementGenerationPublicId) {
+    throw minimumReplanError("publication_replacement_not_created");
+  }
   await sql`
     INSERT INTO focowiki.projection_generation_documents (
       generation_public_id, mutation_public_id, document_job_public_id,

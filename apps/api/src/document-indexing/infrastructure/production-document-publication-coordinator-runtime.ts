@@ -164,6 +164,18 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
   return {
     async runOne(now = new Date().toISOString()): Promise<boolean> {
       const nowMilliseconds = Date.parse(now);
+      const stranded = nowMilliseconds >= nextRemediatedRecoveryAt
+        ? await recovery.recoverStrandedReplacements({
+          rendererContractVersion:
+            DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
+          recoveredAt: now,
+          limit: INCOMPATIBLE_GENERATION_RECOVERY_LIMIT
+        }) : {
+          generationCount: 0,
+          releasedFactCount: 0,
+          replannedFactCount: 0,
+          supersededScopeCount: 0
+        };
       const incompatible = await recovery.recoverIncompatibleGenerations({
         rendererContractVersion:
           DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
@@ -183,11 +195,16 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
       if (nowMilliseconds >= nextRemediatedRecoveryAt) {
         nextRemediatedRecoveryAt = recovered.generationCount
           === RECOVERABLE_QUARANTINE_RECOVERY_LIMIT
+          || stranded.generationCount
+            === INCOMPATIBLE_GENERATION_RECOVERY_LIMIT
           ? nowMilliseconds
           : nowMilliseconds + RECOVERABLE_QUARANTINE_POLL_MILLISECONDS;
       }
       if (recovered.generationCount > 0) {
         input.observability?.publicationRecovery?.(recovered);
+      }
+      if (stranded.generationCount > 0) {
+        input.observability?.publicationRecovery?.(stranded);
       }
       if (incompatible.generationCount > 0) {
         input.observability?.publicationRecovery?.(incompatible);
@@ -201,7 +218,7 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
           input.observability?.publicationBacklog(backlog));
         nextBacklogObservationAt = nowMilliseconds + 1_000;
       }
-      return incompatible.generationCount > 0
+      return stranded.generationCount > 0 || incompatible.generationCount > 0
         || recovered.generationCount > 0 || planned || validated || activated;
     },
     async run(signal: AbortSignal): Promise<void> {

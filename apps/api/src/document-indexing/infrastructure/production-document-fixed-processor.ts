@@ -1,4 +1,5 @@
 import type { RuntimeConfig, WorkerRuntimeConfig } from "../../config.js";
+import { getHeapStatistics } from "node:v8";
 import type { DatabaseClient } from "../../db/client.js";
 import type { createNodeJiebaTokenizer } from
   "../../infrastructure/tokenization/nodejieba-tokenizer.js";
@@ -13,7 +14,8 @@ import type { DocumentResourceCapacityInput } from
 import {
   resolveDocumentResourceLaneCapacities,
   resolveDocumentPublicationS3Capacities,
-  resolveDocumentProjectionCapacities
+  resolveDocumentProjectionCapacities,
+  resolveDocumentPublicationMemoryCapacity
 } from
   "../application/document-resource-capacity.js";
 import { createWeightedGenerationTaskRunner } from "../application/weighted-generation-task-runner.js";
@@ -87,7 +89,7 @@ export function createProductionDocumentFixedProcessor(input: {
     "work" | "providerFailure" | "ingestionFailure" | "publication"
       | "publicationBacklog" | "publicationScope" | "publicationStorage"
       | "publicationProjection" | "publicationScopeStage"
-      | "storageRequest" | "cleanup"
+      | "publicationResourcePressure" | "storageRequest" | "cleanup"
   >;
 }) {
   let currentResourceCapacity = { ...input.resourceCapacity };
@@ -312,10 +314,10 @@ export function createProductionDocumentFixedProcessor(input: {
       workerId: input.workerId,
       leaseDurationMs: input.workerConfig.lockTtlSeconds * 1_000,
       heartbeatIntervalMs: input.workerConfig.heartbeatIntervalMs,
-      maximumConcurrency: Math.min(
+      maximumConcurrency: publicationMemoryCapacity(Math.min(
         projectionCapacities.scopeProjection,
         publicationS3Capacities.scopeProjection
-      ),
+      )),
       renderer: scopeRenderer,
       ...(input.observability
         ? { observability: input.observability } : {})
@@ -380,7 +382,10 @@ export function createProductionDocumentFixedProcessor(input: {
         projectionBacklogLimit(next.resourceCapacity.documentConcurrency)
       );
       publicationScopeRuntime.updateMaximumConcurrency(
-        Math.min(projection.scopeProjection, publicationS3Capacities.scopeProjection)
+        publicationMemoryCapacity(Math.min(
+          projection.scopeProjection,
+          publicationS3Capacities.scopeProjection
+        ))
       );
       Object.assign(input.workerConfig, next.workerConfig);
       currentResourceCapacity = { ...next.resourceCapacity };
@@ -404,6 +409,13 @@ export function createProductionDocumentFixedProcessor(input: {
 
 function projectionBacklogLimit(documentConcurrency: number): number {
   return Math.max(documentConcurrency, documentConcurrency * 8);
+}
+
+function publicationMemoryCapacity(requestedConcurrency: number): number {
+  return resolveDocumentPublicationMemoryCapacity({
+    requestedConcurrency,
+    heapLimitBytes: getHeapStatistics().heap_size_limit
+  });
 }
 
 function missingGraphConfig(): never {

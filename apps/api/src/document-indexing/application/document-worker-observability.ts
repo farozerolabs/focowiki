@@ -258,6 +258,9 @@ export function createDocumentWorkerObservability(input: {
       outcome: "completed" | "failed";
       durationMs: number;
       errorCode: string | null;
+      heapUsedBytes?: number;
+      heapLimitBytes?: number;
+      rssBytes?: number;
     }) {
       if (fields.knowledgeBaseId !== null) identity(fields.knowledgeBaseId);
       if (fields.generationPublicId !== null) identity(fields.generationPublicId);
@@ -265,7 +268,16 @@ export function createDocumentWorkerObservability(input: {
       if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
       write("worker.publication_scope_stage", {
         ...fields,
-        durationMs: metric(fields.durationMs)
+        durationMs: metric(fields.durationMs),
+        ...(fields.heapUsedBytes === undefined ? {} : {
+          heapUsedBytes: metric(fields.heapUsedBytes)
+        }),
+        ...(fields.heapLimitBytes === undefined ? {} : {
+          heapLimitBytes: metric(fields.heapLimitBytes)
+        }),
+        ...(fields.rssBytes === undefined ? {} : {
+          rssBytes: metric(fields.rssBytes)
+        })
       });
     },
     publicationStorage(fields: {
@@ -298,6 +310,13 @@ export function createDocumentWorkerObservability(input: {
       putByteCount: number;
       renewalCount: number;
       maximumHeartbeatAgeMs: number;
+      heapUsedBytes?: number;
+      heapLimitBytes?: number;
+      rssBytes?: number;
+      changedRecordCount?: number;
+      chunkCount?: number;
+      peakBufferedRecordCount?: number;
+      touchedShardCount?: number;
     }) {
       identity(fields.knowledgeBaseId);
       identity(fields.generationPublicId);
@@ -312,7 +331,43 @@ export function createDocumentWorkerObservability(input: {
         objectReuseCount: metric(fields.objectReuseCount),
         putByteCount: metric(fields.putByteCount),
         renewalCount: metric(fields.renewalCount),
-        maximumHeartbeatAgeMs: metric(fields.maximumHeartbeatAgeMs)
+        maximumHeartbeatAgeMs: metric(fields.maximumHeartbeatAgeMs),
+        ...(fields.heapUsedBytes === undefined ? {} : {
+          heapUsedBytes: metric(fields.heapUsedBytes)
+        }),
+        ...(fields.heapLimitBytes === undefined ? {} : {
+          heapLimitBytes: metric(fields.heapLimitBytes)
+        }),
+        ...(fields.rssBytes === undefined ? {} : {
+          rssBytes: metric(fields.rssBytes)
+        }),
+        ...(fields.changedRecordCount === undefined ? {} : {
+          changedRecordCount: metric(fields.changedRecordCount)
+        }),
+        ...(fields.chunkCount === undefined ? {} : {
+          chunkCount: metric(fields.chunkCount)
+        }),
+        ...(fields.peakBufferedRecordCount === undefined ? {} : {
+          peakBufferedRecordCount: metric(fields.peakBufferedRecordCount)
+        }),
+        ...(fields.touchedShardCount === undefined ? {} : {
+          touchedShardCount: metric(fields.touchedShardCount)
+        })
+      });
+    },
+    publicationResourcePressure(fields: {
+      heapUsedBytes: number;
+      heapLimitBytes: number;
+      rssBytes: number;
+      activeScopeCount: number;
+      maximumScopeConcurrency: number;
+    }) {
+      write("worker.publication_resource_pressure", {
+        heapUsedBytes: metric(fields.heapUsedBytes),
+        heapLimitBytes: metric(fields.heapLimitBytes),
+        rssBytes: metric(fields.rssBytes),
+        activeScopeCount: metric(fields.activeScopeCount),
+        maximumScopeConcurrency: metric(fields.maximumScopeConcurrency)
       });
     },
     storageRequest(fields: {

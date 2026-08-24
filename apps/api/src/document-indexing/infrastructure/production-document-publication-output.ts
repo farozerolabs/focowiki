@@ -29,6 +29,12 @@ type RenderedPublicationScope = Readonly<{
   }>[];
   storageRequests?: ReturnType<typeof zeroStorageRequests>;
   factCount: number;
+  projectionMetrics?: Readonly<{
+    changedRecordCount: number;
+    chunkCount: number;
+    peakBufferedRecordCount: number;
+    touchedShardCount: number;
+  }>;
 }>;
 
 export function finalizeDocumentPublicationOutput(input: Readonly<{
@@ -87,7 +93,8 @@ export function finalizeDocumentPublicationOutput(input: Readonly<{
     ),
     validationEvidence: {
       ...input.validationEvidence,
-      recordsRendered: input.rendered.factCount
+      recordsRendered: input.rendered.factCount,
+      ...(input.rendered.projectionMetrics ?? {})
     }
   });
   return {
