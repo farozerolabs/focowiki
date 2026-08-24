@@ -9,6 +9,7 @@ export type DocumentPublicationRecoveryDecision = Readonly<{
 }>;
 
 export const DOCUMENT_PUBLICATION_PROVIDER_MAXIMUM_ATTEMPTS = 3;
+export const DOCUMENT_PUBLICATION_LEASE_LOSS_MAXIMUM_ATTEMPTS = 2;
 
 const PERMANENT_INPUT = new Set([
   "source_body_empty", "source_frontmatter_invalid", "source_utf8_invalid",
@@ -26,7 +27,7 @@ const INVARIANTS = new Set([
 ]);
 const SUPERSESSION = new Set([
   "publication_generation_stale_base", "document_revision_superseded",
-  "scope_snapshot_not_mutable"
+  "scope_snapshot_not_mutable", "publication_renderer_contract_incompatible"
 ]);
 const CONTENTION = new Set([
   "40P01", "40001", "55P03",
@@ -78,10 +79,15 @@ export function limitDocumentPublicationRecovery(input: {
   if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
     throw new Error("Document publication recovery attempt is invalid");
   }
-  return input.decision.action === "retry_provider"
-    && input.attempt >= DOCUMENT_PUBLICATION_PROVIDER_MAXIMUM_ATTEMPTS
-    ? "quarantine"
-    : input.decision.action;
+  if (input.decision.action === "retry_provider"
+    && input.attempt >= DOCUMENT_PUBLICATION_PROVIDER_MAXIMUM_ATTEMPTS) {
+    return "quarantine";
+  }
+  if (input.decision.action === "inspect_or_reclaim"
+    && input.attempt >= DOCUMENT_PUBLICATION_LEASE_LOSS_MAXIMUM_ATTEMPTS) {
+    return "recompute_scope";
+  }
+  return input.decision.action;
 }
 
 function decision(

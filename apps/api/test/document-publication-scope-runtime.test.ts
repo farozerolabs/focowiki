@@ -137,4 +137,47 @@ describe("document publication scope runtime", () => {
     expect(claimLimits[0]).toBe(8);
     expect(claimLimits.at(-1)).toBe(1);
   });
+
+  it("continues lease recovery checks while every permit is occupied",
+    async () => {
+      let nowMilliseconds = Date.parse("2026-08-24T09:00:00.000Z");
+      let release!: () => void;
+      const recoverExpired = vi.fn(async () => 0);
+      const runtime = createDocumentPublicationScopeRuntime({
+        workerId: "worker-full-capacity",
+        leaseDurationMs: 1_000,
+        maximumConcurrency: 1,
+        repository: {
+          claim: vi.fn()
+            .mockResolvedValueOnce([{
+              publicId: "scope-long",
+              leaseGeneration: documentLeaseGeneration(1)
+            }])
+            .mockResolvedValue([]),
+          fail: vi.fn(),
+          recoverExpired
+        },
+        execute: vi.fn(async () => new Promise<void>((resolve) => {
+          release = resolve;
+        })),
+        now: () => new Date(nowMilliseconds).toISOString(),
+        wait: async () => {
+          nowMilliseconds += 10;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        },
+        classifyError: () => ({ code: "unknown", recoveryAction: "terminal" }),
+        idlePollMilliseconds: 1,
+        recoveryIntervalMilliseconds: 5
+      });
+      const controller = new AbortController();
+      const running = runtime.run(controller.signal);
+
+      await vi.waitFor(() => expect(recoverExpired.mock.calls.length)
+        .toBeGreaterThan(1));
+      controller.abort();
+      release();
+      await running;
+
+      expect(runtime.activeCount()).toBe(0);
+    });
 });

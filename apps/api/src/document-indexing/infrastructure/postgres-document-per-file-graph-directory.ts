@@ -92,6 +92,97 @@ export function createPostgresDocumentPerFileGraphDirectory(
           path: `${portableByFileGraphDirectoryPath(scopePath)}/index.md`
         }))
       };
+    },
+    async readPerFileGraphDirectoryDeltaState(input: {
+      knowledgeBaseId: string;
+      scopePath: string;
+      publicationGenerationPublicId: string;
+      includedSourceRevisionPublicIds: readonly string[];
+      affectedSourceFilePublicIds: readonly string[];
+      candidateChildScopePaths: readonly string[];
+    }) {
+      const included = sortedUnique(input.includedSourceRevisionPublicIds);
+      const affected = sortedUnique(input.affectedSourceFilePublicIds);
+      const candidateChildren = sortedUnique(input.candidateChildScopePaths);
+      if (affected.length === 0 || affected.length > 10_000
+        || candidateChildren.length > 512) {
+        throw new Error("per_file_graph_delta_input_invalid");
+      }
+      const rows = await sql<Array<{ page_path: string; title: string }>>`
+        SELECT membership.page_path COLLATE "C" AS page_path, record.title
+        FROM focowiki.document_semantic_directory_memberships membership
+        JOIN focowiki.document_projection_records record
+          ON record.knowledge_base_id = membership.knowledge_base_id
+         AND record.source_revision_public_id
+               = membership.source_revision_public_id
+        LEFT JOIN focowiki.projection_generation_graph_degrees overlay
+          ON overlay.publication_generation_public_id
+               = ${input.publicationGenerationPublicId}
+         AND overlay.knowledge_base_id = record.knowledge_base_id
+         AND overlay.source_revision_public_id
+               = record.source_revision_public_id
+        LEFT JOIN focowiki.document_graph_degrees active_degree
+          ON active_degree.knowledge_base_id = record.knowledge_base_id
+         AND active_degree.source_revision_public_id
+               = record.source_revision_public_id
+        WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
+          AND membership.directory_path = ${input.scopePath}
+          AND record.source_file_public_id = ANY(${affected}::text[])
+          AND record.source_revision_public_id = ANY(${included}::text[])
+          AND coalesce(overlay.incoming_count, active_degree.incoming_count, 0)
+            + coalesce(overlay.outgoing_count, active_degree.outgoing_count, 0)
+              > 0
+        ORDER BY page_path
+        LIMIT ${affected.length + 1}
+      `;
+      if (rows.length > affected.length) {
+        throw new Error("per_file_graph_delta_record_limit_exceeded");
+      }
+      const directRows = rows.filter((row) =>
+        directChildName(input.scopePath, row.page_path) === null);
+      const childRows = candidateChildren.length === 0 ? []
+        : await sql<Array<{ scope_path: string }>>`
+            SELECT candidate.scope_path COLLATE "C" AS scope_path
+            FROM unnest(${candidateChildren}::text[]) candidate(scope_path)
+            WHERE EXISTS (
+              SELECT 1
+              FROM focowiki.document_semantic_directory_memberships membership
+              JOIN focowiki.document_projection_records record
+                ON record.knowledge_base_id = membership.knowledge_base_id
+               AND record.source_revision_public_id
+                     = membership.source_revision_public_id
+              LEFT JOIN focowiki.projection_generation_graph_degrees overlay
+                ON overlay.publication_generation_public_id
+                     = ${input.publicationGenerationPublicId}
+               AND overlay.knowledge_base_id = record.knowledge_base_id
+               AND overlay.source_revision_public_id
+                     = record.source_revision_public_id
+              LEFT JOIN focowiki.document_graph_degrees active_degree
+                ON active_degree.knowledge_base_id = record.knowledge_base_id
+               AND active_degree.source_revision_public_id
+                     = record.source_revision_public_id
+              WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
+                AND membership.directory_path = candidate.scope_path
+                AND (record.source_revision_public_id = ANY(${included}::text[])
+                  OR (record.active
+                    AND record.source_file_public_id <> ALL(${affected}::text[])))
+                AND coalesce(overlay.incoming_count,
+                      active_degree.incoming_count, 0)
+                  + coalesce(overlay.outgoing_count,
+                      active_degree.outgoing_count, 0) > 0
+              LIMIT 1
+            )
+            ORDER BY scope_path
+          `;
+      return {
+        records: directRows.map((row) => ({
+          path: portableByFileGraphPath(row.page_path), title: row.title
+        })),
+        childDirectories: childRows.map(({ scope_path: scopePath }) => ({
+          title: posix.basename(scopePath), scopePath,
+          path: `${portableByFileGraphDirectoryPath(scopePath)}/index.md`
+        }))
+      };
     }
   };
 }

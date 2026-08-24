@@ -13,99 +13,18 @@ import { readRelatedSourceRevisionSnapshots } from
   "./postgres-document-publication-related-snapshots.js";
 import { replacePostgresDocumentGenerationGraphDegrees } from
   "./postgres-document-generation-graph-degrees.js";
+import { replacePostgresDocumentGenerationStatistics } from
+  "./postgres-document-generation-statistics.js";
+import { buildDocumentPublicationAffectedClosure } from
+  "../application/document-publication-affected-closure.js";
+import { createPostgresDocumentPublicationStrandedPlanReader } from
+  "./postgres-document-publication-stranded-plan.js";
 export function createPostgresDocumentPublicationCoordinator(
   sql: DatabaseClient
 ) {
+  const strandedPlans = createPostgresDocumentPublicationStrandedPlanReader(sql);
   return {
-    async claimStrandedPlan(input: {
-      knowledgeBaseId?: string;
-      now: string;
-      staleAfterMs: number;
-    }) {
-      const now = assertRepositoryTimestamp(input.now, "now");
-      const staleAfterMs = assertRepositoryPositiveInteger(
-        input.staleAfterMs,
-        "stale_after_ms",
-        300_000
-      );
-      const knowledgeBaseId = input.knowledgeBaseId === undefined
-        ? null
-        : assertRepositoryIdentity(
-          input.knowledgeBaseId,
-          "knowledge_base_id"
-        );
-      return sql.begin(async (transaction) => {
-        const generations = await transaction<Array<{
-          public_id: string;
-          knowledge_base_id: string;
-          base_generation_public_id: string | null;
-          target_fact_epoch: number | string;
-          renderer_contract_version: string;
-          deterministic_changed_at: Date | string;
-        }>>`
-          WITH candidate AS (
-            SELECT generation.public_id
-            FROM focowiki.projection_publication_generations generation
-            WHERE generation.state = 'planned'
-              AND (${knowledgeBaseId}::text IS NULL
-                OR generation.knowledge_base_id = ${knowledgeBaseId})
-              AND generation.updated_at <= ${now}::timestamptz
-                - (${staleAfterMs} * interval '1 millisecond')
-              AND NOT EXISTS (
-                SELECT 1
-                FROM focowiki.projection_scope_generations scope
-                WHERE scope.publication_generation_public_id
-                  = generation.public_id
-              )
-            ORDER BY generation.updated_at,
-                     generation.public_id COLLATE "C"
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-          )
-          UPDATE focowiki.projection_publication_generations generation
-          SET updated_at = ${now}
-          FROM candidate
-          WHERE generation.public_id = candidate.public_id
-          RETURNING generation.public_id, generation.knowledge_base_id,
-                    generation.base_generation_public_id,
-                    generation.target_fact_epoch,
-                    generation.renderer_contract_version,
-                    generation.deterministic_changed_at
-        `;
-        const generation = generations[0];
-        if (!generation) return null;
-        const documents = await transaction<ReadyFactRow[]>`
-          SELECT epoch.fact_epoch, epoch.mutation_public_id,
-                 document.document_job_public_id,
-                 epoch.source_file_public_id,
-                 epoch.source_revision_public_id, epoch.created_at
-          FROM focowiki.projection_generation_documents document
-          JOIN focowiki.projection_fact_epochs epoch
-            ON epoch.knowledge_base_id = ${generation.knowledge_base_id}
-           AND epoch.mutation_public_id = document.mutation_public_id
-           AND epoch.fact_epoch = document.fact_epoch
-          WHERE document.generation_public_id = ${generation.public_id}
-            AND epoch.state = 'included'
-          ORDER BY epoch.created_at, epoch.fact_epoch
-        `;
-        if (documents.length === 0) {
-          throw repositoryContractError(
-            "publication_stranded_plan_documents_missing"
-          );
-        }
-        return {
-          generationPublicId: generation.public_id,
-          knowledgeBaseId: generation.knowledge_base_id,
-          baseGenerationPublicId: generation.base_generation_public_id,
-          targetFactEpoch: Number(generation.target_fact_epoch),
-          rendererContractVersion: generation.renderer_contract_version,
-          deterministicChangedAt: new Date(
-            generation.deterministic_changed_at
-          ).toISOString(),
-          documents: documents.map(mapReadyFact)
-        };
-      });
-    },
+    ...strandedPlans,
 
     async freezeReady(input: {
       knowledgeBaseId: string;
@@ -205,13 +124,36 @@ export function createPostgresDocumentPublicationCoordinator(
           INSERT INTO focowiki.projection_publication_generations (
             public_id, knowledge_base_id, base_generation_public_id,
             target_fact_epoch, renderer_contract_version,
-            deterministic_changed_at, input_fingerprint_sha256
+            deterministic_changed_at, input_fingerprint_sha256,
+            planning_mode, full_rebuild_reason
           ) VALUES (
             ${generationPublicId}, ${knowledgeBaseId},
             ${head.active_generation_public_id}, ${window.targetFactEpoch},
             ${contractVersion(input.rendererContractVersion)},
-            ${window.deterministicChangedAt}, ${identity}
+            ${window.deterministicChangedAt}, ${identity},
+            ${head.active_generation_public_id === null ? "initial" : "delta"},
+            ${head.active_generation_public_id === null
+              ? "empty_knowledge_base" : null}
           )
+        `;
+        await transaction`
+          UPDATE focowiki.projection_publication_generations
+          SET superseded_by_generation_public_id = ${generationPublicId},
+              recovery_evidence = recovery_evidence || jsonb_build_object(
+                'replacementGenerationPublicId', (${generationPublicId})::text,
+                'replacementRendererContractVersion',
+                  (${input.rendererContractVersion})::text,
+                'outcome', 'minimum_replacement_planned'
+              ),
+              updated_at = ${now}
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND state = 'obsolete'
+            AND superseded_by_generation_public_id IS NULL
+            AND supersession_reason IN (
+              'publication_renderer_contract_incompatible',
+              'scope_generation_lease_lost'
+            )
+            AND target_fact_epoch <= ${window.targetFactEpoch}
         `;
         const documents = window.documents.map((document) => ({
           generation_public_id: generationPublicId,
@@ -285,8 +227,10 @@ export function createPostgresDocumentPublicationCoordinator(
         const generations = await transaction<Array<{
           knowledge_base_id: string;
           input_fingerprint_sha256: string;
+          base_generation_public_id: string | null;
         }>>`
-          SELECT knowledge_base_id, input_fingerprint_sha256
+          SELECT knowledge_base_id, input_fingerprint_sha256,
+                 base_generation_public_id
           FROM focowiki.projection_publication_generations
           WHERE public_id = ${assertRepositoryIdentity(
             input.generationPublicId,
@@ -297,6 +241,54 @@ export function createPostgresDocumentPublicationCoordinator(
         const generation = generations[0];
         if (!generation) {
           throw repositoryContractError("publication_generation_not_plannable");
+        }
+        const planningMode = input.documents.every((document) =>
+          document.operation === "repair") ? "repair"
+          : generation.base_generation_public_id === null ? "initial" : "delta";
+        const affectedClosure = buildDocumentPublicationAffectedClosure({
+          planningMode,
+          documents: input.documents
+        });
+        await transaction`
+          UPDATE focowiki.projection_publication_generations
+          SET planning_mode = ${planningMode},
+              affected_closure_fingerprint_sha256 =
+                ${affectedClosure.fingerprintSha256},
+              full_rebuild_reason = ${planningMode === "initial"
+                ? "empty_knowledge_base"
+                : planningMode === "repair" ? "explicit_repair" : null},
+              updated_at = ${input.createdAt}
+          WHERE public_id = ${input.generationPublicId}
+            AND state = 'planned'
+        `;
+        if (affectedClosure.members.length > 0) {
+          const affectedMembers = affectedClosure.members.map((member) => ({
+            publication_generation_public_id: input.generationPublicId,
+            knowledge_base_id: generation.knowledge_base_id,
+            member_kind: member.kind,
+            member_public_id: member.publicId,
+            source_file_public_id: member.sourceFilePublicId,
+            member_order: member.order,
+            created_at: input.createdAt
+          }));
+          await transaction`
+            INSERT INTO focowiki.projection_generation_affected_members (
+              publication_generation_public_id, knowledge_base_id,
+              member_kind, member_public_id, source_file_public_id,
+              member_order, created_at
+            )
+            SELECT publication_generation_public_id, knowledge_base_id,
+                   member_kind, member_public_id, source_file_public_id,
+                   member_order, created_at
+            FROM jsonb_to_recordset(
+              ${transaction.json(affectedMembers as never)}::jsonb
+            ) AS desired(
+              publication_generation_public_id text, knowledge_base_id text,
+              member_kind text, member_public_id text,
+              source_file_public_id text, member_order integer,
+              created_at timestamptz
+            )
+          `;
         }
         const priorRows = await transaction<Array<{
           scope_identity: string;
@@ -428,6 +420,14 @@ export function createPostgresDocumentPublicationCoordinator(
           generationPublicId: input.generationPublicId,
           knowledgeBaseId: generation.knowledge_base_id,
           documents: input.documents, createdAt: input.createdAt
+        });
+        await replacePostgresDocumentGenerationStatistics({
+          transaction: transaction as unknown as DatabaseClient,
+          generationPublicId: input.generationPublicId,
+          baseGenerationPublicId: generation.base_generation_public_id,
+          knowledgeBaseId: generation.knowledge_base_id,
+          documents: input.documents,
+          createdAt: input.createdAt
         });
         const dependencies = input.scopes.flatMap((scope) =>
           scope.dependsOn.map((dependency) => ({

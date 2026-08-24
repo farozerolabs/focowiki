@@ -19,12 +19,14 @@ import type { DocumentWorkerObservability } from
   "../application/document-worker-observability.js";
 import { readGenerationFactDeltas } from
   "./production-document-publication-fact-deltas.js";
+import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
+  "../application/document-publication-renderer-contract.js";
 
-const RENDERER_CONTRACT_VERSION = "portable-okf-v2";
 const CONTRIBUTOR_CAP = 256;
 const STRANDED_PLAN_LEASE_MILLISECONDS = 30_000;
 const RECOVERABLE_QUARANTINE_RECOVERY_LIMIT = 16;
 const RECOVERABLE_QUARANTINE_POLL_MILLISECONDS = 30_000;
+const INCOMPATIBLE_GENERATION_RECOVERY_LIMIT = 16;
 
 export function createProductionDocumentPublicationCoordinatorRuntime(input: {
   sql: DatabaseClient;
@@ -57,7 +59,7 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
       knowledgeBaseId,
       now,
       contributorCap: CONTRIBUTOR_CAP,
-      rendererContractVersion: RENDERER_CONTRACT_VERSION
+      rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
     });
     if (!frozen) return false;
     const documents = await readGenerationFactDeltas(
@@ -162,6 +164,12 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
   return {
     async runOne(now = new Date().toISOString()): Promise<boolean> {
       const nowMilliseconds = Date.parse(now);
+      const incompatible = await recovery.recoverIncompatibleGenerations({
+        rendererContractVersion:
+          DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
+        recoveredAt: now,
+        limit: INCOMPATIBLE_GENERATION_RECOVERY_LIMIT
+      });
       const recovered = nowMilliseconds >= nextRemediatedRecoveryAt
         ? await recovery.recoverRecoverableQuarantines({
           recoveredAt: now,
@@ -169,6 +177,7 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
         }) : {
           generationCount: 0,
           releasedFactCount: 0,
+          replannedFactCount: 0,
           supersededScopeCount: 0
         };
       if (nowMilliseconds >= nextRemediatedRecoveryAt) {
@@ -180,6 +189,9 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
       if (recovered.generationCount > 0) {
         input.observability?.publicationRecovery?.(recovered);
       }
+      if (incompatible.generationCount > 0) {
+        input.observability?.publicationRecovery?.(incompatible);
+      }
       const [planned, validated, activated] = await Promise.all([
         planOne(now), validateOne(now), activateOne(now)
       ]);
@@ -189,7 +201,8 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
           input.observability?.publicationBacklog(backlog));
         nextBacklogObservationAt = nowMilliseconds + 1_000;
       }
-      return recovered.generationCount > 0 || planned || validated || activated;
+      return incompatible.generationCount > 0
+        || recovered.generationCount > 0 || planned || validated || activated;
     },
     async run(signal: AbortSignal): Promise<void> {
       while (!signal.aborted) {

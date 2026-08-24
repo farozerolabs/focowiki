@@ -47,4 +47,14 @@ describe("document publication recovery", () => {
     expect(limitDocumentPublicationRecovery({ decision, attempt: 100 }))
       .toBe("retry_infrastructure");
   });
+
+  it("replans the second consecutive lease loss for one immutable input", () => {
+    const decision = decideDocumentPublicationRecovery(
+      "scope_generation_lease_lost"
+    );
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 1 }))
+      .toBe("inspect_or_reclaim");
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 2 }))
+      .toBe("recompute_scope");
+  });
 });

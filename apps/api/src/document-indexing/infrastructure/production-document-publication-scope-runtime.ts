@@ -23,6 +23,8 @@ import { waitForDocumentWork } from
   "./production-document-fixed-runtime-support.js";
 import type { DocumentWorkerObservability } from
   "../application/document-worker-observability.js";
+import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
+  "../application/document-publication-renderer-contract.js";
 
 export function createProductionDocumentPublicationScopeRuntime(input: {
   sql: DatabaseClient;
@@ -32,7 +34,8 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
   maximumConcurrency: number;
   renderer: ReturnType<typeof createProductionDocumentScopeRenderer>;
   observability?: Pick<DocumentWorkerObservability,
-    "publicationScope" | "publicationScopeStage" | "publicationStorage">;
+    "publicationScope" | "publicationScopeStage" | "publicationStorage"
+      | "publicationProjection">;
 }) {
   const workerId = `${input.workerId}:publication-scope`;
   const repository = createPostgresDocumentScopeGenerationRepository(input.sql);
@@ -43,9 +46,11 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
     leaseDurationMs: input.leaseDurationMs,
     heartbeatIntervalMs: input.heartbeatIntervalMs,
     maximumExecutionMs: DOCUMENT_PUBLICATION_SCOPE_EXECUTION_TIMEOUT_MS,
+    supportedRendererContractVersion:
+      DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
     now: () => new Date().toISOString(),
-    render: (snapshot, signal) =>
-      input.renderer.renderPublication(snapshot, signal),
+    render: (snapshot, signal, checkpoint) =>
+      input.renderer.renderPublication(snapshot, signal, checkpoint),
     onPersisted(event) {
       input.observability?.publicationStorage({
         knowledgeBaseId: event.snapshot.knowledgeBaseId,
@@ -53,6 +58,21 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
         objectPutCount: event.objectPutCount,
         objectReuseCount: event.objectReuseCount,
         putByteCount: event.putByteCount
+      });
+      input.observability?.publicationProjection({
+        knowledgeBaseId: event.snapshot.knowledgeBaseId,
+        generationPublicId: event.snapshot.publicationGenerationPublicId,
+        planningMode: event.snapshot.planningMode,
+        rendererContractVersion: event.snapshot.rendererContractVersion,
+        affectedSourceCount:
+          event.snapshot.affectedSourceFilePublicIds.length,
+        basePageCount: event.snapshot.basePages.length,
+        recordsRendered: event.recordsRendered,
+        objectPutCount: event.objectPutCount,
+        objectReuseCount: event.objectReuseCount,
+        putByteCount: event.putByteCount,
+        renewalCount: event.renewalCount,
+        maximumHeartbeatAgeMs: event.maximumHeartbeatAgeMs
       });
     },
     onStage(event) {
@@ -81,10 +101,12 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
       const decision = decideDocumentPublicationRecovery(code);
       return {
         code,
-        recoveryAction: limitDocumentPublicationRecovery({
-          decision,
-          attempt: Number(claim.leaseGeneration)
-        })
+        recoveryAction: decision.action === "inspect_or_reclaim"
+          ? decision.action
+          : limitDocumentPublicationRecovery({
+              decision,
+              attempt: Number(claim.leaseGeneration)
+            })
       };
     },
     onClaim: ({ claim }) => observeScope(input.observability, {
@@ -119,6 +141,7 @@ function observeScope(
       activeFactEpoch?: number;
       scopeGeneration?: number;
       leaseGeneration: number;
+      leaseLossCount?: number;
     }>;
     durationMs: number;
     errorCode: string | null;
@@ -140,6 +163,7 @@ function observeScope(
     activeFactEpoch: claim.activeFactEpoch,
     scopeGeneration: claim.scopeGeneration,
     leaseGeneration: Number(claim.leaseGeneration),
+    leaseLossCount: claim.leaseLossCount ?? 0,
     durationMs: input.durationMs,
     errorCode: input.errorCode
   });

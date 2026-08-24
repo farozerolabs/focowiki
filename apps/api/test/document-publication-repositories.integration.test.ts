@@ -13,6 +13,12 @@ import { createPostgresDocumentPublicationRepository } from
   "../src/document-indexing/infrastructure/postgres-document-publication-repository.js";
 import { createPostgresDocumentPublicationRecovery } from
   "../src/document-indexing/infrastructure/postgres-document-publication-recovery.js";
+import { createPostgresDocumentPublicationCoordinator } from
+  "../src/document-indexing/infrastructure/postgres-document-publication-coordinator.js";
+import { readBaseGraphDirectoryRecordKeys } from
+  "../src/document-indexing/infrastructure/postgres-document-graph-directory-scope-reader.js";
+import { createPostgresDocumentPerFileGraphDirectory } from
+  "../src/document-indexing/infrastructure/postgres-document-per-file-graph-directory.js";
 import { createPostgresDocumentPublicationValidator } from
   "../src/document-indexing/infrastructure/postgres-document-publication-validator.js";
 import { createPostgresDocumentScopeGenerationRepository } from
@@ -79,6 +85,71 @@ const enabled = Boolean(databaseUrl && runOwner
       activeGenerationId: null,
       activeFactEpoch: 0,
       headVersion: 0
+    });
+  });
+
+  it("orders prior graph directory record keys by projected aliases", async () => {
+    await expect(readBaseGraphDirectoryRecordKeys(database, {
+      knowledgeBaseId: "publication-kb",
+      scopePath: "pages",
+      affectedSourceFilePublicIds: ["source-1"],
+      baseDeterministicChangedAt: "2026-08-21T12:00:00.000Z"
+    })).resolves.toEqual([]);
+  });
+
+  it("keeps descendant graph files out of root delta navigation", async () => {
+    await sql.begin(async (transaction) => {
+      await transaction`SET LOCAL session_replication_role = replica`;
+      await transaction`
+        INSERT INTO focowiki.document_projection_records (
+          knowledge_base_id, source_file_public_id, source_revision_public_id,
+          logical_path, normalized_path, title, summary, metadata, headings,
+          entities, content_type, checksum_sha256, byte_count,
+          tokenizer_contract_version, navigation_term_fingerprint_sha256,
+          active
+        ) VALUES (
+          'publication-kb', 'navigation-root-source',
+          'navigation-root-revision', 'guides/overview.md',
+          'guides/overview.md', 'Overview', '', '{}'::jsonb, '{}'::text[],
+          '{}'::text[], 'text/markdown; charset=utf-8', ${"e".repeat(64)},
+          1, 'nodejieba-test-v1', ${"f".repeat(64)}, true
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.document_semantic_directory_memberships (
+          knowledge_base_id, source_revision_public_id, directory_path,
+          page_path
+        ) VALUES
+          ('publication-kb', 'navigation-root-revision', 'pages',
+            'pages/guides/overview.md'),
+          ('publication-kb', 'navigation-root-revision', 'pages/guides',
+            'pages/guides/overview.md')
+      `;
+      await transaction`
+        INSERT INTO focowiki.document_graph_degrees (
+          knowledge_base_id, source_revision_public_id,
+          incoming_count, outgoing_count
+        ) VALUES (
+          'publication-kb', 'navigation-root-revision', 1, 0
+        )
+      `;
+    });
+
+    const reader = createPostgresDocumentPerFileGraphDirectory(database);
+    await expect(reader.readPerFileGraphDirectoryDeltaState({
+      knowledgeBaseId: "publication-kb",
+      scopePath: "pages",
+      publicationGenerationPublicId: "missing-generation",
+      includedSourceRevisionPublicIds: ["navigation-root-revision"],
+      affectedSourceFilePublicIds: ["navigation-root-source"],
+      candidateChildScopePaths: ["pages/guides"]
+    })).resolves.toEqual({
+      records: [],
+      childDirectories: [{
+        title: "guides",
+        scopePath: "pages/guides",
+        path: "_graph/by-file/guides/index.md"
+      }]
     });
   });
 
@@ -426,6 +497,24 @@ const enabled = Boolean(databaseUrl && runOwner
         documentPublicationGenerationId("generation-4"),
         12
       ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 12, 'lease-recompute-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${generationId}, 'lease-recompute-mutation', NULL,
+          'source-1', 'revision-1', 12
+        )
+      `;
       const repository = createPostgresDocumentScopeGenerationRepository(database);
       await repository.create({
         publicId: "scope-generation-lease",
@@ -502,6 +591,17 @@ const enabled = Boolean(databaseUrl && runOwner
         generation_state: "obsolete",
         scope_state: "superseded"
       }]);
+      const replacements = await sql<Array<{ public_id: string }>>`
+        SELECT public_id FROM focowiki.projection_publication_generations
+        WHERE recovery_evidence->>'supersedesGenerationPublicId'
+          = ${generationId}
+      `;
+      expect(replacements).toHaveLength(1);
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = now()
+        WHERE public_id = ${replacements[0]!.public_id}
+      `;
 
       const quarantineGenerationId = documentPublicationGenerationId(
         "generation-7"
@@ -860,6 +960,24 @@ const enabled = Boolean(databaseUrl && runOwner
         documentPublicationGenerationId("generation-4"),
         15
       ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 15, 'resource-recompute-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${generationId}, 'resource-recompute-mutation', NULL,
+          'source-1', 'revision-1', 15
+        )
+      `;
       const scopes = createPostgresDocumentScopeGenerationRepository(database);
       await scopes.create({
         publicId: "scope-generation-resource",
@@ -929,6 +1047,244 @@ const enabled = Boolean(databaseUrl && runOwner
         state: "obsolete",
         safe_error_code: "53100"
       }]);
+      const replacements = await sql<Array<{ public_id: string }>>`
+        SELECT public_id FROM focowiki.projection_publication_generations
+        WHERE recovery_evidence->>'supersedesGenerationPublicId'
+          = ${generationId}
+      `;
+      expect(replacements).toHaveLength(1);
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = now()
+        WHERE public_id = ${replacements[0]!.public_id}
+      `;
+    });
+
+  it("supersedes incompatible projection only and preserves upstream work",
+    async () => {
+      const publications = createPostgresDocumentPublicationRepository(database);
+      const generationId = documentPublicationGenerationId(
+        "generation-incompatible"
+      );
+      await publications.createGeneration(generation(
+        generationId,
+        documentPublicationGenerationId("generation-4"),
+        17
+      ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 17, 'incompatible-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${generationId}, 'incompatible-mutation', 'publication-job-1',
+          'source-1', 'revision-1', 17
+        )
+      `;
+      const scopes = createPostgresDocumentScopeGenerationRepository(database);
+      await scopes.create({
+        publicId: "scope-generation-incompatible",
+        publicationGenerationId: generationId,
+        knowledgeBaseId: "publication-kb",
+        scopeIdentity: "root:index",
+        scopeKind: "root",
+        scopeKey: "index",
+        scopeGeneration: documentScopeGeneration(8),
+        inputSnapshotFingerprintSha256: "7".repeat(64),
+        createdAt: "2026-08-21T12:09:00.000Z"
+      });
+      await sql`
+        UPDATE focowiki.knowledge_base_projection_heads
+        SET active_generation_public_id = 'generation-4',
+            active_fact_epoch = 10
+        WHERE knowledge_base_id = 'publication-kb'
+      `;
+      const upstreamBefore = await upstreamWorkCounts(sql);
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+
+      await expect(recovery.recoverIncompatibleGenerations({
+        rendererContractVersion: "portable-okf-v3",
+        recoveredAt: "2026-08-21T12:09:01.000Z",
+        limit: 10
+      })).resolves.toEqual({
+        generationCount: 1,
+        releasedFactCount: 0,
+        replannedFactCount: 1,
+        supersededScopeCount: 1
+      });
+
+      await expect(sql<Array<{
+        generation_state: string;
+        scope_state: string;
+        fact_state: string;
+        active_generation_public_id: string | null;
+        retention_state: string;
+      }>>`
+        SELECT generation.state AS generation_state,
+               scope.state AS scope_state, epoch.state AS fact_state,
+               head.active_generation_public_id,
+               retention.retention_state
+        FROM focowiki.projection_publication_generations generation
+        JOIN focowiki.projection_scope_generations scope
+          ON scope.publication_generation_public_id = generation.public_id
+        JOIN focowiki.projection_generation_documents document
+          ON document.generation_public_id = generation.public_id
+        JOIN focowiki.projection_fact_epochs epoch
+          ON epoch.knowledge_base_id = generation.knowledge_base_id
+         AND epoch.mutation_public_id = document.mutation_public_id
+         AND epoch.fact_epoch = document.fact_epoch
+        JOIN focowiki.knowledge_base_projection_heads head
+          ON head.knowledge_base_id = generation.knowledge_base_id
+        JOIN focowiki.projection_generation_retention retention
+          ON retention.generation_public_id = generation.public_id
+        WHERE generation.public_id = ${generationId}
+      `).resolves.toEqual([{
+        generation_state: "obsolete",
+        scope_state: "superseded",
+        fact_state: "included",
+        active_generation_public_id: "generation-4",
+        retention_state: "retained"
+      }]);
+      await expect(upstreamWorkCounts(sql)).resolves.toEqual(upstreamBefore);
+      const replacements = await sql<Array<{
+        public_id: string;
+        renderer_contract_version: string;
+        state: string;
+      }>>`
+        SELECT public_id, renderer_contract_version, state
+        FROM focowiki.projection_publication_generations
+        WHERE recovery_evidence->>'supersedesGenerationPublicId'
+          = ${generationId}
+      `;
+      expect(replacements).toEqual([expect.objectContaining({
+        renderer_contract_version: "portable-okf-v3",
+        state: "planned"
+      })]);
+      await expect(createPostgresDocumentPublicationCoordinator(database)
+        .claimStrandedPlan({
+          knowledgeBaseId: "publication-kb",
+          now: "2026-08-21T12:09:01.001Z",
+          staleAfterMs: 30_000
+        })).resolves.toMatchObject({
+          generationPublicId: replacements[0]!.public_id,
+          rendererContractVersion: "portable-okf-v3",
+          documents: [expect.objectContaining({
+            mutationPublicId: "incompatible-mutation",
+            sourceRevisionPublicId: "revision-1"
+          })]
+        });
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = now()
+        WHERE public_id = ${replacements[0]!.public_id}
+      `;
+    });
+
+  it("supersedes after the second unchanged lease loss and fences late writers",
+    async () => {
+      const publications = createPostgresDocumentPublicationRepository(database);
+      const generationId = documentPublicationGenerationId(
+        "generation-two-losses"
+      );
+      await publications.createGeneration(generation(
+        generationId,
+        documentPublicationGenerationId("generation-4"),
+        18
+      ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 18, 'two-loss-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${generationId}, 'two-loss-mutation', 'publication-job-1',
+          'source-1', 'revision-1', 18
+        )
+      `;
+      const scopes = createPostgresDocumentScopeGenerationRepository(database);
+      await scopes.create({
+        publicId: "scope-generation-two-losses",
+        publicationGenerationId: generationId,
+        knowledgeBaseId: "publication-kb",
+        scopeIdentity: "root:index",
+        scopeKind: "root",
+        scopeKey: "index",
+        scopeGeneration: documentScopeGeneration(9),
+        inputSnapshotFingerprintSha256: "6".repeat(64),
+        createdAt: "2026-08-21T12:10:00.000Z"
+      });
+      const first = (await scopes.claim({
+        workerId: "scope-worker-loss-one",
+        now: "2026-08-21T12:10:01.000Z",
+        leaseDurationMs: 1_000,
+        limit: 1
+      }))[0]!;
+      await expect(scopes.recoverExpired({
+        now: "2026-08-21T12:10:03.000Z", limit: 1
+      })).resolves.toBe(1);
+      const second = (await scopes.claim({
+        workerId: "scope-worker-loss-two",
+        now: "2026-08-21T12:10:03.100Z",
+        leaseDurationMs: 1_000,
+        limit: 1
+      }))[0]!;
+      expect(second.leaseGeneration).toBeGreaterThan(first.leaseGeneration);
+      await expect(scopes.recoverExpired({
+        now: "2026-08-21T12:10:05.000Z", limit: 1
+      })).resolves.toBe(1);
+      await expect(scopes.heartbeat({
+        publicId: second.publicId,
+        workerId: "scope-worker-loss-two",
+        leaseGeneration: second.leaseGeneration,
+        now: "2026-08-21T12:10:05.100Z",
+        leaseDurationMs: 1_000
+      })).resolves.toBe(false);
+      await expect(sql<Array<{
+        generation_state: string;
+        scope_state: string;
+        fact_state: string;
+        consecutive_lease_loss_count: number;
+        retention_state: string;
+      }>>`
+        SELECT generation.state AS generation_state,
+               scope.state AS scope_state, epoch.state AS fact_state,
+               scope.consecutive_lease_loss_count,
+               retention.retention_state
+        FROM focowiki.projection_publication_generations generation
+        JOIN focowiki.projection_scope_generations scope
+          ON scope.publication_generation_public_id = generation.public_id
+        JOIN focowiki.projection_generation_documents document
+          ON document.generation_public_id = generation.public_id
+        JOIN focowiki.projection_fact_epochs epoch
+          ON epoch.knowledge_base_id = generation.knowledge_base_id
+         AND epoch.mutation_public_id = document.mutation_public_id
+         AND epoch.fact_epoch = document.fact_epoch
+        JOIN focowiki.projection_generation_retention retention
+          ON retention.generation_public_id = generation.public_id
+        WHERE generation.public_id = ${generationId}
+      `).resolves.toEqual([{
+        generation_state: "obsolete",
+        scope_state: "superseded",
+        fact_state: "included",
+        consecutive_lease_loss_count: 2,
+        retention_state: "retained"
+      }]);
     });
 });
 
@@ -996,6 +1352,32 @@ async function seed(sql: postgres.Sql): Promise<void> {
 
 function generatedObjectId(): string {
   return `generated-sha256:okf-generated-markdown-v1:${"d".repeat(64)}`;
+}
+
+async function upstreamWorkCounts(sql: postgres.Sql) {
+  const rows = await sql<Array<{
+    model_executions: number | string;
+    graphrag_chunks: number | string;
+    embedding_artifacts: number | string;
+    artifact_work: number | string;
+  }>>`
+    SELECT
+      (SELECT count(*) FROM focowiki.document_model_layer_executions)
+        AS model_executions,
+      (SELECT count(*) FROM focowiki.document_graphrag_chunks)
+        AS graphrag_chunks,
+      (SELECT count(*) FROM focowiki.embedding_artifacts)
+        AS embedding_artifacts,
+      (SELECT count(*) FROM focowiki.document_artifact_work)
+        AS artifact_work
+  `;
+  const row = rows[0]!;
+  return {
+    modelExecutions: Number(row.model_executions),
+    graphragChunks: Number(row.graphrag_chunks),
+    embeddingArtifacts: Number(row.embedding_artifacts),
+    artifactWork: Number(row.artifact_work)
+  };
 }
 
 function withDatabase(url: string, database: string): string {

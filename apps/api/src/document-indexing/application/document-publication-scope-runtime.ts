@@ -13,6 +13,7 @@ type ScopeClaim = Readonly<{
   targetFactEpoch?: number;
   activeFactEpoch?: number;
   scopeGeneration?: number;
+  leaseLossCount?: number;
 }>;
 
 export function createDocumentPublicationScopeRuntime(input: {
@@ -150,7 +151,8 @@ export function createDocumentPublicationScopeRuntime(input: {
           claims.forEach((claim) => launch(claim, signal));
         }
         if (active.size > 0) {
-          await Promise.race(active);
+          await input.wait(input.idlePollMilliseconds ?? 100, signal);
+          await new Promise<void>((resolve) => setImmediate(resolve));
         } else {
           await input.wait(input.idlePollMilliseconds ?? 100, signal);
         }

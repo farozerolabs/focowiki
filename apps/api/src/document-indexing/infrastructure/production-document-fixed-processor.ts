@@ -86,7 +86,8 @@ export function createProductionDocumentFixedProcessor(input: {
     DocumentWorkerObservability,
     "work" | "providerFailure" | "ingestionFailure" | "publication"
       | "publicationBacklog" | "publicationScope" | "publicationStorage"
-      | "publicationScopeStage" | "storageRequest" | "cleanup"
+      | "publicationProjection" | "publicationScopeStage"
+      | "storageRequest" | "cleanup"
   >;
 }) {
   let currentResourceCapacity = { ...input.resourceCapacity };
@@ -300,6 +301,7 @@ export function createProductionDocumentFixedProcessor(input: {
       okfLogMaxBytes: input.config.generated.okfLogMaxBytes
     },
     objectWriter: resources.writer,
+    objectBodies: resources.bodies,
     ownership: resources.ownership,
     maximumRecordsPerShard: graphConfig.shardSize,
     maximumShardBytes: 1_048_576

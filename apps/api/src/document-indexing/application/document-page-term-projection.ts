@@ -7,7 +7,9 @@ import {
 } from "./document-term-routing.js";
 import {
   buildDocumentSemanticPacketPages,
-  jsonDocumentSemanticPage
+  jsonDocumentSemanticPage,
+  type DocumentSemanticMachinePage,
+  type DocumentSemanticPartDescriptor
 } from "./document-semantic-resource-packets.js";
 import {
   asString,
@@ -41,15 +43,35 @@ export function buildDocumentPageDirectoryScopeResources(input: {
     maximumRecords: input.maximumRecordsPerShard,
     maximumBytes: input.maximumShardBytes
   });
+  return buildDocumentPageDirectoryScopeResourcesFromPacket({
+    scopePath: input.scopePath,
+    packet,
+    recordCount: input.records.length,
+    childDirectories: input.childDirectories,
+    previousPaths: input.previousPaths
+  });
+}
+
+export function buildDocumentPageDirectoryScopeResourcesFromPacket(input: {
+  scopePath: string;
+  packet: Readonly<{
+    pages: readonly DocumentSemanticMachinePage[];
+    descriptors: readonly DocumentSemanticPartDescriptor[];
+  }>;
+  recordCount: number;
+  childDirectories: DirectoryState["childDirectories"];
+  previousPaths: readonly string[];
+}) {
+  const machineDirectory = portableIndexDirectoryPath(input.scopePath);
   const removedLogicalPaths = new Set<string>();
   removeStalePaths(input.previousPaths,
-    packet.descriptors.map((descriptor) => descriptor.path),
+    input.packet.descriptors.map((descriptor) => descriptor.path),
     removedLogicalPaths);
   const state: DirectoryState = {
     scopePath: input.scopePath,
     childDirectories: [...input.childDirectories],
-    resources: [...packet.descriptors],
-    count: input.records.length
+    resources: [...input.packet.descriptors],
+    count: input.recordCount
   };
   if (input.scopePath !== "pages" && isEmptyDirectoryState(state)) {
     removedLogicalPaths.add(`${machineDirectory}/index.json`);
@@ -67,8 +89,8 @@ export function buildDocumentPageDirectoryScopeResources(input: {
       portableIndexDirectoryPath)
   });
   return {
-    pages: [...packet.pages, router],
-    descriptors: packet.descriptors,
+    pages: [...input.packet.pages, router],
+    descriptors: input.packet.descriptors,
     removedLogicalPaths: [...removedLogicalPaths].sort(compareText)
   };
 }
@@ -93,13 +115,7 @@ export function buildDocumentNavigationTermBucketResources(input: {
   const removedLogicalPaths = new Set<string>();
   removeStalePaths(input.previousPaths,
     packet.descriptors.map((item) => item.path), removedLogicalPaths);
-  const routes = packet.descriptors.map((descriptor) => ({
-    path: descriptor.path,
-    firstTerm: descriptor.firstKey,
-    lastTerm: descriptor.lastKey,
-    recordCount: descriptor.recordCount
-  }));
-  if (routes.length === 0) {
+  if (packet.descriptors.length === 0) {
     removedLogicalPaths.add(`${directoryPath}/index.json`);
     return {
       pages: [],
@@ -107,21 +123,39 @@ export function buildDocumentNavigationTermBucketResources(input: {
       removedLogicalPaths: [...removedLogicalPaths].sort(compareText)
     };
   }
-  const router = jsonDocumentSemanticPage({
-    logicalPath: `${directoryPath}/index.json`, entryKind: "index",
-    family: "term_bucket",
-    value: {
-      formatVersion: 2,
-      title: `${input.bucket} term routes`,
-      bucket: input.bucket,
-      routes
-    }
-  });
+  const router = buildDocumentNavigationTermBucketRouterPage(
+    input.bucket, packet.descriptors);
   return {
     pages: [...packet.pages, router],
     descriptors: packet.descriptors,
     removedLogicalPaths: [...removedLogicalPaths].sort(compareText)
   };
+}
+
+export function buildDocumentNavigationTermBucketRouterPage(
+  bucket: DocumentTermBucket,
+  descriptors: readonly Readonly<{
+    path: string;
+    firstKey: string;
+    lastKey: string;
+    recordCount: number;
+  }>[]
+) {
+  return jsonDocumentSemanticPage({
+    logicalPath: `_index/terms/${bucket}/index.json`, entryKind: "index",
+    family: "term_bucket",
+    value: {
+      formatVersion: 2,
+      title: `${bucket} term routes`,
+      bucket,
+      routes: descriptors.map((descriptor) => ({
+        path: descriptor.path,
+        firstTerm: descriptor.firstKey,
+        lastTerm: descriptor.lastKey,
+        recordCount: descriptor.recordCount
+      }))
+    }
+  });
 }
 
 export function buildDocumentTermCatalogPage(
