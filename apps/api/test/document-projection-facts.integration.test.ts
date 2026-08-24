@@ -317,6 +317,24 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       catalogBuckets: ["latin"],
       affectedBuckets: ["latin"]
     });
+    await expect(bucketReader.listNavigationTermDeltaRecords({
+      knowledgeBaseId: "kb-projection-facts",
+      bucket: "latin",
+      affectedSourceFilePublicIds: ["source-file-projection-first"],
+      includedSourceRevisionPublicIds: ["source-revision-projection-first"]
+    })).resolves.toEqual([{
+      term: "alpha",
+      postings: [{
+        path: "pages/moved/renamed.md",
+        fields: ["title", "path"]
+      }]
+    }, {
+      term: "replacement",
+      postings: [{
+        path: "pages/moved/renamed.md",
+        fields: ["heading"]
+      }]
+    }]);
     await sql`
       INSERT INTO focowiki.relation_candidate_pairs (
         public_id, knowledge_base_id, first_source_file_public_id,
@@ -904,7 +922,8 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         childDirectories: [],
         navigationCandidateEntryIds: [documentDirectoryEntryId(
           "file", "pages/reference/second.md"
-        )]
+        )],
+        removedRecordPaths: ["pages/reference/second.md"]
       });
       await sql`
         UPDATE focowiki.document_projection_records

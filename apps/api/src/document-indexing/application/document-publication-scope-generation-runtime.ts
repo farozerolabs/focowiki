@@ -14,8 +14,12 @@ export type DocumentPublicationImmutableScopeSnapshot = Readonly<{
   targetFactEpoch: number;
   inputSnapshotFingerprintSha256: string;
   rendererContractVersion: string;
+  planningMode: "initial" | "delta" | "repair";
+  affectedSourceFilePublicIds: readonly string[];
   deterministicChangedAt: string;
   baseGenerationPublicId: string | null;
+  baseDeterministicChangedAt?: string | null;
+  affectedLogicalPaths?: readonly string[];
   members: readonly Readonly<{
     kind: string;
     publicId: string;
@@ -24,12 +28,16 @@ export type DocumentPublicationImmutableScopeSnapshot = Readonly<{
     sourceFilePublicId: string | null;
   }>[];
   basePages: readonly Readonly<{
+    logicalPath?: string;
     normalizedPath: string;
     action: "put" | "delete";
     entryKind: string | null;
     objectId: string | null;
     checksumSha256: string | null;
     byteCount: number | null;
+    storageKey?: string | null;
+    contentType?: string | null;
+    objectFormat?: string | null;
   }>[];
 }>;
 
@@ -55,6 +63,10 @@ type RenderedScopeOutput = Readonly<{
     objectId: string;
     writeAttemptPublicId: string;
   }>[];
+  storageRequests?: Readonly<{
+    put: number;
+    attemptedBytes: number;
+  }>;
 }>;
 
 export function createDocumentPublicationScopeGenerationExecutor(input: {
@@ -82,16 +94,21 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
   heartbeatIntervalMs?: number;
   leaseDurationMs?: number;
   maximumExecutionMs?: number;
+  supportedRendererContractVersion?: string;
   now?: () => string;
   render(
     snapshot: DocumentPublicationImmutableScopeSnapshot,
-    signal: AbortSignal
+    signal: AbortSignal,
+    checkpoint: () => Promise<void>
   ): Promise<RenderedScopeOutput>;
   onPersisted?(input: Readonly<{
     snapshot: DocumentPublicationImmutableScopeSnapshot;
+    recordsRendered: number;
     objectPutCount: number;
     objectReuseCount: number;
     putByteCount: number;
+    renewalCount: number;
+    maximumHeartbeatAgeMs: number;
   }>): void;
   onStage?(input: Readonly<{
     snapshot: DocumentPublicationImmutableScopeSnapshot | null;
@@ -122,29 +139,54 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
         controller.abort(runtimeError("scope_generation_deadline_exceeded"));
       }, maximumExecutionMs);
       deadline.unref?.();
-      const heartbeat = async () => {
+      const heartbeatIntervalMs = input.heartbeatIntervalMs ?? 10_000;
+      let nextHeartbeatAt = 0;
+      let lastHeartbeatAt: number | null = null;
+      let maximumHeartbeatAgeMs = 0;
+      let renewalCount = 0;
+      let renewal: Promise<void> | null = null;
+      const heartbeat = async (force = false) => {
         if (!input.leases) return;
-        const renewed = await input.leases.heartbeat({
-          publicId: request.claim.publicId,
-          workerId: request.workerId,
-          leaseGeneration: request.claim.leaseGeneration,
-          now: input.now?.() ?? request.checkedAt,
-          leaseDurationMs: input.leaseDurationMs ?? 30_000
-        });
-        if (!renewed) {
-          const error = runtimeError("scope_generation_lease_lost");
-          controller.abort(error);
-          throw error;
+        const checkedAt = Date.now();
+        if (!force && checkedAt < nextHeartbeatAt) return;
+        if (renewal) return renewal;
+        renewal = (async () => {
+          const startedAt = Date.now();
+          if (lastHeartbeatAt !== null) {
+            maximumHeartbeatAgeMs = Math.max(
+              maximumHeartbeatAgeMs, startedAt - lastHeartbeatAt
+            );
+          }
+          const renewed = await input.leases!.heartbeat({
+            publicId: request.claim.publicId,
+            workerId: request.workerId,
+            leaseGeneration: request.claim.leaseGeneration,
+            now: input.now?.() ?? new Date().toISOString(),
+            leaseDurationMs: input.leaseDurationMs ?? 30_000
+          });
+          if (!renewed) {
+            const error = runtimeError("scope_generation_lease_lost");
+            controller.abort(error);
+            throw error;
+          }
+          lastHeartbeatAt = Date.now();
+          nextHeartbeatAt = lastHeartbeatAt + heartbeatIntervalMs;
+          renewalCount += 1;
+        })();
+        try {
+          await renewal;
+        } finally {
+          renewal = null;
         }
       };
       let timer: ReturnType<typeof setInterval> | null = null;
       try {
         controller.signal.throwIfAborted();
-        await heartbeat();
+        await heartbeat(true);
         if (input.leases) {
           timer = setInterval(() => void heartbeat().catch((error) => {
             controller.abort(error);
-          }), input.heartbeatIntervalMs ?? 10_000);
+          }), heartbeatIntervalMs);
           timer.unref?.();
         }
         const snapshot = await observeStage({
@@ -158,15 +200,32 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
         if (snapshot.publicId !== request.claim.publicId) {
           throw runtimeError("scope_generation_snapshot_identity_mismatch");
         }
+        if (input.supportedRendererContractVersion !== undefined
+          && snapshot.rendererContractVersion
+            !== input.supportedRendererContractVersion) {
+          throw runtimeError("publication_renderer_contract_incompatible");
+        }
+        if (!["initial", "delta", "repair"].includes(snapshot.planningMode)) {
+          throw runtimeError("publication_planning_mode_invalid");
+        }
+        if (snapshot.planningMode === "delta"
+          && snapshot.affectedSourceFilePublicIds.length === 0) {
+          throw runtimeError("publication_delta_closure_incomplete");
+        }
         const rendered = await observeStage({
           input,
           snapshot,
           scopeGenerationPublicId: request.claim.publicId,
           stage: "render",
           signal: controller.signal,
-          operation: () => input.render(snapshot, controller.signal)
+          operation: () => input.render(snapshot, controller.signal, async () => {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            controller.signal.throwIfAborted();
+            await heartbeat();
+            controller.signal.throwIfAborted();
+          })
         });
-        await heartbeat();
+        await heartbeat(true);
         controller.signal.throwIfAborted();
         await observeStage({
           input,
@@ -183,15 +242,26 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
           })
         });
         const putPages = rendered.pages.filter((page) => page.action === "put");
-        const objectPutCount = rendered.verifiedReservations.length;
+        const objectPutCount = rendered.storageRequests?.put
+          ?? rendered.verifiedReservations.length;
+        const touchedPaths = new Set(rendered.pages.map((page) =>
+          page.normalizedPath));
+        const structurallyReusedObjectCount = snapshot.basePages.filter((page) =>
+          page.action === "put" && !touchedPaths.has(page.normalizedPath)
+        ).length;
         input.onPersisted?.({
           snapshot,
+          recordsRendered: nonNegativeEvidenceMetric(
+            rendered.validationEvidence.recordsRendered
+          ),
           objectPutCount,
-          objectReuseCount: Math.max(0, putPages.length - objectPutCount),
-          putByteCount: putPages.reduce(
-            (total, page) => total + (page.byteCount ?? 0),
-            0
-          )
+          objectReuseCount: structurallyReusedObjectCount
+            + Math.max(0, putPages.length - objectPutCount),
+          putByteCount: rendered.storageRequests?.attemptedBytes
+            ?? putPages.reduce((total, page) =>
+              total + (page.byteCount ?? 0), 0),
+          renewalCount,
+          maximumHeartbeatAgeMs
         });
       } finally {
         if (timer) clearInterval(timer);
@@ -200,6 +270,10 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
       }
     }
   };
+}
+
+function nonNegativeEvidenceMetric(value: unknown): number {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
 }
 
 async function observeStage<T>(request: {

@@ -1,16 +1,11 @@
 import { createHash } from "node:crypto";
-import {
-  portableGraphDirectoryPath,
-  portableIndexDirectoryPath
-} from "@focowiki/okf";
+import { portableGraphDirectoryPath, portableIndexDirectoryPath } from "@focowiki/okf";
 import type { StorageVnextImmutableObjectWriter } from "../../storage-vnext/ownership/immutable-object-writer.js";
 import type { StorageVnextOwnershipRepository } from "../../storage-vnext/ownership/ports.js";
+import type { StorageVnextImmutableBodyStore } from "../../storage-vnext/ownership/s3-immutable-body-store.js";
 import type { DocumentProjectionScopeClaim } from "../application/document-scope-projector-runtime.js";
 import type { DocumentPublicationImmutableScopeSnapshot } from "../application/document-publication-scope-generation-runtime.js";
-import {
-  normalizeDocumentPublicationScopeOutput,
-  selectDocumentPublicationRemovedPaths
-} from
+import { normalizeDocumentPublicationScopeOutput } from
   "../application/document-publication-scope-output.js";
 import {
   validateDocumentProjectionScopeOutputOwnership
@@ -48,7 +43,6 @@ import {
   sourceFileScope,
   termBucket,
   validateScopeRendererConfiguration,
-  writeAttemptId,
   zeroStorageRequests
 } from "./production-document-scope-renderer-support.js";
 import {
@@ -59,11 +53,20 @@ import {
   selectChangedPages,
   type DocumentSourceScopeProjection
 } from "./production-document-scope-renderer-helpers.js";
+import { storeDocumentProjectionPages } from
+  "./production-document-scope-object-writer.js";
+import { finalizeDocumentPublicationOutput } from
+  "./production-document-publication-output.js";
 export type { DocumentSourceScopeProjection } from "./production-document-scope-renderer-helpers.js";
 type DocumentScopeContributor = Readonly<{ sourceFilePublicId: string; sourceRevisionPublicId: string | null; requiredSequence: number }>;
 type DocumentScopeRenderOptions = Readonly<{ pageIntegrityOverrides?:
   readonly DocumentPageIntegrityOverride[]; contributors?:
-  readonly DocumentScopeContributor[] }>;
+  readonly DocumentScopeContributor[]; checkpoint?: () => Promise<void>;
+  affectedSourceFilePublicIds?: readonly string[];
+  planningMode?: "initial" | "delta" | "repair";
+  baseDeterministicChangedAt?: string | null;
+  affectedLogicalPaths?: readonly string[];
+  basePages?: DocumentPublicationImmutableScopeSnapshot["basePages"] }>;
 export function createProductionDocumentScopeRenderer(input: {
   machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
   sourceProjection?: DocumentSourceScopeProjection;
@@ -72,6 +75,7 @@ export function createProductionDocumentScopeRenderer(input: {
   rootLimits?: { rootSummaryLimit: number; okfLogMaxEntries: number;
     okfLogMaxBytes: number };
   objectWriter: StorageVnextImmutableObjectWriter;
+  objectBodies?: StorageVnextImmutableBodyStore;
   ownership?: StorageVnextOwnershipRepository;
   maximumRecordsPerShard: number;
   maximumShardBytes: number;
@@ -84,6 +88,9 @@ export function createProductionDocumentScopeRenderer(input: {
     signal: AbortSignal,
     options: DocumentScopeRenderOptions = {}
   ) {
+    if (scope.publicationGenerationPublicId && !options.planningMode) {
+      throw scopeRenderError("publication_planning_mode_missing");
+    }
     const deterministicEventTime = scope.deterministicEventTime ?? clock();
     const sourceFile = sourceFileScope(scope);
     const bucket = termBucket(scope);
@@ -107,8 +114,10 @@ export function createProductionDocumentScopeRenderer(input: {
     const includedSourceRevisionPublicIds = contributors.flatMap((contributor) =>
       contributor.sourceRevisionPublicId
         ? [contributor.sourceRevisionPublicId] : []);
-    const excludedActiveSourceFilePublicIds = contributors.map((contributor) =>
-      contributor.sourceFilePublicId);
+    const excludedActiveSourceFilePublicIds = [
+      ...new Set(options.affectedSourceFilePublicIds
+        ?? contributors.map((contributor) => contributor.sourceFilePublicId))
+    ].sort();
     const projected = sourceFile
       ? await requireSourceProjection(input).project({
           knowledgeBaseId: scope.knowledgeBaseId,
@@ -120,6 +129,7 @@ export function createProductionDocumentScopeRenderer(input: {
       : pageDirectory
       ? await projectDocumentPageDirectoryScope({
           machineProjection: input.machineProjection,
+          ...(input.objectBodies ? { objectBodies: input.objectBodies } : {}),
           knowledgeBaseId: scope.knowledgeBaseId,
           scopePath: pageDirectory,
           ...(scope.publicationGenerationPublicId
@@ -127,6 +137,16 @@ export function createProductionDocumentScopeRenderer(input: {
                 scope.publicationGenerationPublicId } : {}),
           includedSourceRevisionPublicIds,
           excludedActiveSourceFilePublicIds,
+          ...(options.affectedSourceFilePublicIds
+            ? { affectedSourceFilePublicIds:
+                options.affectedSourceFilePublicIds } : {}),
+          ...(options.affectedLogicalPaths
+            ? { affectedLogicalPaths: options.affectedLogicalPaths } : {}),
+          ...(options.planningMode
+            ? { planningMode: options.planningMode } : {}),
+          ...(options.basePages ? { basePages: options.basePages } : {}),
+          ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
+          signal,
           pageIntegrityOverrides: options.pageIntegrityOverrides ?? [],
           maximumRecordsPerShard: input.maximumRecordsPerShard,
           maximumShardBytes: input.maximumShardBytes
@@ -137,7 +157,12 @@ export function createProductionDocumentScopeRenderer(input: {
             knowledgeBaseId: scope.knowledgeBaseId,
             scopePath: semanticDirectory,
             includedSourceRevisionPublicIds,
-            excludedActiveSourceFilePublicIds
+            excludedActiveSourceFilePublicIds,
+            ...(options.affectedSourceFilePublicIds
+              ? { affectedSourceFilePublicIds:
+                  options.affectedSourceFilePublicIds } : {}),
+            ...(options.planningMode
+              ? { planningMode: options.planningMode } : {})
           })
       : graphDirectory
         ? await projectGraphDirectory({
@@ -145,7 +170,17 @@ export function createProductionDocumentScopeRenderer(input: {
             knowledgeBaseId: scope.knowledgeBaseId,
             scopePath: graphDirectory,
             includedSourceRevisionPublicIds,
-            excludedActiveSourceFilePublicIds
+            excludedActiveSourceFilePublicIds,
+            ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
+            ...(options.planningMode
+              ? { planningMode: options.planningMode } : {}),
+            ...(options.baseDeterministicChangedAt
+              ? { baseDeterministicChangedAt:
+                  options.baseDeterministicChangedAt } : {}),
+            ...(options.basePages ? { basePages: options.basePages } : {}),
+            ...(options.affectedLogicalPaths
+              ? { affectedLogicalPaths: options.affectedLogicalPaths } : {}),
+            signal
           })
       : perFileGraphDirectory
         ? await projectPerFileGraphDirectory({
@@ -156,12 +191,22 @@ export function createProductionDocumentScopeRenderer(input: {
                   scope.publicationGenerationPublicId } : {}),
             scopePath: perFileGraphDirectory,
             includedSourceRevisionPublicIds,
-            excludedActiveSourceFilePublicIds
+            excludedActiveSourceFilePublicIds,
+            ...(options.affectedSourceFilePublicIds
+              ? { affectedSourceFilePublicIds:
+                  options.affectedSourceFilePublicIds } : {}),
+            ...(options.planningMode
+              ? { planningMode: options.planningMode } : {}),
+            ...(options.affectedLogicalPaths
+              ? { affectedLogicalPaths: options.affectedLogicalPaths } : {})
           })
       : graphCatalog
         ? await projectGraphCatalog({
             dependencies: input,
             knowledgeBaseId: scope.knowledgeBaseId,
+            ...(scope.publicationGenerationPublicId
+              ? { publicationGenerationPublicId:
+                  scope.publicationGenerationPublicId } : {}),
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds
           })
@@ -170,12 +215,23 @@ export function createProductionDocumentScopeRenderer(input: {
             input,
             knowledgeBaseId: scope.knowledgeBaseId,
             includedSourceRevisionPublicIds,
-            excludedActiveSourceFilePublicIds
+            excludedActiveSourceFilePublicIds,
+            ...(scope.publicationGenerationPublicId
+              ? { publicationGenerationPublicId:
+                  scope.publicationGenerationPublicId } : {}),
+            ...(options.planningMode
+              ? { planningMode: options.planningMode } : {}),
+            ...(options.basePages ? { basePages: options.basePages } : {}),
+            ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
+            signal
           })
       : indexCatalog
         ? await projectRoot({
             dependencies: input,
             knowledgeBaseId: scope.knowledgeBaseId,
+            ...(scope.publicationGenerationPublicId
+              ? { publicationGenerationPublicId:
+                  scope.publicationGenerationPublicId } : {}),
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds,
             changedAt: deterministicEventTime
@@ -193,8 +249,17 @@ export function createProductionDocumentScopeRenderer(input: {
             knowledgeBaseId: scope.knowledgeBaseId,
             bucket: bucket!,
             includedSourceRevisionPublicIds,
-            excludedActiveSourceFilePublicIds
+            excludedActiveSourceFilePublicIds,
+            ...(options.affectedSourceFilePublicIds
+              ? { affectedSourceFilePublicIds:
+                  options.affectedSourceFilePublicIds } : {}),
+            ...(options.planningMode
+              ? { planningMode: options.planningMode } : {}),
+            ...(options.basePages ? { basePages: options.basePages } : {}),
+            ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
+            signal
           });
+    await options.checkpoint?.();
     const materialized = indexCatalog
       ? await materializeRootExtensionNavigation({
           dependencies: input,
@@ -292,7 +357,10 @@ export function createProductionDocumentScopeRenderer(input: {
     async render(
       scope: DocumentProjectionScopeClaim,
       signal: AbortSignal,
-      options: Pick<DocumentScopeRenderOptions, "contributors"> = {}
+      options: Pick<DocumentScopeRenderOptions,
+        "contributors" | "checkpoint" | "affectedSourceFilePublicIds"
+          | "planningMode" | "baseDeterministicChangedAt" | "basePages"
+          | "affectedLogicalPaths"> = {}
     ) {
       const materialized = await project(scope, signal, options);
       if (!materialized) {
@@ -318,50 +386,14 @@ export function createProductionDocumentScopeRenderer(input: {
         knowledgeBaseId: scope.knowledgeBaseId,
         pages: materialized.pages
       });
-      const settled = await Promise.allSettled(pagesToStore.map(async (page) => {
-        if (signal.aborted) throw scopeRenderError("projection_scope_aborted");
-        const writeAttemptPublicId = writeAttemptId(
-          scope,
-          page.normalizedPath,
-          page.checksumSha256
-        );
-        const result = await input.objectWriter.putVerified({
-          bytes: page.bytes,
-          objectFormat: page.normalizedPath.endsWith(".json")
-            ? "okf-generated-json-v1" : "okf-generated-markdown-v1",
-          writeAttemptPublicId,
-          createdAt: clock(),
-          retainVerifiedReservation: input.ownership !== undefined,
-          signal
-        });
-        if (result.checksum !== page.checksumSha256
-          || result.byteCount !== page.byteCount) {
-          throw scopeRenderError("projection_scope_object_mismatch");
-        }
-        return { page, result, writeAttemptPublicId };
-      }));
-      const failed = settled.find((item) => item.status === "rejected");
-      if (failed) {
-        const releases = await Promise.allSettled(settled.flatMap((item) =>
-          item.status === "fulfilled" && input.ownership
-            ? [input.ownership.releaseVerifiedReservation({
-                objectId: item.value.result.objectId,
-                writeAttemptPublicId: item.value.writeAttemptPublicId
-              })]
-            : []));
-        const releaseErrors = releases.flatMap((result) =>
-          result.status === "rejected" ? [result.reason] : []);
-        if (releaseErrors.length > 0) {
-          throw new AggregateError(
-            [failed.reason, ...releaseErrors],
-            "Projection render and verified reservation release failed"
-          );
-        }
-        throw failed.reason;
-      }
-      const stored = settled.map((item) => {
-        if (item.status !== "fulfilled") throw item.reason;
-        return item.value;
+      const stored = await storeDocumentProjectionPages({
+        objectWriter: input.objectWriter,
+        ...(input.ownership ? { ownership: input.ownership } : {}),
+        scope,
+        pages: pagesToStore,
+        signal,
+        clock,
+        ...(options.checkpoint ? { checkpoint: options.checkpoint } : {})
       });
       const pages = stored.map(({ page, result }) => ({
         logicalPath: page.logicalPath,
@@ -402,7 +434,8 @@ export function createProductionDocumentScopeRenderer(input: {
     },
     async renderPublication(
       snapshot: DocumentPublicationImmutableScopeSnapshot,
-      signal: AbortSignal
+      signal: AbortSignal,
+      checkpoint: () => Promise<void> = async () => undefined
     ) {
       const validationEvidence = {
         scopeIdentity: snapshot.scopeIdentity,
@@ -437,60 +470,28 @@ export function createProductionDocumentScopeRenderer(input: {
           pages: [],
           removedNormalizedPaths: [],
           navigationMutations: [],
-          verifiedReservations: []
+          verifiedReservations: [],
+          storageRequests: zeroStorageRequests(),
+          factCount: 0
         }
-        : await renderer.render(scope, signal, { contributors });
-      const removedNormalizedPaths = selectDocumentPublicationRemovedPaths({
-        basePages: snapshot.basePages,
-        renderedPaths: rendered.pages.map((page) => page.normalizedPath),
-        explicitRemovedPaths: rendered.removedNormalizedPaths,
-        deleteOmittedBasePages: snapshot.scopeKind === "source"
-      });
-      const pages = [
-        ...rendered.pages.map((page) => ({
-          logicalPath: page.logicalPath,
-          normalizedPath: page.normalizedPath,
-          action: "put" as const,
-          entryKind: page.entryKind,
-          objectId: page.objectId,
-          checksumSha256: page.checksumSha256,
-          byteCount: page.byteCount
-        })),
-        ...removedNormalizedPaths.map((normalizedPath) => ({
-          logicalPath: normalizedPath,
-          normalizedPath,
-          action: "delete" as const,
-          entryKind: null,
-          objectId: null,
-          checksumSha256: null,
-          byteCount: null
-        }))
-      ];
-      const normalized = normalizeDocumentPublicationScopeOutput({
-        scope: {
-          kind: snapshot.scopeKind as DocumentProjectionScopeClaim["kind"],
-          key: snapshot.scopeKey
-        },
-        sourceFilePublicId: snapshot.scopeKind === "source"
-          ? snapshot.scopeKey : null,
-        inputSnapshotFingerprintSha256:
-          snapshot.inputSnapshotFingerprintSha256,
-        rendererContractVersion: snapshot.rendererContractVersion,
-        pages,
-        navigationMutations: rendered.navigationMutations.map(
-          (mutation, order) => ({
-            directoryPath: mutation.directoryPath,
-            order,
-            action: "upsert" as const,
-            mutation
-          })
-        ),
+        : await renderer.render(scope, signal, {
+            contributors,
+            checkpoint,
+            affectedSourceFilePublicIds:
+              snapshot.affectedSourceFilePublicIds,
+            planningMode: snapshot.planningMode,
+            ...(snapshot.baseDeterministicChangedAt
+              ? { baseDeterministicChangedAt:
+                  snapshot.baseDeterministicChangedAt } : {}),
+            ...(snapshot.affectedLogicalPaths
+              ? { affectedLogicalPaths: snapshot.affectedLogicalPaths } : {}),
+            basePages: snapshot.basePages
+          });
+      return finalizeDocumentPublicationOutput({
+        snapshot,
+        rendered,
         validationEvidence
       });
-      return {
-        ...normalized,
-        verifiedReservations: rendered.verifiedReservations
-      };
     }
   };
   return renderer;

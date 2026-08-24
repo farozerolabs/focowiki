@@ -5,6 +5,8 @@ import {
   assertRepositoryTimestamp,
   repositoryContractError
 } from "./document-repository-validation.js";
+import { createMinimumCompatiblePublicationReplacement } from
+  "./postgres-document-publication-minimum-replan.js";
 
 const LEGACY_NAVIGATION_CHANGE_LIMIT = 10_000;
 
@@ -12,6 +14,74 @@ export function createPostgresDocumentPublicationRecovery(
   sql: DatabaseClient
 ) {
   return {
+    async recoverIncompatibleGenerations(input: Readonly<{
+      rendererContractVersion: string;
+      recoveredAt: string;
+      limit: number;
+    }>) {
+      const recoveredAt = assertRepositoryTimestamp(
+        input.recoveredAt,
+        "recovered_at"
+      );
+      const limit = assertRepositoryPositiveInteger(input.limit, "limit", 256);
+      if (!input.rendererContractVersion
+        || Buffer.byteLength(input.rendererContractVersion, "utf8") > 128) {
+        throw repositoryContractError("renderer_contract_version_invalid");
+      }
+      return sql.begin(async (transaction) => {
+        const generations = await transaction<Array<{
+          public_id: string;
+          knowledge_base_id: string;
+        }>>`
+          SELECT generation.public_id, generation.knowledge_base_id
+          FROM focowiki.projection_publication_generations generation
+          JOIN focowiki.knowledge_base_projection_heads head
+            ON head.knowledge_base_id = generation.knowledge_base_id
+          WHERE generation.state IN (
+              'planned', 'rendering', 'validating', 'ready'
+            )
+            AND generation.renderer_contract_version
+                  <> ${input.rendererContractVersion}
+            AND head.active_generation_public_id IS DISTINCT FROM
+                  generation.public_id
+          ORDER BY generation.updated_at,
+                   generation.public_id COLLATE "C"
+          FOR UPDATE OF generation, head SKIP LOCKED
+          LIMIT ${limit}
+        `;
+        if (generations.length === 0) {
+          return {
+            generationCount: 0,
+            releasedFactCount: 0,
+            replannedFactCount: 0,
+            supersededScopeCount: 0
+          };
+        }
+        const replacements = [];
+        for (const generation of generations) {
+          const replacement = await createMinimumCompatiblePublicationReplacement(
+            transaction as unknown as DatabaseClient,
+            {
+              generationPublicId: generation.public_id,
+              rendererContractVersion: input.rendererContractVersion,
+              supersessionReason:
+                "publication_renderer_contract_incompatible",
+              recoveredAt
+            }
+          );
+          if (replacement) replacements.push(replacement);
+        }
+        return {
+          generationCount: replacements.length,
+          releasedFactCount: 0,
+          replannedFactCount: replacements.reduce((total, item) =>
+            total + item.factCount, 0),
+          supersededScopeCount: replacements.reduce((total, item) =>
+            total + item.supersededScopeCount, 0)
+        };
+      });
+    },
+
     async recoverRecoverableQuarantines(input: Readonly<{
       recoveredAt: string;
       limit: number;

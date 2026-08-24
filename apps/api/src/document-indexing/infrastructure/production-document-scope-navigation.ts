@@ -4,14 +4,10 @@ import type { DocumentProjectionScopeClaim } from
   "../application/document-scope-projector-runtime.js";
 import { reconcileDocumentDirectoryNavigation } from
   "../application/document-directory-navigation-state.js";
-import {
-  renderDocumentDirectoryMutationPages,
-  renderDocumentRootPage
-} from "../application/document-generated-navigation.js";
+import { renderDocumentDirectoryMutationPages } from
+  "../application/document-generated-navigation.js";
 import { directoryLeafPath } from
   "../application/document-directory-navigation-renderer.js";
-import { buildDocumentIndexCatalogPage } from
-  "../application/document-page-term-projection.js";
 import type { OrderedDirectoryLeafLimits } from
   "../domain/document-directory-leaves.js";
 import { documentDirectoryEntryId } from
@@ -22,16 +18,14 @@ import type { createPostgresDocumentMachineProjectionReader } from
   "./postgres-document-machine-projection-reader.js";
 import { createDirectoryLeafId } from
   "./production-document-processor-support.js";
-type RootLimits = {
-  rootSummaryLimit: number;
-  okfLogMaxEntries: number;
-  okfLogMaxBytes: number;
-};
+import type { DocumentRootProjectionLimits } from
+  "./production-document-root-projection.js";
+export { projectRoot } from "./production-document-root-projection.js";
 export type DocumentScopeNavigationDependencies = {
   machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
   directoryNavigation?: ReturnType<typeof createPostgresDocumentDirectoryNavigation>;
   directoryLeafLimits?: OrderedDirectoryLeafLimits;
-  rootLimits?: RootLimits;
+  rootLimits?: DocumentRootProjectionLimits;
 };
 type ProjectedPage = {
   logicalPath: string;
@@ -56,6 +50,7 @@ export async function materializeMachineDirectoryNavigation(input: {
       title: string;
       path: string;
     }[];
+    navigationCandidateEntryIds?: readonly string[];
   };
   changedAt: string;
   removeWhenEmpty?: boolean;
@@ -63,6 +58,9 @@ export async function materializeMachineDirectoryNavigation(input: {
 }) {
   return materializeDirectoryNavigation({
     ...input,
+    ...(input.projected.navigationCandidateEntryIds
+      ? { candidateEntryIds:
+          input.projected.navigationCandidateEntryIds } : {}),
     dependencies: requireDirectoryNavigation(input.dependencies)
   });
 }
@@ -106,6 +104,7 @@ export async function materializePerFileGraphDirectoryNavigation(input: {
       title: string;
       path: string;
     }[];
+    navigationCandidateEntryIds?: readonly string[];
   };
   changedAt: string;
 }) {
@@ -131,6 +130,9 @@ export async function materializePerFileGraphDirectoryNavigation(input: {
         kind: "directory" as const
       }))
     ],
+    ...(input.projected.navigationCandidateEntryIds
+      ? { candidateEntryIds:
+          input.projected.navigationCandidateEntryIds } : {}),
     changedAt: input.changedAt,
     leafPrefix: "extension-leaf",
     title: input.scopePath === "pages"
@@ -292,6 +294,9 @@ async function materializeDirectoryNavigation(input: {
         maximumEntries: 100_000
       })
     : null;
+  if (input.candidateEntryIds !== undefined && delta?.mode === "full") {
+    throw scopeNavigationError("navigation_delta_window_exceeded");
+  }
   const previous = delta?.mode === "window" ? delta.leaves
     : await input.dependencies.directoryNavigation.read({
         knowledgeBaseId: input.scope.knowledgeBaseId,
@@ -359,7 +364,9 @@ async function materializeDirectoryNavigation(input: {
       ? [{
           directoryPath: input.directoryPath,
           touchedLeaves,
-          removedLeafIds: navigation.removedLeafIds
+          removedLeafIds: navigation.removedLeafIds,
+          entryCount: navigation.entryCount,
+          firstLeafId: navigation.firstLeafId
         }]
       : []
   };
@@ -395,17 +402,46 @@ export async function projectSemanticDirectory(input: {
   scopePath: string;
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
+  affectedSourceFilePublicIds?: readonly string[];
+  planningMode?: "initial" | "delta" | "repair";
 }) {
-  const state = input.excludedActiveSourceFilePublicIds.length > 0
+  const includedSourceFilePublicIds = input.affectedSourceFilePublicIds
+    ? []
+    :
+    input.includedSourceRevisionPublicIds.length > 0
+      && input.excludedActiveSourceFilePublicIds.length === 0
+      ? await input.dependencies.machineProjection
+          .resolveSourceFilePublicIdsForRevisions({
+            knowledgeBaseId: input.knowledgeBaseId,
+            sourceRevisionPublicIds: input.includedSourceRevisionPublicIds
+          })
+      : [];
+  const affectedSourceFilePublicIds = [...new Set([
+    ...(input.affectedSourceFilePublicIds ?? []),
+    ...includedSourceFilePublicIds,
+    ...input.excludedActiveSourceFilePublicIds
+  ])].sort();
+  if (input.planningMode === "delta"
+    && affectedSourceFilePublicIds.length === 0) {
+    throw scopeNavigationError("publication_delta_closure_incomplete");
+  }
+  const state = input.planningMode === "delta"
     ? await input.dependencies.machineProjection.readSemanticDirectoryDeltaState({
         knowledgeBaseId: input.knowledgeBaseId,
         scopePath: input.scopePath,
-        affectedSourceFilePublicIds:
-          input.excludedActiveSourceFilePublicIds,
+        affectedSourceFilePublicIds,
         includedSourceRevisionPublicIds:
           input.includedSourceRevisionPublicIds
       })
-    : await input.dependencies.machineProjection.readSemanticDirectoryState({
+    : affectedSourceFilePublicIds.length > 0 && !input.planningMode
+      ? await input.dependencies.machineProjection.readSemanticDirectoryDeltaState({
+          knowledgeBaseId: input.knowledgeBaseId,
+          scopePath: input.scopePath,
+          affectedSourceFilePublicIds,
+          includedSourceRevisionPublicIds:
+            input.includedSourceRevisionPublicIds
+        })
+      : await input.dependencies.machineProjection.readSemanticDirectoryState({
         knowledgeBaseId: input.knowledgeBaseId,
         scopePath: input.scopePath,
         includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
@@ -423,52 +459,8 @@ export async function projectSemanticDirectory(input: {
     removedLogicalPaths: [] as string[],
     records: state.records,
     childDirectories: state.childDirectories,
-    navigationCandidateEntryIds
-  };
-}
-
-export async function projectRoot(input: {
-  dependencies: DocumentScopeNavigationDependencies;
-  knowledgeBaseId: string;
-  includedSourceRevisionPublicIds: readonly string[];
-  excludedActiveSourceFilePublicIds: readonly string[];
-  changedAt: string;
-}) {
-  const limits = input.dependencies.rootLimits;
-  if (!limits) throw scopeNavigationError(
-    "projection_scope_root_configuration_invalid");
-  const state = await input.dependencies.machineProjection.readRootProjectionState({
-    knowledgeBaseId: input.knowledgeBaseId,
-    includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
-    excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds,
-    logLimit: limits.okfLogMaxEntries
-  });
-  const currentLogEntry = state.currentLogEntries[0];
-  return {
-    pages: [
-      buildDocumentIndexCatalogPage(),
-      ...(["index.md", "log.md"] as const)
-        .map((path) => renderDocumentRootPage({
-          path,
-          knowledgeBase: {
-            ...state.knowledgeBase,
-            sourceFileCount: state.sourceFileCount,
-            graphEdgeCount: state.graphEdgeCount,
-            changedAt: input.changedAt
-          },
-          rootEntryCount: state.rootEntryCount,
-          limits,
-          logEntries: [
-            ...state.currentLogEntries.slice(1),
-            ...state.previousLogEntries
-          ],
-          ...(currentLogEntry ? { currentLogEntry } : {})
-        }))
-    ],
-    removedLogicalPaths: [] as string[],
-    records: [] as Record<string, unknown>[],
-    graphEdgeCount: state.graphEdgeCount,
-    factCount: state.sourceFileCount
+    ...(navigationCandidateEntryIds
+      ? { navigationCandidateEntryIds } : {})
   };
 }
 

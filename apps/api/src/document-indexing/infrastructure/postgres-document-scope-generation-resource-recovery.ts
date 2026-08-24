@@ -1,4 +1,8 @@
 import type { DatabaseClient } from "../../db/client.js";
+import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
+  "../application/document-publication-renderer-contract.js";
+import { createMinimumCompatiblePublicationReplacement } from
+  "./postgres-document-publication-minimum-replan.js";
 
 const RESOURCE_RETRY_DEADLINE_MILLISECONDS = 30 * 60 * 1_000;
 
@@ -58,29 +62,10 @@ export async function recomputeDocumentScopeGeneration(
     now: string;
   }>
 ): Promise<void> {
-  await sql`
-    UPDATE focowiki.projection_scope_generations
-    SET state = 'superseded', lease_owner = NULL,
-        lease_expires_at = NULL, heartbeat_at = NULL,
-        updated_at = ${input.now}
-    WHERE publication_generation_public_id = ${input.generationPublicId}
-      AND state IN ('waiting', 'running', 'error')
-  `;
-  await sql`
-    UPDATE focowiki.projection_fact_epochs epoch
-    SET state = 'ready'
-    FROM focowiki.projection_generation_documents document
-    WHERE document.generation_public_id = ${input.generationPublicId}
-      AND epoch.knowledge_base_id = ${input.knowledgeBaseId}
-      AND epoch.mutation_public_id = document.mutation_public_id
-      AND epoch.fact_epoch = document.fact_epoch
-      AND epoch.state = 'included'
-  `;
-  await sql`
-    UPDATE focowiki.projection_publication_generations
-    SET state = 'obsolete', safe_error_code = ${input.errorCode},
-        completed_at = ${input.now}, updated_at = ${input.now}
-    WHERE public_id = ${input.generationPublicId}
-      AND state IN ('planned', 'rendering', 'validating', 'ready')
-  `;
+  await createMinimumCompatiblePublicationReplacement(sql, {
+    generationPublicId: input.generationPublicId,
+    rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
+    supersessionReason: input.errorCode,
+    recoveredAt: input.now
+  });
 }

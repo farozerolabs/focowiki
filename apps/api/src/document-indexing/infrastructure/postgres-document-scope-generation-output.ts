@@ -8,6 +8,8 @@ import { normalizeDocumentProjectionOwnedPath } from
   "../application/document-projection-path-ownership.js";
 import { enqueueProjectionCleanupOutbox } from
   "./postgres-projection-cleanup-outbox.js";
+import { lockVerifiedDocumentObjectRegistrations } from
+  "./postgres-document-object-registration-lock.js";
 import {
   assertRepositoryIdentity,
   assertRepositorySha256,
@@ -118,7 +120,7 @@ export async function reuseCompletedDocumentScopeGenerationOutput(
       ORDER BY object_id COLLATE "C"
     `;
     const sourceObjectIds = sourceObjects.map((item) => item.object_id);
-    if (!await lockVerifiedObjectRegistrations(
+    if (!await lockVerifiedDocumentObjectRegistrations(
       transaction as unknown as DatabaseClient,
       sourceObjectIds
     )) {
@@ -185,6 +187,9 @@ export async function reuseCompletedDocumentScopeGenerationOutput(
             = ${source.output_fingerprint_sha256},
           validation_evidence
             = ${transaction.json(source.validation_evidence as never)},
+          consecutive_lease_loss_count = 0,
+          last_progress_at = ${checkedAt},
+          progress_evidence = jsonb_build_object('outcome', 'reused'),
           completed_at = ${checkedAt}, updated_at = ${checkedAt}
       WHERE public_id = ${target.public_id} AND state = 'waiting'
     `;
@@ -359,10 +364,23 @@ export async function persistDocumentScopeGenerationOutput(
     if (navigationRows.length !== navigation.length) {
       throw repositoryContractError("scope_navigation_output_conflict");
     }
+    const rootNavigation = navigation.find((mutation) =>
+      mutation.directory_path === "pages"
+        && Number.isSafeInteger(mutation.mutation.entryCount)
+        && Number(mutation.mutation.entryCount) >= 0);
+    if (rootNavigation) {
+      await transaction`
+        UPDATE focowiki.projection_generation_statistics
+        SET root_entry_count = ${Number(rootNavigation.mutation.entryCount)}
+        WHERE publication_generation_public_id
+                = ${scope.publication_generation_public_id}
+          AND knowledge_base_id = ${scope.knowledge_base_id}
+      `;
+    }
     const objectIds = [...new Set(pages.flatMap((page) =>
       page.object_id ? [page.object_id] : []))];
     if (objectIds.length > 0) {
-      if (!await lockVerifiedObjectRegistrations(
+      if (!await lockVerifiedDocumentObjectRegistrations(
         transaction as unknown as DatabaseClient,
         objectIds
       )) {
@@ -406,6 +424,9 @@ export async function persistDocumentScopeGenerationOutput(
           validation_evidence = ${transaction.json(
             normalized.validationEvidence as never
           )},
+          consecutive_lease_loss_count = 0,
+          last_progress_at = ${checkedAt},
+          progress_evidence = jsonb_build_object('outcome', 'committed'),
           completed_at = ${checkedAt}, updated_at = ${checkedAt},
           lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL
       WHERE public_id = ${input.scopeGenerationPublicId}
@@ -414,25 +435,6 @@ export async function persistDocumentScopeGenerationOutput(
   });
   void outcome;
     }
-
-async function lockVerifiedObjectRegistrations(
-  sql: DatabaseClient,
-  objectIds: readonly string[]
-): Promise<boolean> {
-  if (objectIds.length === 0) return true;
-  const registrations = await sql<Array<{
-    object_id: string;
-    state: string;
-  }>>`
-    SELECT object_id, state
-    FROM focowiki.object_registrations
-    WHERE object_id IN ${sql(objectIds)}
-    ORDER BY object_id COLLATE "C"
-    FOR UPDATE
-  `;
-  return registrations.length === objectIds.length
-    && registrations.every((registration) => registration.state === "verified");
-}
 
 function validatePages(input: readonly {
   logicalPath: string;
@@ -478,7 +480,6 @@ function validateNavigation(input: readonly {
     mutation: mutation.mutation
   }));
 }
-
 function hashIdentity(parts: readonly string[]): string {
   return createHash("sha256").update(parts.join("\0")).digest("hex");
 }

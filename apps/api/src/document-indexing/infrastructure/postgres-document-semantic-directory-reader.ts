@@ -73,6 +73,7 @@ export function createPostgresDocumentSemanticDirectoryReader(
       scopePath: string;
       affectedSourceFilePublicIds: readonly string[];
       includedSourceRevisionPublicIds: readonly string[];
+      publicationGenerationPublicId?: string;
     }) {
       const affected = sortedUnique(input.affectedSourceFilePublicIds);
       const included = sortedUnique(input.includedSourceRevisionPublicIds);
@@ -80,7 +81,8 @@ export function createPostgresDocumentSemanticDirectoryReader(
         return {
           records: [] as Record<string, unknown>[],
           childDirectories: [] as DirectoryEntry[],
-          navigationCandidateEntryIds: [] as string[]
+          navigationCandidateEntryIds: [] as string[],
+          removedRecordPaths: [] as string[]
         };
       }
       if (affected.length > 256) {
@@ -88,8 +90,7 @@ export function createPostgresDocumentSemanticDirectoryReader(
           "semantic_directory_navigation_candidate_limit_exceeded"
         );
       }
-      const rows = await sql<Array<Omit<DocumentRecordRow,
-        "relationship_count"> & {
+      const rows = await sql<Array<DocumentRecordRow & {
           visible: boolean;
         }>>`
         WITH affected_records AS (
@@ -121,8 +122,26 @@ export function createPostgresDocumentSemanticDirectoryReader(
         SELECT record.page_path, record.title, record.summary,
                record.metadata, record.headings, record.entities,
                record.content_type, record.checksum_sha256, record.byte_count,
-               record.visible
+               record.visible,
+               CASE
+                 WHEN overlay.source_revision_public_id IS NOT NULL
+                   THEN CASE WHEN overlay.incoming_count
+                     + overlay.outgoing_count > 0 THEN 1 ELSE 0 END
+                 ELSE CASE WHEN coalesce(active_degree.incoming_count, 0)
+                   + coalesce(active_degree.outgoing_count, 0) > 0
+                   THEN 1 ELSE 0 END
+               END AS relationship_count
         FROM affected_records record
+        LEFT JOIN focowiki.projection_generation_graph_degrees overlay
+          ON overlay.publication_generation_public_id
+               = ${input.publicationGenerationPublicId ?? null}
+         AND overlay.knowledge_base_id = record.knowledge_base_id
+         AND overlay.source_revision_public_id
+               = record.source_revision_public_id
+        LEFT JOIN focowiki.document_graph_degrees active_degree
+          ON active_degree.knowledge_base_id = record.knowledge_base_id
+         AND active_degree.source_revision_public_id
+               = record.source_revision_public_id
         WHERE record.visible OR record.active OR record.source_rank = 1
         ORDER BY record.normalized_path COLLATE "C",
                  record.source_revision_public_id COLLATE "C"
@@ -162,15 +181,16 @@ export function createPostgresDocumentSemanticDirectoryReader(
       return {
         records: rows.flatMap((row) => {
           return row.visible && posix.dirname(row.page_path) === input.scopePath
-            ? [mapDocumentProjectionRecord({
-                ...row, relationship_count: 0
-              })] : [];
+            ? [mapDocumentProjectionRecord(row)] : [];
         }),
         childDirectories: visibleChildRows.map(({ directory_path: scopePath }) => ({
           title: posix.basename(scopePath), scopePath,
           path: `${scopePath}/index.md`
         })),
-        navigationCandidateEntryIds
+        navigationCandidateEntryIds,
+        removedRecordPaths: [...new Set(rows.flatMap((row) =>
+          posix.dirname(row.page_path) === input.scopePath
+            ? [row.page_path] : []))].sort()
       };
     }
   };
