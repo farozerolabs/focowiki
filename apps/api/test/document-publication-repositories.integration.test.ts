@@ -13,6 +13,11 @@ import { createPostgresDocumentPublicationRepository } from
   "../src/document-indexing/infrastructure/postgres-document-publication-repository.js";
 import { createPostgresDocumentPublicationRecovery } from
   "../src/document-indexing/infrastructure/postgres-document-publication-recovery.js";
+import {
+  applyPostgresDocumentDirectoryNavigation,
+  createPostgresDocumentDirectoryNavigation
+} from
+  "../src/document-indexing/infrastructure/postgres-document-directory-navigation.js";
 import { createPostgresDocumentPublicationCoordinator } from
   "../src/document-indexing/infrastructure/postgres-document-publication-coordinator.js";
 import { readBaseGraphDirectoryRecordKeys } from
@@ -96,6 +101,67 @@ const enabled = Boolean(databaseUrl && runOwner
       baseDeterministicChangedAt: "2026-08-21T12:00:00.000Z"
     })).resolves.toEqual([]);
   });
+
+  it("reads disconnected navigation neighborhoods as bounded windows",
+    async () => {
+      const letters = ["a", "b", "c", "d", "e", "f", "g"];
+      const leaves = letters.map((letter, index) => ({
+        id: `directory-leaf-${letter}`,
+        previousLeafId: index > 0
+          ? `directory-leaf-${letters[index - 1]}` : null,
+        nextLeafId: index < letters.length - 1
+          ? `directory-leaf-${letters[index + 1]}` : null,
+        revision: 1,
+        entries: [{
+          id: `entry-${letter}`,
+          sortKey: `1/${letter}.md/pages/disconnected/${letter}.md`,
+          name: letter.toUpperCase(),
+          targetPath: `pages/disconnected/${letter}.md`,
+          kind: "file" as const
+        }]
+      }));
+      await applyPostgresDocumentDirectoryNavigation({
+        transaction: database,
+        knowledgeBaseId: "publication-kb",
+        activationRevision: 1,
+        mutations: [{
+          directoryPath: "pages/disconnected",
+          touchedLeaves: leaves,
+          removedLeafIds: []
+        }],
+        activatedAt: "2026-08-21T12:00:00.000Z"
+      });
+      const desiredEntries = ["b", "f"].map((letter) => ({
+        id: `entry-${letter}`,
+        sortKey: `1/${letter}.md/pages/disconnected/${letter}.md`,
+        name: `${letter.toUpperCase()} updated`,
+        targetPath: `pages/disconnected/${letter}.md`,
+        kind: "file" as const
+      }));
+
+      const delta = await createPostgresDocumentDirectoryNavigation(database)
+        .readDelta({
+          knowledgeBaseId: "publication-kb",
+          directoryPath: "pages/disconnected",
+          desiredEntries,
+          candidateEntryIds: desiredEntries.map((entry) => entry.id),
+          maximumChanges: 16,
+          maximumLeaves: 16,
+          maximumEntries: 16
+        });
+
+      expect(delta.mode).toBe("windows");
+      if (delta.mode !== "windows") throw new Error("Expected bounded windows");
+      expect(delta.windows.map((window) => window.map((leaf) => leaf.id)))
+        .toEqual([
+          ["directory-leaf-a", "directory-leaf-b", "directory-leaf-c"],
+          ["directory-leaf-e", "directory-leaf-f", "directory-leaf-g"]
+        ]);
+      expect(delta.changes.map((change) => change.entryId))
+        .toEqual(["entry-b", "entry-f"]);
+      expect(delta.totalEntryCount).toBe(7);
+      expect(delta.firstLeafId).toBe("directory-leaf-a");
+    });
 
   it("keeps descendant graph files out of root delta navigation", async () => {
     await sql.begin(async (transaction) => {
@@ -672,7 +738,7 @@ const enabled = Boolean(databaseUrl && runOwner
       }]);
     });
 
-  it("recovers remediated graph directory quarantines in bounded batches",
+  it("recovers remediated publication quarantines in bounded batches",
     async () => {
       const publications = createPostgresDocumentPublicationRepository(database);
       const generationId = documentPublicationGenerationId("generation-8");
@@ -793,8 +859,55 @@ const enabled = Boolean(databaseUrl && runOwner
         releasedFactCount: 1,
         supersededScopeCount: 2
       });
+      await sql`
+        UPDATE focowiki.projection_fact_epochs
+        SET state = 'included'
+        WHERE knowledge_base_id = 'publication-kb'
+          AND fact_epoch = 14
+      `;
+      await sql`
+        UPDATE focowiki.projection_scope_generations
+        SET state = CASE WHEN scope_kind = '_graph'
+          THEN 'waiting' ELSE 'quarantined' END
+        WHERE publication_generation_public_id = ${generationId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined',
+            safe_error_code = 'navigation_delta_window_exceeded',
+            completed_at = NULL
+        WHERE public_id = ${generationId}
+      `;
       await expect(recovery.recoverRecoverableQuarantines({
         recoveredAt: "2026-08-21T12:07:03.000Z",
+        limit: 1
+      })).resolves.toEqual({
+        generationCount: 1,
+        releasedFactCount: 1,
+        supersededScopeCount: 2
+      });
+      await expect(sql<Array<{
+        generation_state: string;
+        safe_error_code: string;
+        fact_state: string;
+      }>>`
+        SELECT generation.state AS generation_state,
+               generation.safe_error_code, epoch.state AS fact_state
+        FROM focowiki.projection_publication_generations generation
+        JOIN focowiki.projection_generation_documents document
+          ON document.generation_public_id = generation.public_id
+        JOIN focowiki.projection_fact_epochs epoch
+          ON epoch.knowledge_base_id = generation.knowledge_base_id
+         AND epoch.mutation_public_id = document.mutation_public_id
+         AND epoch.fact_epoch = document.fact_epoch
+        WHERE generation.public_id = ${generationId}
+      `).resolves.toEqual([{
+        generation_state: "obsolete",
+        safe_error_code: "navigation_delta_window_remediated",
+        fact_state: "ready"
+      }]);
+      await expect(recovery.recoverRecoverableQuarantines({
+        recoveredAt: "2026-08-21T12:07:04.000Z",
         limit: 1
       })).resolves.toEqual({
         generationCount: 0,

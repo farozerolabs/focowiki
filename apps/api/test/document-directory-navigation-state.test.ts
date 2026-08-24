@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { reconcileDocumentDirectoryNavigation } from
   "../src/document-indexing/application/document-directory-navigation-state.js";
+import {
+  partitionDocumentDirectoryNavigationWindows,
+  reconcileDocumentDirectoryNavigationWindows
+} from
+  "../src/document-indexing/application/document-directory-navigation-windows.js";
 
 describe("document directory navigation state", () => {
   it("preserves existing leaf identities and touches only changed navigation", () => {
@@ -189,6 +194,64 @@ describe("document directory navigation state", () => {
     })).toEqual({
       leaves: [], touchedLeafIds: [], removedLeafIds: [],
       entryCount: 12_345, firstLeafId: "leaf-first"
+    });
+  });
+
+  it("partitions disconnected bounded leaves without treating gaps as corruption",
+    () => {
+      const windows = partitionDocumentDirectoryNavigationWindows([{
+        id: "leaf-b", previousLeafId: "leaf-a", nextLeafId: "leaf-c",
+        revision: 1, entries: [entry("source-b", "b.md")]
+      }, {
+        id: "leaf-c", previousLeafId: "leaf-b", nextLeafId: "leaf-d",
+        revision: 1, entries: [entry("source-c", "c.md")]
+      }, {
+        id: "leaf-y", previousLeafId: "leaf-x", nextLeafId: "leaf-z",
+        revision: 1, entries: [entry("source-y", "y.md")]
+      }, {
+        id: "leaf-z", previousLeafId: "leaf-y", nextLeafId: null,
+        revision: 1, entries: [entry("source-z", "z.md")]
+      }]);
+
+      expect(windows.map((window) => window.map((leaf) => leaf.id))).toEqual([
+        ["leaf-b", "leaf-c"],
+        ["leaf-y", "leaf-z"]
+      ]);
+    });
+
+  it("moves one entry across disconnected bounded windows atomically", () => {
+    const result = reconcileDocumentDirectoryNavigationWindows({
+      previousWindows: [[{
+        id: "leaf-b", previousLeafId: "leaf-a", nextLeafId: "leaf-c",
+        revision: 2, entries: [entry("source-b", "b.md")]
+      }, {
+        id: "leaf-c", previousLeafId: "leaf-b", nextLeafId: "leaf-d",
+        revision: 3, entries: [entry("source-c", "c.md")]
+      }], [{
+        id: "leaf-y", previousLeafId: "leaf-x", nextLeafId: "leaf-z",
+        revision: 4, entries: [entry("source-y", "y.md")]
+      }, {
+        id: "leaf-z", previousLeafId: "leaf-y", nextLeafId: null,
+        revision: 5, entries: [entry("source-z", "z.md")]
+      }]],
+      changes: [{
+        entryId: "source-y",
+        desiredEntry: entry("source-y", "b2.md")
+      }],
+      window: { totalEntryCount: 10, firstLeafId: "leaf-a" },
+      limits: { maxEntries: 2, maxBytes: 8_192, mergeBelowEntries: 1 },
+      createLeafId: () => "unused"
+    });
+
+    expect(result.entryCount).toBe(10);
+    expect(result.firstLeafId).toBe("leaf-a");
+    expect(result.leaves.flatMap((leaf) => leaf.entries)
+      .filter((item) => item.id === "source-y")).toEqual([
+        entry("source-y", "b2.md")
+      ]);
+    expect(result.removedLeafIds).toEqual(["leaf-y"]);
+    expect(result.leaves.find((leaf) => leaf.id === "leaf-z")).toMatchObject({
+      previousLeafId: "leaf-x", nextLeafId: null, revision: 6
     });
   });
 
