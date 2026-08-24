@@ -3,14 +3,10 @@ import {
   portableGraphDirectoryPath,
   portableIndexDirectoryPath
 } from "@focowiki/okf";
-import type { StorageVnextImmutableObjectWriter } from
-  "../../storage-vnext/ownership/immutable-object-writer.js";
-import type { StorageVnextOwnershipRepository } from
-  "../../storage-vnext/ownership/ports.js";
-import type { DocumentProjectionScopeClaim } from
-  "../application/document-scope-projector-runtime.js";
-import type { DocumentPublicationImmutableScopeSnapshot } from
-  "../application/document-publication-scope-generation-runtime.js";
+import type { StorageVnextImmutableObjectWriter } from "../../storage-vnext/ownership/immutable-object-writer.js";
+import type { StorageVnextOwnershipRepository } from "../../storage-vnext/ownership/ports.js";
+import type { DocumentProjectionScopeClaim } from "../application/document-scope-projector-runtime.js";
+import type { DocumentPublicationImmutableScopeSnapshot } from "../application/document-publication-scope-generation-runtime.js";
 import {
   normalizeDocumentPublicationScopeOutput,
   selectDocumentPublicationRemovedPaths
@@ -19,12 +15,9 @@ import {
 import {
   validateDocumentProjectionScopeOutputOwnership
 } from "../application/document-projection-path-ownership.js";
-import type { createPostgresDocumentMachineProjectionReader } from
-  "./postgres-document-machine-projection-reader.js";
-import type { createPostgresDocumentDirectoryNavigation } from
-  "./postgres-document-directory-navigation.js";
-import type { OrderedDirectoryLeafLimits } from
-  "../domain/document-directory-leaves.js";
+import type { createPostgresDocumentMachineProjectionReader } from "./postgres-document-machine-projection-reader.js";
+import type { createPostgresDocumentDirectoryNavigation } from "./postgres-document-directory-navigation.js";
+import type { OrderedDirectoryLeafLimits } from "../domain/document-directory-leaves.js";
 import {
   materializeMachineDirectoryNavigation,
   materializePerFileGraphDirectoryNavigation,
@@ -129,6 +122,9 @@ export function createProductionDocumentScopeRenderer(input: {
           machineProjection: input.machineProjection,
           knowledgeBaseId: scope.knowledgeBaseId,
           scopePath: pageDirectory,
+          ...(scope.publicationGenerationPublicId
+            ? { publicationGenerationPublicId:
+                scope.publicationGenerationPublicId } : {}),
           includedSourceRevisionPublicIds,
           excludedActiveSourceFilePublicIds,
           pageIntegrityOverrides: options.pageIntegrityOverrides ?? [],
@@ -155,6 +151,9 @@ export function createProductionDocumentScopeRenderer(input: {
         ? await projectPerFileGraphDirectory({
             dependencies: input,
             knowledgeBaseId: scope.knowledgeBaseId,
+            ...(scope.publicationGenerationPublicId
+              ? { publicationGenerationPublicId:
+                  scope.publicationGenerationPublicId } : {}),
             scopePath: perFileGraphDirectory,
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds

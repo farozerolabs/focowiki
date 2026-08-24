@@ -6,6 +6,8 @@ import { buildDocumentGraphDirectoryScopeResources } from
   "../src/document-indexing/application/document-graph-projection.js";
 import { parseDocumentPortableRecords } from
   "../src/document-indexing/application/document-portable-record-parser.js";
+import { documentDirectoryEntryId } from
+  "../src/document-indexing/domain/document-directory-entry-identity.js";
 import { createPostgresDocumentProjectionFacts } from
   "../src/document-indexing/infrastructure/postgres-document-projection-facts.js";
 import { createPostgresDocumentMachineProjectionReader } from
@@ -14,6 +16,10 @@ import { createPostgresCandidateFileRelationRepository } from
   "../src/document-indexing/infrastructure/postgres-candidate-file-relation-repository.js";
 import { createPostgresGeneratedPageBaseRepository } from
   "../src/document-indexing/infrastructure/postgres-generated-page-base-repository.js";
+import {
+  applyPostgresDocumentDirectoryNavigation,
+  createPostgresDocumentDirectoryNavigation
+} from "../src/document-indexing/infrastructure/postgres-document-directory-navigation.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
 
@@ -877,6 +883,97 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
     `).resolves.toEqual([{ count: "0" }]);
   });
 
+  it("keeps the latest inactive path as a deletion navigation candidate",
+    async () => {
+      await sql`
+        UPDATE focowiki.document_projection_records
+        SET active = false
+        WHERE knowledge_base_id = 'kb-projection-facts'
+          AND source_revision_public_id = 'source-revision-projection-second'
+      `;
+      const reader = createPostgresDocumentMachineProjectionReader(
+        sql as unknown as DatabaseClient
+      );
+      await expect(reader.readSemanticDirectoryDeltaState({
+        knowledgeBaseId: "kb-projection-facts",
+        scopePath: "pages/reference",
+        affectedSourceFilePublicIds: ["source-file-projection-second"],
+        includedSourceRevisionPublicIds: []
+      })).resolves.toEqual({
+        records: [],
+        childDirectories: [],
+        navigationCandidateEntryIds: [documentDirectoryEntryId(
+          "file", "pages/reference/second.md"
+        )]
+      });
+      await sql`
+        UPDATE focowiki.document_projection_records
+        SET active = true
+        WHERE knowledge_base_id = 'kb-projection-facts'
+          AND source_revision_public_id = 'source-revision-projection-second'
+      `;
+    });
+
+  it("reads only a changed stable-leaf window and its bounded neighbors",
+    async () => {
+      const leaves = ["a", "b", "c", "d", "e"].map((suffix, index, all) => ({
+        id: `delta-leaf-${suffix}`,
+        previousLeafId: index === 0 ? null : `delta-leaf-${all[index - 1]}`,
+        nextLeafId: index === all.length - 1
+          ? null : `delta-leaf-${all[index + 1]}`,
+        revision: 1,
+        changedAt: "2026-08-24T01:00:00.000Z",
+        entries: [{
+          id: `delta-entry-${suffix}`,
+          sortKey: `${suffix}.md`,
+          name: `${suffix}.md`,
+          targetPath: `pages/delta/${suffix}.md`,
+          kind: "file" as const
+        }]
+      }));
+      await applyPostgresDocumentDirectoryNavigation({
+        transaction: sql as unknown as DatabaseClient,
+        knowledgeBaseId: "kb-projection-facts",
+        activationRevision: 1,
+        mutations: [{
+          directoryPath: "pages/delta",
+          touchedLeaves: leaves,
+          removedLeafIds: []
+        }],
+        activatedAt: "2026-08-24T01:00:00.000Z"
+      });
+      const desiredEntries = [
+        ...leaves.flatMap((leaf) => leaf.entries),
+        {
+          id: "delta-entry-c2", sortKey: "c2.md", name: "c2.md",
+          targetPath: "pages/delta/c2.md", kind: "file" as const
+        }
+      ];
+      await expect(createPostgresDocumentDirectoryNavigation(
+        sql as unknown as DatabaseClient
+      ).readDelta({
+        knowledgeBaseId: "kb-projection-facts",
+        directoryPath: "pages/delta",
+        desiredEntries,
+        maximumChanges: 16,
+        maximumLeaves: 16,
+        maximumEntries: 32
+      })).resolves.toMatchObject({
+        mode: "window",
+        totalEntryCount: 5,
+        firstLeafId: "delta-leaf-a",
+        changes: [{
+          entryId: "delta-entry-c2",
+          desiredEntry: { targetPath: "pages/delta/c2.md" }
+        }],
+        leaves: [
+          { id: "delta-leaf-c" },
+          { id: "delta-leaf-d" },
+          { id: "delta-leaf-e" }
+        ]
+      });
+    });
+
   it("reads more than ten thousand direct relationship files without a directory cap",
     async () => {
       const count = 10_001;
@@ -996,25 +1093,72 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         WHERE source.knowledge_base_id = 'kb-large-flat-directory'
           AND source.public_id <> 'source-z-anchor'
       `;
+      await sql`
+        INSERT INTO focowiki.projection_publication_generations (
+          public_id, knowledge_base_id, target_fact_epoch,
+          renderer_contract_version, deterministic_changed_at,
+          input_fingerprint_sha256
+        ) VALUES (
+          'generation-large-flat-directory', 'kb-large-flat-directory', 1,
+          'portable-okf-v2', '2026-08-24T01:00:00.000Z', ${checksum}
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_graph_degrees (
+          publication_generation_public_id, knowledge_base_id,
+          source_revision_public_id, incoming_count, outgoing_count
+        )
+        SELECT 'generation-large-flat-directory', 'kb-large-flat-directory',
+               record.source_revision_public_id,
+               CASE WHEN record.source_file_public_id = 'source-z-anchor'
+                 THEN ${count} ELSE 0 END,
+               CASE WHEN record.source_file_public_id = 'source-z-anchor'
+                 THEN 0 ELSE 1 END
+        FROM focowiki.document_projection_records record
+        WHERE record.knowledge_base_id = 'kb-large-flat-directory'
+      `;
 
       const reader = createPostgresDocumentMachineProjectionReader(
         sql as unknown as DatabaseClient
       );
+      const graphStartedAt = performance.now();
       const graphDirectory = await reader.readPerFileGraphDirectoryState({
         knowledgeBaseId: "kb-large-flat-directory",
-        scopePath: "pages"
+        scopePath: "pages",
+        publicationGenerationPublicId: "generation-large-flat-directory"
       });
+      const graphDurationMs = performance.now() - graphStartedAt;
       expect(graphDirectory.records).toHaveLength(count + 1);
       expect(graphDirectory.childDirectories).toEqual([]);
       expect(graphDirectory.relationshipPagePaths).toHaveLength(count + 1);
+      const indexStartedAt = performance.now();
       const pageDirectory = await reader.readDocumentDirectoryState({
         knowledgeBaseId: "kb-large-flat-directory",
-        scopePath: "pages"
+        scopePath: "pages",
+        publicationGenerationPublicId: "generation-large-flat-directory"
       });
+      const indexDurationMs = performance.now() - indexStartedAt;
       expect(pageDirectory.records).toHaveLength(count + 1);
       expect(pageDirectory.records.every((record) =>
         record.relationshipCount === 1)).toBe(true);
       expect(pageDirectory.childDirectories).toEqual([]);
+      const affectedSourceFilePublicIds = Array.from({ length: 256 },
+        (_, index) => `source-a-${String(index + 1).padStart(5, "0")}`);
+      const deltaStartedAt = performance.now();
+      const semanticDelta = await reader.readSemanticDirectoryDeltaState({
+        knowledgeBaseId: "kb-large-flat-directory",
+        scopePath: "pages",
+        affectedSourceFilePublicIds,
+        includedSourceRevisionPublicIds: affectedSourceFilePublicIds.map(
+          (sourceFilePublicId) => `revision-${sourceFilePublicId}`
+        )
+      });
+      const deltaDurationMs = performance.now() - deltaStartedAt;
+      expect(semanticDelta.records).toHaveLength(256);
+      expect(semanticDelta.navigationCandidateEntryIds).toHaveLength(256);
+      expect(graphDurationMs).toBeLessThan(5_000);
+      expect(indexDurationMs).toBeLessThan(5_000);
+      expect(deltaDurationMs).toBeLessThan(5_000);
     }, 120_000);
 });
 

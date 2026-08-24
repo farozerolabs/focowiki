@@ -57,6 +57,7 @@ export function publicationScopeClaim(
     key: snapshot.scopeKey,
     requiredSequence: snapshot.targetFactEpoch,
     renderedSequence: snapshot.scopeGeneration,
+    publicationGenerationPublicId: snapshot.publicationGenerationPublicId,
     deterministicEventTime: snapshot.deterministicChangedAt
   };
 }

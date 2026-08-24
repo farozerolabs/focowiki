@@ -138,6 +138,19 @@ const enabled = Boolean(databaseUrl && runOwner
         )
       `;
       await transaction`
+        INSERT INTO focowiki.relation_directed_evidence (
+          public_id, knowledge_base_id, pair_public_id,
+          source_file_public_id, source_revision_public_id,
+          target_source_file_public_id, target_source_revision_public_id,
+          evidence_kind, evidence_fingerprint_sha256, evidence, active
+        ) VALUES (
+          'active-related-evidence', 'hot-kb', 'active-related-pair',
+          'hot-source-1', 'hot-revision-1',
+          'active-related-source', 'active-related-revision',
+          'first_layer', repeat('e', 64), '{}'::jsonb, true
+        )
+      `;
+      await transaction`
         INSERT INTO focowiki.document_projection_records (
           knowledge_base_id, source_file_public_id,
           source_revision_public_id, logical_path, normalized_path,
@@ -362,6 +375,32 @@ const enabled = Boolean(databaseUrl && runOwner
     expect(Number(summary[0]!.member_count))
       .toBeLessThanOrEqual(plan.scopes.length * documents.length);
     expect(Number(summary[0]!.dependency_count)).toBeGreaterThan(0);
+    await expect(sql<Array<{
+      source_revision_public_id: string;
+      incoming_count: number;
+      outgoing_count: number;
+    }>>`
+      SELECT source_revision_public_id, incoming_count, outgoing_count
+      FROM focowiki.projection_generation_graph_degrees
+      WHERE publication_generation_public_id = ${generation.public_id}
+      ORDER BY source_revision_public_id COLLATE "C"
+    `).resolves.toEqual(expect.arrayContaining([
+      {
+        source_revision_public_id: "active-related-revision",
+        incoming_count: 1,
+        outgoing_count: 0
+      },
+      {
+        source_revision_public_id: "hot-revision-1",
+        incoming_count: 0,
+        outgoing_count: 1
+      },
+      {
+        source_revision_public_id: "hot-revision-2",
+        incoming_count: 0,
+        outgoing_count: 0
+      }
+    ]));
     const sourceScopes = await sql<Array<{ public_id: string }>>`
       SELECT public_id FROM focowiki.projection_scope_generations
       WHERE publication_generation_public_id = ${generation.public_id}
