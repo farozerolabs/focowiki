@@ -2,8 +2,8 @@ import { posix } from "node:path";
 import { portableByFileGraphDirectoryPath } from "@focowiki/okf";
 import type { DocumentProjectionScopeClaim } from
   "../application/document-scope-projector-runtime.js";
-import { reconcileDocumentDirectoryNavigation } from
-  "../application/document-directory-navigation-state.js";
+import { reconcileDocumentDirectoryNavigationDelta } from
+  "../application/document-directory-navigation-windows.js";
 import { renderDocumentDirectoryMutationPages } from
   "../application/document-generated-navigation.js";
 import { directoryLeafPath } from
@@ -297,7 +297,10 @@ async function materializeDirectoryNavigation(input: {
   if (input.candidateEntryIds !== undefined && delta?.mode === "full") {
     throw scopeNavigationError("navigation_delta_window_exceeded");
   }
+  const boundedDelta = delta?.mode === "window" || delta?.mode === "windows"
+    ? delta : null;
   const previous = delta?.mode === "window" ? delta.leaves
+    : delta?.mode === "windows" ? delta.windows.flat()
     : await input.dependencies.directoryNavigation.read({
         knowledgeBaseId: input.scope.knowledgeBaseId,
         directoryPath: input.directoryPath,
@@ -305,7 +308,7 @@ async function materializeDirectoryNavigation(input: {
         maximumEntries: 100_000
       });
   const desiredById = new Map(desiredEntries.map((entry) => [entry.id, entry]));
-  const changes = delta?.mode === "window" ? [...delta.changes] : [
+  const changes = boundedDelta ? [...boundedDelta.changes] : [
     ...previous.flatMap((leaf) => leaf.entries)
       .filter((entry) => !desiredById.has(entry.id))
       .map((entry) => ({ entryId: entry.id, desiredEntry: null })),
@@ -313,22 +316,20 @@ async function materializeDirectoryNavigation(input: {
   ].sort((left, right) => left.entryId.localeCompare(right.entryId, "en-US"));
   let sequence = 0;
   const occupiedLeafIds = new Set(previous.map((leaf) => leaf.id));
-  const navigation = reconcileDocumentDirectoryNavigation({
+  const createLeafId = () => createDirectoryLeafId({
+    prefix: input.leafPrefix ?? "extension-leaf",
+    knowledgeBaseId: input.scope.knowledgeBaseId,
+    directoryPath: input.directoryPath,
+    occupiedLeafIds,
+    sequence: ++sequence
+  });
+  const navigation = reconcileDocumentDirectoryNavigationDelta({
     previous,
     changes,
-    ...(delta?.mode === "window" ? { window: {
-      totalEntryCount: delta.totalEntryCount,
-      firstLeafId: delta.firstLeafId
-    } } : {}),
+    delta: boundedDelta,
     limits: input.dependencies.directoryLeafLimits,
     changedAt: input.changedAt,
-    createLeafId: () => createDirectoryLeafId({
-      prefix: input.leafPrefix ?? "extension-leaf",
-      knowledgeBaseId: input.scope.knowledgeBaseId,
-      directoryPath: input.directoryPath,
-      occupiedLeafIds,
-      sequence: ++sequence
-    })
+    createLeafId
   });
   const touchedLeafIds = new Set(navigation.touchedLeafIds);
   const touchedLeaves = navigation.leaves.filter((leaf) =>
@@ -337,7 +338,7 @@ async function materializeDirectoryNavigation(input: {
   const navigationChanged = navigation.touchedLeafIds.length > 0
     || navigation.removedLeafIds.length > 0;
   const navigationPages = removeDirectory
-    || (!navigationChanged && delta?.mode === "window" && delta.rootExists)
+    || (!navigationChanged && boundedDelta?.rootExists)
     ? []
     : renderDocumentDirectoryMutationPages({
         directoryPath: input.directoryPath,
