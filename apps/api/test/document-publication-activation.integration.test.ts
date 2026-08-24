@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
+import { createDocumentPublicationActivationCoordinator } from
+  "../src/document-indexing/application/document-publication-activation-coordinator.js";
 import { createPostgresDocumentPublicationActivation } from
   "../src/document-indexing/infrastructure/postgres-document-publication-activation.js";
 import { activatePostgresDocumentPublicationPages } from
@@ -693,12 +695,75 @@ const enabled = Boolean(databaseUrl && runOwner
       `).resolves.toEqual([{ state: "processing" }]);
     });
 
+  it("reuses an already available related document in a later generation",
+    async () => {
+      const before = await sql<Array<{
+        terminal_at: Date;
+        revision: number | string;
+        receipt_count: number | string;
+      }>>`
+        SELECT job.terminal_at, job.revision,
+               (SELECT count(*)
+                FROM focowiki.document_artifact_receipts receipt
+                WHERE receipt.document_job_public_id = job.public_id)
+                 AS receipt_count
+        FROM focowiki.document_processing_jobs job
+        WHERE job.public_id = 'document-job-1'
+      `;
+      await seedReadyGeneration({
+        knowledgeBaseId: "document-kb",
+        generationPublicId: "document-generation-related",
+        baseGenerationPublicId: "document-generation-1",
+        targetFactEpoch: 2,
+        objectId: "document-page-object-related"
+      });
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          'document-generation-related', 'document-job-1', 'document-job-1',
+          'document-source-1', 'document-revision-1', 1
+        )
+      `;
+
+      await expect(createPostgresDocumentPublicationActivation({ sql: database })
+        .activate({
+          generationPublicId: "document-generation-related",
+          expectedHeadVersion: 1,
+          activatedAt: "2026-08-25T09:01:00.000Z"
+        })).resolves.toMatchObject({
+          sourceCount: 1,
+          documentCount: 0,
+          headVersion: 2
+        });
+      await expect(sql<Array<{
+        state: string;
+        terminal_at: Date;
+        revision: number | string;
+        receipt_count: number | string;
+      }>>`
+        SELECT job.state, job.terminal_at, job.revision,
+               (SELECT count(*)
+                FROM focowiki.document_artifact_receipts receipt
+                WHERE receipt.document_job_public_id = job.public_id)
+                 AS receipt_count
+        FROM focowiki.document_processing_jobs job
+        WHERE job.public_id = 'document-job-1'
+      `).resolves.toEqual([{
+        state: "available",
+        terminal_at: before[0]!.terminal_at,
+        revision: before[0]!.revision,
+        receipt_count: before[0]!.receipt_count
+      }]);
+    });
+
   it("activates a deletion fact without a synthetic document job", async () => {
     await seedReadyGeneration({
       knowledgeBaseId: "document-kb",
       generationPublicId: "document-generation-delete",
-      baseGenerationPublicId: "document-generation-1",
-      targetFactEpoch: 2,
+      baseGenerationPublicId: "document-generation-related",
+      targetFactEpoch: 3,
       objectId: "document-page-object-delete"
     });
     await sql`
@@ -707,7 +772,7 @@ const enabled = Boolean(databaseUrl && runOwner
         mutation_group_public_id, source_file_public_id,
         source_revision_public_id, fact_kind, state
       ) VALUES (
-        'document-kb', 2, 'document-delete-mutation',
+        'document-kb', 3, 'document-delete-mutation',
         'document-delete-operation', 'document-source-1',
         'document-revision-1', 'delete', 'included'
       )
@@ -718,13 +783,13 @@ const enabled = Boolean(databaseUrl && runOwner
         source_file_public_id, source_revision_public_id, fact_epoch
       ) VALUES (
         'document-generation-delete', 'document-delete-mutation', NULL,
-        'document-source-1', 'document-revision-1', 2
+        'document-source-1', 'document-revision-1', 3
       )
     `;
     await expect(createPostgresDocumentPublicationActivation({ sql: database })
       .activate({
         generationPublicId: "document-generation-delete",
-        expectedHeadVersion: 1,
+        expectedHeadVersion: 2,
         activatedAt: "2026-08-21T13:05:00.000Z"
       })).resolves.toMatchObject({ documentCount: 0, sourceCount: 1 });
     await expect(sql`
@@ -746,6 +811,64 @@ const enabled = Boolean(databaseUrl && runOwner
       search_active: false
     }]);
   });
+
+  it("durably replans one invalid activation while preserving the active head",
+    async () => {
+      await seedReadyGeneration({
+        knowledgeBaseId: "document-kb",
+        generationPublicId: "document-generation-invalid",
+        baseGenerationPublicId: "document-generation-delete",
+        targetFactEpoch: 4,
+        objectId: "document-page-object-invalid"
+      });
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          'document-generation-invalid', 'document-job-1', 'document-job-1',
+          'document-source-1', 'document-revision-1', 1
+        )
+      `;
+      const coordinator = createDocumentPublicationActivationCoordinator({
+        activation: createPostgresDocumentPublicationActivation({ sql: database }),
+        recovery: createPostgresDocumentPublicationRecovery(database)
+      });
+
+      await expect(coordinator.activate({
+        operation: "create",
+        generationPublicId: "document-generation-invalid",
+        expectedHeadVersion: 3,
+        activatedAt: "2026-08-25T09:02:00.000Z"
+      })).resolves.toMatchObject({
+        state: "superseded",
+        reason: "activation_precondition",
+        errorCode: "publication_source_precondition_failed",
+        recovery: { factCount: 1 }
+      });
+      await expect(sql<Array<{
+        active_generation_public_id: string;
+        invalid_state: string;
+        invalid_error: string;
+        replacement_state: string;
+      }>>`
+        SELECT head.active_generation_public_id,
+               invalid.state AS invalid_state,
+               invalid.safe_error_code AS invalid_error,
+               replacement.state AS replacement_state
+        FROM focowiki.knowledge_base_projection_heads head
+        JOIN focowiki.projection_publication_generations invalid
+          ON invalid.public_id = 'document-generation-invalid'
+        JOIN focowiki.projection_publication_generations replacement
+          ON replacement.public_id = invalid.superseded_by_generation_public_id
+        WHERE head.knowledge_base_id = 'document-kb'
+      `).resolves.toEqual([{
+        active_generation_public_id: "document-generation-delete",
+        invalid_state: "obsolete",
+        invalid_error: "publication_source_precondition_failed",
+        replacement_state: "planned"
+      }]);
+    });
 
   async function seedKnowledgeBase(knowledgeBaseId: string): Promise<void> {
     await sql`

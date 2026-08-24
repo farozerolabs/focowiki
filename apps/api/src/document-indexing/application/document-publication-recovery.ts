@@ -27,7 +27,9 @@ const INVARIANTS = new Set([
 ]);
 const SUPERSESSION = new Set([
   "publication_generation_stale_base", "document_revision_superseded",
-  "scope_snapshot_not_mutable", "publication_renderer_contract_incompatible"
+  "scope_snapshot_not_mutable", "publication_renderer_contract_incompatible",
+  "publication_source_precondition_failed",
+  "publication_work_precondition_failed"
 ]);
 const CONTENTION = new Set([
   "40P01", "40001", "55P03",

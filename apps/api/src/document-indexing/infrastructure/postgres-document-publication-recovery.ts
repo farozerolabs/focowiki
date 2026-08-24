@@ -301,6 +301,50 @@ export function createPostgresDocumentPublicationRecovery(
       });
     },
 
+    async recoverActivationPrecondition(input: Readonly<{
+      generationPublicId: string;
+      recoveredAt: string;
+      errorCode: "publication_source_precondition_failed"
+        | "publication_work_precondition_failed";
+    }>) {
+      const generationPublicId = assertRepositoryIdentity(
+        input.generationPublicId,
+        "generation_public_id"
+      );
+      const recoveredAt = assertRepositoryTimestamp(
+        input.recoveredAt,
+        "recovered_at"
+      );
+      if (input.errorCode !== "publication_source_precondition_failed"
+        && input.errorCode !== "publication_work_precondition_failed") {
+        throw repositoryContractError(
+          "publication_activation_precondition_code_invalid"
+        );
+      }
+      return sql.begin(async (transaction) => {
+        const generations = await transaction<Array<{
+          renderer_contract_version: string;
+        }>>`
+          SELECT renderer_contract_version
+          FROM focowiki.projection_publication_generations
+          WHERE public_id = ${generationPublicId}
+        `;
+        const generation = generations[0];
+        if (!generation) {
+          throw repositoryContractError("publication_generation_not_found");
+        }
+        return createMinimumCompatiblePublicationReplacement(
+          transaction as unknown as DatabaseClient,
+          {
+            generationPublicId,
+            rendererContractVersion: generation.renderer_contract_version,
+            supersessionReason: input.errorCode,
+            recoveredAt
+          }
+        );
+      });
+    },
+
     async recoverStaleBase(input: Readonly<{
       generationPublicId: string;
       recoveredAt: string;

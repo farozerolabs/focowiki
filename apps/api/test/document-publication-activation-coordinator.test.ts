@@ -49,6 +49,46 @@ describe("document publication activation coordinator", () => {
     });
   });
 
+  it.each([
+    "publication_source_precondition_failed",
+    "publication_work_precondition_failed"
+  ])("supersedes and replans an invalid activation without terminating the runtime",
+    async (code) => {
+      const recoverActivationPrecondition = vi.fn().mockResolvedValue({
+        replacementGenerationPublicId: "generation-replacement",
+        factCount: 2
+      });
+      const coordinator = createDocumentPublicationActivationCoordinator({
+        activation: { activate: vi.fn().mockRejectedValue(Object.assign(
+          new Error("invalid activation precondition"), { code }
+        )) },
+        recovery: {
+          recoverStaleBase: vi.fn(),
+          recoverActivationPrecondition
+        }
+      });
+
+      await expect(coordinator.activate({
+        operation: "create",
+        generationPublicId: "generation-invalid",
+        expectedHeadVersion: 4,
+        activatedAt: "2026-08-25T09:00:00.000Z"
+      })).resolves.toEqual({
+        state: "superseded",
+        reason: "activation_precondition",
+        errorCode: code,
+        recovery: {
+          replacementGenerationPublicId: "generation-replacement",
+          factCount: 2
+        }
+      });
+      expect(recoverActivationPrecondition).toHaveBeenCalledWith({
+        generationPublicId: "generation-invalid",
+        recoveredAt: "2026-08-25T09:00:00.000Z",
+        errorCode: code
+      });
+    });
+
   it("returns durable contention deferral without invoking stale recovery",
     async () => {
       const recovery = vi.fn();
