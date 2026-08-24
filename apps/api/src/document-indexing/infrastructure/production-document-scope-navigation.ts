@@ -422,6 +422,10 @@ export async function projectSemanticDirectory(input: {
     ...includedSourceFilePublicIds,
     ...input.excludedActiveSourceFilePublicIds
   ])].sort();
+  const navigationSourceFilePublicIds = [...new Set([
+    ...includedSourceFilePublicIds,
+    ...input.excludedActiveSourceFilePublicIds
+  ])].sort();
   if (input.planningMode === "delta"
     && affectedSourceFilePublicIds.length === 0) {
     throw scopeNavigationError("publication_delta_closure_incomplete");
@@ -432,7 +436,8 @@ export async function projectSemanticDirectory(input: {
         scopePath: input.scopePath,
         affectedSourceFilePublicIds,
         includedSourceRevisionPublicIds:
-          input.includedSourceRevisionPublicIds
+          input.includedSourceRevisionPublicIds,
+        navigationSourceFilePublicIds
       })
     : affectedSourceFilePublicIds.length > 0 && !input.planningMode
       ? await input.dependencies.machineProjection.readSemanticDirectoryDeltaState({
@@ -440,7 +445,8 @@ export async function projectSemanticDirectory(input: {
           scopePath: input.scopePath,
           affectedSourceFilePublicIds,
           includedSourceRevisionPublicIds:
-            input.includedSourceRevisionPublicIds
+            input.includedSourceRevisionPublicIds,
+          navigationSourceFilePublicIds
         })
       : await input.dependencies.machineProjection.readSemanticDirectoryState({
         knowledgeBaseId: input.knowledgeBaseId,

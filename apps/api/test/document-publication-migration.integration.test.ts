@@ -72,7 +72,8 @@ const enabled = Boolean(databaseUrl && runOwner
           "008_projection_navigation_capacity.sql",
           "009_projection_resource_recovery.sql",
           "010_projection_large_directory_deltas.sql",
-          "011_projection_delta_lease_safety.sql"
+          "011_projection_delta_lease_safety.sql",
+          "012_projection_runtime_recovery.sql"
         ]
       });
       await expect(sql.begin(async (transaction) => {

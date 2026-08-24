@@ -335,6 +335,7 @@ async function assertDocumentIndexingSchemaSignature(
           ,'projection_publication_generations_supersession_idx'
           ,'projection_scope_generations_lease_loss_idx'
           ,'projection_generation_statistics_knowledge_base_idx'
+          ,'projection_publication_generations_stranded_recovery_idx'
         ]) AS required(name)
         WHERE NOT EXISTS (
           SELECT 1 FROM pg_indexes actual
@@ -363,6 +364,7 @@ async function assertDocumentIndexingSchemaSignature(
           'search_projections_value_check',
           'search_document_owners_value_check'
           ,'upload_operation_summaries_count_check'
+          ,'cleanup_actions_attempt_boundary_check'
         ]) AS required(name)
         WHERE NOT EXISTS (
           SELECT 1

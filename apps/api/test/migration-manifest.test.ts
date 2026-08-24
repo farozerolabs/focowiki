@@ -69,6 +69,11 @@ describe("document indexing migration manifest", () => {
       sourceGeneration: "storage-vnext-v18-projection-large-directory-deltas",
       targetGeneration: "storage-vnext-v19-projection-delta-lease-safety",
       safety: "compatible"
+    }, {
+      fileName: "012_projection_runtime_recovery.sql",
+      sourceGeneration: "storage-vnext-v19-projection-delta-lease-safety",
+      targetGeneration: "storage-vnext-v20-projection-runtime-recovery",
+      safety: "compatible"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
@@ -81,10 +86,11 @@ describe("document indexing migration manifest", () => {
       "008_projection_navigation_capacity.sql",
       "009_projection_resource_recovery.sql",
       "010_projection_large_directory_deltas.sql",
-      "011_projection_delta_lease_safety.sql"
+      "011_projection_delta_lease_safety.sql",
+      "012_projection_runtime_recovery.sql"
     ]);
     expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      "storage-vnext-v19-projection-delta-lease-safety"
+      "storage-vnext-v20-projection-runtime-recovery"
     );
   });
 
@@ -111,7 +117,8 @@ describe("document indexing migration manifest", () => {
       "008_projection_navigation_capacity.sql",
       "009_projection_resource_recovery.sql",
       "010_projection_large_directory_deltas.sql",
-      "011_projection_delta_lease_safety.sql"
+      "011_projection_delta_lease_safety.sql",
+      "012_projection_runtime_recovery.sql"
     ]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     for (const generation of [

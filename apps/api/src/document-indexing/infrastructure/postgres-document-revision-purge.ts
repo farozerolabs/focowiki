@@ -112,12 +112,25 @@ async function claim(
     operation_public_id: string | null;
     resource_public_id: string;
   }>>`
-    WITH candidates AS (
+    WITH exhausted AS (
+      UPDATE focowiki.cleanup_actions
+      SET state = 'failed', lease_owner = NULL,
+          lease_expires_at = NULL,
+          safe_error_code = 'cleanup_attempts_exhausted',
+          completed_at = now(), updated_at = now()
+      WHERE action_kind = 'document_revision_purge'
+        AND state IN ('queued', 'retry', 'running')
+        AND attempt_count >= maximum_attempts
+      RETURNING public_id
+    ), candidates AS (
       SELECT public_id
       FROM focowiki.cleanup_actions
       WHERE action_kind = 'document_revision_purge'
-        AND state IN ('queued', 'retry')
-        AND not_before <= now()
+        AND attempt_count < maximum_attempts
+        AND (
+          (state IN ('queued', 'retry') AND not_before <= now())
+          OR (state = 'running' AND lease_expires_at <= now())
+        )
       ORDER BY priority, not_before, public_id COLLATE "C"
       FOR UPDATE SKIP LOCKED
       LIMIT ${input.limit}

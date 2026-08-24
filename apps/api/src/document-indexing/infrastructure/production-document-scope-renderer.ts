@@ -5,11 +5,8 @@ import type { StorageVnextOwnershipRepository } from "../../storage-vnext/owners
 import type { StorageVnextImmutableBodyStore } from "../../storage-vnext/ownership/s3-immutable-body-store.js";
 import type { DocumentProjectionScopeClaim } from "../application/document-scope-projector-runtime.js";
 import type { DocumentPublicationImmutableScopeSnapshot } from "../application/document-publication-scope-generation-runtime.js";
-import { normalizeDocumentPublicationScopeOutput } from
-  "../application/document-publication-scope-output.js";
-import {
-  validateDocumentProjectionScopeOutputOwnership
-} from "../application/document-projection-path-ownership.js";
+import { normalizeDocumentPublicationScopeOutput } from "../application/document-publication-scope-output.js";
+import { validateDocumentProjectionScopeOutputOwnership } from "../application/document-projection-path-ownership.js";
 import type { createPostgresDocumentMachineProjectionReader } from "./postgres-document-machine-projection-reader.js";
 import type { createPostgresDocumentDirectoryNavigation } from "./postgres-document-directory-navigation.js";
 import type { OrderedDirectoryLeafLimits } from "../domain/document-directory-leaves.js";
@@ -53,10 +50,9 @@ import {
   selectChangedPages,
   type DocumentSourceScopeProjection
 } from "./production-document-scope-renderer-helpers.js";
-import { storeDocumentProjectionPages } from
-  "./production-document-scope-object-writer.js";
-import { finalizeDocumentPublicationOutput } from
-  "./production-document-publication-output.js";
+import { storeDocumentProjectionPages } from "./production-document-scope-object-writer.js";
+import { finalizeDocumentPublicationOutput } from "./production-document-publication-output.js";
+import { readDocumentProjectionMetrics } from "./production-document-projection-metrics.js";
 export type { DocumentSourceScopeProjection } from "./production-document-scope-renderer-helpers.js";
 type DocumentScopeContributor = Readonly<{ sourceFilePublicId: string; sourceRevisionPublicId: string | null; requiredSequence: number }>;
 type DocumentScopeRenderOptions = Readonly<{ pageIntegrityOverrides?:
@@ -115,8 +111,8 @@ export function createProductionDocumentScopeRenderer(input: {
       contributor.sourceRevisionPublicId
         ? [contributor.sourceRevisionPublicId] : []);
     const excludedActiveSourceFilePublicIds = [
-      ...new Set(options.affectedSourceFilePublicIds
-        ?? contributors.map((contributor) => contributor.sourceFilePublicId))
+      ...new Set(contributors.map((contributor) =>
+        contributor.sourceFilePublicId))
     ].sort();
     const projected = sourceFile
       ? await requireSourceProjection(input).project({
@@ -335,10 +331,12 @@ export function createProductionDocumentScopeRenderer(input: {
       removedLogicalPaths: materialized.removedLogicalPaths,
       navigationMutations: materialized.navigationMutations
     });
+    const projectionMetrics = readDocumentProjectionMetrics(projected);
     return {
       ...materialized,
       factCount: "factCount" in projected
-        ? projected.factCount : projected.records.length
+        ? projected.factCount : projected.records.length,
+      ...(projectionMetrics ? { projectionMetrics } : {})
     };
   }
   const renderer = {
@@ -417,6 +415,7 @@ export function createProductionDocumentScopeRenderer(input: {
         latencyMilliseconds: total.latencyMilliseconds
           + item.result.requests.latencyMilliseconds
       }), zeroStorageRequests());
+      const projectionMetrics = readDocumentProjectionMetrics(materialized);
       return {
         outputFingerprintSha256: createHash("sha256")
           .update(canonicalJson({ pages, removedNormalizedPaths }))
@@ -429,7 +428,8 @@ export function createProductionDocumentScopeRenderer(input: {
           writeAttemptPublicId
         })),
         storageRequests,
-        factCount: materialized.factCount
+        factCount: materialized.factCount,
+        ...(projectionMetrics ? { projectionMetrics } : {})
       };
     },
     async renderPublication(

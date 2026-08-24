@@ -14,6 +14,81 @@ export function createPostgresDocumentPublicationRecovery(
   sql: DatabaseClient
 ) {
   return {
+    async recoverStrandedReplacements(input: Readonly<{
+      rendererContractVersion: string;
+      recoveredAt: string;
+      limit: number;
+    }>) {
+      const recoveredAt = assertRepositoryTimestamp(
+        input.recoveredAt,
+        "recovered_at"
+      );
+      const limit = assertRepositoryPositiveInteger(input.limit, "limit", 256);
+      if (!input.rendererContractVersion
+        || Buffer.byteLength(input.rendererContractVersion, "utf8") > 128) {
+        throw repositoryContractError("renderer_contract_version_invalid");
+      }
+      return sql.begin(async (transaction) => {
+        const generations = await transaction<Array<{
+          public_id: string;
+          knowledge_base_id: string;
+        }>>`
+          SELECT generation.public_id, generation.knowledge_base_id
+          FROM focowiki.projection_publication_generations generation
+          JOIN focowiki.knowledge_base_projection_heads head
+            ON head.knowledge_base_id = generation.knowledge_base_id
+          LEFT JOIN focowiki.projection_publication_generations successor
+            ON successor.public_id =
+                 generation.superseded_by_generation_public_id
+          WHERE generation.state = 'obsolete'
+            AND generation.recovery_evidence->>'outcome'
+                  = 'minimum_replacement_planned'
+            AND head.active_generation_public_id IS DISTINCT FROM
+                  generation.public_id
+            AND (successor.public_id IS NULL OR successor.state IN (
+              'obsolete', 'quarantined'
+            ))
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.projection_publication_generations live
+              WHERE live.knowledge_base_id = generation.knowledge_base_id
+                AND live.state IN ('planned', 'rendering', 'validating', 'ready')
+            )
+          ORDER BY generation.updated_at DESC,
+                   generation.public_id COLLATE "C"
+          FOR UPDATE OF generation, head SKIP LOCKED
+          LIMIT ${limit}
+        `;
+        const recoveredKnowledgeBases = new Set<string>();
+        const replacements = [];
+        for (const generation of generations) {
+          if (recoveredKnowledgeBases.has(generation.knowledge_base_id)) continue;
+          const replacement = await createMinimumCompatiblePublicationReplacement(
+            transaction as unknown as DatabaseClient,
+            {
+              generationPublicId: generation.public_id,
+              rendererContractVersion: input.rendererContractVersion,
+              supersessionReason: "publication_replacement_stranded",
+              recoveredAt,
+              recoverObsoleteStranded: true
+            }
+          );
+          if (replacement) {
+            replacements.push(replacement);
+            recoveredKnowledgeBases.add(generation.knowledge_base_id);
+          }
+        }
+        return {
+          generationCount: replacements.length,
+          releasedFactCount: 0,
+          replannedFactCount: replacements.reduce((total, item) =>
+            total + item.factCount, 0),
+          supersededScopeCount: replacements.reduce((total, item) =>
+            total + item.supersededScopeCount, 0)
+        };
+      });
+    },
+
     async recoverIncompatibleGenerations(input: Readonly<{
       rendererContractVersion: string;
       recoveredAt: string;

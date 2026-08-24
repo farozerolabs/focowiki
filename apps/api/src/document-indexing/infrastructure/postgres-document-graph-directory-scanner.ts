@@ -12,7 +12,7 @@ import {
 } from "./postgres-document-graph-visibility.js";
 import {
   readAffectedGraphChildScopes,
-  readBaseGraphDirectoryRecordKeys,
+  scanBaseGraphDirectoryRecordKeys,
   readGraphChildScopes,
   readMachineResourcePaths
 } from "./postgres-document-graph-directory-scope-reader.js";
@@ -50,6 +50,7 @@ export function createPostgresDocumentGraphDirectoryScanner(
     affectedLogicalPaths?: readonly string[];
     signal?: AbortSignal;
     checkpoint?: () => Promise<void>;
+    onRemovedRecordKeys?(keys: readonly string[]): Promise<void> | void;
     onRecords(records: readonly Record<string, unknown>[]): Promise<void> | void;
   }) {
     const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
@@ -101,7 +102,7 @@ export function createPostgresDocumentGraphDirectoryScanner(
         await input.onRecords(finalRecords);
         recordCount += finalRecords.length;
       }
-      const [childScopes, resourcePaths, removedRecordKeys] = await Promise.all([
+      const [childScopes, resourcePaths] = await Promise.all([
         affected !== null && input.affectedLogicalPaths
           ? readAffectedGraphChildScopes(transaction, {
               knowledgeBaseId: input.knowledgeBaseId,
@@ -122,16 +123,25 @@ export function createPostgresDocumentGraphDirectoryScanner(
               knowledgeBaseId: input.knowledgeBaseId,
               machineDirectory: portableGraphDirectoryPath(input.scopePath)
             })
-          : Promise.resolve([]),
-        affected !== null && input.baseDeterministicChangedAt
-          ? readBaseGraphDirectoryRecordKeys(transaction, {
-              knowledgeBaseId: input.knowledgeBaseId,
-              scopePath: input.scopePath,
-              affectedSourceFilePublicIds: affected,
-              baseDeterministicChangedAt: input.baseDeterministicChangedAt
-            })
           : Promise.resolve([])
       ]);
+      const removedRecordKeys: string[] = [];
+      if (affected !== null && input.baseDeterministicChangedAt) {
+        await scanBaseGraphDirectoryRecordKeys(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          scopePath: input.scopePath,
+          affectedSourceFilePublicIds: affected,
+          baseDeterministicChangedAt: input.baseDeterministicChangedAt,
+          async onKeys(keys) {
+            if (input.onRemovedRecordKeys) {
+              await input.onRemovedRecordKeys(keys);
+            } else {
+              removedRecordKeys.push(...keys);
+            }
+          },
+          ...(input.checkpoint ? { checkpoint: input.checkpoint } : {})
+        });
+      }
       return {
         recordCount,
         childDirectories: childScopes.map((scopePath) => ({
@@ -155,6 +165,7 @@ export function createPostgresDocumentGraphDirectoryScanner(
       excludedActiveSourceFilePublicIds?: readonly string[];
       signal?: AbortSignal;
       checkpoint?: () => Promise<void>;
+      onRemovedRecordKeys?(keys: readonly string[]): Promise<void> | void;
       baseDeterministicChangedAt?: string | null;
       affectedLogicalPaths?: readonly string[];
       onRecords(records: readonly Record<string, unknown>[]): Promise<void> | void;

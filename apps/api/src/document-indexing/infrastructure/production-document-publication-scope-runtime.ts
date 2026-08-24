@@ -1,4 +1,6 @@
 import type { DatabaseClient } from "../../db/client.js";
+import { totalmem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import {
   DOCUMENT_PUBLICATION_SCOPE_EXECUTION_TIMEOUT_MS,
   createDocumentPublicationScopeGenerationExecutor
@@ -25,6 +27,8 @@ import type { DocumentWorkerObservability } from
   "../application/document-worker-observability.js";
 import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
   "../application/document-publication-renderer-contract.js";
+import { hasDocumentPublicationMemoryHeadroom } from
+  "../application/document-resource-capacity.js";
 
 export function createProductionDocumentPublicationScopeRuntime(input: {
   sql: DatabaseClient;
@@ -35,7 +39,7 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
   renderer: ReturnType<typeof createProductionDocumentScopeRenderer>;
   observability?: Pick<DocumentWorkerObservability,
     "publicationScope" | "publicationScopeStage" | "publicationStorage"
-      | "publicationProjection">;
+      | "publicationProjection" | "publicationResourcePressure">;
 }) {
   const workerId = `${input.workerId}:publication-scope`;
   const repository = createPostgresDocumentScopeGenerationRepository(input.sql);
@@ -72,7 +76,14 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
         objectReuseCount: event.objectReuseCount,
         putByteCount: event.putByteCount,
         renewalCount: event.renewalCount,
-        maximumHeartbeatAgeMs: event.maximumHeartbeatAgeMs
+        maximumHeartbeatAgeMs: event.maximumHeartbeatAgeMs,
+        heapUsedBytes: event.heapUsedBytes,
+        heapLimitBytes: event.heapLimitBytes,
+        rssBytes: event.rssBytes,
+        changedRecordCount: event.changedRecordCount,
+        chunkCount: event.chunkCount,
+        peakBufferedRecordCount: event.peakBufferedRecordCount,
+        touchedShardCount: event.touchedShardCount
       });
     },
     onStage(event) {
@@ -84,11 +95,15 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
         stage: event.stage,
         outcome: event.outcome,
         durationMs: event.durationMs,
-        errorCode: event.errorCode
+        errorCode: event.errorCode,
+        heapUsedBytes: event.heapUsedBytes,
+        heapLimitBytes: event.heapLimitBytes,
+        rssBytes: event.rssBytes
       });
     }
   });
-  return createDocumentPublicationScopeRuntime({
+  let runtime: ReturnType<typeof createDocumentPublicationScopeRuntime>;
+  runtime = createDocumentPublicationScopeRuntime({
     workerId,
     leaseDurationMs: input.leaseDurationMs,
     maximumConcurrency: input.maximumConcurrency,
@@ -96,6 +111,27 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
     execute: (request) => executor.execute(request),
     now: () => new Date().toISOString(),
     wait: waitForDocumentWork,
+    canClaim() {
+      const memory = process.memoryUsage();
+      const constrained = process.constrainedMemory?.() ?? 0;
+      return hasDocumentPublicationMemoryHeadroom({
+        heapUsedBytes: memory.heapUsed,
+        heapLimitBytes: getHeapStatistics().heap_size_limit,
+        rssBytes: memory.rss,
+        residentLimitBytes: constrained > 0
+          ? Math.min(totalmem(), constrained) : totalmem()
+      });
+    },
+    onAdmissionDeferred() {
+      const memory = process.memoryUsage();
+      input.observability?.publicationResourcePressure({
+        heapUsedBytes: memory.heapUsed,
+        heapLimitBytes: getHeapStatistics().heap_size_limit,
+        rssBytes: memory.rss,
+        activeScopeCount: runtime.activeCount(),
+        maximumScopeConcurrency: input.maximumConcurrency
+      });
+    },
     classifyError(error, claim) {
       const code = safeErrorCode(error);
       const decision = decideDocumentPublicationRecovery(code);
@@ -125,6 +161,7 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
       }
     )
   });
+  return runtime;
 }
 
 function observeScope(

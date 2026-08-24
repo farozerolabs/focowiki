@@ -178,6 +178,38 @@ describe("document publication scope runtime", () => {
       release();
       await running;
 
-      expect(runtime.activeCount()).toBe(0);
+    expect(runtime.activeCount()).toBe(0);
+  });
+
+  it("does not claim another projection while memory admission is closed",
+    async () => {
+      let memoryAvailable = false;
+      const claim = vi.fn(async () => []);
+      const onAdmissionDeferred = vi.fn();
+      const runtime = createDocumentPublicationScopeRuntime({
+        workerId: "worker-memory-pressure",
+        leaseDurationMs: 1_000,
+        maximumConcurrency: 2,
+        repository: {
+          claim,
+          fail: vi.fn(),
+          recoverExpired: vi.fn(async () => 0)
+        },
+        execute: vi.fn(),
+        now: () => "2026-08-24T09:00:00.000Z",
+        wait: async () => new Promise<void>((resolve) => setImmediate(resolve)),
+        classifyError: () => ({ code: "unknown", recoveryAction: "terminal" }),
+        canClaim: () => memoryAvailable,
+        onAdmissionDeferred
+      });
+      const controller = new AbortController();
+      const running = runtime.run(controller.signal);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(claim).not.toHaveBeenCalled();
+      expect(onAdmissionDeferred).toHaveBeenCalledTimes(1);
+      memoryAvailable = true;
+      await vi.waitFor(() => expect(claim).toHaveBeenCalled());
+      controller.abort();
+      await running;
     });
 });

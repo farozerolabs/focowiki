@@ -41,6 +41,34 @@ export function resolveDocumentProjectionCapacities(input: {
   };
 }
 
+const PUBLICATION_HEAP_RESERVE_BYTES = 192 * 1_024 * 1_024;
+const PUBLICATION_SCOPE_HEAP_BUDGET_BYTES = 256 * 1_024 * 1_024;
+
+export function resolveDocumentPublicationMemoryCapacity(input: {
+  requestedConcurrency: number;
+  heapLimitBytes: number;
+}): number {
+  if (!Number.isSafeInteger(input.requestedConcurrency)
+    || input.requestedConcurrency < 1 || input.requestedConcurrency > 64
+    || !Number.isFinite(input.heapLimitBytes) || input.heapLimitBytes <= 0) {
+    throw new Error("Document publication memory capacity input is invalid");
+  }
+  return Math.min(input.requestedConcurrency, Math.max(1, Math.floor(
+    (input.heapLimitBytes - PUBLICATION_HEAP_RESERVE_BYTES)
+      / PUBLICATION_SCOPE_HEAP_BUDGET_BYTES
+  )));
+}
+
+export function hasDocumentPublicationMemoryHeadroom(input: {
+  heapUsedBytes: number;
+  heapLimitBytes: number;
+  rssBytes: number;
+  residentLimitBytes: number;
+}): boolean {
+  return input.heapUsedBytes / input.heapLimitBytes < 0.78
+    && input.rssBytes / input.residentLimitBytes < 0.85;
+}
+
 export function resolveDocumentPublicationS3Capacities(input: {
   documentConcurrency: number;
   sourceObjectReadConcurrency: number;
