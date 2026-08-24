@@ -7,6 +7,12 @@ import {
 } from "./postgres-document-graph-visibility.js";
 
 const MAXIMUM_DIRECTORY_RECORDS = 10_000;
+const GRAPH_RECORD_KEY_PAGE_SIZE = 1_000;
+type BaseGraphRecordKeyRow = {
+  first_path: string;
+  second_path: string;
+  relation_kind: string;
+};
 
 export async function readBaseGraphDirectoryRecordKeys(
   sql: DatabaseClient,
@@ -17,67 +23,107 @@ export async function readBaseGraphDirectoryRecordKeys(
     baseDeterministicChangedAt: string;
   }>
 ): Promise<string[]> {
-  const rows = await sql<Array<{
-    first_path: string;
-    second_path: string;
-    relation_kind: string;
-  }>>`
-    SELECT DISTINCT first_page.page_path COLLATE "C" AS first_path,
-           second_page.page_path COLLATE "C" AS second_path,
-           relation.relation_kind::text COLLATE "C" AS relation_kind
-    FROM focowiki.canonical_file_relations relation
-    JOIN focowiki.document_projection_records first_record
-      ON first_record.knowledge_base_id = relation.knowledge_base_id
-     AND first_record.source_revision_public_id
-           = relation.first_source_revision_public_id
-    JOIN focowiki.document_projection_records second_record
-      ON second_record.knowledge_base_id = relation.knowledge_base_id
-     AND second_record.source_revision_public_id
-           = relation.second_source_revision_public_id
-    JOIN LATERAL (
-      SELECT membership.page_path, membership.directory_path
-      FROM focowiki.document_semantic_directory_memberships membership
-      WHERE membership.knowledge_base_id = first_record.knowledge_base_id
-        AND membership.source_revision_public_id
-              = first_record.source_revision_public_id
-      ORDER BY char_length(membership.directory_path) DESC
-      LIMIT 1
-    ) first_page ON true
-    JOIN LATERAL (
-      SELECT membership.page_path, membership.directory_path
-      FROM focowiki.document_semantic_directory_memberships membership
-      WHERE membership.knowledge_base_id = second_record.knowledge_base_id
-        AND membership.source_revision_public_id
-              = second_record.source_revision_public_id
-      ORDER BY char_length(membership.directory_path) DESC
-      LIMIT 1
-    ) second_page ON true
-    WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (relation.first_source_file_public_id
-             = ANY(${input.affectedSourceFilePublicIds}::text[])
-        OR relation.second_source_file_public_id
-             = ANY(${input.affectedSourceFilePublicIds}::text[]))
-      AND relation.created_at <= ${input.baseDeterministicChangedAt}
-      AND (relation.retired_at IS NULL
-        OR relation.retired_at > ${input.baseDeterministicChangedAt})
-      AND (
-        (first_page.directory_path = ${input.scopePath}
-          AND position('/' in substring(first_page.page_path
-            from char_length(${input.scopePath}) + 2)) = 0)
-        OR
-        (second_page.directory_path = ${input.scopePath}
-          AND position('/' in substring(second_page.page_path
-            from char_length(${input.scopePath}) + 2)) = 0)
+  const keys: string[] = [];
+  await scanBaseGraphDirectoryRecordKeys(sql, {
+    ...input,
+    onKeys(page) { keys.push(...page); }
+  });
+  return keys;
+}
+
+export async function scanBaseGraphDirectoryRecordKeys(
+  sql: DatabaseClient,
+  input: Readonly<{
+    knowledgeBaseId: string;
+    scopePath: string;
+    affectedSourceFilePublicIds: readonly string[];
+    baseDeterministicChangedAt: string;
+    onKeys(keys: readonly string[]): Promise<void> | void;
+    checkpoint?: () => Promise<void>;
+  }>
+): Promise<number> {
+  let cursor: Readonly<{
+    firstPath: string;
+    secondPath: string;
+    relationKind: string;
+  }> | null = null;
+  let count = 0;
+  while (true) {
+    const rows: BaseGraphRecordKeyRow[] = await sql<BaseGraphRecordKeyRow[]>`
+      WITH base_keys AS (
+        SELECT DISTINCT first_page.page_path COLLATE "C" AS first_path,
+               second_page.page_path COLLATE "C" AS second_path,
+               relation.relation_kind::text COLLATE "C" AS relation_kind
+        FROM focowiki.canonical_file_relations relation
+        JOIN focowiki.document_projection_records first_record
+          ON first_record.knowledge_base_id = relation.knowledge_base_id
+         AND first_record.source_revision_public_id
+               = relation.first_source_revision_public_id
+        JOIN focowiki.document_projection_records second_record
+          ON second_record.knowledge_base_id = relation.knowledge_base_id
+         AND second_record.source_revision_public_id
+               = relation.second_source_revision_public_id
+        JOIN LATERAL (
+          SELECT membership.page_path, membership.directory_path
+          FROM focowiki.document_semantic_directory_memberships membership
+          WHERE membership.knowledge_base_id = first_record.knowledge_base_id
+            AND membership.source_revision_public_id
+                  = first_record.source_revision_public_id
+          ORDER BY char_length(membership.directory_path) DESC
+          LIMIT 1
+        ) first_page ON true
+        JOIN LATERAL (
+          SELECT membership.page_path, membership.directory_path
+          FROM focowiki.document_semantic_directory_memberships membership
+          WHERE membership.knowledge_base_id = second_record.knowledge_base_id
+            AND membership.source_revision_public_id
+                  = second_record.source_revision_public_id
+          ORDER BY char_length(membership.directory_path) DESC
+          LIMIT 1
+        ) second_page ON true
+        WHERE relation.knowledge_base_id = ${input.knowledgeBaseId}
+          AND (relation.first_source_file_public_id
+                 = ANY(${input.affectedSourceFilePublicIds}::text[])
+            OR relation.second_source_file_public_id
+                 = ANY(${input.affectedSourceFilePublicIds}::text[]))
+          AND relation.created_at <= ${input.baseDeterministicChangedAt}
+          AND (relation.retired_at IS NULL
+            OR relation.retired_at > ${input.baseDeterministicChangedAt})
+          AND (
+            (first_page.directory_path = ${input.scopePath}
+              AND position('/' in substring(first_page.page_path
+                from char_length(${input.scopePath}) + 2)) = 0)
+            OR
+            (second_page.directory_path = ${input.scopePath}
+              AND position('/' in substring(second_page.page_path
+                from char_length(${input.scopePath}) + 2)) = 0)
+          )
       )
-    ORDER BY first_path, second_path, relation_kind
-    LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
-  `;
-  if (rows.length > MAXIMUM_DIRECTORY_RECORDS) {
-    throw scopeReadError("graph_directory_delta_record_limit_exceeded");
+      SELECT first_path, second_path, relation_kind
+      FROM base_keys
+      WHERE ${cursor === null}
+         OR (first_path, second_path, relation_kind) > (
+           ${cursor?.firstPath ?? ""}, ${cursor?.secondPath ?? ""},
+           ${cursor?.relationKind ?? ""}
+         )
+      ORDER BY first_path, second_path, relation_kind
+      LIMIT ${GRAPH_RECORD_KEY_PAGE_SIZE}
+    `;
+    if (rows.length === 0) break;
+    await input.onKeys(rows.map((row: BaseGraphRecordKeyRow) => [
+      row.first_path, row.second_path, row.relation_kind
+    ].join("\0")));
+    count += rows.length;
+    await input.checkpoint?.();
+    const last: BaseGraphRecordKeyRow = rows.at(-1)!;
+    cursor = {
+      firstPath: last.first_path,
+      secondPath: last.second_path,
+      relationKind: last.relation_kind
+    };
+    if (rows.length < GRAPH_RECORD_KEY_PAGE_SIZE) break;
   }
-  return rows.map((row) => [
-    row.first_path, row.second_path, row.relation_kind
-  ].join("\0"));
+  return count;
 }
 
 export async function readGraphChildScopes(sql: DatabaseClient, input: {

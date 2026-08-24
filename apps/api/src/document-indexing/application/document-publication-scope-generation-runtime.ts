@@ -1,5 +1,6 @@
 import type { DocumentLeaseGeneration } from
   "../domain/document-publication-identifiers.js";
+import { getHeapStatistics } from "node:v8";
 
 export const DOCUMENT_PUBLICATION_SCOPE_EXECUTION_TIMEOUT_MS = 180_000;
 
@@ -109,6 +110,13 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
     putByteCount: number;
     renewalCount: number;
     maximumHeartbeatAgeMs: number;
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+    rssBytes: number;
+    changedRecordCount: number;
+    chunkCount: number;
+    peakBufferedRecordCount: number;
+    touchedShardCount: number;
   }>): void;
   onStage?(input: Readonly<{
     snapshot: DocumentPublicationImmutableScopeSnapshot | null;
@@ -117,6 +125,9 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
     outcome: "completed" | "failed";
     durationMs: number;
     errorCode: string | null;
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+    rssBytes: number;
   }>): void;
 }) {
   const maximumExecutionMs = boundedExecutionMs(
@@ -249,6 +260,7 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
         const structurallyReusedObjectCount = snapshot.basePages.filter((page) =>
           page.action === "put" && !touchedPaths.has(page.normalizedPath)
         ).length;
+        const memory = resourceSnapshot();
         input.onPersisted?.({
           snapshot,
           recordsRendered: nonNegativeEvidenceMetric(
@@ -261,7 +273,20 @@ export function createDocumentPublicationScopeGenerationExecutor(input: {
             ?? putPages.reduce((total, page) =>
               total + (page.byteCount ?? 0), 0),
           renewalCount,
-          maximumHeartbeatAgeMs
+          maximumHeartbeatAgeMs,
+          ...memory,
+          changedRecordCount: nonNegativeEvidenceMetric(
+            rendered.validationEvidence.changedRecordCount
+          ),
+          chunkCount: nonNegativeEvidenceMetric(
+            rendered.validationEvidence.chunkCount
+          ),
+          peakBufferedRecordCount: nonNegativeEvidenceMetric(
+            rendered.validationEvidence.peakBufferedRecordCount
+          ),
+          touchedShardCount: nonNegativeEvidenceMetric(
+            rendered.validationEvidence.touchedShardCount
+          )
         });
       } finally {
         if (timer) clearInterval(timer);
@@ -293,7 +318,8 @@ async function observeStage<T>(request: {
       stage: request.stage,
       outcome: "completed",
       durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
-      errorCode: null
+      errorCode: null,
+      ...resourceSnapshot()
     });
     return result;
   } catch (error) {
@@ -303,7 +329,8 @@ async function observeStage<T>(request: {
       stage: request.stage,
       outcome: "failed",
       durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
-      errorCode: safeCode(error)
+      errorCode: safeCode(error),
+      ...resourceSnapshot()
     });
     throw error;
   }
@@ -335,6 +362,15 @@ function boundedExecutionMs(value: number): number {
     throw runtimeError("scope_generation_deadline_invalid");
   }
   return value;
+}
+
+function resourceSnapshot() {
+  const memory = process.memoryUsage();
+  return {
+    heapUsedBytes: memory.heapUsed,
+    heapLimitBytes: getHeapStatistics().heap_size_limit,
+    rssBytes: memory.rss
+  };
 }
 
 function runtimeError(code: string): Error & { code: string } {

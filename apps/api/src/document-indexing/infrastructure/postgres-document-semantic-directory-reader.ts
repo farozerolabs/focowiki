@@ -73,10 +73,19 @@ export function createPostgresDocumentSemanticDirectoryReader(
       scopePath: string;
       affectedSourceFilePublicIds: readonly string[];
       includedSourceRevisionPublicIds: readonly string[];
+      navigationSourceFilePublicIds?: readonly string[];
       publicationGenerationPublicId?: string;
     }) {
       const affected = sortedUnique(input.affectedSourceFilePublicIds);
       const included = sortedUnique(input.includedSourceRevisionPublicIds);
+      const navigationSources = sortedUnique(
+        input.navigationSourceFilePublicIds ?? affected);
+      if (navigationSources.some((sourceFilePublicId) =>
+        !affected.includes(sourceFilePublicId))) {
+        throw semanticReaderError(
+          "semantic_directory_navigation_source_invalid"
+        );
+      }
       if (affected.length === 0) {
         return {
           records: [] as Record<string, unknown>[],
@@ -91,6 +100,7 @@ export function createPostgresDocumentSemanticDirectoryReader(
         );
       }
       const rows = await sql<Array<DocumentRecordRow & {
+          source_file_public_id: string;
           visible: boolean;
         }>>`
         WITH affected_records AS (
@@ -119,7 +129,8 @@ export function createPostgresDocumentSemanticDirectoryReader(
           WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
             AND record.source_file_public_id = ANY(${affected}::text[])
         )
-        SELECT record.page_path, record.title, record.summary,
+        SELECT record.source_file_public_id, record.page_path,
+               record.title, record.summary,
                record.metadata, record.headings, record.entities,
                record.content_type, record.checksum_sha256, record.byte_count,
                record.visible,
@@ -152,8 +163,10 @@ export function createPostgresDocumentSemanticDirectoryReader(
           "semantic_directory_navigation_revision_limit_exceeded"
         );
       }
+      const navigationSourceSet = new Set(navigationSources);
       const candidateTargets = rows.flatMap((row) =>
-        candidateTarget(input.scopePath, row.page_path));
+        navigationSourceSet.has(row.source_file_public_id)
+          ? candidateTarget(input.scopePath, row.page_path) : []);
       const navigationCandidateEntryIds = [...new Set(candidateTargets.map(
         (target) => documentDirectoryEntryId(target.kind, target.path)
       ))].sort();

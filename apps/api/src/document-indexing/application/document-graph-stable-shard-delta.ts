@@ -32,6 +32,127 @@ export type DocumentGraphStableShardDelta = Readonly<{
   relationshipCount: number;
 }>;
 
+export type DocumentGraphStableShardDeltaStreamResult =
+  DocumentGraphStableShardDelta & Readonly<{
+    metrics: Readonly<{
+      changedRecordCount: number;
+      chunkCount: number;
+      peakBufferedRecordCount: number;
+      touchedShardCount: number;
+    }>;
+  }>;
+
+export function createDocumentGraphStableShardDeltaStream(input: Readonly<{
+  scopePath: string;
+  machineDirectory: string;
+  base: DocumentGraphBaseRouter;
+  maximumRecords: number;
+  maximumBytes: number;
+  readRecords(path: string): Promise<readonly Record<string, unknown>[]>;
+  checkpoint?(): Promise<void>;
+}>) {
+  if (!Number.isSafeInteger(input.maximumRecords) || input.maximumRecords < 1
+    || !Number.isSafeInteger(input.maximumBytes) || input.maximumBytes < 1) {
+    throw stableDeltaError("graph_delta_stream_limits_invalid");
+  }
+  let current = input.base;
+  const originalPaths = new Set(input.base.resources.map((item) => item.path));
+  const latestPages = new Map<string, DocumentSemanticMachinePage>();
+  const changedKeys = new Set<string>();
+  const touchedPaths = new Set<string>();
+  let changedRecordCount = 0;
+  let chunkCount = 0;
+  let peakBufferedRecordCount = 0;
+
+  async function readCurrentRecords(path: string) {
+    const page = latestPages.get(path);
+    if (!page) return input.readRecords(path);
+    const parsed = JSON.parse(new TextDecoder().decode(page.bytes)) as {
+      relationships?: unknown;
+    };
+    if (!Array.isArray(parsed.relationships)) {
+      throw stableDeltaError("graph_delta_stream_page_invalid");
+    }
+    return parsed.relationships as Record<string, unknown>[];
+  }
+
+  async function applyChunk(
+    changedRecords: readonly Record<string, unknown>[],
+    removedRecordKeys: readonly string[]
+  ): Promise<void> {
+    if (changedRecords.length === 0 && removedRecordKeys.length === 0) return;
+    peakBufferedRecordCount = Math.max(
+      peakBufferedRecordCount,
+      changedRecords.length,
+      removedRecordKeys.length
+    );
+    chunkCount += 1;
+    const delta = await applyDocumentGraphStableShardDelta({
+      scopePath: input.scopePath,
+      machineDirectory: input.machineDirectory,
+      base: current,
+      changedRecords,
+      removedRecordKeys,
+      maximumRecords: input.maximumRecords,
+      maximumBytes: input.maximumBytes,
+      readRecords: readCurrentRecords,
+      ...(input.checkpoint ? { checkpoint: input.checkpoint } : {})
+    });
+    delta.removedPaths.forEach((path) => latestPages.delete(path));
+    delta.pages.forEach((page) => {
+      latestPages.set(page.logicalPath, page);
+      touchedPaths.add(page.logicalPath);
+    });
+    current = {
+      ...current,
+      relationshipCount: delta.relationshipCount,
+      resources: delta.descriptors
+    };
+  }
+
+  return {
+    async append(records: readonly Record<string, unknown>[]): Promise<void> {
+      changedRecordCount += records.length;
+      records.forEach((record) => changedKeys.add(
+        documentGraphRelationshipKey(record)
+      ));
+      for (let offset = 0; offset < records.length;
+        offset += input.maximumRecords) {
+        await applyChunk(records.slice(offset, offset + input.maximumRecords), []);
+      }
+    },
+    async remove(recordKeys: readonly string[]): Promise<void> {
+      const removals = recordKeys.filter((key) => !changedKeys.has(key));
+      for (let offset = 0; offset < removals.length;
+        offset += input.maximumRecords) {
+        await applyChunk([], removals.slice(offset, offset + input.maximumRecords));
+      }
+    },
+    async finish(
+      removedRecordKeys: readonly string[]
+    ): Promise<DocumentGraphStableShardDeltaStreamResult> {
+      await this.remove(removedRecordKeys);
+      const finalPaths = new Set(current.resources.map((item) => item.path));
+      const pages = [...latestPages.values()]
+        .filter((page) => finalPaths.has(page.logicalPath))
+        .sort((left, right) => compareText(left.logicalPath, right.logicalPath));
+      return {
+        pages,
+        descriptors: current.resources,
+        removedPaths: [...originalPaths]
+          .filter((path) => !finalPaths.has(path)).sort(compareText),
+        relationshipCount: current.relationshipCount,
+        metrics: {
+          changedRecordCount,
+          chunkCount,
+          peakBufferedRecordCount,
+          touchedShardCount: touchedPaths.size
+        }
+      };
+    }
+  };
+}
+
 export async function applyDocumentGraphStableShardDelta(input: Readonly<{
   scopePath: string;
   machineDirectory: string;
@@ -186,4 +307,8 @@ function withPath(
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function stableDeltaError(code: string): Error & { code: string } {
+  return Object.assign(new Error(`Graph stable delta error: ${code}`), { code });
 }

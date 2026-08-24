@@ -13,6 +13,8 @@ import { createPostgresDocumentPublicationRepository } from
   "../src/document-indexing/infrastructure/postgres-document-publication-repository.js";
 import { createPostgresDocumentPublicationRecovery } from
   "../src/document-indexing/infrastructure/postgres-document-publication-recovery.js";
+import { createMinimumCompatiblePublicationReplacement } from
+  "../src/document-indexing/infrastructure/postgres-document-publication-minimum-replan.js";
 import {
   applyPostgresDocumentDirectoryNavigation,
   createPostgresDocumentDirectoryNavigation
@@ -1398,6 +1400,58 @@ const enabled = Boolean(databaseUrl && runOwner
         consecutive_lease_loss_count: 2,
         retention_state: "retained"
       }]);
+      const [firstReplacement] = await sql<Array<{ public_id: string }>>`
+        SELECT public_id
+        FROM focowiki.projection_publication_generations
+        WHERE recovery_evidence->>'supersedesGenerationPublicId'
+          = ${generationId}
+      `;
+      expect(firstReplacement).toBeDefined();
+      const secondReplacement = await createMinimumCompatiblePublicationReplacement(
+        database,
+        {
+          generationPublicId: firstReplacement!.public_id,
+          rendererContractVersion: "portable-okf-v2",
+          supersessionReason: "scope_generation_lease_lost",
+          recoveredAt: "2026-08-21T12:10:06.000Z"
+        }
+      );
+      expect(secondReplacement?.replacementGenerationPublicId)
+        .not.toBe(firstReplacement!.public_id);
+      await expect(sql<Array<{ state: string }>>`
+        SELECT state
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = ${secondReplacement!.replacementGenerationPublicId}
+      `).resolves.toEqual([{ state: "planned" }]);
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = now()
+        WHERE public_id = ${secondReplacement!.replacementGenerationPublicId}
+      `;
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+      await expect(recovery.recoverStrandedReplacements({
+        rendererContractVersion: "portable-okf-v2",
+        recoveredAt: "2026-08-21T12:10:07.000Z",
+        limit: 10
+      })).resolves.toMatchObject({
+        generationCount: 1,
+        replannedFactCount: 1
+      });
+      const liveReplacement = await sql<Array<{ public_id: string }>>`
+        SELECT public_id
+        FROM focowiki.projection_publication_generations
+        WHERE knowledge_base_id = 'publication-kb'
+          AND state = 'planned'
+      `;
+      expect(liveReplacement).toHaveLength(1);
+      expect(liveReplacement[0]!.public_id).not.toBe(
+        secondReplacement!.replacementGenerationPublicId
+      );
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = now()
+        WHERE public_id = ${liveReplacement[0]!.public_id}
+      `;
     });
 });
 

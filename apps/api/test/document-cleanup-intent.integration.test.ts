@@ -137,6 +137,50 @@ const enabled = Boolean(databaseUrl && runOwner
     });
   });
 
+  it("terminalizes exhausted cleanup actions instead of reclaiming them",
+    async () => {
+      const [target] = await sql<Array<{ public_id: string }>>`
+        SELECT public_id
+        FROM focowiki.cleanup_actions
+        WHERE resource_public_id = 'search-document-old'
+        ORDER BY public_id
+        LIMIT 1
+      `;
+      expect(target).toBeDefined();
+      await sql`
+        UPDATE focowiki.cleanup_actions
+        SET state = 'retry', attempt_count = maximum_attempts,
+            not_before = now() - interval '1 second',
+            lease_owner = NULL, lease_expires_at = NULL
+        WHERE public_id = ${target!.public_id}
+      `;
+      const cleanup = createPostgresDocumentObsoleteCleanup(
+        sql as unknown as DatabaseClient
+      );
+
+      await expect(cleanup.actions.claim({
+        owner: "cleanup-owner-exhausted",
+        searchProviderKind: "opensearch",
+        limit: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
+      })).resolves.toEqual([]);
+      await expect(sql<Array<{
+        state: string;
+        attempt_count: number;
+        maximum_attempts: number;
+        safe_error_code: string | null;
+      }>>`
+        SELECT state, attempt_count, maximum_attempts, safe_error_code
+        FROM focowiki.cleanup_actions
+        WHERE public_id = ${target!.public_id}
+      `).resolves.toEqual([{
+        state: "failed",
+        attempt_count: 8,
+        maximum_attempts: 8,
+        safe_error_code: "cleanup_attempts_exhausted"
+      }]);
+    });
+
   it("keeps the current head and releases terminal staged and superseded candidates", async () => {
     const actions = await ensurePostgresDocumentCleanupIntent({
       transaction: sql as unknown as DatabaseClient,
@@ -255,6 +299,16 @@ const enabled = Boolean(databaseUrl && runOwner
       sourceRevisionPublicId: "revision-cleanup-old",
       createdAt: "2026-08-15T14:02:00.000Z"
     })).resolves.toBe(true);
+
+    await sql`
+      UPDATE focowiki.cleanup_actions
+      SET state = 'running', attempt_count = 1,
+          lease_owner = 'expired-revision-purge-owner',
+          lease_expires_at = '2026-08-15T14:02:00.500Z',
+          updated_at = '2026-08-15T14:02:00.000Z'
+      WHERE action_kind = 'document_revision_purge'
+        AND resource_public_id = 'revision-cleanup-old'
+    `;
 
     const purge = createPostgresDocumentRevisionPurge(
       sql as unknown as DatabaseClient

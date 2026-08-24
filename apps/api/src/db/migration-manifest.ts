@@ -79,6 +79,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v18-projection-large-directory-deltas",
     targetGeneration: "storage-vnext-v19-projection-delta-lease-safety",
     safety: "compatible"
+  },
+  {
+    fileName: "012_projection_runtime_recovery.sql",
+    sourceGeneration: "storage-vnext-v19-projection-delta-lease-safety",
+    targetGeneration: "storage-vnext-v20-projection-runtime-recovery",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

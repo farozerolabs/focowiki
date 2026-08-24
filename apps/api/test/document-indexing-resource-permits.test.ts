@@ -6,6 +6,7 @@ import { createDocumentResourcePermits } from
 import {
   deriveDocumentResourceCapacities,
   resolveDocumentFinalizationCapacity,
+  resolveDocumentPublicationMemoryCapacity,
   resolveDocumentPublicationS3Capacities,
   resolveDocumentProjectionCapacities,
   resolveDocumentResourceLaneCapacities
@@ -49,6 +50,14 @@ describe("document resource permits", () => {
       documentConcurrency: 32,
       sourceObjectReadConcurrency: 1
     })).toEqual({ scopeProjection: 1, readsPerScope: 1 });
+    expect(resolveDocumentPublicationMemoryCapacity({
+      requestedConcurrency: 6,
+      heapLimitBytes: 512 * 1_024 * 1_024
+    })).toBe(1);
+    expect(resolveDocumentPublicationMemoryCapacity({
+      requestedConcurrency: 6,
+      heapLimitBytes: 2 * 1_024 * 1_024 * 1_024
+    })).toBe(6);
   });
 
   it("bounds configured search concurrency by the active document window", () => {

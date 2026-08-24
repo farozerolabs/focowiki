@@ -21,7 +21,14 @@ describe("document worker observability", () => {
       objectReuseCount: 82,
       putByteCount: 4_096,
       renewalCount: 2,
-      maximumHeartbeatAgeMs: 9_500
+      maximumHeartbeatAgeMs: 9_500,
+      heapUsedBytes: 128,
+      heapLimitBytes: 512,
+      rssBytes: 256,
+      changedRecordCount: 80,
+      chunkCount: 4,
+      peakBufferedRecordCount: 20,
+      touchedShardCount: 3
     });
 
     expect(events).toEqual([log("worker.publication_projection", {
@@ -36,7 +43,14 @@ describe("document worker observability", () => {
       objectReuseCount: 82,
       putByteCount: 4_096,
       renewalCount: 2,
-      maximumHeartbeatAgeMs: 9_500
+      maximumHeartbeatAgeMs: 9_500,
+      heapUsedBytes: 128,
+      heapLimitBytes: 512,
+      rssBytes: 256,
+      changedRecordCount: 80,
+      chunkCount: 4,
+      peakBufferedRecordCount: 20,
+      touchedShardCount: 3
     })]);
   });
 
