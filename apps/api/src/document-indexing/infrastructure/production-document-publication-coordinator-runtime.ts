@@ -156,7 +156,10 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
           ? "publication_activation_deadline_deferred"
           : "publication_activation_contention_deferred"
         : outcome.state === "superseded"
-          ? "publication_generation_stale_base" : null
+          ? "errorCode" in outcome
+            ? outcome.errorCode
+            : "publication_generation_stale_base"
+          : null
     });
     return true;
   }

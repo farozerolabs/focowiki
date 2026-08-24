@@ -3,7 +3,8 @@ export type DocumentPublicationOperation = "create" | "replace" | "rename"
 
 export function createDocumentPublicationActivationCoordinator<
   TActivationResult,
-  TRecoveryResult
+  TStaleBaseRecoveryResult,
+  TActivationPreconditionRecoveryResult = TStaleBaseRecoveryResult
 >(input: {
   activation: {
     activate(request: Readonly<{
@@ -16,7 +17,13 @@ export function createDocumentPublicationActivationCoordinator<
     recoverStaleBase(request: Readonly<{
       generationPublicId: string;
       recoveredAt: string;
-    }>): Promise<TRecoveryResult>;
+    }>): Promise<TStaleBaseRecoveryResult>;
+    recoverActivationPrecondition?(request: Readonly<{
+      generationPublicId: string;
+      recoveredAt: string;
+      errorCode: "publication_source_precondition_failed"
+        | "publication_work_precondition_failed";
+    }>): Promise<TActivationPreconditionRecoveryResult>;
   };
 }) {
   return {
@@ -42,6 +49,21 @@ export function createDocumentPublicationActivationCoordinator<
             recoveredAt: request.activatedAt
           });
           return { state: "superseded" as const, recovery };
+        }
+        if ((code === "publication_source_precondition_failed"
+            || code === "publication_work_precondition_failed")
+          && input.recovery.recoverActivationPrecondition) {
+          const recovery = await input.recovery.recoverActivationPrecondition({
+            generationPublicId: request.generationPublicId,
+            recoveredAt: request.activatedAt,
+            errorCode: code
+          });
+          return {
+            state: "superseded" as const,
+            reason: "activation_precondition" as const,
+            errorCode: code,
+            recovery
+          };
         }
         if (code === "publication_activation_contention_deferred") {
           return { state: "deferred" as const };

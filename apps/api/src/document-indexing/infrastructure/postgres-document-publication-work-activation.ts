@@ -58,12 +58,40 @@ export async function completePostgresDocumentPublicationWork(input: {
     ORDER BY job.public_id COLLATE "C"
     FOR UPDATE OF job, projection, activation
   `;
-  const expected = await sql<Array<{ count: number | string }>>`
-    SELECT count(*) AS count FROM focowiki.projection_generation_documents
-    WHERE generation_public_id = ${input.generationPublicId}
-      AND document_job_public_id IS NOT NULL
+  const preconditions = await sql<Array<{
+    processing_count: number | string;
+    invalid_count: number | string;
+  }>>`
+    SELECT count(*) FILTER (WHERE job.state = 'processing')
+             AS processing_count,
+           count(*) FILTER (WHERE job.public_id IS NULL
+             OR job.knowledge_base_id <> ${input.knowledgeBaseId}
+             OR job.source_file_public_id <> document.source_file_public_id
+             OR job.source_revision_public_id
+                  <> document.source_revision_public_id
+             OR job.state NOT IN ('processing', 'available')
+             OR (job.state = 'available' AND (
+               NOT EXISTS (
+                 SELECT 1 FROM focowiki.document_artifact_work projection
+                 WHERE projection.document_job_public_id = job.public_id
+                   AND projection.work_kind = 'knowledge_projection'
+                   AND projection.state = 'completed'
+               ) OR NOT EXISTS (
+                 SELECT 1 FROM focowiki.document_artifact_work activation
+                 WHERE activation.document_job_public_id = job.public_id
+                   AND activation.work_kind = 'activate'
+                   AND activation.state = 'completed'
+               )
+             ))) AS invalid_count
+    FROM focowiki.projection_generation_documents document
+    LEFT JOIN focowiki.document_processing_jobs job
+      ON job.public_id = document.document_job_public_id
+    WHERE document.generation_public_id = ${input.generationPublicId}
+      AND document.document_job_public_id IS NOT NULL
   `;
-  if (works.length !== Number(expected[0]?.count ?? -1)) {
+  const precondition = preconditions[0];
+  if (!precondition || Number(precondition.invalid_count) !== 0
+    || works.length !== Number(precondition.processing_count)) {
     throw activationError("publication_work_precondition_failed");
   }
   if (works.length === 0) return 0;
