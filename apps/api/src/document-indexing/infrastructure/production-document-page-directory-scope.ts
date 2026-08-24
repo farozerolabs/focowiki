@@ -15,6 +15,7 @@ export async function projectDocumentPageDirectoryScope(input: {
   machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
   knowledgeBaseId: string;
   scopePath: string;
+  publicationGenerationPublicId?: string;
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
   pageIntegrityOverrides: readonly DocumentPageIntegrityOverride[];
@@ -24,6 +25,9 @@ export async function projectDocumentPageDirectoryScope(input: {
   const state = await input.machineProjection.readDocumentDirectoryState({
     knowledgeBaseId: input.knowledgeBaseId,
     scopePath: input.scopePath,
+    ...(input.publicationGenerationPublicId
+      ? { publicationGenerationPublicId:
+          input.publicationGenerationPublicId } : {}),
     includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
     excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
   });

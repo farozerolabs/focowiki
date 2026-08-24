@@ -6,6 +6,7 @@ export type DocumentProjectionScopeClaim = Readonly<{
   key: string;
   requiredSequence: number;
   renderedSequence: number;
+  publicationGenerationPublicId?: string;
   deterministicEventTime?: string;
   leaseGeneration?: number;
   leaseExpiresAt?: string;

@@ -24,6 +24,7 @@ type Dependencies = {
 
 type Visibility = {
   knowledgeBaseId: string;
+  publicationGenerationPublicId?: string;
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
 };
@@ -110,6 +111,9 @@ export async function projectPerFileGraphDirectory(input: {
     .readPerFileGraphDirectoryState({
       knowledgeBaseId: input.knowledgeBaseId,
       scopePath: input.scopePath,
+      ...(input.publicationGenerationPublicId
+        ? { publicationGenerationPublicId:
+            input.publicationGenerationPublicId } : {}),
       includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
       excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
     });

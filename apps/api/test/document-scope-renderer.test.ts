@@ -9,6 +9,8 @@ import { buildDocumentNavigationTermBucketResources } from
   "../src/document-indexing/application/document-page-term-projection.js";
 import { parseDocumentPortableRecords } from
   "../src/document-indexing/application/document-portable-record-parser.js";
+import { documentDirectoryEntryId } from
+  "../src/document-indexing/domain/document-directory-entry-identity.js";
 import { createProductionDocumentScopeRenderer } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer.js";
 import { projectGraphCatalog } from
@@ -574,27 +576,29 @@ describe("production document scope renderer", () => {
         }
       }));
       let wallClockOffset = 0;
+      const readDocumentDirectoryState = vi.fn(async () => {
+        throw new Error("Semantic directory must not read machine graph facts");
+      });
+      const readSemanticDirectoryState = vi.fn(async () => ({
+        records: [{
+          path: "pages/guides/overview.md",
+          title: "Overview",
+          summary: "A concise overview",
+          metadata: {}, subjects: [], tags: [], headings: [],
+          keywords: [], entities: [], type: "document",
+          contentType: "text/markdown; charset=utf-8",
+          checksumSha256: "a".repeat(64), byteCount: 10
+        }],
+        childDirectories: [{
+          title: "advanced",
+          scopePath: "pages/guides/advanced",
+          path: "pages/guides/advanced/index.md"
+        }]
+      }));
       const renderer = createProductionDocumentScopeRenderer({
         machineProjection: {
-          async readDocumentDirectoryState() {
-            return {
-              records: [{
-                path: "pages/guides/overview.md",
-                title: "Overview",
-                summary: "A concise overview",
-                metadata: {}, subjects: [], tags: [], headings: [],
-                keywords: [], entities: [], type: "document",
-                contentType: "text/markdown; charset=utf-8",
-                checksumSha256: "a".repeat(64), byteCount: 10
-              }],
-              childDirectories: [{
-                title: "advanced",
-                scopePath: "pages/guides/advanced",
-                path: "_index/pages/guides/advanced/index.json"
-              }],
-              resourcePaths: []
-            };
-          }
+          readDocumentDirectoryState,
+          readSemanticDirectoryState
         } as never,
         directoryNavigation: {
           async read() { return []; }
@@ -637,7 +641,95 @@ describe("production document scope renderer", () => {
             targetPath: "pages/guides/advanced/index.md"
           })
         ]));
+      expect(readSemanticDirectoryState).toHaveBeenCalledOnce();
+      expect(readDocumentDirectoryState).not.toHaveBeenCalled();
       expect(result.storageRequests.put).toBe(2);
+    });
+
+  it("materializes a publication semantic directory from bounded entry deltas",
+    async () => {
+      const readSemanticDirectoryState = vi.fn(async () => {
+        throw new Error("Publication rendering must use immutable deltas");
+      });
+      const readSemanticDirectoryDeltaState = vi.fn(async () => ({
+        records: [{
+          path: "pages/guides/overview.md", title: "Overview",
+          summary: "Overview", metadata: {}, subjects: [], tags: [],
+          headings: [], keywords: [], entities: [], type: "document",
+          contentType: "text/markdown", checksumSha256: "a".repeat(64),
+          byteCount: 10
+        }],
+        childDirectories: [{
+          title: "advanced", scopePath: "pages/guides/advanced",
+          path: "pages/guides/advanced/index.md"
+        }],
+        navigationCandidateEntryIds: [
+          documentDirectoryEntryId("file", "pages/guides/overview.md"),
+          documentDirectoryEntryId(
+            "directory", "pages/guides/advanced/index.md"
+          )
+        ]
+      }));
+      const readDelta = vi.fn(async (request: {
+        desiredEntries: Array<{
+          id: string; sortKey: string; name: string; targetPath: string;
+          kind: "file" | "directory";
+        }>;
+        candidateEntryIds: string[];
+      }) => ({
+        mode: "window" as const,
+        leaves: [],
+        changes: request.desiredEntries.map((entry) => ({
+          entryId: entry.id, desiredEntry: entry
+        })),
+        totalEntryCount: 0,
+        firstLeafId: null,
+        rootExists: false
+      }));
+      const renderer = createProductionDocumentScopeRenderer({
+        machineProjection: {
+          readSemanticDirectoryState,
+          readSemanticDirectoryDeltaState
+        } as never,
+        directoryNavigation: {
+          readDelta,
+          async read() {
+            throw new Error("Publication delta rendering must not list all leaves");
+          }
+        } as never,
+        directoryLeafLimits: {
+          maxEntries: 200, maxBytes: 65_536, mergeBelowEntries: 50
+        },
+        objectWriter: {} as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      });
+
+      const projected = await renderer.project({
+        publicId: "scope-directory-delta",
+        publicationGenerationPublicId: "generation-delta",
+        knowledgeBaseId: "kb-1",
+        kind: "directory",
+        key: "pages/guides",
+        requiredSequence: 10,
+        renderedSequence: 10
+      }, {
+        contributors: [{
+          sourceFilePublicId: "source-overview",
+          sourceRevisionPublicId: "revision-overview",
+          requiredSequence: 10
+        }]
+      });
+
+      expect(projected.navigationMutations).toHaveLength(1);
+      expect(readSemanticDirectoryDeltaState).toHaveBeenCalledOnce();
+      expect(readSemanticDirectoryState).not.toHaveBeenCalled();
+      expect(readDelta).toHaveBeenCalledWith(expect.objectContaining({
+        maximumChanges: 2_048,
+        candidateEntryIds: expect.arrayContaining([
+          documentDirectoryEntryId("file", "pages/guides/overview.md")
+        ])
+      }));
     });
 
   it("renders one exact graph directory from fixed-sequence relationship facts",

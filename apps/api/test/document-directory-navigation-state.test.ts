@@ -148,6 +148,50 @@ describe("document directory navigation state", () => {
     });
   });
 
+  it("updates one bounded leaf window while preserving external neighbors", () => {
+    const result = reconcileDocumentDirectoryNavigation({
+      previous: [{
+        id: "leaf-b", previousLeafId: "leaf-a", nextLeafId: "leaf-c",
+        revision: 4, entries: [entry("source-b", "b.md")]
+      }, {
+        id: "leaf-c", previousLeafId: "leaf-b", nextLeafId: "leaf-d",
+        revision: 5, entries: [entry("source-c", "c.md")]
+      }, {
+        id: "leaf-d", previousLeafId: "leaf-c", nextLeafId: "leaf-e",
+        revision: 6, entries: [entry("source-d", "d.md")]
+      }],
+      changes: [{
+        entryId: "source-c2",
+        desiredEntry: entry("source-c2", "c2.md")
+      }],
+      window: { totalEntryCount: 5, firstLeafId: "leaf-a" },
+      limits: { maxEntries: 2, maxBytes: 8_192, mergeBelowEntries: 1 },
+      createLeafId: () => "unused"
+    });
+
+    expect(result.entryCount).toBe(6);
+    expect(result.firstLeafId).toBe("leaf-a");
+    expect(result.leaves[0]).toMatchObject({
+      id: "leaf-b", previousLeafId: "leaf-a", nextLeafId: "leaf-c"
+    });
+    expect(result.leaves.at(-1)).toMatchObject({
+      id: "leaf-d", previousLeafId: "leaf-c", nextLeafId: "leaf-e"
+    });
+    expect(result.touchedLeafIds).toEqual(["leaf-d"]);
+  });
+
+  it("returns an unchanged global summary without loading any leaf entries", () => {
+    expect(reconcileDocumentDirectoryNavigation({
+      previous: [], changes: [],
+      window: { totalEntryCount: 12_345, firstLeafId: "leaf-first" },
+      limits: { maxEntries: 200, maxBytes: 65_536, mergeBelowEntries: 50 },
+      createLeafId: () => "unused"
+    })).toEqual({
+      leaves: [], touchedLeafIds: [], removedLeafIds: [],
+      entryCount: 12_345, firstLeafId: "leaf-first"
+    });
+  });
+
   it("still rejects duplicate and mismatched navigation identities", () => {
     const reconcile = (changes: Parameters<
       typeof reconcileDocumentDirectoryNavigation>[0]["changes"]

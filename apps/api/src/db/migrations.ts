@@ -183,6 +183,7 @@ async function assertDocumentIndexingSchemaSignature(
           'projection_cutover_states',
           'projection_shadow_parity_results',
           'projection_generation_retention'
+          ,'projection_generation_graph_degrees'
           ,'projection_legacy_cleanup_state'
         ]) AS required(name)
         WHERE to_regclass('focowiki.' || required.name) IS NULL
@@ -312,6 +313,14 @@ async function assertDocumentIndexingSchemaSignature(
           ,'projection_scope_generation_pages_path_idx'
           ,'projection_scope_generation_object_refs_object_idx'
           ,'projection_invariant_diagnostics_open_idx'
+          ,'projection_generation_graph_degrees_directory_idx'
+          ,'document_projection_records_revision_visibility_idx'
+          ,'document_semantic_memberships_directory_revision_idx'
+          ,'canonical_file_relations_first_revision_visible_idx'
+          ,'canonical_file_relations_second_revision_visible_idx'
+          ,'canonical_file_relations_first_file_history_idx'
+          ,'canonical_file_relations_second_file_history_idx'
+          ,'relation_directed_evidence_pair_visible_idx'
         ]) AS required(name)
         WHERE NOT EXISTS (
           SELECT 1 FROM pg_indexes actual
