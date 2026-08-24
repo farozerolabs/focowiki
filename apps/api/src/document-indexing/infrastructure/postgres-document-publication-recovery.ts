@@ -6,6 +6,8 @@ import {
   repositoryContractError
 } from "./document-repository-validation.js";
 
+const LEGACY_NAVIGATION_CHANGE_LIMIT = 10_000;
+
 export function createPostgresDocumentPublicationRecovery(
   sql: DatabaseClient
 ) {
@@ -24,15 +26,72 @@ export function createPostgresDocumentPublicationRecovery(
           public_id: string;
           knowledge_base_id: string;
         }>>`
-          SELECT public_id, knowledge_base_id
-          FROM focowiki.projection_publication_generations
-          WHERE state = 'quarantined'
-            AND (safe_error_code IN (
+          SELECT generation.public_id, generation.knowledge_base_id
+          FROM focowiki.projection_publication_generations generation
+          WHERE generation.state = 'quarantined'
+            AND (generation.safe_error_code IN (
               'graph_directory_record_limit_exceeded',
               'per_file_graph_directory_limit_exceeded'
             )
-              OR safe_error_code IN ('53000', '53100', '53200', '53300', '53400'))
-          ORDER BY updated_at, public_id COLLATE "C"
+              OR generation.safe_error_code IN (
+                '53000', '53100', '53200', '53300', '53400'
+              )
+              OR (
+                generation.safe_error_code = 'changes_invalid'
+                AND EXISTS (
+                  SELECT 1
+                  FROM focowiki.projection_scope_generations scope
+                  WHERE scope.publication_generation_public_id =
+                    generation.public_id
+                    AND scope.state = 'quarantined'
+                    AND scope.scope_kind = 'directory'
+                    AND (
+                      SELECT count(*)
+                      FROM (
+                        SELECT 1
+                        FROM focowiki.document_semantic_directory_memberships
+                          membership
+                        JOIN focowiki.document_projection_records record
+                          ON record.knowledge_base_id =
+                            membership.knowledge_base_id
+                         AND record.source_revision_public_id =
+                            membership.source_revision_public_id
+                        WHERE membership.knowledge_base_id =
+                          generation.knowledge_base_id
+                          AND membership.directory_path = scope.scope_key
+                          AND position('/' in substring(
+                            membership.page_path
+                            from char_length(scope.scope_key) + 2
+                          )) = 0
+                          AND (
+                            EXISTS (
+                              SELECT 1
+                              FROM focowiki.projection_generation_documents
+                                document
+                              WHERE document.generation_public_id =
+                                generation.public_id
+                                AND document.source_revision_public_id =
+                                  record.source_revision_public_id
+                            )
+                            OR (
+                              record.active
+                              AND NOT EXISTS (
+                                SELECT 1
+                                FROM focowiki.projection_generation_documents
+                                  document
+                                WHERE document.generation_public_id =
+                                  generation.public_id
+                                  AND document.source_file_public_id =
+                                    record.source_file_public_id
+                              )
+                            )
+                          )
+                        LIMIT ${LEGACY_NAVIGATION_CHANGE_LIMIT + 1}
+                      ) visible_records
+                    ) > ${LEGACY_NAVIGATION_CHANGE_LIMIT}
+                )
+              ))
+          ORDER BY generation.updated_at, generation.public_id COLLATE "C"
           FOR UPDATE SKIP LOCKED
           LIMIT ${limit}
         `;
@@ -74,6 +133,8 @@ export function createPostgresDocumentPublicationRecovery(
           SET state = 'obsolete', completed_at = ${recoveredAt},
               activation_next_eligible_at = NULL,
               safe_error_code = CASE
+                WHEN safe_error_code = 'changes_invalid'
+                  THEN 'navigation_change_limit_remediated'
                 WHEN safe_error_code IN (
                   'graph_directory_record_limit_exceeded',
                   'per_file_graph_directory_limit_exceeded'
