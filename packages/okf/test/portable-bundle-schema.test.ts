@@ -2,6 +2,35 @@ import { describe, expect, it } from "vitest";
 import { assertPortableRecord, type PortableRecordFamily } from "../src/portable-bundle.js";
 
 describe("portable bundle version 2 schema snapshots", () => {
+  it("accepts portable records ordered by Unicode scalar value", () => {
+    expect(() => assertPortableRecord("term_postings", {
+      formatVersion: 2,
+      title: "other terms",
+      bucket: "other",
+      terms: [{
+        term: "portable-order",
+        postings: [{ path: "pages/\uE000.md", fields: ["body"] },
+          { path: "pages/😀.md", fields: ["body"] }]
+      }]
+    })).not.toThrow();
+  });
+
+  it("identifies the duplicated portable record field", () => {
+    expect(() => assertPortableRecord("term_postings", {
+      formatVersion: 2,
+      title: "duplicate terms",
+      bucket: "other",
+      terms: [{
+        term: "duplicate",
+        postings: [{ path: "pages/duplicate.md", fields: ["body"] },
+          { path: "pages/duplicate.md", fields: ["title"] }]
+      }]
+    })).toThrow(expect.objectContaining({
+      code: "portable_record_duplicate",
+      recordField: "terms.postings.path"
+    }));
+  });
+
   it("accepts source-derived navigation terms that resemble internal prefixes", () => {
     expect(() => assertPortableRecord("term_postings", {
       formatVersion: 2,

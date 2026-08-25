@@ -225,6 +225,8 @@ export function createDocumentWorkerObservability(input: {
       leaseLossCount?: number;
       durationMs: number;
       errorCode: string | null;
+      errorRecordFamily?: string | null;
+      errorRecordField?: string | null;
     }) {
       identity(fields.knowledgeBaseId);
       identity(fields.generationPublicId);
@@ -233,6 +235,13 @@ export function createDocumentWorkerObservability(input: {
         throw new Error("Document publication scope key hash is invalid");
       }
       if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
+      if (fields.errorRecordFamily) {
+        safeToken(fields.errorRecordFamily, "error record family");
+      }
+      if (fields.errorRecordField
+        && !/^[a-z_.]{1,128}$/u.test(fields.errorRecordField)) {
+        throw new Error("Document publication error record field is invalid");
+      }
       const targetFactEpoch = metric(fields.targetFactEpoch);
       const activeFactEpoch = metric(fields.activeFactEpoch);
       write(`worker.publication_scope_${fields.event}`, {
@@ -247,7 +256,13 @@ export function createDocumentWorkerObservability(input: {
         leaseGeneration: metric(fields.leaseGeneration),
         leaseLossCount: metric(fields.leaseLossCount ?? 0),
         durationMs: metric(fields.durationMs),
-        errorCode: fields.errorCode
+        errorCode: fields.errorCode,
+        ...(fields.errorRecordFamily === undefined ? {} : {
+          errorRecordFamily: fields.errorRecordFamily
+        }),
+        ...(fields.errorRecordField === undefined ? {} : {
+          errorRecordField: fields.errorRecordField
+        })
       });
     },
     publicationScopeStage(fields: {

@@ -5,6 +5,29 @@ import { applyDocumentTermStableShardDelta } from
   "../src/document-indexing/application/document-term-stable-shard-delta.js";
 
 describe("document term stable shard delta", () => {
+  it("keeps Unicode shard boundaries in the portable order", async () => {
+    const base = [termDescriptor("private", "\uE000", "\uE000"),
+      termDescriptor("emoji", "😀", "😀")];
+    const readRecords = vi.fn(async (path: string) => path.endsWith("private.json")
+      ? [term("\uE000")]
+      : [term("😀")]);
+    const result = await applyDocumentTermStableShardDelta({
+      bucket: "other",
+      base: { resources: base },
+      changedRecords: [term("😁")],
+      removedTerms: [],
+      maximumRecords: 2,
+      maximumBytes: 4_096,
+      readRecords
+    });
+
+    expect(readRecords.mock.calls.map(([path]) => path)).toEqual([
+      "_index/terms/latin/emoji.json"
+    ]);
+    expect(result.descriptors.map((descriptor) => descriptor.firstKey))
+      .toEqual(["\uE000", "😀"]);
+  });
+
   it("loads and rewrites only the shard owning an affected term", async () => {
     const records = Array.from({ length: 12 }, (_, index) => ({
       term: `term-${String(index).padStart(2, "0")}`,

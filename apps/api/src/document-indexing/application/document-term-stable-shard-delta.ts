@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { comparePortableRecordKeys } from "@focowiki/okf";
 import type { DocumentTermBucket } from "./document-term-routing.js";
 import { buildDocumentNavigationTermBucketResources } from
   "./document-page-term-projection.js";
@@ -27,7 +28,7 @@ export async function applyDocumentTermStableShardDelta(input: Readonly<{
   ]));
   const changedKeys = [...new Set([
     ...changes.keys(), ...input.removedTerms
-  ])].sort(compareText);
+  ])].sort(comparePortableRecordKeys);
   if (changedKeys.length === 0) {
     return {
       pages: [] as DocumentSemanticMachinePage[],
@@ -85,12 +86,13 @@ export async function applyDocumentTermStableShardDelta(input: Readonly<{
     ...input.base.resources.filter((descriptor) =>
       !touchedPaths.has(descriptor.path)),
     ...updated
-  ].sort((left, right) => compareText(left.firstKey, right.firstKey)
-    || compareText(left.path, right.path));
+  ].sort((left, right) => comparePortableRecordKeys(
+    left.firstKey, right.firstKey)
+    || comparePortableRecordKeys(left.path, right.path));
   return {
     pages,
     descriptors,
-    removedPaths: removedPaths.sort(compareText)
+    removedPaths: removedPaths.sort(comparePortableRecordKeys)
   };
 }
 
@@ -126,8 +128,8 @@ function selectTouchedDescriptors(
       .forEach((descriptor) => selected.add(descriptor));
   }
   return [...selected].sort((left, right) =>
-    compareText(left.firstKey, right.firstKey)
-      || compareText(left.path, right.path));
+    comparePortableRecordKeys(left.firstKey, right.firstKey)
+      || comparePortableRecordKeys(left.path, right.path));
 }
 
 function allocateStablePaths(input: Readonly<{
@@ -167,10 +169,6 @@ function withPath(
     normalizedPath: logicalPath.toLocaleLowerCase("en-US"),
     checksumSha256: createHash("sha256").update(page.bytes).digest("hex")
   };
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function termDeltaError(code: string): Error & { code: string } {

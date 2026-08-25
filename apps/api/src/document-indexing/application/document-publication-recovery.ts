@@ -23,7 +23,8 @@ const INVARIANTS = new Set([
   "projection_scope_owner_version_conflict",
   "scope_generation_output_diverged",
   "publication_generation_closure_incomplete",
-  "registration_conflict", "write_attempt_conflict", "23514"
+  "registration_conflict", "write_attempt_conflict",
+  "portable_record_order_invalid", "portable_record_duplicate", "23514"
 ]);
 const SUPERSESSION = new Set([
   "publication_generation_stale_base", "document_revision_superseded",

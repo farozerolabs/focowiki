@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   assertPortableRecord,
+  comparePortableRecordKeys,
   portableSemanticResourceFileName,
   type PortableRecordFamily,
   type PortableSemanticResourceFamily
@@ -44,12 +45,50 @@ export function buildDocumentSemanticPacketPages(input: Readonly<{
   pages: readonly DocumentSemanticMachinePage[];
   descriptors: readonly DocumentSemanticPartDescriptor[];
 }> {
-  const ordered = expandOversizedTermRecords(input, input.records.slice().sort(
-    (left, right) => compareText(input.recordKey(left), input.recordKey(right))
+  const records = input.family === "term_postings"
+    ? normalizeTermPacketRecords(input.records) : input.records;
+  const ordered = expandOversizedTermRecords(input, records.slice().sort(
+    (left, right) => comparePortableRecordKeys(
+      input.recordKey(left), input.recordKey(right))
   ));
   const accumulator = createDocumentSemanticPacketAccumulator(input);
   accumulator.append(ordered);
   return accumulator.finish();
+}
+
+function normalizeTermPacketRecords(
+  records: readonly Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const terms = new Map<string, Map<string, Set<string>>>();
+  for (const record of records) {
+    if (typeof record.term !== "string" || !Array.isArray(record.postings)) {
+      throw packetError("term_packet_record_invalid");
+    }
+    const postings = terms.get(record.term) ?? new Map<string, Set<string>>();
+    for (const value of record.postings) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw packetError("term_packet_posting_invalid");
+      }
+      const posting = value as Record<string, unknown>;
+      if (typeof posting.path !== "string" || !Array.isArray(posting.fields)
+        || posting.fields.some((field) => typeof field !== "string")) {
+        throw packetError("term_packet_posting_invalid");
+      }
+      const fields = postings.get(posting.path) ?? new Set<string>();
+      posting.fields.forEach((field) => fields.add(field as string));
+      postings.set(posting.path, fields);
+    }
+    terms.set(record.term, postings);
+  }
+  return [...terms.entries()].sort(([left], [right]) =>
+    comparePortableRecordKeys(left, right)).map(([term, postings]) => ({
+    term,
+    postings: [...postings.entries()].sort(([left], [right]) =>
+      comparePortableRecordKeys(left, right)).map(([path, fields]) => ({
+      path,
+      fields: [...fields].sort(comparePortableRecordKeys)
+    }))
+  }));
 }
 
 export function createDocumentSemanticPacketAccumulator(
@@ -87,7 +126,7 @@ export function createDocumentSemanticPacketAccumulator(
       if (finished) throw packetError("packet_accumulator_finished");
       for (const record of records) {
         const key = input.recordKey(record);
-        if (lastKey !== null && compareText(lastKey, key) > 0) {
+        if (lastKey !== null && comparePortableRecordKeys(lastKey, key) > 0) {
           throw packetError("packet_records_unordered");
         }
         if (current.length > 0
@@ -194,7 +233,7 @@ export function jsonDocumentSemanticPage(input: Readonly<{
   family: PortableRecordFamily;
   value: unknown;
 }>): DocumentSemanticMachinePage {
-  assertPortableRecord(input.family, input.value);
+  assertSemanticPortableRecord(input.family, input.value);
   return semanticMachinePage(
     input.logicalPath,
     input.entryKind,
@@ -208,8 +247,22 @@ function encodePacket(
   records: readonly Record<string, unknown>[]
 ): Uint8Array {
   const value = packetValue(input, records);
-  assertPortableRecord(input.family, value);
+  assertSemanticPortableRecord(input.family, value);
   return Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+}
+
+function assertSemanticPortableRecord(
+  family: PortableRecordFamily,
+  value: unknown
+): void {
+  try {
+    assertPortableRecord(family, value);
+  } catch (error) {
+    if (typeof error === "object" && error !== null) {
+      Object.assign(error, { recordFamily: family });
+    }
+    throw error;
+  }
 }
 
 function packetValue(
@@ -267,10 +320,6 @@ function semanticMachinePage(
 function requiredString(value: string | undefined): string {
   if (!value) throw packetError("packet_scope_missing");
   return value;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function packetError(code: string): Error & { code: string } {

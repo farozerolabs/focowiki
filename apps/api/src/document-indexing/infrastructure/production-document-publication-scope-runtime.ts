@@ -19,7 +19,7 @@ import { createPostgresDocumentScopeGenerationRepository } from
   "./postgres-document-scope-generation-repository.js";
 import type { createProductionDocumentScopeRenderer } from
   "./production-document-scope-renderer.js";
-import { safeErrorCode } from
+import { safeErrorCode, safeWorkerErrorDiagnostic } from
   "./production-document-error-diagnostic.js";
 import { waitForDocumentWork } from
   "./production-document-fixed-runtime-support.js";
@@ -151,15 +151,17 @@ export function createProductionDocumentPublicationScopeRuntime(input: {
     onComplete: ({ claim, durationMs }) => observeScope(input.observability, {
       event: "completed", claim, durationMs, errorCode: null
     }),
-    onFailure: ({ claim, code, recoveryAction }) => observeScope(
-      input.observability,
-      {
+    onFailure: ({ claim, code, recoveryAction, error }) => {
+      const diagnostic = safeWorkerErrorDiagnostic(error);
+      observeScope(input.observability, {
         event: recoveryAction === "inspect_or_reclaim" ? "fenced" : "failed",
         claim,
         durationMs: 0,
-        errorCode: code
-      }
-    )
+        errorCode: code,
+        errorRecordFamily: diagnostic.errorRecordFamily,
+        errorRecordField: diagnostic.errorRecordField
+      });
+    }
   });
   return runtime;
 }
@@ -182,6 +184,8 @@ function observeScope(
     }>;
     durationMs: number;
     errorCode: string | null;
+    errorRecordFamily?: string | null;
+    errorRecordField?: string | null;
   }>
 ): void {
   const claim = input.claim;
@@ -202,6 +206,12 @@ function observeScope(
     leaseGeneration: Number(claim.leaseGeneration),
     leaseLossCount: claim.leaseLossCount ?? 0,
     durationMs: input.durationMs,
-    errorCode: input.errorCode
+    errorCode: input.errorCode,
+    ...(input.errorRecordFamily === undefined ? {} : {
+      errorRecordFamily: input.errorRecordFamily
+    }),
+    ...(input.errorRecordField === undefined ? {} : {
+      errorRecordField: input.errorRecordField
+    })
   });
 }
