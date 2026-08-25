@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { comparePortableRecordKeys } from "@focowiki/okf";
 import type { LexicalTokenizer } from "../../application/ports/lexical-tokenizer.js";
 
 export const DOCUMENT_NAVIGATION_TERM_DEFAULT_LIMIT = 128;
@@ -129,5 +130,5 @@ function assertMaximumTerms(value: number): void {
 }
 
 function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return comparePortableRecordKeys(left, right);
 }

@@ -23,7 +23,9 @@ describe("document worker error diagnostic", () => {
       errorName: "TypeError",
       errorFrame: "/app/src/document-finalization.ts:42:11",
       errorResource: "pages/guide.md",
-      errorTarget: "pages/%E5%AD%A4%E7%AB%8B/%E6%97%A0%E5%85%B3%E7%B3%BB.md"
+      errorTarget: "pages/%E5%AD%A4%E7%AB%8B/%E6%97%A0%E5%85%B3%E7%B3%BB.md",
+      errorRecordFamily: null,
+      errorRecordField: null
     });
     expect(JSON.stringify(safeWorkerErrorDiagnostic(error))).not.toContain(
       "secret-value"
@@ -39,7 +41,21 @@ describe("document worker error diagnostic", () => {
       errorName: "UnknownError",
       errorFrame: null,
       errorResource: null,
-      errorTarget: null
+      errorTarget: null,
+      errorRecordFamily: null,
+      errorRecordField: null
+    });
+  });
+
+  it("reports the portable record family and ordered field", () => {
+    expect(safeWorkerErrorDiagnostic(Object.assign(new Error("invalid order"), {
+      code: "portable_record_order_invalid",
+      recordFamily: "term_postings",
+      recordField: "terms.postings.path"
+    }))).toMatchObject({
+      errorCode: "portable_record_order_invalid",
+      errorRecordFamily: "term_postings",
+      errorRecordField: "terms.postings.path"
     });
   });
 

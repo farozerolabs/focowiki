@@ -62,6 +62,34 @@ describe("portable Agent traversal", () => {
     ]);
     expect(graph.reads).toEqual(["_graph/by-file/指南/安装.json"]);
   });
+
+  it("routes supplementary Unicode paths with the portable scalar order",
+    async () => {
+      const unicodeTraversal = createDocumentPortableAgentTraversal({
+        async readJson(path) {
+          if (path === "_index/pages/index.json") return {
+            resources: [{
+              path: "_index/pages/unicode-documents.json",
+              firstKey: "pages/\uE000.md",
+              lastKey: "pages/😀.md"
+            }]
+          };
+          if (path === "_index/pages/unicode-documents.json") return {
+            documents: [{ path: "pages/😀.md", title: "Emoji" }]
+          };
+          throw new Error("Unexpected read: " + path);
+        }
+      });
+
+      await expect(unicodeTraversal.exactPath("pages/😀.md")).resolves
+        .toMatchObject({
+          result: { path: "pages/😀.md", title: "Emoji" },
+          reads: [
+            "_index/pages/index.json",
+            "_index/pages/unicode-documents.json"
+          ]
+        });
+    });
 });
 
 function fixture(): Map<string, Record<string, unknown>> {

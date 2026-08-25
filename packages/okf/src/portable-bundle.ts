@@ -33,6 +33,22 @@ export type PortableRelationship = Readonly<{
   evidence: readonly PortableEvidence[];
 }>;
 
+export function comparePortableRecordKeys(left: string, right: string): number {
+  let leftOffset = 0;
+  let rightOffset = 0;
+  while (leftOffset < left.length && rightOffset < right.length) {
+    const leftCodePoint = left.codePointAt(leftOffset)!;
+    const rightCodePoint = right.codePointAt(rightOffset)!;
+    if (leftCodePoint !== rightCodePoint) {
+      return leftCodePoint < rightCodePoint ? -1 : 1;
+    }
+    leftOffset += leftCodePoint > 0xffff ? 2 : 1;
+    rightOffset += rightCodePoint > 0xffff ? 2 : 1;
+  }
+  if (leftOffset === left.length && rightOffset === right.length) return 0;
+  return leftOffset === left.length ? -1 : 1;
+}
+
 const RESERVED_PAGE_SEGMENTS = new Set(["_graph", "_index", "_segments"]);
 export const PORTABLE_LOGICAL_SEGMENT_MAX_CODE_POINTS = 1_000;
 export type PortableSemanticResourceFamily =
@@ -401,7 +417,7 @@ function validateDocumentPacket(record: Record<string, unknown>): void {
     if (!objectOrUndefined(document.metadata)) throw portableBundleError("portable_record_invalid");
   }
   assertUniqueOrdered(record.documents.map((value) =>
-    asString((value as Record<string, unknown>).path)));
+    asString((value as Record<string, unknown>).path)), "documents.path");
 }
 
 function validateTermCatalog(record: Record<string, unknown>): void {
@@ -428,7 +444,7 @@ function validateTermCatalog(record: Record<string, unknown>): void {
     }
   }
   assertUniqueOrdered(record.buckets.map((value) =>
-    asString((value as Record<string, unknown>).bucket)));
+    asString((value as Record<string, unknown>).bucket)), "buckets.bucket");
 }
 
 function validateTermBucket(record: Record<string, unknown>): void {
@@ -453,11 +469,13 @@ function validateTermBucket(record: Record<string, unknown>): void {
     }
     const firstTerm = validatedPortableTerm(route.firstTerm);
     const lastTerm = validatedPortableTerm(route.lastTerm);
-    if (firstTerm > lastTerm) throw portableBundleError("portable_record_invalid");
+    if (comparePortableRecordKeys(firstTerm, lastTerm) > 0) {
+      throw portableBundleError("portable_record_invalid");
+    }
     validateNonNegativeInteger(route.recordCount);
   }
   assertUniqueOrdered(record.routes.map((value) =>
-    asString((value as Record<string, unknown>).path)));
+    asString((value as Record<string, unknown>).path)), "routes.path");
 }
 
 function validateTermPostings(record: Record<string, unknown>): void {
@@ -486,10 +504,12 @@ function validateTermPostings(record: Record<string, unknown>): void {
       validateStringArray(posting.fields);
     }
     assertUniqueOrdered(entry.postings.map((posting) =>
-      asString((posting as Record<string, unknown>).path)));
+      asString((posting as Record<string, unknown>).path)),
+    "terms.postings.path");
   }
   assertUniqueOrdered(record.terms.map((value) =>
-    validatedPortableTerm((value as Record<string, unknown>).term)));
+    validatedPortableTerm((value as Record<string, unknown>).term)),
+  "terms.term");
 }
 
 function validatedPortableTerm(value: unknown): string {
@@ -517,7 +537,8 @@ function validateRelationshipPacket(record: Record<string, unknown>): void {
       throw portableBundleError("portable_record_invalid");
     }
   }
-  assertUniqueOrdered(record.relationships.map(relationshipIdentity));
+  assertUniqueOrdered(record.relationships.map(relationshipIdentity),
+    "relationships.identity");
 }
 
 function validatePerFileGraph(record: Record<string, unknown>): void {
@@ -537,7 +558,7 @@ function validatePerFileGraph(record: Record<string, unknown>): void {
     const relationship = value as Record<string, unknown>;
     return [relationship.targetPath, relationship.relationType, relationship.direction]
       .map(asString).join("\0");
-  }));
+  }), "relationships.identity");
   if (`${portableIndexDirectoryPath(posix.dirname(path))}/index.json` !== record.indexPath
     || `${portableGraphDirectoryPath(posix.dirname(path))}/index.json` !== record.directoryGraphPath) {
     throw portableBundleError("portable_record_invalid");
@@ -699,11 +720,22 @@ function assertUnique(values: readonly string[]): void {
   }
 }
 
-function assertUniqueOrdered(values: readonly string[]): void {
-  assertUnique(values);
+function assertUniqueOrdered(
+  values: readonly string[],
+  recordField: string
+): void {
+  if (new Set(values).size !== values.length) {
+    throw Object.assign(
+      portableBundleError("portable_record_duplicate"),
+      { recordField }
+    );
+  }
   for (let index = 1; index < values.length; index += 1) {
-    if (values[index - 1]! > values[index]!) {
-      throw portableBundleError("portable_record_order_invalid");
+    if (comparePortableRecordKeys(values[index - 1]!, values[index]!) > 0) {
+      throw Object.assign(
+        portableBundleError("portable_record_order_invalid"),
+        { recordField }
+      );
     }
   }
 }

@@ -11,6 +11,8 @@ describe("document publication recovery", () => {
     ["projection_scope_page_conflict", "invariant", "quarantine"],
     ["registration_conflict", "invariant", "quarantine"],
     ["write_attempt_conflict", "invariant", "quarantine"],
+    ["portable_record_order_invalid", "invariant", "quarantine"],
+    ["portable_record_duplicate", "invariant", "quarantine"],
     ["23514", "invariant", "quarantine"],
     ["publication_generation_stale_base", "supersession", "recompute_scope"],
     ["publication_source_precondition_failed", "supersession", "recompute_scope"],

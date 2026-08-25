@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { portableDirectoryResourceSubject,
+import { comparePortableRecordKeys, portableDirectoryResourceSubject,
   portableIndexDirectoryPath,
   portableSemanticResourceFileName } from "@focowiki/okf";
 import { buildDocumentSemanticPacketPages,
@@ -26,7 +26,7 @@ export async function applyDocumentRecordStableShardDelta(input: Readonly<{
   ]));
   const changedKeys = [...new Set([
     ...changes.keys(), ...input.removedRecordPaths
-  ])].sort(compareText);
+  ])].sort(comparePortableRecordKeys);
   if (changedKeys.length === 0) return {
     pages: [] as DocumentSemanticMachinePage[],
     descriptors: input.baseResources,
@@ -86,12 +86,13 @@ export async function applyDocumentRecordStableShardDelta(input: Readonly<{
   const descriptors = [
     ...input.baseResources.filter((item) => !touchedPaths.has(item.path)),
     ...updated
-  ].sort((left, right) => compareText(left.firstKey, right.firstKey)
-    || compareText(left.path, right.path));
+  ].sort((left, right) => comparePortableRecordKeys(
+    left.firstKey, right.firstKey)
+    || comparePortableRecordKeys(left.path, right.path));
   return {
     pages,
     descriptors,
-    removedPaths: removedPaths.sort(compareText),
+    removedPaths: removedPaths.sort(comparePortableRecordKeys),
     recordCount: descriptors.reduce(
       (total, item) => total + item.recordCount, 0)
   };
@@ -111,7 +112,7 @@ function selectTouched(
   const selected = new Set(keys.flatMap((key) =>
     selectStableShardOwners(descriptors, key)));
   return [...selected].sort((left, right) =>
-    compareText(left.firstKey, right.firstKey));
+    comparePortableRecordKeys(left.firstKey, right.firstKey));
 }
 
 function allocatePaths(input: Readonly<{
@@ -156,10 +157,6 @@ function withPath(page: DocumentSemanticMachinePage, logicalPath: string) {
     normalizedPath: logicalPath.toLocaleLowerCase("en-US"),
     checksumSha256: createHash("sha256").update(page.bytes).digest("hex")
   };
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function deltaError(code: string): Error & { code: string } {

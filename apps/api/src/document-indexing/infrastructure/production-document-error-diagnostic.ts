@@ -23,6 +23,8 @@ export function safeWorkerErrorDiagnostic(error: unknown): {
   errorFrame: string | null;
   errorResource: string | null;
   errorTarget: string | null;
+  errorRecordFamily: string | null;
+  errorRecordField: string | null;
 } {
   const errorName = error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/u
     .test(error.name)
@@ -41,7 +43,9 @@ export function safeWorkerErrorDiagnostic(error: unknown): {
     errorName,
     errorFrame: frame && frame.length <= 512 ? frame : null,
     errorResource: safeDocumentDiagnosticPath(resource),
-    errorTarget: safeDocumentDiagnosticPath(target)
+    errorTarget: safeDocumentDiagnosticPath(target),
+    errorRecordFamily: safeDiagnosticToken(error, "recordFamily"),
+    errorRecordField: safeDiagnosticToken(error, "recordField")
   };
 }
 
@@ -105,4 +109,16 @@ function safePathProperty(
   }
   const value = (error as Record<string, unknown>)[property];
   return typeof value === "string" ? value : null;
+}
+
+function safeDiagnosticToken(
+  error: unknown,
+  property: "recordFamily" | "recordField"
+): string | null {
+  if (typeof error !== "object" || error === null || !(property in error)) {
+    return null;
+  }
+  const value = (error as Record<string, unknown>)[property];
+  return typeof value === "string" && /^[a-z_.]{1,128}$/u.test(value)
+    ? value : null;
 }

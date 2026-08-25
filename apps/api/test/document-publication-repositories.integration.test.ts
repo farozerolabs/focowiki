@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { comparePortableRecordKeys } from "@focowiki/okf";
 import type { DatabaseClient } from "../src/db/client.js";
 import { normalizeDocumentPublicationScopeOutput } from
   "../src/document-indexing/application/document-publication-scope-output.js";
@@ -65,6 +66,19 @@ const enabled = Boolean(databaseUrl && runOwner
     }
     await admin.end({ timeout: 5 });
   }, 120_000);
+
+  it("keeps portable Unicode ordering aligned with PostgreSQL C collation",
+    async () => {
+      const values = ["😀", "\uE000", "𠀀", "汉", "Ａ", "a"];
+      const rows = await sql<Array<{ value: string }>>`
+        SELECT value
+        FROM unnest(${values}::text[]) item(value)
+        ORDER BY value COLLATE "C"
+      `;
+      expect(rows.map((row) => row.value)).toEqual(
+        values.slice().sort(comparePortableRecordKeys)
+      );
+    });
 
   it("allocates monotonic idempotent fact epochs under concurrency", async () => {
     const repository = createPostgresDocumentPublicationRepository(database);
@@ -1395,6 +1409,190 @@ const enabled = Boolean(databaseUrl && runOwner
         UPDATE focowiki.projection_publication_generations
         SET state = 'obsolete', completed_at = now()
         WHERE public_id = ${replacements[0]!.public_id}
+      `;
+    });
+
+  it("releases multiple ordering quarantines as one recoverable fact window",
+    async () => {
+      const publications = createPostgresDocumentPublicationRepository(database);
+      const scopes = createPostgresDocumentScopeGenerationRepository(database);
+      const generationIds: string[] = [];
+      for (const factEpoch of [70, 71]) {
+        const generationId = documentPublicationGenerationId(
+          `generation-portable-order-${factEpoch}`
+        );
+        generationIds.push(generationId);
+        const mutationPublicId = `portable-order-job-${factEpoch}`;
+        const sourceFilePublicId = `portable-order-source-${factEpoch}`;
+        const sourceRevisionPublicId = `portable-order-revision-${factEpoch}`;
+        const scopePublicId = `scope-generation-portable-order-${factEpoch}`;
+        await sql.begin(async (transaction) => {
+          await transaction`SET LOCAL session_replication_role = replica`;
+          await transaction`
+            INSERT INTO focowiki.document_processing_jobs (
+              public_id, knowledge_base_id, operation_public_id,
+              source_file_public_id, source_revision_public_id,
+              runtime_settings_revision_public_id,
+              generation_model_configuration_public_id,
+              generation_model_configuration_revision,
+              embedding_configuration_revision_public_id,
+              semantic_generation_public_id, semantic_contract_version,
+              state, maximum_attempts, accepted_at, started_at
+            ) VALUES (
+              ${mutationPublicId}, 'publication-kb', 'publication-operation',
+              ${sourceFilePublicId}, ${sourceRevisionPublicId},
+              'settings', 'model', 1, 'embedding', 'semantic', 'contract',
+              'processing', 3, now(), now()
+            )
+          `;
+          await transaction`
+            INSERT INTO focowiki.document_artifact_work (
+              public_id, knowledge_base_id, document_job_public_id,
+              source_file_public_id, source_revision_public_id,
+              work_kind, resource_lane, input_fingerprint_sha256,
+              state, maximum_attempts, next_eligible_at
+            ) VALUES (
+              ${`portable-order-work-${factEpoch}`}, 'publication-kb',
+              ${mutationPublicId}, ${sourceFilePublicId},
+              ${sourceRevisionPublicId}, 'knowledge_projection', 'projection',
+              ${String(factEpoch).padStart(64, "0")},
+              'waiting_on_projection', 3, now()
+            )
+          `;
+        });
+        await publications.createGeneration(generation(
+          generationId,
+          documentPublicationGenerationId("generation-4"),
+          factEpoch
+        ));
+        await sql`
+          INSERT INTO focowiki.projection_fact_epochs (
+            knowledge_base_id, fact_epoch, mutation_public_id,
+            source_file_public_id, source_revision_public_id, fact_kind, state
+          ) VALUES (
+            'publication-kb', ${factEpoch}, ${mutationPublicId},
+            ${sourceFilePublicId}, ${sourceRevisionPublicId}, 'replace',
+            'included'
+          )
+        `;
+        await sql`
+          INSERT INTO focowiki.projection_generation_documents (
+            generation_public_id, mutation_public_id, document_job_public_id,
+            source_file_public_id, source_revision_public_id, fact_epoch
+          ) VALUES (
+            ${generationId}, ${mutationPublicId}, ${mutationPublicId},
+            ${sourceFilePublicId}, ${sourceRevisionPublicId}, ${factEpoch}
+          )
+        `;
+        await scopes.create({
+          publicId: scopePublicId,
+          publicationGenerationId: generationId,
+          knowledgeBaseId: "publication-kb",
+          scopeIdentity: "_index:term:han",
+          scopeKind: "_index",
+          scopeKey: "term:han",
+          scopeGeneration: documentScopeGeneration(factEpoch),
+          inputSnapshotFingerprintSha256: "9".repeat(64),
+          createdAt: `2026-08-25T12:09:${factEpoch - 70}0.000Z`
+        });
+        await sql`
+          UPDATE focowiki.projection_scope_generations
+          SET state = 'quarantined',
+              validation_evidence = jsonb_build_object(
+                'safeErrorCode', 'portable_record_order_invalid'
+              )
+          WHERE public_id = ${scopePublicId}
+        `;
+        await sql`
+          UPDATE focowiki.projection_publication_generations
+          SET state = 'quarantined',
+              safe_error_code = 'portable_record_order_invalid'
+          WHERE public_id = ${generationId}
+        `;
+      }
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+
+      await expect(recovery.recoverRecoverableQuarantines({
+        rendererContractVersion: "portable-okf-v4",
+        recoveredAt: "2026-08-25T12:09:01.000Z",
+        limit: 10
+      })).resolves.toEqual({
+        generationCount: 2,
+        releasedFactCount: 2,
+        supersededScopeCount: 2
+      });
+      await expect(sql<Array<{
+        generation_state: string; safe_error_code: string;
+        scope_state: string; fact_state: string;
+      }>>`
+        SELECT generation.state AS generation_state,
+               generation.safe_error_code, scope.state AS scope_state,
+               epoch.state AS fact_state
+        FROM focowiki.projection_publication_generations generation
+        JOIN focowiki.projection_scope_generations scope
+          ON scope.publication_generation_public_id = generation.public_id
+        JOIN focowiki.projection_generation_documents document
+          ON document.generation_public_id = generation.public_id
+        JOIN focowiki.projection_fact_epochs epoch
+          ON epoch.knowledge_base_id = generation.knowledge_base_id
+         AND epoch.mutation_public_id = document.mutation_public_id
+         AND epoch.fact_epoch = document.fact_epoch
+        WHERE generation.public_id = ANY(${generationIds}::text[])
+        ORDER BY generation.target_fact_epoch
+      `).resolves.toEqual(Array.from({ length: 2 }, () => ({
+        generation_state: "obsolete",
+        safe_error_code: "portable_record_order_remediated",
+        scope_state: "superseded",
+        fact_state: "ready"
+      })));
+      const replacement = await createPostgresDocumentPublicationCoordinator(
+        database
+      ).freezeReady({
+        knowledgeBaseId: "publication-kb",
+        now: "2026-08-25T12:09:02.000Z",
+        contributorCap: 256,
+        rendererContractVersion: "portable-okf-v4"
+      });
+      expect(replacement).toMatchObject({
+        rendererContractVersion: "portable-okf-v4",
+        documents: [
+          expect.objectContaining({
+            mutationPublicId: "portable-order-job-70",
+            factEpoch: 70
+          }),
+          expect.objectContaining({
+            mutationPublicId: "portable-order-job-71",
+            factEpoch: 71
+          })
+        ]
+      });
+      await expect(sql<Array<{ count: number | string }>>`
+        SELECT count(*) AS count
+        FROM focowiki.projection_publication_generations
+        WHERE knowledge_base_id = 'publication-kb'
+          AND state IN ('planned', 'rendering', 'validating', 'ready')
+      `).resolves.toEqual([{ count: "1" }]);
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = now()
+        WHERE public_id = ${replacement!.generationPublicId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_fact_epochs
+        SET state = 'superseded'
+        WHERE mutation_public_id IN (
+          'portable-order-job-70', 'portable-order-job-71'
+        )
+      `;
+      await sql`
+        DELETE FROM focowiki.document_artifact_work
+        WHERE document_job_public_id IN (
+          'portable-order-job-70', 'portable-order-job-71'
+        )
+      `;
+      await sql`
+        DELETE FROM focowiki.document_processing_jobs
+        WHERE public_id IN ('portable-order-job-70', 'portable-order-job-71')
       `;
     });
 

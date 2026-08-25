@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import {
+  comparePortableRecordKeys,
   normalizePortableDirectoryPath,
   normalizePortablePagePath,
   normalizePortableTerm,
@@ -55,8 +56,8 @@ export function createDocumentPortableAgentTraversal(input: {
         if (!bucketRoute) throw traversalError("term_bucket_missing");
         const router = await read(asString(bucketRoute.path));
         const routes = arrayRecords(router.routes).filter((route) =>
-          compareText(asString(route.firstTerm), term) <= 0
-          && compareText(term, asString(route.lastTerm)) <= 0);
+          comparePortableRecordKeys(asString(route.firstTerm), term) <= 0
+          && comparePortableRecordKeys(term, asString(route.lastTerm)) <= 0);
         const postings: JsonRecord[] = [];
         for (const route of routes) {
           const packet = await read(asString(route.path));
@@ -64,7 +65,7 @@ export function createDocumentPortableAgentTraversal(input: {
           if (entry) postings.push(...arrayRecords(entry.postings));
         }
         return postings.sort((left, right) =>
-          compareText(asString(left.path), asString(right.path)));
+          comparePortableRecordKeys(asString(left.path), asString(right.path)));
       });
     },
     directory(scopePath: string) {
@@ -86,8 +87,8 @@ export function createDocumentPortableAgentTraversal(input: {
 
 function resourceForKey(router: JsonRecord, key: string): string {
   const resource = arrayRecords(router.resources).find((item) =>
-    compareText(asString(item.firstKey), key) <= 0
-      && compareText(key, asString(item.lastKey)) <= 0);
+    comparePortableRecordKeys(asString(item.firstKey), key) <= 0
+      && comparePortableRecordKeys(key, asString(item.lastKey)) <= 0);
   if (!resource) throw traversalError("document_route_missing");
   return asString(resource.path);
 }
@@ -103,10 +104,6 @@ function arrayRecords(value: unknown): JsonRecord[] {
 function asString(value: unknown): string {
   if (typeof value !== "string" || !value) throw traversalError("resource_invalid");
   return value;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function traversalError(code: string): Error & { code: string } {
