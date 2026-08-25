@@ -229,7 +229,17 @@ async function activateOnce(
         UPDATE focowiki.projection_publication_generations
         SET state = 'active', completed_at = ${input.activatedAt},
             updated_at = ${input.activatedAt},
-            activation_next_eligible_at = NULL, safe_error_code = NULL
+            activation_next_eligible_at = NULL, safe_error_code = NULL,
+            recovery_evidence = CASE
+              WHEN recovery_evidence->>'outcome'
+                    = 'minimum_replacement_planned'
+              THEN jsonb_set(
+                recovery_evidence,
+                '{outcome}',
+                to_jsonb('minimum_replacement_activated'::text)
+              )
+              ELSE recovery_evidence
+            END
         WHERE public_id = ${input.generationPublicId} AND state = 'ready'
       `;
       await transaction`

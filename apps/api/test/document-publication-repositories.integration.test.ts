@@ -1453,6 +1453,142 @@ const enabled = Boolean(databaseUrl && runOwner
         WHERE public_id = ${liveReplacement[0]!.public_id}
       `;
     });
+
+  it("does not recover an obsolete replacement covered by the active head",
+    async () => {
+      const publications = createPostgresDocumentPublicationRepository(database);
+      const staleGenerationId = documentPublicationGenerationId(
+        "generation-covered-replacement"
+      );
+      await publications.createGeneration(generation(
+        staleGenerationId,
+        documentPublicationGenerationId("generation-4"),
+        19
+      ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 19, 'covered-replacement-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${staleGenerationId}, 'covered-replacement-mutation',
+          'publication-job-1', 'source-1', 'revision-1', 19
+        )
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = '2026-08-21T12:11:00.000Z',
+            updated_at = '2026-08-21T12:11:00.000Z',
+            recovery_evidence = jsonb_build_object(
+              'outcome', 'minimum_replacement_planned'
+            )
+        WHERE public_id = ${staleGenerationId}
+      `;
+      const activeGenerationId = documentPublicationGenerationId(
+        "generation-covering-head"
+      );
+      await publications.createGeneration(generation(
+        activeGenerationId,
+        documentPublicationGenerationId("generation-4"),
+        19
+      ));
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'active', completed_at = '2026-08-21T12:11:01.000Z',
+            updated_at = '2026-08-21T12:11:01.000Z'
+        WHERE public_id = ${activeGenerationId}
+      `;
+      await sql`
+        UPDATE focowiki.knowledge_base_projection_heads
+        SET active_generation_public_id = ${activeGenerationId},
+            active_fact_epoch = 19, head_version = head_version + 1,
+            updated_at = '2026-08-21T12:11:01.000Z'
+        WHERE knowledge_base_id = 'publication-kb'
+      `;
+
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+      await expect(recovery.recoverStrandedReplacements({
+        rendererContractVersion: "portable-okf-v2",
+        recoveredAt: "2026-08-21T12:11:02.000Z",
+        limit: 10
+      })).resolves.toEqual({
+        generationCount: 0,
+        releasedFactCount: 0,
+        replannedFactCount: 0,
+        supersededScopeCount: 0
+      });
+      await expect(sql<Array<{ count: number | string }>>`
+        SELECT count(*) AS count
+        FROM focowiki.projection_publication_generations
+        WHERE recovery_evidence->>'supersedesGenerationPublicId'
+          = ${staleGenerationId}
+      `).resolves.toEqual([{ count: "0" }]);
+    });
+
+  it("recovers an uncovered replacement when no active head exists",
+    async () => {
+      const publications = createPostgresDocumentPublicationRepository(database);
+      const strandedGenerationId = documentPublicationGenerationId(
+        "generation-without-active-head"
+      );
+      await publications.createGeneration(generation(
+        strandedGenerationId,
+        null,
+        20
+      ));
+      await sql`
+        INSERT INTO focowiki.projection_fact_epochs (
+          knowledge_base_id, fact_epoch, mutation_public_id,
+          source_file_public_id, source_revision_public_id, fact_kind, state
+        ) VALUES (
+          'publication-kb', 20, 'no-head-replacement-mutation',
+          'source-1', 'revision-1', 'replace', 'included'
+        )
+      `;
+      await sql`
+        INSERT INTO focowiki.projection_generation_documents (
+          generation_public_id, mutation_public_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, fact_epoch
+        ) VALUES (
+          ${strandedGenerationId}, 'no-head-replacement-mutation',
+          'publication-job-1', 'source-1', 'revision-1', 20
+        )
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = '2026-08-21T12:12:00.000Z',
+            updated_at = '2026-08-21T12:12:00.000Z',
+            recovery_evidence = jsonb_build_object(
+              'outcome', 'minimum_replacement_planned'
+            )
+        WHERE public_id = ${strandedGenerationId}
+      `;
+      await sql`
+        UPDATE focowiki.knowledge_base_projection_heads
+        SET active_generation_public_id = NULL, active_fact_epoch = 0,
+            head_version = head_version + 1,
+            updated_at = '2026-08-21T12:12:00.000Z'
+        WHERE knowledge_base_id = 'publication-kb'
+      `;
+
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+      await expect(recovery.recoverStrandedReplacements({
+        rendererContractVersion: "portable-okf-v2",
+        recoveredAt: "2026-08-21T12:12:01.000Z",
+        limit: 10
+      })).resolves.toMatchObject({
+        generationCount: 1,
+        replannedFactCount: 1
+      });
+    });
 });
 
 function generation(
