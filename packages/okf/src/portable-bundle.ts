@@ -474,8 +474,21 @@ function validateTermBucket(record: Record<string, unknown>): void {
     }
     validateNonNegativeInteger(route.recordCount);
   }
-  assertUniqueOrdered(record.routes.map((value) =>
-    asString((value as Record<string, unknown>).path)), "routes.path");
+  const routes = record.routes as Record<string, unknown>[];
+  assertUniqueField(routes.map((route) => asString(route.path)),
+    "routes.path");
+  assertOrdered(routes.map((route) => validatedPortableTerm(route.firstTerm)),
+    "routes.firstTerm");
+  for (let index = 1; index < routes.length; index += 1) {
+    const previousLast = validatedPortableTerm(routes[index - 1]!.lastTerm);
+    const currentFirst = validatedPortableTerm(routes[index]!.firstTerm);
+    if (comparePortableRecordKeys(previousLast, currentFirst) > 0) {
+      throw Object.assign(
+        portableBundleError("portable_record_order_invalid"),
+        { recordField: "routes.range" }
+      );
+    }
+  }
 }
 
 function validateTermPostings(record: Record<string, unknown>): void {
@@ -724,12 +737,26 @@ function assertUniqueOrdered(
   values: readonly string[],
   recordField: string
 ): void {
+  assertUniqueField(values, recordField);
+  assertOrdered(values, recordField);
+}
+
+function assertUniqueField(
+  values: readonly string[],
+  recordField: string
+): void {
   if (new Set(values).size !== values.length) {
     throw Object.assign(
       portableBundleError("portable_record_duplicate"),
       { recordField }
     );
   }
+}
+
+function assertOrdered(
+  values: readonly string[],
+  recordField: string
+): void {
   for (let index = 1; index < values.length; index += 1) {
     if (comparePortableRecordKeys(values[index - 1]!, values[index]!) > 0) {
       throw Object.assign(
