@@ -937,6 +937,38 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         WHERE knowledge_base_id = 'kb-projection-facts'
           AND source_revision_public_id = 'source-revision-projection-second'
       `;
+      await sql`
+        UPDATE focowiki.document_semantic_directory_memberships
+        SET directory_path = 'pages/reference',
+            page_path = 'pages/reference/third.md'
+        WHERE knowledge_base_id = 'kb-projection-facts'
+          AND source_revision_public_id = 'source-revision-projection-third'
+          AND directory_path = 'pages/guides'
+      `;
+      const relationOnlyNeighborDelta =
+        await reader.readSemanticDirectoryDeltaState({
+          knowledgeBaseId: "kb-projection-facts",
+          scopePath: "pages",
+          affectedSourceFilePublicIds: [
+            "source-file-projection-second",
+            "source-file-projection-third"
+          ],
+          includedSourceRevisionPublicIds: [],
+          navigationSourceFilePublicIds: ["source-file-projection-second"]
+        });
+      expect(relationOnlyNeighborDelta.childDirectories).toEqual([{
+        title: "reference",
+        scopePath: "pages/reference",
+        path: "pages/reference/index.md"
+      }]);
+      await sql`
+        UPDATE focowiki.document_semantic_directory_memberships
+        SET directory_path = 'pages/guides',
+            page_path = 'pages/guides/third.md'
+        WHERE knowledge_base_id = 'kb-projection-facts'
+          AND source_revision_public_id = 'source-revision-projection-third'
+          AND directory_path = 'pages/reference'
+      `;
       await expect(reader.readSemanticDirectoryDeltaState({
         knowledgeBaseId: "kb-projection-facts",
         scopePath: "pages/reference",
@@ -1186,20 +1218,39 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       expect(pageDirectory.records.every((record) =>
         record.relationshipCount === 1)).toBe(true);
       expect(pageDirectory.childDirectories).toEqual([]);
-      const affectedSourceFilePublicIds = Array.from({ length: 256 },
+      const affectedSourceFilePublicIds = Array.from({ length: 314 },
         (_, index) => `source-a-${String(index + 1).padStart(5, "0")}`);
+      const navigationSourceFilePublicIds =
+        affectedSourceFilePublicIds.slice(0, 51);
       const deltaStartedAt = performance.now();
       const semanticDelta = await reader.readSemanticDirectoryDeltaState({
         knowledgeBaseId: "kb-large-flat-directory",
         scopePath: "pages",
         affectedSourceFilePublicIds,
-        includedSourceRevisionPublicIds: affectedSourceFilePublicIds.map(
+        includedSourceRevisionPublicIds: navigationSourceFilePublicIds.map(
           (sourceFilePublicId) => `revision-${sourceFilePublicId}`
-        )
+        ),
+        navigationSourceFilePublicIds
       });
+      const batchedAffectedSourceFilePublicIds = Array.from({ length: 700 },
+        (_, index) => `source-a-${String(index + 1).padStart(5, "0")}`);
+      const batchedSemanticDelta =
+        await reader.readSemanticDirectoryDeltaState({
+          knowledgeBaseId: "kb-large-flat-directory",
+          scopePath: "pages",
+          affectedSourceFilePublicIds: batchedAffectedSourceFilePublicIds,
+          includedSourceRevisionPublicIds:
+            navigationSourceFilePublicIds.map(
+              (sourceFilePublicId) => `revision-${sourceFilePublicId}`
+            ),
+          navigationSourceFilePublicIds
+        });
       const deltaDurationMs = performance.now() - deltaStartedAt;
-      expect(semanticDelta.records).toHaveLength(256);
-      expect(semanticDelta.navigationCandidateEntryIds).toHaveLength(256);
+      expect(semanticDelta.records).toHaveLength(314);
+      expect(semanticDelta.navigationCandidateEntryIds).toHaveLength(51);
+      expect(batchedSemanticDelta.records).toHaveLength(700);
+      expect(batchedSemanticDelta.navigationCandidateEntryIds)
+        .toHaveLength(51);
       expect(graphDurationMs).toBeLessThan(5_000);
       expect(indexDurationMs).toBeLessThan(5_000);
       expect(deltaDurationMs).toBeLessThan(5_000);

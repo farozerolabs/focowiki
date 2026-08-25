@@ -57,6 +57,7 @@ export async function projectDocumentPageDirectoryScope(input: {
       scopePath: input.scopePath,
       affectedSourceFilePublicIds: affected,
       includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
+      navigationSourceFilePublicIds: [],
       publicationGenerationPublicId: input.publicationGenerationPublicId
     });
     const base = await readBaseRouter(input);
