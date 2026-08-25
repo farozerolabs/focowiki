@@ -37,6 +37,8 @@ export function createPostgresDocumentPublicationRecovery(
           FROM focowiki.projection_publication_generations generation
           JOIN focowiki.knowledge_base_projection_heads head
             ON head.knowledge_base_id = generation.knowledge_base_id
+          LEFT JOIN focowiki.projection_publication_generations active
+            ON active.public_id = head.active_generation_public_id
           LEFT JOIN focowiki.projection_publication_generations successor
             ON successor.public_id =
                  generation.superseded_by_generation_public_id
@@ -45,9 +47,13 @@ export function createPostgresDocumentPublicationRecovery(
                   = 'minimum_replacement_planned'
             AND head.active_generation_public_id IS DISTINCT FROM
                   generation.public_id
-            AND (successor.public_id IS NULL OR successor.state IN (
-              'obsolete', 'quarantined'
-            ))
+            AND (successor.public_id IS NULL OR successor.state = 'quarantined')
+            AND NOT COALESCE((
+              active.state = 'active'
+              AND active.target_fact_epoch >= generation.target_fact_epoch
+              AND active.renderer_contract_version
+                    = ${input.rendererContractVersion}
+            ), false)
             AND NOT EXISTS (
               SELECT 1
               FROM focowiki.projection_publication_generations live
