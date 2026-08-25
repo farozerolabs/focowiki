@@ -1,5 +1,6 @@
 import type { DocumentSemanticPartDescriptor } from
   "./document-semantic-resource-packets.js";
+import { comparePortableRecordKeys } from "@focowiki/okf";
 
 export function selectStableShardOwners(
   descriptors: readonly DocumentSemanticPartDescriptor[],
@@ -8,13 +9,13 @@ export function selectStableShardOwners(
 ): DocumentSemanticPartDescriptor[] {
   if (descriptors.length === 0) return [];
   const containing = descriptors.filter((descriptor) =>
-    compareText(descriptor.firstKey, key) <= 0
-      && compareText(key, descriptor.lastKey) <= 0);
+    comparePortableRecordKeys(descriptor.firstKey, key) <= 0
+      && comparePortableRecordKeys(key, descriptor.lastKey) <= 0);
   if (containing.length > 0) {
     return includeDuplicateRanges ? containing : [containing[0]!];
   }
   const predecessor = [...descriptors].reverse().find((descriptor) =>
-    compareText(descriptor.firstKey, key) < 0);
+    comparePortableRecordKeys(descriptor.firstKey, key) < 0);
   return [predecessor ?? descriptors[0]!];
 }
 
@@ -35,8 +36,4 @@ export function partitionStableShardRuns(
   }
   if (current.length > 0) runs.push(current);
   return runs;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

@@ -1,5 +1,6 @@
 import type { DatabaseClient } from "../../db/client.js";
-import type { DocumentTermBucket } from
+import { comparePortableRecordKeys } from "@focowiki/okf";
+import { DOCUMENT_TERM_BUCKETS, type DocumentTermBucket } from
   "../application/document-term-routing.js";
 
 const MAXIMUM_TERM_RECORDS = 100_000;
@@ -248,13 +249,11 @@ function checkedTermRows(rows: Array<{ term: string; postings: unknown }>) {
 }
 
 function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort((left, right) =>
-    left.localeCompare(right, "en-US"));
+  return [...new Set(values)].sort(comparePortableRecordKeys);
 }
 
 function isDocumentTermBucket(value: string): value is DocumentTermBucket {
-  return ["han", "latin", "number", "symbol", "mixed", "other"]
-    .includes(value);
+  return (DOCUMENT_TERM_BUCKETS as readonly string[]).includes(value);
 }
 
 function termReaderError(code: string): Error & { code: string } {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   portableDirectoryResourceSubject,
+  comparePortableRecordKeys,
   portableSemanticResourceFileName
 } from "@focowiki/okf";
 import {
@@ -135,12 +136,14 @@ export function createDocumentGraphStableShardDeltaStream(input: Readonly<{
       const finalPaths = new Set(current.resources.map((item) => item.path));
       const pages = [...latestPages.values()]
         .filter((page) => finalPaths.has(page.logicalPath))
-        .sort((left, right) => compareText(left.logicalPath, right.logicalPath));
+        .sort((left, right) => comparePortableRecordKeys(
+          left.logicalPath, right.logicalPath));
       return {
         pages,
         descriptors: current.resources,
         removedPaths: [...originalPaths]
-          .filter((path) => !finalPaths.has(path)).sort(compareText),
+          .filter((path) => !finalPaths.has(path))
+          .sort(comparePortableRecordKeys),
         relationshipCount: current.relationshipCount,
         metrics: {
           changedRecordCount,
@@ -169,7 +172,7 @@ export async function applyDocumentGraphStableShardDelta(input: Readonly<{
   ]));
   const changedKeys = [...new Set([
     ...changes.keys(), ...input.removedRecordKeys
-  ])].sort(compareText);
+  ])].sort(comparePortableRecordKeys);
   if (changedKeys.length === 0) {
     return {
       pages: [],
@@ -230,12 +233,13 @@ export async function applyDocumentGraphStableShardDelta(input: Readonly<{
     ...input.base.resources.filter((descriptor) =>
       !touchedPaths.has(descriptor.path)),
     ...updated
-  ].sort((left, right) => compareText(left.firstKey, right.firstKey)
-    || compareText(left.path, right.path));
+  ].sort((left, right) => comparePortableRecordKeys(
+    left.firstKey, right.firstKey)
+    || comparePortableRecordKeys(left.path, right.path));
   return {
     pages,
     descriptors,
-    removedPaths: removedPaths.sort(compareText),
+    removedPaths: removedPaths.sort(comparePortableRecordKeys),
     relationshipCount: descriptors.reduce(
       (total, descriptor) => total + descriptor.recordCount, 0
     )
@@ -253,7 +257,7 @@ function selectTouchedDescriptors(
       .forEach((descriptor) => selected.add(descriptor));
   }
   return [...selected].sort((left, right) =>
-    compareText(left.firstKey, right.firstKey));
+    comparePortableRecordKeys(left.firstKey, right.firstKey));
 }
 
 function allocateStablePaths(input: Readonly<{
@@ -303,10 +307,6 @@ function withPath(
     normalizedPath: logicalPath.toLocaleLowerCase("en-US"),
     checksumSha256: createHash("sha256").update(page.bytes).digest("hex")
   };
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function stableDeltaError(code: string): Error & { code: string } {

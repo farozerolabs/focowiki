@@ -1,5 +1,6 @@
 import type { DocumentNavigationTermField } from
   "./document-navigation-terms.js";
+import { comparePortableRecordKeys } from "@focowiki/okf";
 
 export const DOCUMENT_TERM_BUCKETS = [
   "latin", "han", "kana", "hangul", "number", "other"
@@ -51,7 +52,7 @@ export function partitionDocumentNavigationTerms(
   }
   return DOCUMENT_TERM_BUCKETS.flatMap((bucket) => {
     const ordered = (byBucket.get(bucket) ?? []).slice().sort((left, right) =>
-      compareText(left.term, right.term));
+      comparePortableRecordKeys(left.term, right.term));
     const parts = [];
     for (let offset = 0; offset < ordered.length;
       offset += options.maximumRecordsPerPart) {
@@ -103,8 +104,4 @@ function isHangul(value: number): boolean {
   return (value >= 0x1100 && value <= 0x11ff)
     || (value >= 0x3130 && value <= 0x318f)
     || (value >= 0xac00 && value <= 0xd7af);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

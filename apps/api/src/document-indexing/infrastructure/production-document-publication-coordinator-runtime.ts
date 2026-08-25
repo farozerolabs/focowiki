@@ -192,7 +192,9 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
       const recovered = nowMilliseconds >= nextRemediatedRecoveryAt
         ? await recovery.recoverRecoverableQuarantines({
           recoveredAt: now,
-          limit: RECOVERABLE_QUARANTINE_RECOVERY_LIMIT
+          limit: RECOVERABLE_QUARANTINE_RECOVERY_LIMIT,
+          rendererContractVersion:
+            DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
         }) : {
           generationCount: 0,
           releasedFactCount: 0,

@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { comparePortableRecordKeys } from "@focowiki/okf";
 import type { DocumentSemanticPartDescriptor } from
   "./document-semantic-resource-packets.js";
 
@@ -72,7 +73,7 @@ export function isEmptyDirectoryState(state: DirectoryState): boolean {
 }
 
 export function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  return comparePortableRecordKeys(left, right);
 }
 
 export function machineProjectionError(code: string): Error & { code: string } {

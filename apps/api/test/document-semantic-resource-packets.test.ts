@@ -5,6 +5,35 @@ import {
 } from "../src/document-indexing/application/document-semantic-resource-packets.js";
 
 describe("document semantic resource packets", () => {
+  it("uses the portable Unicode order for packet records and postings", () => {
+    const result = buildDocumentSemanticPacketPages({
+      family: "term_postings",
+      directoryPath: "_index/terms/other",
+      subject: "other",
+      title: "other terms",
+      prefix: "other",
+      records: [{
+        term: "\uE000",
+        postings: [{ path: "pages/😀.md", fields: ["body"] },
+          { path: "pages/\uE000.md", fields: ["body"] }]
+      }, {
+        term: "😀",
+        postings: [{ path: "pages/😀.md", fields: ["title"] }]
+      }],
+      recordKey: (record) => String(record.term),
+      maximumRecords: 500,
+      maximumBytes: 16_384
+    });
+
+    expect(result.descriptors[0]).toMatchObject({
+      firstKey: "\uE000",
+      lastKey: "😀"
+    });
+    const value = JSON.parse(new TextDecoder().decode(result.pages[0]!.bytes));
+    expect(value.terms[0].postings.map((posting: { path: string }) =>
+      posting.path)).toEqual(["pages/\uE000.md", "pages/😀.md"]);
+  });
+
   it("splits a high-frequency term across named parts without losing postings", () => {
     const postings = Array.from({ length: 2_000 }, (_, index) => ({
       path: `pages/library/document-${String(index).padStart(4, "0")}.md`,
