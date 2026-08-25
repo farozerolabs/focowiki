@@ -51,9 +51,14 @@ export async function activatePostgresDocumentPublicationSources(input: {
     WHERE document.generation_public_id = ${input.generationPublicId}
       AND (epoch.fact_kind = 'delete'
         OR (job.knowledge_base_id = ${input.knowledgeBaseId}
-          AND job.state = 'processing'
+          AND job.source_file_public_id = document.source_file_public_id
+          AND job.source_revision_public_id = document.source_revision_public_id
           AND active.current_source_revision_public_id
-                = document.source_revision_public_id))
+                = document.source_revision_public_id
+          AND (job.state = 'processing'
+            OR (job.state = 'available'
+              AND active.active_source_revision_public_id
+                    = document.source_revision_public_id))))
     ORDER BY document.source_file_public_id COLLATE "C"
     FOR UPDATE OF active
   `;
@@ -149,7 +154,8 @@ export async function activatePostgresDocumentPublicationSources(input: {
           AND source_file_public_id = ${document.source_file_public_id}
           AND state <> 'deleted'
       `;
-    } else {
+    } else if (document.prior_source_revision_public_id
+      !== document.source_revision_public_id) {
       if (!document.semantic_generation_public_id) {
         throw activationError("publication_semantic_generation_missing");
       }

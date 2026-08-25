@@ -13,6 +13,8 @@ describe("document publication recovery", () => {
     ["write_attempt_conflict", "invariant", "quarantine"],
     ["23514", "invariant", "quarantine"],
     ["publication_generation_stale_base", "supersession", "recompute_scope"],
+    ["publication_source_precondition_failed", "supersession", "recompute_scope"],
+    ["publication_work_precondition_failed", "supersession", "recompute_scope"],
     ["40P01", "contention", "defer_activation"],
     ["scope_generation_lease_lost", "lease_loss", "inspect_or_reclaim"],
     ["53000", "database_resource", "retry_infrastructure"],
