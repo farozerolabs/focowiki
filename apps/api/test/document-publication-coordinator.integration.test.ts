@@ -8,6 +8,8 @@ import { planDocumentPublicationActivationReservations } from
   "../src/document-indexing/application/document-publication-activation.js";
 import { createPostgresDocumentPublicationCoordinator } from
   "../src/document-indexing/infrastructure/postgres-document-publication-coordinator.js";
+import { createPostgresDocumentPublicationRecovery } from
+  "../src/document-indexing/infrastructure/postgres-document-publication-recovery.js";
 import { createPostgresDocumentPublicationSnapshot } from
   "../src/document-indexing/infrastructure/postgres-document-publication-snapshot.js";
 import { createPostgresDocumentScopeGenerationRepository } from
@@ -88,6 +90,121 @@ const enabled = Boolean(databaseUrl && runOwner
       { state: "ready", mutation_public_id: "hot-job-4" }
     ]);
   });
+
+  it("creates a distinct idempotent successor after terminal recovery",
+    async () => {
+      const knowledgeBaseId = "recovery-kb";
+      const documentJobPublicId = "recovery-job-1";
+      await sql.begin(async (transaction) => {
+        await transaction`SET LOCAL session_replication_role = replica`;
+        await transaction`
+          INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+          VALUES (${knowledgeBaseId}, 'Recovery', 1)
+        `;
+        await transaction`
+          INSERT INTO focowiki.document_processing_jobs (
+            public_id, knowledge_base_id, operation_public_id,
+            source_file_public_id, source_revision_public_id,
+            runtime_settings_revision_public_id,
+            generation_model_configuration_public_id,
+            generation_model_configuration_revision,
+            embedding_configuration_revision_public_id,
+            semantic_generation_public_id, semantic_contract_version,
+            state, maximum_attempts, accepted_at, started_at,
+            created_at, updated_at
+          ) VALUES (
+            ${documentJobPublicId}, ${knowledgeBaseId}, 'recovery-operation-1',
+            'recovery-source-1', 'recovery-revision-1', 'settings', 'model', 1,
+            'embedding', 'semantic', 'contract', 'processing', 3,
+            '2026-08-21T12:10:00.000Z', '2026-08-21T12:10:00.000Z',
+            '2026-08-21T12:10:00.000Z', '2026-08-21T12:10:00.000Z'
+          )
+        `;
+        await transaction`
+          INSERT INTO focowiki.document_artifact_work (
+            public_id, knowledge_base_id, document_job_public_id,
+            source_file_public_id, source_revision_public_id,
+            work_kind, resource_lane, input_fingerprint_sha256,
+            state, maximum_attempts, next_eligible_at, created_at, updated_at
+          ) VALUES (
+            'recovery-work-1', ${knowledgeBaseId}, ${documentJobPublicId},
+            'recovery-source-1', 'recovery-revision-1',
+            'knowledge_projection', 'projection', ${"9".repeat(64)},
+            'waiting_on_projection', 3, '2026-08-21T12:10:00.000Z',
+            '2026-08-21T12:10:00.000Z', '2026-08-21T12:10:00.000Z'
+          )
+        `;
+        await transaction`
+          INSERT INTO focowiki.projection_fact_epochs (
+            knowledge_base_id, fact_epoch, mutation_public_id,
+            source_file_public_id, source_revision_public_id,
+            fact_kind, state, created_at
+          ) VALUES (
+            ${knowledgeBaseId}, 1, ${documentJobPublicId},
+            'recovery-source-1', 'recovery-revision-1',
+            'create', 'ready', '2026-08-21T12:10:00.000Z'
+          )
+        `;
+      });
+      const coordinator = createPostgresDocumentPublicationCoordinator(database);
+      const recovery = createPostgresDocumentPublicationRecovery(database);
+      const freeze = (now: string) => coordinator.freezeReady({
+        knowledgeBaseId,
+        now,
+        contributorCap: 8,
+        rendererContractVersion: "portable-okf-v3"
+      });
+      const first = await freeze("2026-08-21T12:10:01.000Z");
+      expect(first).not.toBeNull();
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined',
+            safe_error_code =
+              'semantic_directory_navigation_candidate_limit_exceeded'
+        WHERE public_id = ${first!.generationPublicId}
+      `;
+      await expect(recovery.recoverRecoverableQuarantines({
+        recoveredAt: "2026-08-21T12:10:02.000Z",
+        limit: 1
+      })).resolves.toMatchObject({
+        generationCount: 1,
+        releasedFactCount: 1
+      });
+
+      const concurrent = await Promise.all([
+        freeze("2026-08-21T12:10:03.000Z"),
+        freeze("2026-08-21T12:10:03.000Z")
+      ]);
+      const successors = concurrent.filter((item) => item !== null);
+      expect(successors).toHaveLength(1);
+      const second = successors[0]!;
+      expect(second.generationPublicId).not.toBe(first!.generationPublicId);
+      await expect(sql<Array<{
+        superseded_by_generation_public_id: string | null;
+      }>>`
+        SELECT superseded_by_generation_public_id
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = ${first!.generationPublicId}
+      `).resolves.toEqual([{
+        superseded_by_generation_public_id: second.generationPublicId
+      }]);
+
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined', safe_error_code = '53100'
+        WHERE public_id = ${second.generationPublicId}
+      `;
+      await expect(recovery.recoverRecoverableQuarantines({
+        recoveredAt: "2026-08-21T12:10:04.000Z",
+        limit: 1
+      })).resolves.toMatchObject({
+        generationCount: 1,
+        releasedFactCount: 1
+      });
+      const third = await freeze("2026-08-21T12:10:05.000Z");
+      expect(third?.generationPublicId).not.toBe(second.generationPublicId);
+      expect(third?.generationPublicId).not.toBe(first!.generationPublicId);
+    });
 
   it("reclaims a planned generation left without scopes after interruption", async () => {
     const coordinator = createPostgresDocumentPublicationCoordinator(database);

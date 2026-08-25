@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
+import { createPostgresDocumentPublicationGeneration } from
+  "./postgres-document-publication-generation-identity.js";
 
 export async function createMinimumCompatiblePublicationReplacement(
   sql: DatabaseClient,
@@ -80,7 +82,6 @@ export async function createMinimumCompatiblePublicationReplacement(
       Number(document.fact_epoch)
     ])
   })).digest("hex");
-  const replacementGenerationPublicId = `projection-generation-${identity}`;
   await sql`
     UPDATE focowiki.projection_publication_generations
     SET state = 'obsolete', safe_error_code = ${input.supersessionReason},
@@ -88,31 +89,21 @@ export async function createMinimumCompatiblePublicationReplacement(
         completed_at = ${input.recoveredAt}, updated_at = ${input.recoveredAt}
     WHERE public_id = ${generation.public_id}
   `;
-  const inserted = await sql<Array<{ public_id: string }>>`
-    INSERT INTO focowiki.projection_publication_generations (
-      public_id, knowledge_base_id, base_generation_public_id,
-      target_fact_epoch, renderer_contract_version,
-      deterministic_changed_at, input_fingerprint_sha256,
-      planning_mode, full_rebuild_reason, recovery_evidence
-    ) VALUES (
-      ${replacementGenerationPublicId}, ${generation.knowledge_base_id},
-      ${generation.active_generation_public_id},
-      ${Number(generation.target_fact_epoch)},
-      ${input.rendererContractVersion}, ${generation.deterministic_changed_at},
-      ${identity},
-      ${generation.active_generation_public_id === null ? "initial" : "delta"},
-      ${generation.active_generation_public_id === null
-        ? "empty_knowledge_base" : null},
-      jsonb_build_object(
-        'outcome', 'minimum_replacement_planned',
-        'supersedesGenerationPublicId', (${generation.public_id})::text
-      )
-    )
-    RETURNING public_id
-  `;
-  if (inserted[0]?.public_id !== replacementGenerationPublicId) {
+  const replacement = await createPostgresDocumentPublicationGeneration(sql, {
+    knowledgeBaseId: generation.knowledge_base_id,
+    baseGenerationPublicId: generation.active_generation_public_id,
+    targetFactEpoch: Number(generation.target_fact_epoch),
+    rendererContractVersion: input.rendererContractVersion,
+    deterministicChangedAt: new Date(generation.deterministic_changed_at)
+      .toISOString(),
+    inputFingerprintSha256: identity,
+    createdAt: input.recoveredAt,
+    recoverySupersedesGenerationPublicId: generation.public_id
+  });
+  if (!replacement) {
     throw minimumReplanError("publication_replacement_not_created");
   }
+  const replacementGenerationPublicId = replacement.generationPublicId;
   await sql`
     INSERT INTO focowiki.projection_generation_documents (
       generation_public_id, mutation_public_id, document_job_public_id,

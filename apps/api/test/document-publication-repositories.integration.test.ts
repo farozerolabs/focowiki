@@ -1544,8 +1544,31 @@ const enabled = Boolean(databaseUrl && runOwner
       );
       await sql`
         UPDATE focowiki.projection_publication_generations
-        SET state = 'obsolete', completed_at = now()
+        SET state = 'quarantined', safe_error_code = '53100',
+            completed_at = now()
         WHERE public_id = ${liveReplacement[0]!.public_id}
+      `;
+      await expect(recovery.recoverStrandedReplacements({
+        rendererContractVersion: "portable-okf-v2",
+        recoveredAt: "2026-08-21T12:10:08.000Z",
+        limit: 10
+      })).resolves.toMatchObject({
+        generationCount: 1,
+        replannedFactCount: 1
+      });
+      const recoveredReplacement = await sql<Array<{ public_id: string }>>`
+        SELECT public_id
+        FROM focowiki.projection_publication_generations
+        WHERE knowledge_base_id = 'publication-kb'
+          AND state = 'planned'
+      `;
+      expect(recoveredReplacement).toHaveLength(1);
+      expect(recoveredReplacement[0]!.public_id)
+        .not.toBe(liveReplacement[0]!.public_id);
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'obsolete', completed_at = now()
+        WHERE public_id = ${recoveredReplacement[0]!.public_id}
       `;
     });
 
