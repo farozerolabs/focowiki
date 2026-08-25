@@ -13,6 +13,8 @@ import { documentDirectoryEntryId } from
   "../src/document-indexing/domain/document-directory-entry-identity.js";
 import { createProductionDocumentScopeRenderer } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer.js";
+import { projectDocumentPageDirectoryScope } from
+  "../src/document-indexing/infrastructure/production-document-page-directory-scope.js";
 import { projectTermCatalog } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer-helpers.js";
 import { projectGraphCatalog, projectGraphDirectory,
@@ -22,6 +24,39 @@ import { projectRoot, projectSemanticDirectory } from
   "../src/document-indexing/infrastructure/production-document-scope-navigation.js";
 
 describe("production document scope renderer", () => {
+  it("keeps relation-only closure sources out of page navigation candidates",
+    async () => {
+      const readSemanticDirectoryDeltaState = vi.fn(async () => ({
+        records: [], childDirectories: [], navigationCandidateEntryIds: [],
+        removedRecordPaths: []
+      }));
+
+      await projectDocumentPageDirectoryScope({
+        machineProjection: { readSemanticDirectoryDeltaState } as never,
+        knowledgeBaseId: "kb-page-delta",
+        scopePath: "pages",
+        publicationGenerationPublicId: "generation-page-delta",
+        includedSourceRevisionPublicIds: ["revision-current"],
+        excludedActiveSourceFilePublicIds: ["source-current"],
+        affectedSourceFilePublicIds: ["source-current", "source-neighbor"],
+        affectedLogicalPaths: ["pages/current.md", "pages/neighbor.md"],
+        planningMode: "delta",
+        basePages: [],
+        pageIntegrityOverrides: [],
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576
+      });
+
+      expect(readSemanticDirectoryDeltaState).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-page-delta",
+        scopePath: "pages",
+        affectedSourceFilePublicIds: ["source-current", "source-neighbor"],
+        includedSourceRevisionPublicIds: ["revision-current"],
+        navigationSourceFilePublicIds: [],
+        publicationGenerationPublicId: "generation-page-delta"
+      });
+    });
+
   it("treats included pure-create revisions as a semantic directory delta",
     async () => {
       const readSemanticDirectoryState = vi.fn(async () => {
