@@ -55,6 +55,13 @@ const enabled = Boolean(databaseUrl && runOwner
         targetFactEpoch: 1,
         objectId: "activation-object-1"
       });
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET recovery_evidence = jsonb_build_object(
+          'outcome', 'minimum_replacement_planned'
+        )
+        WHERE public_id = 'activation-generation-1'
+      `;
       const activation = createPostgresDocumentPublicationActivation({ sql: database });
       await expect(activation.activate({
         generationPublicId: "activation-generation-1",
@@ -71,6 +78,11 @@ const enabled = Boolean(databaseUrl && runOwner
         object_id: "activation-object-1",
         projection_generation_public_id: "activation-generation-1"
       }]);
+      await expect(sql<Array<{ outcome: string }>>`
+        SELECT recovery_evidence->>'outcome' AS outcome
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = 'activation-generation-1'
+      `).resolves.toEqual([{ outcome: "minimum_replacement_activated" }]);
 
       await seedReadyGeneration({
         knowledgeBaseId: "activation-kb",
