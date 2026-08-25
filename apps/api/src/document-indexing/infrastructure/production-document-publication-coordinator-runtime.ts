@@ -21,12 +21,15 @@ import { readGenerationFactDeltas } from
   "./production-document-publication-fact-deltas.js";
 import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
   "../application/document-publication-renderer-contract.js";
+import { safeWorkerErrorDiagnostic } from
+  "./production-document-error-diagnostic.js";
 
 const CONTRIBUTOR_CAP = 256;
 const STRANDED_PLAN_LEASE_MILLISECONDS = 30_000;
 const RECOVERABLE_QUARANTINE_RECOVERY_LIMIT = 16;
 const RECOVERABLE_QUARANTINE_POLL_MILLISECONDS = 30_000;
 const INCOMPATIBLE_GENERATION_RECOVERY_LIMIT = 16;
+const COORDINATOR_FAILURE_POLL_MILLISECONDS = 1_000;
 
 export function createProductionDocumentPublicationCoordinatorRuntime(input: {
   sql: DatabaseClient;
@@ -36,6 +39,7 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
       DocumentWorkerObservability,
       "publicationRecovery"
     >>;
+  onError?: (error: unknown) => void;
 }) {
   const coordinator = createPostgresDocumentPublicationCoordinator(input.sql);
   const validator = createPostgresDocumentPublicationValidator(input.sql);
@@ -226,16 +230,39 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
     },
     async run(signal: AbortSignal): Promise<void> {
       while (!signal.aborted) {
-        const progressed = await this.runOne();
-        if (!progressed) {
-          await waitForDocumentWork(
-            input.idlePollMilliseconds ?? 50,
-            signal
-          );
+        try {
+          const progressed = await this.runOne();
+          if (!progressed) {
+            await waitForDocumentWork(
+              input.idlePollMilliseconds ?? 50,
+              signal
+            );
+          }
+        } catch (error) {
+          if (input.onError) input.onError(error);
+          else logCoordinatorFailure(error);
+          if (!signal.aborted) {
+            await waitForDocumentWork(
+              Math.max(
+                input.idlePollMilliseconds ?? 50,
+                COORDINATOR_FAILURE_POLL_MILLISECONDS
+              ),
+              signal
+            );
+          }
         }
       }
     }
   };
+}
+
+function logCoordinatorFailure(error: unknown): void {
+  console.error(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: "error",
+    event: "worker.publication_coordinator_failed",
+    fields: safeWorkerErrorDiagnostic(error)
+  }));
 }
 
 async function readPublicationBacklogs(sql: DatabaseClient, now: string) {
