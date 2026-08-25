@@ -4,8 +4,32 @@ import {
   createDocumentGraphStableShardDeltaStream
 } from
   "../src/document-indexing/application/document-graph-stable-shard-delta.js";
+import { buildDocumentPerFileGraphScopeResource } from
+  "../src/document-indexing/application/document-graph-projection.js";
 
 describe("document graph stable shard delta", () => {
+  it("orders per-file relationships by their portable identity", () => {
+    const result = buildDocumentPerFileGraphScopeResource({
+      source: { path: "pages/source.md", title: "Source" },
+      relationships: [{
+        targetPath: "pages/target.md", targetTitle: "Target",
+        direction: "incoming", relationType: "zeta", weight: 1,
+        reason: "Target is related to Source.", evidence: []
+      }, {
+        targetPath: "pages/target.md", targetTitle: "Target",
+        direction: "outgoing", relationType: "alpha", weight: 1,
+        reason: "Source is related to Target.", evidence: []
+      }],
+      previousPaths: []
+    });
+    const record = JSON.parse(
+      new TextDecoder().decode(result.pages[0]!.bytes)
+    ) as { relationships: Array<{ relationType: string }> };
+
+    expect(record.relationships.map((item) => item.relationType))
+      .toEqual(["alpha", "zeta"]);
+  });
+
   it("rejects invalid streaming limits before scanning", () => {
     expect(() => createDocumentGraphStableShardDeltaStream({
       scopePath: "pages",

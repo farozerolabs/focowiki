@@ -47,13 +47,26 @@ export function createPostgresDocumentPublicationRecovery(
                   = 'minimum_replacement_planned'
             AND head.active_generation_public_id IS DISTINCT FROM
                   generation.public_id
-            AND (successor.public_id IS NULL OR successor.state = 'quarantined')
+            AND (successor.public_id IS NULL OR (
+              successor.state = 'quarantined'
+              AND successor.renderer_contract_version
+                    <> ${input.rendererContractVersion}
+            ))
             AND NOT COALESCE((
               active.state = 'active'
               AND active.target_fact_epoch >= generation.target_fact_epoch
               AND active.renderer_contract_version
                     = ${input.rendererContractVersion}
             ), false)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.projection_publication_generations terminal
+              WHERE terminal.knowledge_base_id = generation.knowledge_base_id
+                AND terminal.state = 'quarantined'
+                AND terminal.target_fact_epoch >= generation.target_fact_epoch
+                AND terminal.renderer_contract_version
+                      = ${input.rendererContractVersion}
+            )
             AND NOT EXISTS (
               SELECT 1
               FROM focowiki.projection_publication_generations live
