@@ -371,38 +371,26 @@ export function createPostgresDocumentPublicationRecovery(
         "recovered_at"
       );
       return sql.begin(async (transaction) => {
-        const identities = await transaction<Array<{
-          knowledge_base_id: string;
-        }>>`
-          SELECT knowledge_base_id
-          FROM focowiki.projection_publication_generations
-          WHERE public_id = ${generationPublicId}
-        `;
-        const identity = identities[0];
-        if (!identity) {
-          throw repositoryContractError("publication_generation_not_found");
-        }
-        const heads = await transaction<Array<{
-          active_generation_public_id: string | null;
-        }>>`
-          SELECT active_generation_public_id
-          FROM focowiki.knowledge_base_projection_heads
-          WHERE knowledge_base_id = ${identity.knowledge_base_id}
-          FOR UPDATE
-        `;
         const generations = await transaction<Array<{
           knowledge_base_id: string;
           base_generation_public_id: string | null;
+          target_fact_epoch: number | string;
+          active_generation_public_id: string | null;
+          active_fact_epoch: number | string;
           state: string;
         }>>`
-          SELECT knowledge_base_id, base_generation_public_id, state
-          FROM focowiki.projection_publication_generations
-          WHERE public_id = ${generationPublicId}
-          FOR UPDATE
+          SELECT generation.knowledge_base_id,
+                 generation.base_generation_public_id,
+                 generation.target_fact_epoch, generation.state,
+                 head.active_generation_public_id, head.active_fact_epoch
+          FROM focowiki.projection_publication_generations generation
+          JOIN focowiki.knowledge_base_projection_heads head
+            ON head.knowledge_base_id = generation.knowledge_base_id
+          WHERE generation.public_id = ${generationPublicId}
+          FOR UPDATE OF generation, head
         `;
         const generation = generations[0];
-        if (!generation || generation.knowledge_base_id
-          !== identity.knowledge_base_id) {
+        if (!generation) {
           throw repositoryContractError("publication_generation_not_found");
         }
         if (generation.state === "obsolete") {
@@ -417,12 +405,18 @@ export function createPostgresDocumentPublicationRecovery(
             "publication_generation_not_recoverable"
           );
         }
-        if (heads[0]?.active_generation_public_id
-          === generation.base_generation_public_id) {
+        const baseIsStale = generation.active_generation_public_id
+          !== generation.base_generation_public_id;
+        const targetIsStale = Number(generation.target_fact_epoch)
+          < Number(generation.active_fact_epoch);
+        if (!baseIsStale && !targetIsStale) {
           throw repositoryContractError(
-            "publication_generation_base_not_stale"
+            "publication_generation_not_stale"
           );
         }
+        const staleCode = targetIsStale
+          ? "publication_generation_stale_target"
+          : "publication_generation_stale_base";
         const superseded = await transaction<Array<{ public_id: string }>>`
           UPDATE focowiki.projection_scope_generations
           SET state = 'superseded', lease_owner = NULL,
@@ -447,7 +441,8 @@ export function createPostgresDocumentPublicationRecovery(
           UPDATE focowiki.projection_publication_generations
           SET state = 'obsolete', completed_at = ${recoveredAt},
               activation_next_eligible_at = NULL,
-              safe_error_code = 'publication_generation_stale_base',
+              safe_error_code = ${staleCode},
+              supersession_reason = ${staleCode},
               updated_at = ${recoveredAt}
           WHERE public_id = ${generationPublicId}
         `;

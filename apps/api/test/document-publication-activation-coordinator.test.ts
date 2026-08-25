@@ -49,6 +49,39 @@ describe("document publication activation coordinator", () => {
     });
   });
 
+  it("turns a regressed target epoch into durable recovery", async () => {
+    const recoverStaleBase = vi.fn().mockResolvedValue({
+      generationPublicId: "generation-regressed",
+      releasedFactCount: 1
+    });
+    const coordinator = createDocumentPublicationActivationCoordinator({
+      activation: { activate: vi.fn().mockRejectedValue(Object.assign(
+        new Error("target epoch regressed"), {
+          code: "publication_generation_stale_target"
+        }
+      )) },
+      recovery: { recoverStaleBase }
+    });
+
+    await expect(coordinator.activate({
+      operation: "create",
+      generationPublicId: "generation-regressed",
+      expectedHeadVersion: 969,
+      activatedAt: "2026-08-25T00:02:00.000Z"
+    })).resolves.toEqual({
+      state: "superseded",
+      errorCode: "publication_generation_stale_target",
+      recovery: {
+        generationPublicId: "generation-regressed",
+        releasedFactCount: 1
+      }
+    });
+    expect(recoverStaleBase).toHaveBeenCalledWith({
+      generationPublicId: "generation-regressed",
+      recoveredAt: "2026-08-25T00:02:00.000Z"
+    });
+  });
+
   it.each([
     "publication_source_precondition_failed",
     "publication_work_precondition_failed"

@@ -5,7 +5,10 @@ import { planDocumentPublicationGeneration } from
   "../src/document-indexing/application/document-publication-planner.js";
 import { documentPublicationScopeMembers } from
   "../src/document-indexing/application/document-publication-snapshot-members.js";
-import { selectReadyDocumentPublicationWindow } from
+import {
+  monotonicDocumentPublicationTargetFactEpoch,
+  selectReadyDocumentPublicationWindow
+} from
   "../src/document-indexing/application/document-publication-window.js";
 
 describe("document publication planner", () => {
@@ -86,6 +89,15 @@ describe("document publication planner", () => {
       contributorCap: 4,
       inFlightDocumentCount: 100
     })?.documents).toHaveLength(4);
+  });
+
+  it("keeps publication target epochs monotonic across recovery", () => {
+    expect(monotonicDocumentPublicationTargetFactEpoch(11743, 11931))
+      .toBe(11931);
+    expect(monotonicDocumentPublicationTargetFactEpoch(11932, 11931))
+      .toBe(11932);
+    expect(() => monotonicDocumentPublicationTargetFactEpoch(0, 11931))
+      .toThrow("DOCUMENT_PUBLICATION_FACT_EPOCH_INVALID");
   });
 
   it.each([

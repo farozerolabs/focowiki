@@ -206,6 +206,108 @@ const enabled = Boolean(databaseUrl && runOwner
       expect(third?.generationPublicId).not.toBe(first!.generationPublicId);
     });
 
+  it("never freezes recovered facts below the active publication epoch",
+    async () => {
+      const knowledgeBaseId = "epoch-recovery-kb";
+      const documentJobPublicId = "epoch-recovery-job-1";
+      await sql.begin(async (transaction) => {
+        await transaction`SET LOCAL session_replication_role = replica`;
+        await transaction`
+          INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+          VALUES (${knowledgeBaseId}, 'Epoch recovery', 1)
+        `;
+        await transaction`
+          INSERT INTO focowiki.knowledge_base_sequences (
+            knowledge_base_id, current_sequence
+          ) VALUES (${knowledgeBaseId}, 11931)
+        `;
+        await transaction`
+          INSERT INTO focowiki.projection_publication_generations (
+            public_id, knowledge_base_id, target_fact_epoch,
+            renderer_contract_version, deterministic_changed_at, state,
+            input_fingerprint_sha256, output_fingerprint_sha256, completed_at
+          ) VALUES (
+            'epoch-recovery-active', ${knowledgeBaseId}, 11931,
+            'portable-okf-v3', '2026-08-25T00:00:00.000Z', 'active',
+            ${"a".repeat(64)}, ${"b".repeat(64)},
+            '2026-08-25T00:00:00.000Z'
+          )
+        `;
+        await transaction`
+          INSERT INTO focowiki.knowledge_base_projection_heads (
+            knowledge_base_id, active_generation_public_id,
+            active_fact_epoch, head_version
+          ) VALUES (
+            ${knowledgeBaseId}, 'epoch-recovery-active', 11931, 969
+          )
+        `;
+        await transaction`
+          INSERT INTO focowiki.document_processing_jobs (
+            public_id, knowledge_base_id, operation_public_id,
+            source_file_public_id, source_revision_public_id,
+            runtime_settings_revision_public_id,
+            generation_model_configuration_public_id,
+            generation_model_configuration_revision,
+            embedding_configuration_revision_public_id,
+            semantic_generation_public_id, semantic_contract_version,
+            state, maximum_attempts, accepted_at, started_at,
+            created_at, updated_at
+          ) VALUES (
+            ${documentJobPublicId}, ${knowledgeBaseId},
+            'epoch-recovery-operation-1', 'epoch-recovery-source-1',
+            'epoch-recovery-revision-1', 'settings', 'model', 1,
+            'embedding', 'semantic', 'contract', 'processing', 3,
+            '2026-08-25T00:01:00.000Z', '2026-08-25T00:01:00.000Z',
+            '2026-08-25T00:01:00.000Z', '2026-08-25T00:01:00.000Z'
+          )
+        `;
+        await transaction`
+          INSERT INTO focowiki.document_artifact_work (
+            public_id, knowledge_base_id, document_job_public_id,
+            source_file_public_id, source_revision_public_id,
+            work_kind, resource_lane, input_fingerprint_sha256,
+            state, maximum_attempts, next_eligible_at, created_at, updated_at
+          ) VALUES (
+            'epoch-recovery-work-1', ${knowledgeBaseId},
+            ${documentJobPublicId}, 'epoch-recovery-source-1',
+            'epoch-recovery-revision-1', 'knowledge_projection',
+            'projection', ${"c".repeat(64)}, 'waiting_on_projection', 3,
+            '2026-08-25T00:01:00.000Z', '2026-08-25T00:01:00.000Z',
+            '2026-08-25T00:01:00.000Z'
+          )
+        `;
+        await transaction`
+          INSERT INTO focowiki.projection_fact_epochs (
+            knowledge_base_id, fact_epoch, mutation_public_id,
+            source_file_public_id, source_revision_public_id,
+            fact_kind, state, created_at
+          ) VALUES (
+            ${knowledgeBaseId}, 11743, ${documentJobPublicId},
+            'epoch-recovery-source-1', 'epoch-recovery-revision-1',
+            'create', 'ready', '2026-08-25T00:01:00.000Z'
+          )
+        `;
+      });
+
+      const frozen = await createPostgresDocumentPublicationCoordinator(database)
+        .freezeReady({
+          knowledgeBaseId,
+          now: "2026-08-25T00:01:01.000Z",
+          contributorCap: 8,
+          rendererContractVersion: "portable-okf-v3"
+        });
+
+      expect(frozen).toMatchObject({
+        baseGenerationPublicId: "epoch-recovery-active",
+        targetFactEpoch: 11931
+      });
+      await expect(sql<Array<{ target_fact_epoch: string }>>`
+        SELECT target_fact_epoch
+        FROM focowiki.projection_publication_generations
+        WHERE public_id = ${frozen!.generationPublicId}
+      `).resolves.toEqual([{ target_fact_epoch: "11931" }]);
+    });
+
   it("reclaims a planned generation left without scopes after interruption", async () => {
     const coordinator = createPostgresDocumentPublicationCoordinator(database);
     const reclaimed = await coordinator.claimStrandedPlan({
