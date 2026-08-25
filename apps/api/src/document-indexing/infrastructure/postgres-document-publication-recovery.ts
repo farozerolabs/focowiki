@@ -183,7 +183,8 @@ export function createPostgresDocumentPublicationRecovery(
             AND (generation.safe_error_code IN (
               'graph_directory_record_limit_exceeded',
               'per_file_graph_directory_limit_exceeded',
-              'navigation_delta_window_exceeded'
+              'navigation_delta_window_exceeded',
+              'scope_generation_deadline_exceeded'
             )
               OR generation.safe_error_code IN (
                 '53000', '53100', '53200', '53300', '53400'
@@ -289,6 +290,8 @@ export function createPostgresDocumentPublicationRecovery(
                   THEN 'navigation_change_limit_remediated'
                 WHEN safe_error_code = 'navigation_delta_window_exceeded'
                   THEN 'navigation_delta_window_remediated'
+                WHEN safe_error_code = 'scope_generation_deadline_exceeded'
+                  THEN 'scope_generation_deadline_remediated'
                 WHEN safe_error_code IN (
                   'graph_directory_record_limit_exceeded',
                   'per_file_graph_directory_limit_exceeded'

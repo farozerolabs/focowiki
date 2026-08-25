@@ -38,7 +38,7 @@ const CONTENTION = new Set([
 ]);
 const LEASE_LOSS = new Set([
   "scope_generation_lease_lost", "projection_scope_lease_lost",
-  "document_projection_lease_lost"
+  "document_projection_lease_lost", "scope_generation_deadline_exceeded"
 ]);
 const CLEANUP_DEBT = new Set([
   "projection_cleanup_failed", "projection_cleanup_lease_lost",
