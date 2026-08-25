@@ -7,6 +7,17 @@ export type ReadyDocumentPublicationFact = Readonly<{
   readyAt: string;
 }>;
 
+export function monotonicDocumentPublicationTargetFactEpoch(
+  candidateFactEpoch: number,
+  activeFactEpoch: number
+): number {
+  if (!Number.isSafeInteger(candidateFactEpoch) || candidateFactEpoch < 1
+    || !Number.isSafeInteger(activeFactEpoch) || activeFactEpoch < 0) {
+    throw new Error("DOCUMENT_PUBLICATION_FACT_EPOCH_INVALID");
+  }
+  return Math.max(candidateFactEpoch, activeFactEpoch);
+}
+
 export function selectReadyDocumentPublicationWindow(input: Readonly<{
   documents: readonly ReadyDocumentPublicationFact[];
   now: string;

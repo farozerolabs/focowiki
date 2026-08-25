@@ -7,6 +7,20 @@ const LIVE_GENERATION_STATES = new Set([
 ]);
 const TERMINAL_GENERATION_STATES = new Set(["quarantined", "obsolete"]);
 
+export function canonicalPublicationHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function publicationScopePublicId(
+  generationPublicId: string,
+  identity: string
+): string {
+  return `projection-scope-generation-${canonicalPublicationHash({
+    generationPublicId,
+    identity
+  })}`;
+}
+
 export async function resolveAvailablePublicationGenerationIdentity(
   sql: DatabaseClient,
   input: Readonly<{

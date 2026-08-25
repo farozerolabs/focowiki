@@ -130,6 +130,95 @@ const enabled = Boolean(databaseUrl && runOwner
     }]);
   });
 
+  it("supersedes a regressed target and activates its monotonic replacement",
+    async () => {
+      await seedKnowledgeBase("epoch-regression-kb");
+      await seedReadyGeneration({
+        knowledgeBaseId: "epoch-regression-kb",
+        generationPublicId: "epoch-regression-active",
+        baseGenerationPublicId: null,
+        targetFactEpoch: 11931,
+        objectId: "epoch-regression-active-object"
+      });
+      const activation = createPostgresDocumentPublicationActivation({
+        sql: database
+      });
+      await activation.activate({
+        generationPublicId: "epoch-regression-active",
+        expectedHeadVersion: 0,
+        activatedAt: "2026-08-25T00:00:00.000Z"
+      });
+      await seedReadyGeneration({
+        knowledgeBaseId: "epoch-regression-kb",
+        generationPublicId: "epoch-regression-stale",
+        baseGenerationPublicId: "epoch-regression-active",
+        targetFactEpoch: 11743,
+        objectId: "epoch-regression-stale-object"
+      });
+      const coordinator = createDocumentPublicationActivationCoordinator({
+        activation,
+        recovery: createPostgresDocumentPublicationRecovery(database)
+      });
+
+      await expect(coordinator.activate({
+        operation: "create",
+        generationPublicId: "epoch-regression-stale",
+        expectedHeadVersion: 1,
+        activatedAt: "2026-08-25T00:01:00.000Z"
+      })).resolves.toMatchObject({
+        state: "superseded",
+        errorCode: "publication_generation_stale_target"
+      });
+      await expect(sql<Array<{
+        active_generation_public_id: string;
+        active_fact_epoch: string;
+        stale_state: string;
+        stale_error: string;
+        object_id: string;
+      }>>`
+        SELECT head.active_generation_public_id, head.active_fact_epoch,
+               stale.state AS stale_state,
+               stale.safe_error_code AS stale_error,
+               page.object_id
+        FROM focowiki.knowledge_base_projection_heads head
+        JOIN focowiki.projection_publication_generations stale
+          ON stale.public_id = 'epoch-regression-stale'
+        JOIN focowiki.generated_page_heads page
+          ON page.knowledge_base_id = head.knowledge_base_id
+         AND page.normalized_path = 'index.md'
+        WHERE head.knowledge_base_id = 'epoch-regression-kb'
+      `).resolves.toEqual([{
+        active_generation_public_id: "epoch-regression-active",
+        active_fact_epoch: "11931",
+        stale_state: "obsolete",
+        stale_error: "publication_generation_stale_target",
+        object_id: "epoch-regression-active-object"
+      }]);
+
+      await seedReadyGeneration({
+        knowledgeBaseId: "epoch-regression-kb",
+        generationPublicId: "epoch-regression-replacement",
+        baseGenerationPublicId: "epoch-regression-active",
+        targetFactEpoch: 11931,
+        scopeGeneration: 11932,
+        objectId: "epoch-regression-replacement-object"
+      });
+      await expect(activation.activate({
+        generationPublicId: "epoch-regression-replacement",
+        expectedHeadVersion: 1,
+        activatedAt: "2026-08-25T00:02:00.000Z"
+      })).resolves.toMatchObject({
+        targetFactEpoch: 11931,
+        headVersion: 2
+      });
+      await expect(readVisible("epoch-regression-kb")).resolves.toEqual([{
+        active_generation_public_id: "epoch-regression-replacement",
+        head_version: "2",
+        object_id: "epoch-regression-replacement-object",
+        projection_generation_public_id: "epoch-regression-replacement"
+      }]);
+    });
+
   it("binds a related source page to its own snapshot revision", async () => {
     await seedKnowledgeBase("related-source-page-kb");
     for (const suffix of ["a", "b"] as const) {
@@ -905,6 +994,7 @@ const enabled = Boolean(databaseUrl && runOwner
     generationPublicId: string;
     baseGenerationPublicId: string | null;
     targetFactEpoch: number;
+    scopeGeneration?: number;
     objectId: string;
   }): Promise<void> {
     const scopePublicId = `${input.generationPublicId}-root-scope`;
@@ -941,7 +1031,8 @@ const enabled = Boolean(databaseUrl && runOwner
         output_fingerprint_sha256, validation_evidence, completed_at
       ) VALUES (
         ${scopePublicId}, ${input.generationPublicId}, ${input.knowledgeBaseId},
-        'root:index', 'root', 'index', ${input.targetFactEpoch}, 'completed',
+        'root:index', 'root', 'index',
+        ${input.scopeGeneration ?? input.targetFactEpoch}, 'completed',
         ${fingerprint}, ${fingerprint}, '{}'::jsonb,
         '2026-08-21T12:59:00.000Z'
       )

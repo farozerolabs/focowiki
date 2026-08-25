@@ -136,9 +136,10 @@ async function activateOnce(
       if (!identity) throw activationError("publication_generation_not_ready");
       const heads = await transaction<Array<{
         active_generation_public_id: string | null;
+        active_fact_epoch: number | string;
         head_version: number | string;
       }>>`
-        SELECT active_generation_public_id, head_version
+        SELECT active_generation_public_id, active_fact_epoch, head_version
         FROM focowiki.knowledge_base_projection_heads
         WHERE knowledge_base_id = ${identity.knowledge_base_id}
         FOR UPDATE
@@ -168,9 +169,12 @@ async function activateOnce(
         || Number(head.head_version) !== input.expectedHeadVersion) {
         throw activationError("publication_generation_stale_base");
       }
+      const targetFactEpoch = Number(generation.target_fact_epoch);
+      if (targetFactEpoch < Number(head.active_fact_epoch)) {
+        throw activationError("publication_generation_stale_target");
+      }
       await lockActivationReservations(transaction, input.generationPublicId);
       await assertGenerationClosure(transaction, input.generationPublicId);
-      const targetFactEpoch = Number(generation.target_fact_epoch);
       await advanceActivationEpoch({
         sql: transaction,
         knowledgeBaseId: generation.knowledge_base_id,

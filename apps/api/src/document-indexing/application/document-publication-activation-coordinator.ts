@@ -43,12 +43,15 @@ export function createDocumentPublicationActivationCoordinator<
         return { state: "active" as const, result };
       } catch (error) {
         const code = errorCode(error);
-        if (code === "publication_generation_stale_base") {
+        if (code === "publication_generation_stale_base"
+          || code === "publication_generation_stale_target") {
           const recovery = await input.recovery.recoverStaleBase({
             generationPublicId: request.generationPublicId,
             recoveredAt: request.activatedAt
           });
-          return { state: "superseded" as const, recovery };
+          return code === "publication_generation_stale_target"
+            ? { state: "superseded" as const, errorCode: code, recovery }
+            : { state: "superseded" as const, recovery };
         }
         if ((code === "publication_source_precondition_failed"
             || code === "publication_work_precondition_failed")
