@@ -17,6 +17,7 @@ describe("document publication recovery", () => {
     ["publication_work_precondition_failed", "supersession", "recompute_scope"],
     ["40P01", "contention", "defer_activation"],
     ["scope_generation_lease_lost", "lease_loss", "inspect_or_reclaim"],
+    ["scope_generation_deadline_exceeded", "lease_loss", "inspect_or_reclaim"],
     ["53000", "database_resource", "retry_infrastructure"],
     ["53100", "database_resource", "retry_infrastructure"],
     ["53200", "database_resource", "retry_infrastructure"],
@@ -53,6 +54,16 @@ describe("document publication recovery", () => {
   it("replans the second consecutive lease loss for one immutable input", () => {
     const decision = decideDocumentPublicationRecovery(
       "scope_generation_lease_lost"
+    );
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 1 }))
+      .toBe("inspect_or_reclaim");
+    expect(limitDocumentPublicationRecovery({ decision, attempt: 2 }))
+      .toBe("recompute_scope");
+  });
+
+  it("replans a scope after its second consecutive execution deadline", () => {
+    const decision = decideDocumentPublicationRecovery(
+      "scope_generation_deadline_exceeded"
     );
     expect(limitDocumentPublicationRecovery({ decision, attempt: 1 }))
       .toBe("inspect_or_reclaim");
