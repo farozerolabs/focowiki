@@ -955,8 +955,56 @@ const enabled = Boolean(databaseUrl && runOwner
         safe_error_code: "scope_generation_deadline_remediated",
         fact_state: "ready"
       }]);
+      await sql`
+        UPDATE focowiki.projection_fact_epochs
+        SET state = 'included'
+        WHERE knowledge_base_id = 'publication-kb'
+          AND fact_epoch = 14
+      `;
+      await sql`
+        UPDATE focowiki.projection_scope_generations
+        SET state = CASE WHEN scope_kind = '_graph'
+          THEN 'quarantined' ELSE 'waiting' END
+        WHERE publication_generation_public_id = ${generationId}
+      `;
+      await sql`
+        UPDATE focowiki.projection_publication_generations
+        SET state = 'quarantined',
+            safe_error_code =
+              'semantic_directory_navigation_candidate_limit_exceeded',
+            completed_at = NULL
+        WHERE public_id = ${generationId}
+      `;
       await expect(recovery.recoverRecoverableQuarantines({
         recoveredAt: "2026-08-21T12:07:05.000Z",
+        limit: 1
+      })).resolves.toEqual({
+        generationCount: 1,
+        releasedFactCount: 1,
+        supersededScopeCount: 2
+      });
+      await expect(sql<Array<{
+        generation_state: string;
+        safe_error_code: string;
+        fact_state: string;
+      }>>`
+        SELECT generation.state AS generation_state,
+               generation.safe_error_code, epoch.state AS fact_state
+        FROM focowiki.projection_publication_generations generation
+        JOIN focowiki.projection_generation_documents document
+          ON document.generation_public_id = generation.public_id
+        JOIN focowiki.projection_fact_epochs epoch
+          ON epoch.knowledge_base_id = generation.knowledge_base_id
+         AND epoch.mutation_public_id = document.mutation_public_id
+         AND epoch.fact_epoch = document.fact_epoch
+        WHERE generation.public_id = ${generationId}
+      `).resolves.toEqual([{
+        generation_state: "obsolete",
+        safe_error_code: "semantic_directory_navigation_limit_remediated",
+        fact_state: "ready"
+      }]);
+      await expect(recovery.recoverRecoverableQuarantines({
+        recoveredAt: "2026-08-21T12:07:06.000Z",
         limit: 1
       })).resolves.toEqual({
         generationCount: 0,
