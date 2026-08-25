@@ -19,13 +19,14 @@ import { buildDocumentPublicationAffectedClosure } from
   "../application/document-publication-affected-closure.js";
 import { createPostgresDocumentPublicationStrandedPlanReader } from
   "./postgres-document-publication-stranded-plan.js";
+import { createPostgresDocumentPublicationGeneration } from
+  "./postgres-document-publication-generation-identity.js";
 export function createPostgresDocumentPublicationCoordinator(
   sql: DatabaseClient
 ) {
   const strandedPlans = createPostgresDocumentPublicationStrandedPlanReader(sql);
   return {
     ...strandedPlans,
-
     async freezeReady(input: {
       knowledgeBaseId: string;
       now: string;
@@ -119,23 +120,22 @@ export function createPostgresDocumentPublicationCoordinator(
             document.factEpoch
           ])
         });
-        const generationPublicId = `projection-generation-${identity}`;
-        await transaction`
-          INSERT INTO focowiki.projection_publication_generations (
-            public_id, knowledge_base_id, base_generation_public_id,
-            target_fact_epoch, renderer_contract_version,
-            deterministic_changed_at, input_fingerprint_sha256,
-            planning_mode, full_rebuild_reason
-          ) VALUES (
-            ${generationPublicId}, ${knowledgeBaseId},
-            ${head.active_generation_public_id}, ${window.targetFactEpoch},
-            ${contractVersion(input.rendererContractVersion)},
-            ${window.deterministicChangedAt}, ${identity},
-            ${head.active_generation_public_id === null ? "initial" : "delta"},
-            ${head.active_generation_public_id === null
-              ? "empty_knowledge_base" : null}
-          )
-        `;
+        const generationIdentity = await createPostgresDocumentPublicationGeneration(
+          transaction as unknown as DatabaseClient,
+          {
+            knowledgeBaseId,
+            baseGenerationPublicId: head.active_generation_public_id,
+            targetFactEpoch: window.targetFactEpoch,
+            rendererContractVersion: contractVersion(
+              input.rendererContractVersion
+            ),
+            deterministicChangedAt: window.deterministicChangedAt,
+            inputFingerprintSha256: identity,
+            createdAt: now
+          }
+        );
+        if (!generationIdentity) return null;
+        const generationPublicId = generationIdentity.generationPublicId;
         await transaction`
           UPDATE focowiki.projection_publication_generations
           SET superseded_by_generation_public_id = ${generationPublicId},
