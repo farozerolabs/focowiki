@@ -1,2 +1,2 @@
 export const DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION =
-  "portable-okf-v4";
+  "portable-okf-v5";

@@ -1468,11 +1468,12 @@ const enabled = Boolean(databaseUrl && runOwner
         await sql`
           INSERT INTO focowiki.projection_fact_epochs (
             knowledge_base_id, fact_epoch, mutation_public_id,
-            source_file_public_id, source_revision_public_id, fact_kind, state
+            source_file_public_id, source_revision_public_id, fact_kind, state,
+            created_at
           ) VALUES (
             'publication-kb', ${factEpoch}, ${mutationPublicId},
             ${sourceFilePublicId}, ${sourceRevisionPublicId}, 'replace',
-            'included'
+            'included', '2026-08-25T12:08:00.000Z'
           )
         `;
         await sql`
@@ -1513,7 +1514,7 @@ const enabled = Boolean(databaseUrl && runOwner
       const recovery = createPostgresDocumentPublicationRecovery(database);
 
       await expect(recovery.recoverRecoverableQuarantines({
-        rendererContractVersion: "portable-okf-v4",
+        rendererContractVersion: "portable-okf-v5",
         recoveredAt: "2026-08-25T12:09:01.000Z",
         limit: 10
       })).resolves.toEqual({
@@ -1551,10 +1552,10 @@ const enabled = Boolean(databaseUrl && runOwner
         knowledgeBaseId: "publication-kb",
         now: "2026-08-25T12:09:02.000Z",
         contributorCap: 256,
-        rendererContractVersion: "portable-okf-v4"
+        rendererContractVersion: "portable-okf-v5"
       });
       expect(replacement).toMatchObject({
-        rendererContractVersion: "portable-okf-v4",
+        rendererContractVersion: "portable-okf-v5",
         documents: [
           expect.objectContaining({
             mutationPublicId: "portable-order-job-70",
@@ -1566,6 +1567,22 @@ const enabled = Boolean(databaseUrl && runOwner
           })
         ]
       });
+      await expect(recovery.recoverStrandedReplacements({
+        rendererContractVersion: "portable-okf-v5",
+        recoveredAt: "2026-08-25T12:09:02.500Z",
+        limit: 10
+      })).resolves.toMatchObject({
+        generationCount: 0,
+        replannedFactCount: 0
+      });
+      await expect(sql<Array<{ state: string }>>`
+        SELECT state
+        FROM focowiki.projection_fact_epochs
+        WHERE mutation_public_id IN (
+          'portable-order-job-70', 'portable-order-job-71'
+        )
+        ORDER BY fact_epoch
+      `).resolves.toEqual([{ state: "included" }, { state: "included" }]);
       await expect(sql<Array<{ count: number | string }>>`
         SELECT count(*) AS count
         FROM focowiki.projection_publication_generations
@@ -1749,6 +1766,14 @@ const enabled = Boolean(databaseUrl && runOwner
       await expect(recovery.recoverStrandedReplacements({
         rendererContractVersion: "portable-okf-v2",
         recoveredAt: "2026-08-21T12:10:08.000Z",
+        limit: 10
+      })).resolves.toMatchObject({
+        generationCount: 0,
+        replannedFactCount: 0
+      });
+      await expect(recovery.recoverStrandedReplacements({
+        rendererContractVersion: "portable-okf-v3",
+        recoveredAt: "2026-08-21T12:10:09.000Z",
         limit: 10
       })).resolves.toMatchObject({
         generationCount: 1,

@@ -171,16 +171,15 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
   return {
     async runOne(now = new Date().toISOString()): Promise<boolean> {
       const nowMilliseconds = Date.parse(now);
-      const stranded = nowMilliseconds >= nextRemediatedRecoveryAt
-        ? await recovery.recoverStrandedReplacements({
-          rendererContractVersion:
-            DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
+      const recovered = nowMilliseconds >= nextRemediatedRecoveryAt
+        ? await recovery.recoverRecoverableQuarantines({
           recoveredAt: now,
-          limit: INCOMPATIBLE_GENERATION_RECOVERY_LIMIT
+          limit: RECOVERABLE_QUARANTINE_RECOVERY_LIMIT,
+          rendererContractVersion:
+            DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
         }) : {
           generationCount: 0,
           releasedFactCount: 0,
-          replannedFactCount: 0,
           supersededScopeCount: 0
         };
       const incompatible = await recovery.recoverIncompatibleGenerations({
@@ -189,12 +188,15 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
         recoveredAt: now,
         limit: INCOMPATIBLE_GENERATION_RECOVERY_LIMIT
       });
-      const recovered = nowMilliseconds >= nextRemediatedRecoveryAt
-        ? await recovery.recoverRecoverableQuarantines({
-          recoveredAt: now,
-          limit: RECOVERABLE_QUARANTINE_RECOVERY_LIMIT,
+      const [planned, validated, activated] = await Promise.all([
+        planOne(now), validateOne(now), activateOne(now)
+      ]);
+      const stranded = nowMilliseconds >= nextRemediatedRecoveryAt
+        ? await recovery.recoverStrandedReplacements({
           rendererContractVersion:
-            DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
+            DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
+          recoveredAt: now,
+          limit: INCOMPATIBLE_GENERATION_RECOVERY_LIMIT
         }) : {
           generationCount: 0,
           releasedFactCount: 0,
@@ -218,9 +220,6 @@ export function createProductionDocumentPublicationCoordinatorRuntime(input: {
       if (incompatible.generationCount > 0) {
         input.observability?.publicationRecovery?.(incompatible);
       }
-      const [planned, validated, activated] = await Promise.all([
-        planOne(now), validateOne(now), activateOne(now)
-      ]);
       if (input.observability && nowMilliseconds >= nextBacklogObservationAt) {
         const backlogs = await readPublicationBacklogs(input.sql, now);
         backlogs.forEach((backlog) =>

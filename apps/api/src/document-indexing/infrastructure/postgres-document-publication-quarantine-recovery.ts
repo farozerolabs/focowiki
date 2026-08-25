@@ -149,6 +149,10 @@ export async function recoverPostgresDocumentPublicationQuarantines(
       UPDATE focowiki.projection_publication_generations
       SET state = 'obsolete', completed_at = ${recoveredAt},
           activation_next_eligible_at = NULL,
+          recovery_evidence = recovery_evidence || jsonb_build_object(
+            'outcome', 'quarantine_released',
+            'releasedAt', (${recoveredAt})::text
+          ),
           safe_error_code = CASE
             WHEN safe_error_code = 'changes_invalid'
               THEN 'navigation_change_limit_remediated'

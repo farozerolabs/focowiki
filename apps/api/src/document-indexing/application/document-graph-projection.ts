@@ -177,6 +177,6 @@ function compareLocalRelationship(
   right: Readonly<ProjectionRecord>
 ): number {
   return compareText(asString(left.targetPath), asString(right.targetPath))
-    || compareText(asString(left.direction), asString(right.direction))
-    || compareText(asString(left.relationType), asString(right.relationType));
+    || compareText(asString(left.relationType), asString(right.relationType))
+    || compareText(asString(left.direction), asString(right.direction));
 }

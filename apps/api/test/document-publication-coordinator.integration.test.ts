@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
 import { planDocumentPublicationGeneration } from
   "../src/document-indexing/application/document-publication-planner.js";
+import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
+  "../src/document-indexing/application/document-publication-renderer-contract.js";
 import { planDocumentPublicationActivationReservations } from
   "../src/document-indexing/application/document-publication-activation.js";
 import { createPostgresDocumentPublicationCoordinator } from
@@ -59,13 +61,13 @@ const enabled = Boolean(databaseUrl && runOwner
         knowledgeBaseId: "hot-kb",
         now: "2026-08-21T12:00:01.000Z",
         contributorCap: 2,
-        rendererContractVersion: "portable-okf-v3"
+        rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
       }),
       coordinator.freezeReady({
         knowledgeBaseId: "quiet-kb",
         now: "2026-08-21T12:00:01.000Z",
         contributorCap: 8,
-        rendererContractVersion: "portable-okf-v3"
+        rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
       })
     ]);
     expect(hot?.documents.map((item) => item.documentJobPublicId))
@@ -76,7 +78,7 @@ const enabled = Boolean(databaseUrl && runOwner
       knowledgeBaseId: "hot-kb",
       now: "2026-08-21T12:00:02.000Z",
       contributorCap: 8,
-      rendererContractVersion: "portable-okf-v3"
+      rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
     })).toBeNull();
     await expect(sql<Array<{ state: string; mutation_public_id: string }>>`
       SELECT state, mutation_public_id
@@ -152,7 +154,7 @@ const enabled = Boolean(databaseUrl && runOwner
         knowledgeBaseId,
         now,
         contributorCap: 8,
-        rendererContractVersion: "portable-okf-v3"
+        rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
       });
       const first = await freeze("2026-08-21T12:10:01.000Z");
       expect(first).not.toBeNull();
@@ -228,7 +230,8 @@ const enabled = Boolean(databaseUrl && runOwner
             input_fingerprint_sha256, output_fingerprint_sha256, completed_at
           ) VALUES (
             'epoch-recovery-active', ${knowledgeBaseId}, 11931,
-            'portable-okf-v3', '2026-08-25T00:00:00.000Z', 'active',
+            ${DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION},
+            '2026-08-25T00:00:00.000Z', 'active',
             ${"a".repeat(64)}, ${"b".repeat(64)},
             '2026-08-25T00:00:00.000Z'
           )
@@ -294,7 +297,7 @@ const enabled = Boolean(databaseUrl && runOwner
           knowledgeBaseId,
           now: "2026-08-25T00:01:01.000Z",
           contributorCap: 8,
-          rendererContractVersion: "portable-okf-v3"
+          rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
         });
 
       expect(frozen).toMatchObject({
@@ -317,7 +320,7 @@ const enabled = Boolean(databaseUrl && runOwner
     });
     expect(reclaimed).toMatchObject({
       generationPublicId: expect.stringMatching(/^projection-generation-/u),
-      rendererContractVersion: "portable-okf-v3",
+      rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
       documents: expect.arrayContaining([
         expect.objectContaining({
           documentJobPublicId: expect.stringMatching(/^(hot|quiet)-job-/u),
@@ -451,7 +454,7 @@ const enabled = Boolean(databaseUrl && runOwner
         knowledgeBaseId: "delete-kb",
         now: "2026-08-21T12:00:01.000Z",
         contributorCap: 8,
-        rendererContractVersion: "portable-okf-v3"
+        rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION
       });
     expect(frozen?.documents).toEqual([expect.objectContaining({
       mutationPublicId: "delete-mutation-1",
@@ -540,7 +543,7 @@ const enabled = Boolean(databaseUrl && runOwner
       generationPublicId: generation.public_id,
       baseGenerationPublicId: null,
       targetFactEpoch: Number(generation.target_fact_epoch),
-      rendererContractVersion: "portable-okf-v3",
+      rendererContractVersion: DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION,
       deterministicChangedAt:
         generation.deterministic_changed_at.toISOString(),
       documents

@@ -31,6 +31,45 @@ describe("portable bundle version 2 schema snapshots", () => {
     }));
   });
 
+  it("orders term routes by their term ranges while keeping stable paths", () => {
+    expect(() => assertPortableRecord("term_bucket", {
+      formatVersion: 2,
+      title: "han term routes",
+      bucket: "han",
+      routes: [{
+        path: "_index/terms/han/han-terms-part-0002.json",
+        firstTerm: "中",
+        lastTerm: "中",
+        recordCount: 1
+      }, {
+        path: "_index/terms/han/han-terms-part-0001.json",
+        firstTerm: "安",
+        lastTerm: "安",
+        recordCount: 1
+      }]
+    })).not.toThrow();
+
+    expect(() => assertPortableRecord("term_bucket", {
+      formatVersion: 2,
+      title: "han term routes",
+      bucket: "han",
+      routes: [{
+        path: "_index/terms/han/han-terms-part-0001.json",
+        firstTerm: "安",
+        lastTerm: "安",
+        recordCount: 1
+      }, {
+        path: "_index/terms/han/han-terms-part-0002.json",
+        firstTerm: "中",
+        lastTerm: "中",
+        recordCount: 1
+      }]
+    })).toThrow(expect.objectContaining({
+      code: "portable_record_order_invalid",
+      recordField: "routes.firstTerm"
+    }));
+  });
+
   it("accepts source-derived navigation terms that resemble internal prefixes", () => {
     expect(() => assertPortableRecord("term_postings", {
       formatVersion: 2,

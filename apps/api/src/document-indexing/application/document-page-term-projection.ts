@@ -141,6 +141,10 @@ export function buildDocumentNavigationTermBucketRouterPage(
     recordCount: number;
   }>[]
 ) {
+  const ordered = [...descriptors].sort((left, right) =>
+    compareText(left.firstKey, right.firstKey)
+      || compareText(left.lastKey, right.lastKey)
+      || compareText(left.path, right.path));
   return jsonDocumentSemanticPage({
     logicalPath: `_index/terms/${bucket}/index.json`, entryKind: "index",
     family: "term_bucket",
@@ -148,7 +152,7 @@ export function buildDocumentNavigationTermBucketRouterPage(
       formatVersion: 2,
       title: `${bucket} term routes`,
       bucket,
-      routes: descriptors.map((descriptor) => ({
+      routes: ordered.map((descriptor) => ({
         path: descriptor.path,
         firstTerm: descriptor.firstKey,
         lastTerm: descriptor.lastKey,
