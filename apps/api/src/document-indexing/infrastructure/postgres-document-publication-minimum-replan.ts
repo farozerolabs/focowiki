@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
+import { monotonicDocumentPublicationTargetFactEpoch } from
+  "../application/document-publication-window.js";
 import { createPostgresDocumentPublicationGeneration } from
   "./postgres-document-publication-generation-identity.js";
 
@@ -23,11 +25,13 @@ export async function createMinimumCompatiblePublicationReplacement(
     target_fact_epoch: number | string;
     deterministic_changed_at: Date | string;
     active_generation_public_id: string | null;
+    active_fact_epoch: number | string;
     head_version: number | string;
   }>>`
     SELECT generation.public_id, generation.knowledge_base_id,
            generation.target_fact_epoch, generation.deterministic_changed_at,
-           head.active_generation_public_id, head.head_version
+           head.active_generation_public_id, head.active_fact_epoch,
+           head.head_version
     FROM focowiki.projection_publication_generations generation
     JOIN focowiki.knowledge_base_projection_heads head
       ON head.knowledge_base_id = generation.knowledge_base_id
@@ -69,11 +73,16 @@ export async function createMinimumCompatiblePublicationReplacement(
   if (documents.length === 0) {
     throw minimumReplanError("publication_replacement_documents_missing");
   }
+  const targetFactEpoch = monotonicDocumentPublicationTargetFactEpoch(
+    Number(generation.target_fact_epoch),
+    Number(generation.active_fact_epoch)
+  );
   const identity = createHash("sha256").update(JSON.stringify({
     supersededGenerationPublicId: generation.public_id,
     knowledgeBaseId: generation.knowledge_base_id,
     base: generation.active_generation_public_id,
     headVersion: Number(generation.head_version),
+    targetFactEpoch,
     rendererContractVersion: input.rendererContractVersion,
     documents: documents.map((document) => [
       document.mutation_public_id,
@@ -92,7 +101,7 @@ export async function createMinimumCompatiblePublicationReplacement(
   const replacement = await createPostgresDocumentPublicationGeneration(sql, {
     knowledgeBaseId: generation.knowledge_base_id,
     baseGenerationPublicId: generation.active_generation_public_id,
-    targetFactEpoch: Number(generation.target_fact_epoch),
+    targetFactEpoch,
     rendererContractVersion: input.rendererContractVersion,
     deterministicChangedAt: new Date(generation.deterministic_changed_at)
       .toISOString(),

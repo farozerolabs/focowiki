@@ -1,8 +1,10 @@
-import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
 import type { DocumentPublicationFactDelta } from "../application/document-publication-planner.js";
 import { documentPublicationScopeMembers } from "../application/document-publication-snapshot-members.js";
-import { selectReadyDocumentPublicationWindow } from "../application/document-publication-window.js";
+import {
+  monotonicDocumentPublicationTargetFactEpoch,
+  selectReadyDocumentPublicationWindow
+} from "../application/document-publication-window.js";
 import {
   assertRepositoryIdentity,
   assertRepositoryPositiveInteger,
@@ -19,7 +21,11 @@ import { buildDocumentPublicationAffectedClosure } from
   "../application/document-publication-affected-closure.js";
 import { createPostgresDocumentPublicationStrandedPlanReader } from
   "./postgres-document-publication-stranded-plan.js";
-import { createPostgresDocumentPublicationGeneration } from
+import {
+  canonicalPublicationHash,
+  createPostgresDocumentPublicationGeneration,
+  publicationScopePublicId
+} from
   "./postgres-document-publication-generation-identity.js";
 export function createPostgresDocumentPublicationCoordinator(
   sql: DatabaseClient
@@ -52,9 +58,10 @@ export function createPostgresDocumentPublicationCoordinator(
         `;
         const heads = await transaction<Array<{
           active_generation_public_id: string | null;
+          active_fact_epoch: number | string;
           head_version: number | string;
         }>>`
-          SELECT active_generation_public_id, head_version
+          SELECT active_generation_public_id, active_fact_epoch, head_version
           FROM focowiki.knowledge_base_projection_heads
           WHERE knowledge_base_id = ${knowledgeBaseId}
           FOR UPDATE
@@ -108,10 +115,13 @@ export function createPostgresDocumentPublicationCoordinator(
         });
         if (!window) return null;
         const head = heads[0]!;
-        const identity = canonicalHash({
+        const targetFactEpoch = monotonicDocumentPublicationTargetFactEpoch(
+          window.targetFactEpoch, Number(head.active_fact_epoch));
+        const identity = canonicalPublicationHash({
           knowledgeBaseId,
           base: head.active_generation_public_id,
           headVersion: Number(head.head_version),
+          targetFactEpoch,
           rendererContractVersion: input.rendererContractVersion,
           documents: window.documents.map((document) => [
             document.mutationPublicId,
@@ -125,7 +135,7 @@ export function createPostgresDocumentPublicationCoordinator(
           {
             knowledgeBaseId,
             baseGenerationPublicId: head.active_generation_public_id,
-            targetFactEpoch: window.targetFactEpoch,
+            targetFactEpoch,
             rendererContractVersion: contractVersion(
               input.rendererContractVersion
             ),
@@ -153,7 +163,7 @@ export function createPostgresDocumentPublicationCoordinator(
               'publication_renderer_contract_incompatible',
               'scope_generation_lease_lost'
             )
-            AND target_fact_epoch <= ${window.targetFactEpoch}
+            AND target_fact_epoch <= ${targetFactEpoch}
         `;
         const documents = window.documents.map((document) => ({
           generation_public_id: generationPublicId,
@@ -191,7 +201,7 @@ export function createPostgresDocumentPublicationCoordinator(
         return {
           generationPublicId,
           baseGenerationPublicId: head.active_generation_public_id,
-          targetFactEpoch: window.targetFactEpoch,
+          targetFactEpoch,
           rendererContractVersion: input.rendererContractVersion,
           deterministicChangedAt: window.deterministicChangedAt,
           inputFingerprintSha256: identity,
@@ -353,14 +363,14 @@ export function createPostgresDocumentPublicationCoordinator(
           Number(row.maximum_generation ?? 0)
         ]));
         const records = input.scopes.map((scope) => ({
-          public_id: scopePublicId(input.generationPublicId, scope.identity),
+          public_id: publicationScopePublicId(input.generationPublicId, scope.identity),
           publication_generation_public_id: input.generationPublicId,
           knowledge_base_id: generation.knowledge_base_id,
           scope_identity: scope.identity,
           scope_kind: scope.kind,
           scope_key: scope.key,
           scope_generation: (prior.get(scope.identity) ?? 0) + 1,
-          input_snapshot_fingerprint_sha256: canonicalHash({
+          input_snapshot_fingerprint_sha256: canonicalPublicationHash({
             generation: generation.input_fingerprint_sha256,
             scope: scope.identity,
             members: membersByScopeIdentity.get(scope.identity) ?? []
@@ -479,17 +489,6 @@ function mapReadyFact(row: ReadyFactRow) {
     readyAt: new Date(row.created_at).toISOString()
   };
 }
-function scopePublicId(generationPublicId: string, identity: string): string {
-  return `projection-scope-generation-${canonicalHash({
-    generationPublicId,
-    identity
-  })}`;
-}
-
-function canonicalHash(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
 function contractVersion(value: string): string {
   if (!value || Buffer.byteLength(value, "utf8") > 128) {
     throw repositoryContractError("renderer_contract_version_invalid");
