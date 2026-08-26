@@ -36,6 +36,7 @@ const enabled = Boolean(databaseUrl && runOwner
     databaseCreated = true;
     await applyStorageVnextTestMigrations(sql);
     await seedActiveDocument();
+    await seedLargeDirectoryPages();
   }, 120_000);
 
   it("reads only the active base pages owned by the requested scope", async () => {
@@ -58,6 +59,58 @@ const enabled = Boolean(databaseUrl && runOwner
     expect(root.map((page) => page.logicalPath)).toEqual(["index.md"]);
     expect(source.map((page) => page.logicalPath)).toEqual([
       "pages/active.md"
+    ]);
+  });
+
+  it("does not load document bodies for large semantic directory navigation", async () => {
+    const pages = await readPostgresDocumentPublicationJobBasePages(database, {
+      publicId: "large-semantic-directory",
+      knowledgeBaseId: "single-activation-kb",
+      kind: "directory",
+      key: "pages/large-directory",
+      requiredSequence: 1,
+      renderedSequence: 0
+    });
+
+    expect(pages).toEqual([]);
+  });
+
+  it("does not load graph documents for per-file directory navigation", async () => {
+    const pages = await readPostgresDocumentPublicationJobBasePages(database, {
+      publicId: "large-per-file-graph-directory",
+      knowledgeBaseId: "single-activation-kb",
+      kind: "_graph",
+      key: "file-directory:pages/large-directory",
+      requiredSequence: 1,
+      renderedSequence: 0
+    });
+
+    expect(pages).toEqual([]);
+  });
+
+  it("keeps machine index and graph base resources available", async () => {
+    const index = await readPostgresDocumentPublicationJobBasePages(database, {
+      publicId: "large-machine-index-directory",
+      knowledgeBaseId: "single-activation-kb",
+      kind: "_index",
+      key: "pages:pages/large-directory",
+      requiredSequence: 1,
+      renderedSequence: 0
+    });
+    const graph = await readPostgresDocumentPublicationJobBasePages(database, {
+      publicId: "large-machine-graph-directory",
+      knowledgeBaseId: "single-activation-kb",
+      kind: "_graph",
+      key: "directory:pages/large-directory",
+      requiredSequence: 1,
+      renderedSequence: 0
+    });
+
+    expect(index.map((page) => page.logicalPath)).toEqual([
+      "_index/pages/large-directory/index.json"
+    ]);
+    expect(graph.map((page) => page.logicalPath)).toEqual([
+      "_graph/by-directory/large-directory/index.json"
     ]);
   });
 
@@ -471,6 +524,55 @@ const enabled = Boolean(databaseUrl && runOwner
          'source-page', 'single-activation-source',
          'single-activation-revision', NULL, 'single-activation-source-object',
          ${"0".repeat(64)}, 30, 0)
+    `;
+  }
+
+  async function seedLargeDirectoryPages(): Promise<void> {
+    await sql.unsafe(`
+      INSERT INTO focowiki.generated_page_heads (
+        knowledge_base_id, logical_path, normalized_path, entry_kind,
+        source_file_public_id, source_revision_public_id,
+        page_candidate_public_id, object_id, checksum_sha256, byte_count,
+        activation_revision
+      )
+      SELECT
+        'single-activation-kb',
+        'pages/large-directory/document-' || lpad(sequence::text, 5, '0')
+          || '.md',
+        'pages/large-directory/document-' || lpad(sequence::text, 5, '0')
+          || '.md',
+        'source-page', NULL, NULL, NULL, 'single-activation-old-object',
+        '${"1".repeat(64)}', 10, 0
+      FROM generate_series(1, 10001) AS sequence
+    `);
+    await sql`
+      INSERT INTO focowiki.generated_page_heads (
+        knowledge_base_id, logical_path, normalized_path, entry_kind,
+        source_file_public_id, source_revision_public_id,
+        page_candidate_public_id, object_id, checksum_sha256, byte_count,
+        activation_revision
+      ) VALUES
+      (
+        'single-activation-kb',
+        '_graph/by-file/large-directory/document.json',
+        '_graph/by-file/large-directory/document.json',
+        'graph-file', NULL, NULL, NULL, 'single-activation-old-object',
+        ${"1".repeat(64)}, 10, 0
+      ),
+      (
+        'single-activation-kb',
+        '_index/pages/large-directory/index.json',
+        '_index/pages/large-directory/index.json',
+        'machine-index', NULL, NULL, NULL, 'single-activation-old-object',
+        ${"1".repeat(64)}, 10, 0
+      ),
+      (
+        'single-activation-kb',
+        '_graph/by-directory/large-directory/index.json',
+        '_graph/by-directory/large-directory/index.json',
+        'graph-index', NULL, NULL, NULL, 'single-activation-old-object',
+        ${"1".repeat(64)}, 10, 0
+      )
     `;
   }
 
