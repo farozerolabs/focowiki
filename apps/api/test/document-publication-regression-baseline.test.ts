@@ -5,8 +5,8 @@ describe("publication projection regression baseline", () => {
     const baseline = {
       activeDocumentCount: 11_862,
       affectedDocumentCount: 18,
-      activeFactEpoch: 11_913,
-      targetFactEpoch: 11_931,
+      activeReadinessSequence: 11_913,
+      targetReadinessSequence: 11_931,
       rowsRead: null,
       recordsRendered: null,
       objectPutCount: 24,
@@ -15,7 +15,8 @@ describe("publication projection regression baseline", () => {
       observedLeaseGenerations: [4, 5, 6]
     } as const;
 
-    expect(baseline.targetFactEpoch - baseline.activeFactEpoch)
+    expect(baseline.targetReadinessSequence
+      - baseline.activeReadinessSequence)
       .toBe(baseline.affectedDocumentCount);
     expect(baseline).not.toHaveProperty("knowledgeBaseId");
     expect(baseline).not.toHaveProperty("sourceBody");

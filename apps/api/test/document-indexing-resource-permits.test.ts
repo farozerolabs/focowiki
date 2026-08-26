@@ -188,7 +188,7 @@ describe("document resource permits", () => {
     const nestedHandlers = [
       "production-document-content-projection-work-handler.ts",
       "production-document-knowledge-projection-work-handler.ts",
-      "production-document-publication-coordinator-runtime.ts",
+      "production-document-publication-job-runtime.ts",
       "production-document-semantic-search-projection.ts"
     ].map((file) => readFileSync(resolve(
       import.meta.dirname,
@@ -208,6 +208,18 @@ describe("document resource permits", () => {
       "../src/document-indexing/infrastructure/production-document-content-projection-work-handler.ts"
     ), "utf8");
     expect(contentProjection).not.toContain("request.releasePrimaryLane();");
+    const fixedProcessor = readFileSync(resolve(
+      import.meta.dirname,
+      "../src/document-indexing/infrastructure/production-document-fixed-processor.ts"
+    ), "utf8");
+    const objectWriter = readFileSync(resolve(
+      import.meta.dirname,
+      "../src/document-indexing/infrastructure/production-document-scope-object-writer.ts"
+    ), "utf8");
+    expect(fixedProcessor).toContain(
+      '"postgres_s3",\n          () => resources.writer.putVerified(request)'
+    );
+    expect(objectWriter).toContain("PROJECTION_OBJECT_WRITE_BATCH_SIZE = 1");
   });
 });
 

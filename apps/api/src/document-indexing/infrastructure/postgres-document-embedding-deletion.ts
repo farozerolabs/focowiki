@@ -14,25 +14,12 @@ export async function retireEmbeddingArtifacts(
       WHERE knowledge_base_id = ${action.knowledgeBaseId}
         AND source_file_public_id = ANY(${sourceIds}::text[])
     )
-    DELETE FROM focowiki.embedding_artifact_owners owner
-    USING focowiki.embedding_artifacts artifact
-    WHERE owner.knowledge_base_id = ${action.knowledgeBaseId}
-      AND owner.artifact_public_id = artifact.public_id
-      AND (
-        ${allKnowledgeBaseArtifacts}
-        OR artifact.source_revision_public_id IN (
-          SELECT public_id FROM affected_revisions
-        )
-      )
-  `;
-  await sql`
-    WITH affected_revisions AS (
-      SELECT public_id FROM focowiki.source_revisions
-      WHERE knowledge_base_id = ${action.knowledgeBaseId}
-        AND source_file_public_id = ANY(${sourceIds}::text[])
+    INSERT INTO focowiki.document_deletion_embedding_artifacts (
+      operation_public_id, knowledge_base_id, artifact_public_id
     )
-    UPDATE focowiki.embedding_artifacts artifact
-    SET state = 'orphaned', deleted_at = NULL
+    SELECT ${action.operationPublicId}, ${action.knowledgeBaseId},
+           artifact.public_id
+    FROM focowiki.embedding_artifacts artifact
     WHERE artifact.knowledge_base_id = ${action.knowledgeBaseId}
       AND (
         ${allKnowledgeBaseArtifacts}
@@ -40,6 +27,24 @@ export async function retireEmbeddingArtifacts(
           SELECT public_id FROM affected_revisions
         )
       )
+    ON CONFLICT (operation_public_id, artifact_public_id) DO NOTHING
+  `;
+  await sql`
+    DELETE FROM focowiki.embedding_artifact_owners owner
+    USING focowiki.embedding_artifacts artifact,
+          focowiki.document_deletion_embedding_artifacts deletion
+    WHERE owner.knowledge_base_id = ${action.knowledgeBaseId}
+      AND owner.artifact_public_id = artifact.public_id
+      AND deletion.operation_public_id = ${action.operationPublicId}
+      AND deletion.artifact_public_id = artifact.public_id
+  `;
+  await sql`
+    UPDATE focowiki.embedding_artifacts artifact
+    SET state = 'orphaned', deleted_at = NULL
+    FROM focowiki.document_deletion_embedding_artifacts deletion
+    WHERE deletion.operation_public_id = ${action.operationPublicId}
+      AND deletion.artifact_public_id = artifact.public_id
+      AND artifact.knowledge_base_id = ${action.knowledgeBaseId}
   `;
 }
 
@@ -49,22 +54,16 @@ export async function purgeRetiredEmbeddingArtifacts(
   pageSize: number,
   now: string
 ): Promise<number> {
-  const allKnowledgeBaseArtifacts = action.targetKind === "knowledge_base";
   const rows = await sql<Array<{ resource_public_id: string }>>`
     WITH candidates AS (
       SELECT artifact.public_id
       FROM focowiki.embedding_artifacts artifact
+      JOIN focowiki.document_deletion_embedding_artifacts deletion
+        ON deletion.knowledge_base_id = artifact.knowledge_base_id
+       AND deletion.artifact_public_id = artifact.public_id
       WHERE artifact.knowledge_base_id = ${action.knowledgeBaseId}
+        AND deletion.operation_public_id = ${action.operationPublicId}
         AND artifact.state = 'orphaned'
-        AND (
-          ${allKnowledgeBaseArtifacts}
-          OR artifact.source_revision_public_id IS NOT NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM focowiki.source_revisions revision
-              WHERE revision.knowledge_base_id = artifact.knowledge_base_id
-                AND revision.public_id = artifact.source_revision_public_id
-            )
-        )
         AND NOT EXISTS (
           SELECT 1 FROM focowiki.embedding_artifact_owners owner
           WHERE owner.artifact_public_id = artifact.public_id

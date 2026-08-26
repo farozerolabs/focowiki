@@ -94,6 +94,10 @@ export async function releasePostgresDocumentPageCandidates(input: {
         WHERE candidate.object_id = registration.object_id
       )
       AND NOT EXISTS (
+        SELECT 1 FROM focowiki.generated_page_heads head
+        WHERE head.object_id = registration.object_id
+      )
+      AND NOT EXISTS (
         SELECT 1 FROM focowiki.upload_entries entry
         WHERE entry.object_id = registration.object_id
       )
@@ -102,9 +106,11 @@ export async function releasePostgresDocumentPageCandidates(input: {
         WHERE artifact.object_id = registration.object_id
       )
       AND NOT EXISTS (
-        SELECT 1
-        FROM focowiki.projection_scope_generation_object_refs reference
-        WHERE reference.object_id = registration.object_id
+        SELECT 1 FROM focowiki.publication_job_outputs output
+        JOIN focowiki.publication_jobs job
+          ON job.public_id = output.job_public_id
+        WHERE output.object_id = registration.object_id
+          AND job.outcome = 'pending'
       )
     RETURNING registration.object_id
   `;

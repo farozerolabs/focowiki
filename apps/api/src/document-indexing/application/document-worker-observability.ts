@@ -21,9 +21,9 @@ export function createDocumentWorkerObservability(input: {
   write(event: WorkerLogEvent): void;
 }) {
   let previousQueueDepth: number | null = null;
-  const previousPublicationBacklog = new Map<string, string>();
   let previousCleanupSignature: string | null = null;
-
+  const write = (event: string, fields: Record<string, unknown>) =>
+    input.write({ level: "info", event, fields });
   return {
     work(fields: {
       event: "claimed" | "completed" | "waiting_on_projection"
@@ -40,39 +40,20 @@ export function createDocumentWorkerObservability(input: {
     }) {
       identity(fields.workPublicId);
       identity(fields.documentJobPublicId);
-      if (fields.errorCode !== null && !/^[A-Za-z0-9_]{1,128}$/u.test(
-        fields.errorCode
-      )) throw new Error("Document worker error code is invalid");
-      if (fields.errorConstraint !== undefined
-        && fields.errorConstraint !== null
-        && !/^[A-Za-z0-9_]{1,128}$/u.test(fields.errorConstraint)) {
-        throw new Error("Document worker error constraint is invalid");
-      }
+      optionalToken(fields.errorCode, "error code");
+      optionalToken(fields.errorConstraint, "error constraint");
       validateDiagnosticPath(fields.errorResource);
       validateDiagnosticPath(fields.errorTarget);
       write(`worker.document_work_${fields.event}`, {
-        workPublicId: fields.workPublicId,
-        documentJobPublicId: fields.documentJobPublicId,
-        workKind: fields.workKind,
-        resourceLane: fields.resourceLane,
-        attemptCount: metric(fields.attemptCount),
-        errorCode: fields.errorCode,
-        ...(fields.errorConstraint === undefined
-          ? {} : { errorConstraint: fields.errorConstraint }),
-        ...(fields.errorResource === undefined
-          ? {} : { errorResource: fields.errorResource }),
-        ...(fields.errorTarget === undefined
-          ? {} : { errorTarget: fields.errorTarget })
+        ...fields, attemptCount: metric(fields.attemptCount)
       });
     },
     queue(fields: { waiting: number; oldestAgeMs: number }) {
       const waiting = metric(fields.waiting);
-      const oldestAgeMs = metric(fields.oldestAgeMs);
       if (previousQueueDepth === waiting) return;
       previousQueueDepth = waiting;
       write("worker.queue_metrics", {
-        waiting,
-        oldestAgeMs
+        waiting, oldestAgeMs: metric(fields.oldestAgeMs)
       });
     },
     job(fields: {
@@ -86,20 +67,13 @@ export function createDocumentWorkerObservability(input: {
       errorCode: string | null;
     }) {
       identity(fields.jobPublicId);
-      if (fields.errorCode !== null && !/^[A-Za-z0-9_]{1,128}$/u.test(
-        fields.errorCode
-      )) {
-        throw new Error("Document worker error code is invalid");
-      }
+      optionalToken(fields.errorCode, "error code");
       write(`worker.document_${fields.event}`, {
-        jobPublicId: fields.jobPublicId,
-        state: fields.state,
-        blockingWorkKind: fields.blockingWorkKind,
+        ...fields,
         attemptCount: metric(fields.attemptCount),
         queueAgeMs: metric(fields.queueAgeMs),
         serviceTimeMs: fields.serviceTimeMs === null
-          ? null : metric(fields.serviceTimeMs),
-        errorCode: fields.errorCode
+          ? null : metric(fields.serviceTimeMs)
       });
     },
     provider(fields: {
@@ -109,280 +83,70 @@ export function createDocumentWorkerObservability(input: {
       outcome: "success" | "failure";
     }) {
       write("worker.provider_metrics", {
-        resource: fields.resource,
+        ...fields,
         waitTimeMs: metric(fields.waitTimeMs),
-        serviceTimeMs: metric(fields.serviceTimeMs),
-        outcome: fields.outcome
+        serviceTimeMs: metric(fields.serviceTimeMs)
       });
     },
     providerFailure(fields: ProviderRequestFailureDiagnostic) {
-      input.write({
-        level: "error",
-        event: "provider.request_failed",
-        fields: { ...fields }
-      });
+      input.write({ level: "error", event: "provider.request_failed",
+        fields: { ...fields } });
     },
     ingestionFailure(fields: IngestionFailureFields) {
-      input.write({
-        level: "error",
-        event: "ingestion.stage_failed",
-        fields: { ...fields }
-      });
+      input.write({ level: "error", event: "ingestion.stage_failed",
+        fields: { ...fields } });
     },
-    activation(fields: {
-      attempt: number;
-      outcome: "committed" | "conflict";
-    }) {
+    activation(fields: { attempt: number; outcome: "committed" | "conflict" }) {
       write("worker.activation_attempt", {
-        attempt: metric(fields.attempt),
-        outcome: fields.outcome
+        attempt: metric(fields.attempt), outcome: fields.outcome
       });
     },
     publication(fields: {
-      event: "planned" | "validated" | "activated" | "deferred"
-        | "superseded" | "scope_failed";
+      event: "claimed" | "manifest_persisted" | "activated"
+        | "retrying" | "failed";
       knowledgeBaseId: string;
-      generationPublicId: string;
-      scopeKind: string | null;
-      waitingCount: number;
+      jobPublicId: string;
+      itemCount: number;
+      attemptCount: number;
       durationMs: number;
-      contentionCount: number;
       objectPutCount: number;
       objectReuseCount: number;
+      objectRequestCount: number;
+      objectAttemptedBytes: number;
       errorCode: string | null;
     }) {
       identity(fields.knowledgeBaseId);
-      identity(fields.generationPublicId);
-      if (fields.scopeKind !== null
-        && !/^[A-Za-z0-9_:-]{1,128}$/u.test(fields.scopeKind)) {
-        throw new Error("Document publication scope kind is invalid");
-      }
-      if (fields.errorCode !== null
-        && !/^[A-Za-z0-9_]{1,128}$/u.test(fields.errorCode)) {
-        throw new Error("Document publication error code is invalid");
-      }
-      write(`worker.publication_${fields.event}`, {
-        knowledgeBaseId: fields.knowledgeBaseId,
-        generationPublicId: fields.generationPublicId,
-        scopeKind: fields.scopeKind,
-        waitingCount: metric(fields.waitingCount),
-        durationMs: metric(fields.durationMs),
-        contentionCount: metric(fields.contentionCount),
-        objectPutCount: metric(fields.objectPutCount),
-        objectReuseCount: metric(fields.objectReuseCount),
-        errorCode: fields.errorCode
-      });
-    },
-    publicationBacklog(fields: {
-      knowledgeBaseId: string;
-      waitingScopeCount: number;
-      runningScopeCount: number;
-      dirtyFactCount: number;
-      oldestAgeMs: number;
-      statusRegressionCount: number;
-    }) {
-      identity(fields.knowledgeBaseId);
-      const normalized = {
-        knowledgeBaseId: fields.knowledgeBaseId,
-        waitingScopeCount: metric(fields.waitingScopeCount),
-        runningScopeCount: metric(fields.runningScopeCount),
-        dirtyFactCount: metric(fields.dirtyFactCount),
-        oldestAgeMs: metric(fields.oldestAgeMs),
-        statusRegressionCount: metric(fields.statusRegressionCount)
-      };
-      const signature = JSON.stringify(normalized);
-      if (previousPublicationBacklog.get(fields.knowledgeBaseId) === signature) {
-        return;
-      }
-      previousPublicationBacklog.set(fields.knowledgeBaseId, signature);
-      write("worker.publication_backlog", normalized);
-    },
-    publicationRecovery(fields: {
-      generationCount: number;
-      releasedFactCount: number;
-      replannedFactCount?: number;
-      supersededScopeCount: number;
-    }) {
-      write("worker.publication_recovery", {
-        generationCount: metric(fields.generationCount),
-        releasedFactCount: metric(fields.releasedFactCount),
-        ...(fields.replannedFactCount === undefined ? {} : {
-          replannedFactCount: metric(fields.replannedFactCount)
-        }),
-        supersededScopeCount: metric(fields.supersededScopeCount)
-      });
-    },
-    publicationScope(fields: {
-      event: "claimed" | "completed" | "failed" | "fenced" | "recovered";
-      knowledgeBaseId: string;
-      generationPublicId: string;
-      scopeKind: string;
-      safeScopeKeyHash: string;
-      targetFactEpoch: number;
-      activeFactEpoch: number;
-      scopeGeneration: number;
-      leaseGeneration: number;
-      leaseLossCount?: number;
-      durationMs: number;
-      errorCode: string | null;
-      errorRecordFamily?: string | null;
-      errorRecordField?: string | null;
-    }) {
-      identity(fields.knowledgeBaseId);
-      identity(fields.generationPublicId);
-      safeToken(fields.scopeKind, "scope kind");
-      if (!/^[0-9a-f]{64}$/u.test(fields.safeScopeKeyHash)) {
-        throw new Error("Document publication scope key hash is invalid");
-      }
-      if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
-      if (fields.errorRecordFamily) {
-        safeToken(fields.errorRecordFamily, "error record family");
-      }
-      if (fields.errorRecordField
-        && !/^[a-z_.]{1,128}$/u.test(fields.errorRecordField)) {
-        throw new Error("Document publication error record field is invalid");
-      }
-      const targetFactEpoch = metric(fields.targetFactEpoch);
-      const activeFactEpoch = metric(fields.activeFactEpoch);
-      write(`worker.publication_scope_${fields.event}`, {
-        knowledgeBaseId: fields.knowledgeBaseId,
-        generationPublicId: fields.generationPublicId,
-        scopeKind: fields.scopeKind,
-        safeScopeKeyHash: fields.safeScopeKeyHash,
-        targetFactEpoch,
-        activeFactEpoch,
-        scopeLag: Math.max(0, targetFactEpoch - activeFactEpoch),
-        scopeGeneration: metric(fields.scopeGeneration),
-        leaseGeneration: metric(fields.leaseGeneration),
-        leaseLossCount: metric(fields.leaseLossCount ?? 0),
-        durationMs: metric(fields.durationMs),
-        errorCode: fields.errorCode,
-        ...(fields.errorRecordFamily === undefined ? {} : {
-          errorRecordFamily: fields.errorRecordFamily
-        }),
-        ...(fields.errorRecordField === undefined ? {} : {
-          errorRecordField: fields.errorRecordField
-        })
-      });
-    },
-    publicationScopeStage(fields: {
-      knowledgeBaseId: string | null;
-      generationPublicId: string | null;
-      scopeGenerationPublicId: string;
-      stage: "snapshot_load" | "render" | "database_persist";
-      outcome: "completed" | "failed";
-      durationMs: number;
-      errorCode: string | null;
-      heapUsedBytes?: number;
-      heapLimitBytes?: number;
-      rssBytes?: number;
-    }) {
-      if (fields.knowledgeBaseId !== null) identity(fields.knowledgeBaseId);
-      if (fields.generationPublicId !== null) identity(fields.generationPublicId);
-      identity(fields.scopeGenerationPublicId);
-      if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
-      write("worker.publication_scope_stage", {
+      identity(fields.jobPublicId);
+      optionalToken(fields.errorCode, "error code");
+      write(`worker.publication_job_${fields.event}`, {
         ...fields,
+        itemCount: metric(fields.itemCount),
+        attemptCount: metric(fields.attemptCount),
         durationMs: metric(fields.durationMs),
-        ...(fields.heapUsedBytes === undefined ? {} : {
-          heapUsedBytes: metric(fields.heapUsedBytes)
-        }),
-        ...(fields.heapLimitBytes === undefined ? {} : {
-          heapLimitBytes: metric(fields.heapLimitBytes)
-        }),
-        ...(fields.rssBytes === undefined ? {} : {
-          rssBytes: metric(fields.rssBytes)
-        })
-      });
-    },
-    publicationStorage(fields: {
-      knowledgeBaseId: string;
-      generationPublicId: string;
-      objectPutCount: number;
-      objectReuseCount: number;
-      putByteCount: number;
-    }) {
-      identity(fields.knowledgeBaseId);
-      identity(fields.generationPublicId);
-      write("worker.publication_storage", {
-        knowledgeBaseId: fields.knowledgeBaseId,
-        generationPublicId: fields.generationPublicId,
         objectPutCount: metric(fields.objectPutCount),
         objectReuseCount: metric(fields.objectReuseCount),
-        putByteCount: metric(fields.putByteCount)
+        objectRequestCount: metric(fields.objectRequestCount),
+        objectAttemptedBytes: metric(fields.objectAttemptedBytes)
       });
     },
-    publicationProjection(fields: {
-      knowledgeBaseId: string;
-      generationPublicId: string;
-      planningMode: "initial" | "delta" | "repair";
-      rendererContractVersion: string;
-      affectedSourceCount: number;
-      basePageCount: number;
-      recordsRendered: number;
-      objectPutCount: number;
-      objectReuseCount: number;
-      putByteCount: number;
-      renewalCount: number;
-      maximumHeartbeatAgeMs: number;
-      heapUsedBytes?: number;
-      heapLimitBytes?: number;
-      rssBytes?: number;
-      changedRecordCount?: number;
-      chunkCount?: number;
-      peakBufferedRecordCount?: number;
-      touchedShardCount?: number;
+    publicationRuntime(fields: {
+      event: "failed" | "recovered";
+      errorCode: string;
+      failureCount: number;
+      suppressedFailureCount: number;
+      durationMs: number;
     }) {
-      identity(fields.knowledgeBaseId);
-      identity(fields.generationPublicId);
-      safeToken(fields.planningMode, "planning mode");
-      safeToken(fields.rendererContractVersion, "renderer contract");
-      write("worker.publication_projection", {
-        ...fields,
-        affectedSourceCount: metric(fields.affectedSourceCount),
-        basePageCount: metric(fields.basePageCount),
-        recordsRendered: metric(fields.recordsRendered),
-        objectPutCount: metric(fields.objectPutCount),
-        objectReuseCount: metric(fields.objectReuseCount),
-        putByteCount: metric(fields.putByteCount),
-        renewalCount: metric(fields.renewalCount),
-        maximumHeartbeatAgeMs: metric(fields.maximumHeartbeatAgeMs),
-        ...(fields.heapUsedBytes === undefined ? {} : {
-          heapUsedBytes: metric(fields.heapUsedBytes)
-        }),
-        ...(fields.heapLimitBytes === undefined ? {} : {
-          heapLimitBytes: metric(fields.heapLimitBytes)
-        }),
-        ...(fields.rssBytes === undefined ? {} : {
-          rssBytes: metric(fields.rssBytes)
-        }),
-        ...(fields.changedRecordCount === undefined ? {} : {
-          changedRecordCount: metric(fields.changedRecordCount)
-        }),
-        ...(fields.chunkCount === undefined ? {} : {
-          chunkCount: metric(fields.chunkCount)
-        }),
-        ...(fields.peakBufferedRecordCount === undefined ? {} : {
-          peakBufferedRecordCount: metric(fields.peakBufferedRecordCount)
-        }),
-        ...(fields.touchedShardCount === undefined ? {} : {
-          touchedShardCount: metric(fields.touchedShardCount)
-        })
-      });
-    },
-    publicationResourcePressure(fields: {
-      heapUsedBytes: number;
-      heapLimitBytes: number;
-      rssBytes: number;
-      activeScopeCount: number;
-      maximumScopeConcurrency: number;
-    }) {
-      write("worker.publication_resource_pressure", {
-        heapUsedBytes: metric(fields.heapUsedBytes),
-        heapLimitBytes: metric(fields.heapLimitBytes),
-        rssBytes: metric(fields.rssBytes),
-        activeScopeCount: metric(fields.activeScopeCount),
-        maximumScopeConcurrency: metric(fields.maximumScopeConcurrency)
+      optionalToken(fields.errorCode, "error code");
+      const event = `worker.publication_runtime_${fields.event}`;
+      input.write({
+        level: fields.event === "failed" ? "error" : "info",
+        event,
+        fields: {
+          ...fields,
+          failureCount: metric(fields.failureCount),
+          suppressedFailureCount: metric(fields.suppressedFailureCount),
+          durationMs: metric(fields.durationMs)
+        }
       });
     },
     storageRequest(fields: {
@@ -395,10 +159,9 @@ export function createDocumentWorkerObservability(input: {
       if (!/^[0-9a-f]{64}$/u.test(fields.safeObjectKeyHash)) {
         throw new Error("Storage object key hash is invalid");
       }
-      if (fields.errorCode !== null) safeToken(fields.errorCode, "error code");
+      optionalToken(fields.errorCode, "error code");
       write("worker.storage_request", {
-        ...fields,
-        durationMs: metric(Math.round(fields.durationMs))
+        ...fields, durationMs: metric(Math.round(fields.durationMs))
       });
     },
     cleanup(fields: {
@@ -428,14 +191,11 @@ export function createDocumentWorkerObservability(input: {
       write("worker.cleanup_metrics", normalized);
     }
   };
-
-  function write(event: string, fields: Record<string, unknown>): void {
-    input.write({ level: "info", event, fields });
-  }
 }
 
 function metric(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(value) || value < 0
+    || value > Number.MAX_SAFE_INTEGER) {
     throw new Error("Document worker metric value is invalid");
   }
   return value;
@@ -447,9 +207,13 @@ function identity(value: string): void {
   }
 }
 
-function safeToken(value: string, label: string): void {
-  if (!/^[A-Za-z0-9_:-]{1,128}$/u.test(value)) {
-    throw new Error(`Document publication ${label} is invalid`);
+function optionalToken(
+  value: string | null | undefined,
+  label: string
+): void {
+  if (value !== undefined && value !== null
+    && !/^[A-Za-z0-9_:-]{1,128}$/u.test(value)) {
+    throw new Error(`Document worker ${label} is invalid`);
   }
 }
 

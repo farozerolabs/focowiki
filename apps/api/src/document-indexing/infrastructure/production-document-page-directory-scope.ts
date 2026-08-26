@@ -5,8 +5,8 @@ import { buildDocumentPageDirectoryScopeResources,
   "../application/document-page-term-projection.js";
 import { applyDocumentRecordStableShardDelta } from
   "../application/document-record-stable-shard-delta.js";
-import type { DocumentPublicationImmutableScopeSnapshot } from
-  "../application/document-publication-scope-generation-runtime.js";
+import type { DocumentPublicationBasePage } from
+  "../application/document-publication-job-ports.js";
 import { documentDirectoryEntryId } from
   "../domain/document-directory-entry-identity.js";
 import type { createPostgresDocumentMachineProjectionReader } from
@@ -21,9 +21,7 @@ export type DocumentPageIntegrityOverride = Readonly<{
   checksumSha256: string;
   byteCount: number;
 }>;
-type SnapshotPage = NonNullable<
-  DocumentPublicationImmutableScopeSnapshot["basePages"]
->[number];
+type SnapshotPage = DocumentPublicationBasePage;
 type ChildDirectory = { title: string; scopePath: string; path: string };
 
 export async function projectDocumentPageDirectoryScope(input: {
@@ -31,13 +29,12 @@ export async function projectDocumentPageDirectoryScope(input: {
   objectBodies?: StorageVnextImmutableBodyStore;
   knowledgeBaseId: string;
   scopePath: string;
-  publicationGenerationPublicId?: string;
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
   affectedSourceFilePublicIds?: readonly string[];
   affectedLogicalPaths?: readonly string[];
   planningMode?: "initial" | "delta" | "repair";
-  basePages?: DocumentPublicationImmutableScopeSnapshot["basePages"];
+  basePages?: readonly DocumentPublicationBasePage[];
   checkpoint?: () => Promise<void>;
   signal?: AbortSignal;
   pageIntegrityOverrides: readonly DocumentPageIntegrityOverride[];
@@ -49,7 +46,7 @@ export async function projectDocumentPageDirectoryScope(input: {
   if (input.planningMode === "delta") {
     const affected = [...new Set(
       input.affectedSourceFilePublicIds ?? [])].sort();
-    if (affected.length === 0 || !input.publicationGenerationPublicId) {
+    if (affected.length === 0) {
       throw scopeRenderError("publication_delta_closure_incomplete");
     }
     const state = await input.machineProjection.readSemanticDirectoryDeltaState({
@@ -57,8 +54,9 @@ export async function projectDocumentPageDirectoryScope(input: {
       scopePath: input.scopePath,
       affectedSourceFilePublicIds: affected,
       includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
-      navigationSourceFilePublicIds: [],
-      publicationGenerationPublicId: input.publicationGenerationPublicId
+      excludedActiveSourceFilePublicIds:
+        input.excludedActiveSourceFilePublicIds,
+      navigationSourceFilePublicIds: []
     });
     const base = await readBaseRouter(input);
     const changedRecords = applyIntegrity(state.records, integrity);
@@ -100,9 +98,6 @@ export async function projectDocumentPageDirectoryScope(input: {
   const state = await input.machineProjection.readDocumentDirectoryState({
     knowledgeBaseId: input.knowledgeBaseId,
     scopePath: input.scopePath,
-    ...(input.publicationGenerationPublicId
-      ? { publicationGenerationPublicId:
-          input.publicationGenerationPublicId } : {}),
     includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
     excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
   });

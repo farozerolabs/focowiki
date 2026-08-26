@@ -8,28 +8,35 @@ export async function writePostgresDocumentDeletionPublicationFacts(input: {
 }): Promise<number> {
   const sql = input.transaction;
   await sql`
-    INSERT INTO focowiki.knowledge_base_projection_heads (knowledge_base_id)
-    VALUES (${input.knowledgeBaseId})
+    INSERT INTO focowiki.knowledge_base_publication_heads (
+      knowledge_base_id, updated_at
+    ) VALUES (${input.knowledgeBaseId}, ${input.createdAt})
     ON CONFLICT (knowledge_base_id) DO NOTHING
   `;
   await sql`
     SELECT knowledge_base_id
-    FROM focowiki.knowledge_base_projection_heads
+    FROM focowiki.knowledge_base_publication_heads
     WHERE knowledge_base_id = ${input.knowledgeBaseId}
     FOR UPDATE
   `;
-  const inserted = await sql<Array<{ fact_epoch: number | string }>>`
+  const inserted = await sql<Array<{
+    public_id: string;
+    readiness_sequence: number | string;
+  }>>`
     WITH base AS (
-      SELECT coalesce(max(fact_epoch), 0) AS maximum_fact_epoch
-      FROM focowiki.projection_fact_epochs
-      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      SELECT greatest(head.active_readiness_sequence,
+                      head.latest_readiness_sequence)
+               AS maximum_readiness_sequence
+      FROM focowiki.knowledge_base_publication_heads head
+      WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
     ), desired AS (
       SELECT source.public_id AS source_file_public_id,
              active.active_source_revision_public_id
                AS source_revision_public_id,
+             record.logical_path AS prior_logical_path,
              row_number() OVER (
                ORDER BY source.public_id COLLATE "C"
-             ) AS fact_offset
+             ) AS readiness_offset
       FROM document_deletion_sources deletion
       JOIN focowiki.source_files source
         ON source.knowledge_base_id = ${input.knowledgeBaseId}
@@ -37,26 +44,60 @@ export async function writePostgresDocumentDeletionPublicationFacts(input: {
       JOIN focowiki.source_file_active_revisions active
         ON active.knowledge_base_id = source.knowledge_base_id
        AND active.source_file_public_id = source.public_id
+      JOIN focowiki.document_projection_records record
+        ON record.knowledge_base_id = source.knowledge_base_id
+       AND record.source_revision_public_id
+             = active.active_source_revision_public_id
       WHERE active.active_source_revision_public_id IS NOT NULL
     )
-    INSERT INTO focowiki.projection_fact_epochs (
-      knowledge_base_id, fact_epoch, mutation_public_id,
-      mutation_group_public_id, source_file_public_id,
-      source_revision_public_id, fact_kind, state, created_at
+    INSERT INTO focowiki.publication_items (
+      public_id, mutation_public_id, knowledge_base_id,
+      document_job_public_id, source_file_public_id,
+      source_revision_public_id, operation, prior_logical_path,
+      next_logical_path, affected_evidence, readiness_sequence,
+      created_at, updated_at
     )
-    SELECT ${input.knowledgeBaseId},
-           base.maximum_fact_epoch + desired.fact_offset,
-           'projection-delete-fact-' || md5(
+    SELECT 'publication-delete-item-' || md5(
              ${input.operationPublicId} || chr(31)
                || desired.source_file_public_id
            ),
-           ${input.operationPublicId}, desired.source_file_public_id,
-           desired.source_revision_public_id, 'delete', 'ready',
-           ${input.createdAt}
+           'publication-delete-mutation-' || md5(
+             ${input.operationPublicId} || chr(31)
+               || desired.source_file_public_id
+           ),
+           ${input.knowledgeBaseId}, NULL, desired.source_file_public_id,
+           desired.source_revision_public_id, 'delete',
+           desired.prior_logical_path, NULL,
+           jsonb_build_object(
+             'deletionOperationPublicId', ${input.operationPublicId}::text
+           ),
+           base.maximum_readiness_sequence + desired.readiness_offset,
+           ${input.createdAt}, ${input.createdAt}
     FROM desired CROSS JOIN base
     ON CONFLICT (knowledge_base_id, mutation_public_id) DO NOTHING
-    RETURNING fact_epoch
+    RETURNING public_id, readiness_sequence
   `;
+  if (inserted.length > 0) {
+    const latestReadinessSequence = Math.max(...inserted.map((item) =>
+      Number(item.readiness_sequence)));
+    await sql`
+      UPDATE focowiki.knowledge_base_publication_heads
+      SET latest_readiness_sequence = greatest(
+            latest_readiness_sequence, ${latestReadinessSequence}
+          ),
+          pending_item_count = pending_item_count + ${inserted.length},
+          oldest_pending_at = least(
+            coalesce(oldest_pending_at, ${input.createdAt}),
+            ${input.createdAt}
+          ),
+          latest_pending_at = greatest(
+            coalesce(latest_pending_at, ${input.createdAt}),
+            ${input.createdAt}
+          ),
+          updated_at = ${input.createdAt}
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+    `;
+  }
   return inserted.length;
 }
 
@@ -66,22 +107,17 @@ export async function isPostgresDocumentDeletionPublicationActive(input: {
   operationPublicId: string;
 }): Promise<boolean> {
   const rows = await input.transaction<Array<{
-    fact_count: number | string;
-    maximum_fact_epoch: number | string | null;
-    active_fact_epoch: number | string;
+    item_count: number | string;
+    committed_count: number | string;
   }>>`
-    SELECT count(epoch.fact_epoch) AS fact_count,
-           max(epoch.fact_epoch) AS maximum_fact_epoch,
-           head.active_fact_epoch
-    FROM focowiki.knowledge_base_projection_heads head
-    LEFT JOIN focowiki.projection_fact_epochs epoch
-      ON epoch.knowledge_base_id = head.knowledge_base_id
-     AND epoch.mutation_group_public_id = ${input.operationPublicId}
-     AND epoch.fact_kind = 'delete'
-    WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
-    GROUP BY head.active_fact_epoch
+    SELECT count(*) AS item_count,
+           count(*) FILTER (WHERE outcome = 'committed') AS committed_count
+    FROM focowiki.publication_items
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND affected_evidence->>'deletionOperationPublicId'
+            = ${input.operationPublicId}
   `;
   const row = rows[0];
-  return Boolean(row && Number(row.fact_count) > 0
-    && Number(row.active_fact_epoch) >= Number(row.maximum_fact_epoch));
+  return Boolean(row && Number(row.item_count) > 0
+    && Number(row.item_count) === Number(row.committed_count));
 }

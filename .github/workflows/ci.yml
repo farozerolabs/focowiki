@@ -271,7 +271,7 @@ jobs:
         run: >-
           pnpm --filter @focowiki/api exec vitest run
           test/document-upload-finalization.integration.test.ts
-          test/document-retry-lifecycle.integration.test.ts
+          test/document-publication-single-job-activation.integration.test.ts
           test/document-activation-cleanup-lifecycle.integration.test.ts
           test/document-deletion-acceptance.integration.test.ts
           test/document-semantic-fact-reuse.integration.test.ts

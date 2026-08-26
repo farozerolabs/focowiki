@@ -2,17 +2,17 @@ import type { StorageVnextImmutableObjectWriter } from
   "../../storage-vnext/ownership/immutable-object-writer.js";
 import type { StorageVnextOwnershipRepository } from
   "../../storage-vnext/ownership/ports.js";
-import type { DocumentProjectionScopeClaim } from
-  "../application/document-scope-projector-runtime.js";
+import type { DocumentPublicationRenderScope } from
+  "../application/document-publication-job-ports.js";
 import { scopeRenderError, writeAttemptId } from
   "./production-document-scope-renderer-support.js";
 
-const PROJECTION_OBJECT_WRITE_BATCH_SIZE = 32;
+const PROJECTION_OBJECT_WRITE_BATCH_SIZE = 1;
 
 export async function storeDocumentProjectionPages(input: Readonly<{
   objectWriter: StorageVnextImmutableObjectWriter;
   ownership?: StorageVnextOwnershipRepository;
-  scope: DocumentProjectionScopeClaim;
+  scope: DocumentPublicationRenderScope;
   pages: readonly Readonly<{
     logicalPath: string;
     normalizedPath: string;
@@ -67,7 +67,7 @@ export async function storeDocumentProjectionPages(input: Readonly<{
 async function writeProjectionPage(input: Readonly<{
   objectWriter: StorageVnextImmutableObjectWriter;
   ownership?: StorageVnextOwnershipRepository;
-  scope: DocumentProjectionScopeClaim;
+  scope: DocumentPublicationRenderScope;
   page: Readonly<{
     logicalPath: string;
     normalizedPath: string;

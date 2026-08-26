@@ -530,32 +530,14 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       INSERT INTO focowiki.generated_page_heads (
         knowledge_base_id, logical_path, normalized_path, entry_kind,
         page_candidate_public_id, object_id, checksum_sha256,
-        byte_count, activation_revision
+        byte_count, activation_revision,
+        source_file_public_id, source_revision_public_id
       ) VALUES (
         'kb-projection-facts', '_graph/by-file/guides/first.json',
         '_graph/by-file/guides/first.json', 'related_files',
         'prior-file-graph-candidate', ${priorGraphObjectId},
-        ${"7".repeat(64)}, 10, 1
-      )
-    `;
-    await sql`
-      INSERT INTO focowiki.projection_publication_generations (
-        public_id, knowledge_base_id, target_fact_epoch,
-        renderer_contract_version, deterministic_changed_at, state,
-        input_fingerprint_sha256, completed_at
-      ) VALUES (
-        'prior-file-graph-generation', 'kb-projection-facts', 1,
-        'portable-okf-v2', now(), 'active', ${"6".repeat(64)}, now()
-      )
-    `;
-    await sql`
-      INSERT INTO focowiki.projection_artifact_owners (
-        knowledge_base_id, normalized_path, owner_scope_identity,
-        artifact_family, ownership_epoch, generation_public_id
-      ) VALUES (
-        'kb-projection-facts', '_graph/by-file/guides/first.json',
-        '_graph:source-file-projection-first', 'graph', 1,
-        'prior-file-graph-generation'
+        ${"7".repeat(64)}, 10, 1,
+        'source-file-projection-first', 'source-revision-projection-first'
       )
     `;
     const olderGraphObjectId = `generated-sha256:okf-generated-json-v1:${
@@ -587,22 +569,14 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       INSERT INTO focowiki.generated_page_heads (
         knowledge_base_id, logical_path, normalized_path, entry_kind,
         page_candidate_public_id, object_id, checksum_sha256,
-        byte_count, activation_revision
+        byte_count, activation_revision,
+        source_file_public_id, source_revision_public_id
       ) VALUES (
         'kb-projection-facts', '_graph/by-file/legacy/first.json',
         '_graph/by-file/legacy/first.json', 'related_files',
         'older-file-graph-candidate', ${olderGraphObjectId},
-        ${"8".repeat(64)}, 10, 1
-      )
-    `;
-    await sql`
-      INSERT INTO focowiki.projection_artifact_owners (
-        knowledge_base_id, normalized_path, owner_scope_identity,
-        artifact_family, ownership_epoch, generation_public_id
-      ) VALUES (
-        'kb-projection-facts', '_graph/by-file/legacy/first.json',
-        '_graph:source-file-projection-first', 'graph', 1,
-        'prior-file-graph-generation'
+        ${"8".repeat(64)}, 10, 1,
+        'source-file-projection-first', 'source-revision-projection-first'
       )
     `;
     await expect(reader.readPerFileGraphState({
@@ -702,6 +676,83 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       SET active = true, activated_sequence = 1
       WHERE public_id = 'relation-projection'
     `;
+    await sql`
+      UPDATE focowiki.document_graph_degrees
+      SET incoming_count = CASE
+            WHEN source_revision_public_id = 'source-revision-projection-second'
+              THEN 1 ELSE 0 END,
+          outgoing_count = CASE
+            WHEN source_revision_public_id = 'source-revision-projection-first'
+              THEN 1 ELSE 0 END,
+          updated_at = now()
+      WHERE knowledge_base_id = 'kb-projection-facts'
+        AND source_revision_public_id IN (
+          'source-revision-projection-first',
+          'source-revision-projection-second'
+        )
+    `;
+    const removedGraphRecordKeys: string[] = [];
+    const replacementGraphRecords: Record<string, unknown>[] = [];
+    await reader.scanGraphDirectoryDeltaState({
+      knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages/moved",
+      affectedSourceFilePublicIds: ["source-file-projection-first"],
+      includedSourceRevisionPublicIds: [],
+      excludedActiveSourceFilePublicIds: ["source-file-projection-first"],
+      affectedLogicalPaths: ["pages/moved/renamed.md"],
+      baseDeterministicChangedAt: "2100-01-01T00:00:00.000Z",
+      onRemovedRecordKeys(keys) {
+        removedGraphRecordKeys.push(...keys);
+      },
+      onRecords(records) {
+        replacementGraphRecords.push(...records);
+      }
+    });
+    expect(replacementGraphRecords).toEqual([]);
+    expect(removedGraphRecordKeys).toHaveLength(1);
+    const reverseEndpointKeys: string[] = [];
+    await reader.scanGraphDirectoryDeltaState({
+      knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages/reference",
+      affectedSourceFilePublicIds: ["source-file-projection-second"],
+      includedSourceRevisionPublicIds: [],
+      excludedActiveSourceFilePublicIds: ["source-file-projection-second"],
+      affectedLogicalPaths: ["pages/reference/second.md"],
+      baseDeterministicChangedAt: "2100-01-01T00:00:00.000Z",
+      onRemovedRecordKeys(keys) {
+        reverseEndpointKeys.push(...keys);
+      },
+      onRecords() {}
+    });
+    expect(reverseEndpointKeys).toEqual([
+      "pages/reference/second.md\0pages/moved/renamed.md\0references"
+    ]);
+    await expect(reader.readPerFileGraphDirectoryDeltaState({
+      knowledgeBaseId: "kb-projection-facts",
+      scopePath: "pages",
+      includedSourceRevisionPublicIds: [
+        "source-revision-projection-first"
+      ],
+      excludedActiveSourceFilePublicIds: [
+        "source-file-projection-first"
+      ],
+      affectedSourceFilePublicIds: [
+        "source-file-projection-first",
+        "source-file-projection-second"
+      ],
+      candidateChildScopePaths: ["pages/moved", "pages/reference"]
+    })).resolves.toEqual({
+      records: [],
+      childDirectories: [{
+        title: "moved",
+        scopePath: "pages/moved",
+        path: "_graph/by-file/moved/index.md"
+      }, {
+        title: "reference",
+        scopePath: "pages/reference",
+        path: "_graph/by-file/reference/index.md"
+      }]
+    });
     await expect(reader.readDocumentDirectoryState({
       knowledgeBaseId: "kb-projection-facts",
       scopePath: "pages/reference"
@@ -875,6 +926,11 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
 
   it("cascades every exact projection fact when a revision is deleted", async () => {
     await sql`
+      DELETE FROM focowiki.generated_page_heads
+      WHERE knowledge_base_id = 'kb-projection-facts'
+        AND source_file_public_id = 'source-file-projection-first'
+    `;
+    await sql`
       DELETE FROM focowiki.source_file_active_revisions
       WHERE knowledge_base_id = 'kb-projection-facts'
         AND source_file_public_id = 'source-file-projection-first'
@@ -988,6 +1044,20 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         WHERE knowledge_base_id = 'kb-projection-facts'
           AND source_revision_public_id = 'source-revision-projection-second'
       `;
+      await expect(reader.readSemanticDirectoryDeltaState({
+        knowledgeBaseId: "kb-projection-facts",
+        scopePath: "pages/reference",
+        affectedSourceFilePublicIds: ["source-file-projection-second"],
+        includedSourceRevisionPublicIds: [],
+        excludedActiveSourceFilePublicIds: ["source-file-projection-second"]
+      })).resolves.toEqual({
+        records: [],
+        childDirectories: [],
+        navigationCandidateEntryIds: [documentDirectoryEntryId(
+          "file", "pages/reference/second.md"
+        )],
+        removedRecordPaths: ["pages/reference/second.md"]
+      });
     });
 
   it("reads only a changed stable-leaf window and its bounded neighbors",
@@ -1170,30 +1240,22 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
           AND source.public_id <> 'source-z-anchor'
       `;
       await sql`
-        INSERT INTO focowiki.projection_publication_generations (
-          public_id, knowledge_base_id, target_fact_epoch,
-          renderer_contract_version, deterministic_changed_at,
-          input_fingerprint_sha256
-        ) VALUES (
-          'generation-large-flat-directory', 'kb-large-flat-directory', 1,
-          'portable-okf-v2', '2026-08-24T01:00:00.000Z', ${checksum}
+        INSERT INTO focowiki.document_graph_degrees (
+          knowledge_base_id, source_revision_public_id,
+          incoming_count, outgoing_count
         )
-      `;
-      await sql`
-        INSERT INTO focowiki.projection_generation_graph_degrees (
-          publication_generation_public_id, knowledge_base_id,
-          source_revision_public_id, incoming_count, outgoing_count
-        )
-        SELECT 'generation-large-flat-directory', 'kb-large-flat-directory',
-               record.source_revision_public_id,
+        SELECT 'kb-large-flat-directory', record.source_revision_public_id,
                CASE WHEN record.source_file_public_id = 'source-z-anchor'
                  THEN ${count} ELSE 0 END,
                CASE WHEN record.source_file_public_id = 'source-z-anchor'
                  THEN 0 ELSE 1 END
         FROM focowiki.document_projection_records record
         WHERE record.knowledge_base_id = 'kb-large-flat-directory'
+        ON CONFLICT (knowledge_base_id, source_revision_public_id)
+        DO UPDATE SET incoming_count = EXCLUDED.incoming_count,
+                      outgoing_count = EXCLUDED.outgoing_count,
+                      updated_at = now()
       `;
-
       const reader = createPostgresDocumentMachineProjectionReader(
         sql as unknown as DatabaseClient
       );
@@ -1201,7 +1263,6 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       const graphDirectory = await reader.readPerFileGraphDirectoryState({
         knowledgeBaseId: "kb-large-flat-directory",
         scopePath: "pages",
-        publicationGenerationPublicId: "generation-large-flat-directory"
       });
       const graphDurationMs = performance.now() - graphStartedAt;
       expect(graphDirectory.records).toHaveLength(count + 1);
@@ -1211,7 +1272,6 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       const pageDirectory = await reader.readDocumentDirectoryState({
         knowledgeBaseId: "kb-large-flat-directory",
         scopePath: "pages",
-        publicationGenerationPublicId: "generation-large-flat-directory"
       });
       const indexDurationMs = performance.now() - indexStartedAt;
       expect(pageDirectory.records).toHaveLength(count + 1);

@@ -20,6 +20,19 @@ import { createPostgresDocumentNavigationTermReader } from
 const MAXIMUM_ROOT_RECORDS = 100_000;
 const MAXIMUM_CHECKSUM_PATHS = 100_000;
 
+type DocumentDirectoryRow = {
+  page_path: string;
+  title: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+  headings: string[];
+  entities: string[];
+  content_type: string;
+  checksum_sha256: string;
+  byte_count: number | string;
+  relationship_count: number | string;
+};
+
 export function createPostgresDocumentMachineProjectionReader(
   sql: DatabaseClient
 ) {
@@ -77,7 +90,6 @@ export function createPostgresDocumentMachineProjectionReader(
 
     async readRootProjectionState(input: {
       knowledgeBaseId: string;
-      publicationGenerationPublicId?: string;
       includedSourceRevisionPublicIds?: readonly string[];
       excludedActiveSourceFilePublicIds?: readonly string[];
       logLimit: number;
@@ -86,98 +98,6 @@ export function createPostgresDocumentMachineProjectionReader(
         input.includedSourceRevisionPublicIds ?? []);
       const excludedActiveSourceFilePublicIds = sortedUnique(
         input.excludedActiveSourceFilePublicIds ?? []);
-      if (input.publicationGenerationPublicId) {
-        const [knowledgeBases, statistics, currentRecords, previousLogs] =
-          await Promise.all([
-            sql<Array<{
-              public_id: string; name: string; description: string | null;
-            }>>`
-              SELECT public_id, name, description
-              FROM focowiki.knowledge_bases
-              WHERE public_id = ${input.knowledgeBaseId}
-                AND deleted_at IS NULL
-              LIMIT 1
-            `,
-            sql<Array<{
-              source_file_count: number | string;
-              relationship_count: number | string;
-              root_entry_count: number | string;
-            }>>`
-              SELECT source_file_count, relationship_count, root_entry_count
-              FROM focowiki.projection_generation_statistics
-              WHERE publication_generation_public_id
-                      = ${input.publicationGenerationPublicId}
-                AND knowledge_base_id = ${input.knowledgeBaseId}
-            `,
-            sql<Array<{
-              source_revision_public_id: string;
-              logical_path: string;
-              title: string;
-              created_at: Date | string;
-            }>>`
-              SELECT source_revision_public_id, logical_path, title, created_at
-              FROM focowiki.document_projection_records
-              WHERE knowledge_base_id = ${input.knowledgeBaseId}
-                AND source_revision_public_id
-                      = ANY(${includedSourceRevisionPublicIds}::text[])
-              ORDER BY normalized_path COLLATE "C"
-              LIMIT ${Math.max(1, includedSourceRevisionPublicIds.length + 1)}
-            `,
-            input.logLimit > 0 ? sql<Array<{
-              terminal_at: Date | string;
-              logical_path: string;
-              title: string;
-            }>>`
-              SELECT job.terminal_at, record.logical_path, record.title
-              FROM focowiki.document_processing_jobs job
-              JOIN focowiki.document_projection_records record
-                ON record.knowledge_base_id = job.knowledge_base_id
-               AND record.source_file_public_id = job.source_file_public_id
-               AND record.source_revision_public_id
-                     = job.source_revision_public_id
-               AND record.active
-              WHERE job.knowledge_base_id = ${input.knowledgeBaseId}
-                AND job.state = 'available'
-                AND job.terminal_at IS NOT NULL
-                AND job.source_file_public_id
-                      <> ALL(${excludedActiveSourceFilePublicIds}::text[])
-              ORDER BY job.terminal_at DESC, job.public_id COLLATE "C"
-              LIMIT ${Math.min(input.logLimit, 10_000)}
-            ` : Promise.resolve([])
-          ]);
-        const knowledgeBase = knowledgeBases[0];
-        const statistic = statistics[0];
-        if (!knowledgeBase || !statistic
-          || currentRecords.length > includedSourceRevisionPublicIds.length) {
-          throw projectionReaderError("root_projection_statistics_missing");
-        }
-        return {
-          knowledgeBase: {
-            id: knowledgeBase.public_id,
-            name: knowledgeBase.name,
-            description: knowledgeBase.description
-          },
-          sourceFileCount: Number(statistic.source_file_count),
-          graphEdgeCount: Number(statistic.relationship_count),
-          rootEntryCount: Number(statistic.root_entry_count),
-          currentLogEntries: currentRecords.map((record) => ({
-            occurredAt: normalizeTimestamp(record.created_at),
-            action: "Updated page",
-            message: `Updated pages/${record.logical_path}.`,
-            links: [{
-              path: `pages/${record.logical_path}`, title: record.title
-            }]
-          })),
-          previousLogEntries: previousLogs.map((record) => ({
-            occurredAt: normalizeTimestamp(record.terminal_at),
-            action: "Updated page",
-            message: `Updated pages/${record.logical_path}.`,
-            links: [{
-              path: `pages/${record.logical_path}`, title: record.title
-            }]
-          }))
-        };
-      }
       const [knowledgeBases, records, graph, previousLogs] = await Promise.all([
         sql<Array<{ public_id: string; name: string; description: string | null }>>`
           SELECT public_id, name, description
@@ -270,7 +190,6 @@ export function createPostgresDocumentMachineProjectionReader(
     async readDocumentDirectoryState(input: {
       knowledgeBaseId: string;
       scopePath: string;
-      publicationGenerationPublicId?: string;
       includedSourceRevisionPublicIds?: readonly string[];
       excludedActiveSourceFilePublicIds?: readonly string[];
     }) {
@@ -278,84 +197,80 @@ export function createPostgresDocumentMachineProjectionReader(
         input.includedSourceRevisionPublicIds ?? []);
       const excludedActiveSourceFilePublicIds = sortedUnique(
         input.excludedActiveSourceFilePublicIds ?? []);
-      const rows = await sql<Array<{
-        page_path: string;
-        title: string;
-        summary: string;
-        metadata: Record<string, unknown>;
-        headings: string[];
-        entities: string[];
-        content_type: string;
-        checksum_sha256: string;
-        byte_count: number | string;
-        relationship_count: number | string;
-      }>>`
-        SELECT membership.page_path, record.title, record.summary,
-               record.metadata, record.headings, record.entities,
-               record.content_type, record.checksum_sha256, record.byte_count,
-               CASE
-                 WHEN overlay.source_revision_public_id IS NOT NULL
-                   THEN CASE WHEN overlay.incoming_count
-                          + overlay.outgoing_count > 0 THEN 1 ELSE 0 END
-                 WHEN ${input.publicationGenerationPublicId ?? null}::text
-                        IS NOT NULL
-                   THEN CASE WHEN coalesce(active_degree.incoming_count, 0)
-                          + coalesce(active_degree.outgoing_count, 0) > 0
-                        THEN 1 ELSE 0 END
-                 WHEN EXISTS (
-                   SELECT 1
-                   FROM focowiki.canonical_file_relations relation
-                   WHERE relation.knowledge_base_id
-                           = record.knowledge_base_id
-                     AND (
-                       relation.first_source_revision_public_id
-                         = record.source_revision_public_id
-                       OR relation.second_source_revision_public_id
-                         = record.source_revision_public_id
-                     )
-                     AND (${visibleDocumentGraphRelation(
-                       sql,
-                       includedSourceRevisionPublicIds,
-                       excludedActiveSourceFilePublicIds
-                     )})
-                     AND EXISTS (
+      const rows = includedSourceRevisionPublicIds.length === 0
+          && excludedActiveSourceFilePublicIds.length === 0
+        ? await sql<Array<DocumentDirectoryRow>>`
+            SELECT membership.page_path, record.title, record.summary,
+                   record.metadata, record.headings, record.entities,
+                   record.content_type, record.checksum_sha256,
+                   record.byte_count,
+                   CASE WHEN coalesce(degree.incoming_count, 0)
+                              + coalesce(degree.outgoing_count, 0) > 0
+                     THEN 1 ELSE 0 END AS relationship_count
+            FROM focowiki.document_semantic_directory_memberships membership
+            JOIN focowiki.document_projection_records record
+              ON record.knowledge_base_id = membership.knowledge_base_id
+             AND record.source_revision_public_id
+                   = membership.source_revision_public_id
+            LEFT JOIN focowiki.document_graph_degrees degree
+              ON degree.knowledge_base_id = record.knowledge_base_id
+             AND degree.source_revision_public_id
+                   = record.source_revision_public_id
+            WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
+              AND membership.directory_path = ${input.scopePath}
+              AND position('/' in substring(membership.page_path
+                    from char_length(${input.scopePath}) + 2)) = 0
+              AND record.active
+            ORDER BY record.normalized_path COLLATE "C"
+          `
+        : await sql<Array<DocumentDirectoryRow>>`
+            SELECT membership.page_path, record.title, record.summary,
+                   record.metadata, record.headings, record.entities,
+                   record.content_type, record.checksum_sha256,
+                   record.byte_count,
+                   CASE WHEN EXISTS (
                        SELECT 1
-                       FROM focowiki.relation_directed_evidence evidence
-                       WHERE evidence.knowledge_base_id
-                               = relation.knowledge_base_id
-                         AND evidence.pair_public_id = relation.pair_public_id
-                         AND (${visibleDocumentGraphEvidence(
+                       FROM focowiki.canonical_file_relations relation
+                       WHERE relation.knowledge_base_id
+                               = record.knowledge_base_id
+                         AND (relation.first_source_revision_public_id
+                                = record.source_revision_public_id
+                           OR relation.second_source_revision_public_id
+                                = record.source_revision_public_id)
+                         AND (${visibleDocumentGraphRelation(
                            sql,
                            includedSourceRevisionPublicIds,
                            excludedActiveSourceFilePublicIds
                          )})
-                     )
-                 ) THEN 1 ELSE 0
-               END AS relationship_count
-        FROM focowiki.document_semantic_directory_memberships membership
-        JOIN focowiki.document_projection_records record
-          ON record.knowledge_base_id = membership.knowledge_base_id
-         AND record.source_revision_public_id = membership.source_revision_public_id
-        LEFT JOIN focowiki.projection_generation_graph_degrees overlay
-          ON overlay.publication_generation_public_id
-               = ${input.publicationGenerationPublicId ?? null}
-         AND overlay.knowledge_base_id = record.knowledge_base_id
-         AND overlay.source_revision_public_id
-               = record.source_revision_public_id
-        LEFT JOIN focowiki.document_graph_degrees active_degree
-          ON active_degree.knowledge_base_id = record.knowledge_base_id
-         AND active_degree.source_revision_public_id
-               = record.source_revision_public_id
-        WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
-          AND membership.directory_path = ${input.scopePath}
-          AND position('/' in substring(membership.page_path
-                from char_length(${input.scopePath}) + 2)) = 0
-          AND (record.source_revision_public_id
-                 = ANY(${includedSourceRevisionPublicIds}::text[])
-            OR (record.active AND record.source_file_public_id
-                 <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
-        ORDER BY record.normalized_path COLLATE "C"
-      `;
+                         AND EXISTS (
+                           SELECT 1
+                           FROM focowiki.relation_directed_evidence evidence
+                           WHERE evidence.knowledge_base_id
+                                   = relation.knowledge_base_id
+                             AND evidence.pair_public_id
+                                   = relation.pair_public_id
+                             AND (${visibleDocumentGraphEvidence(
+                               sql,
+                               includedSourceRevisionPublicIds,
+                               excludedActiveSourceFilePublicIds
+                             )})
+                         )
+                     ) THEN 1 ELSE 0 END AS relationship_count
+            FROM focowiki.document_semantic_directory_memberships membership
+            JOIN focowiki.document_projection_records record
+              ON record.knowledge_base_id = membership.knowledge_base_id
+             AND record.source_revision_public_id
+                   = membership.source_revision_public_id
+            WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
+              AND membership.directory_path = ${input.scopePath}
+              AND position('/' in substring(membership.page_path
+                    from char_length(${input.scopePath}) + 2)) = 0
+              AND (record.source_revision_public_id
+                     = ANY(${includedSourceRevisionPublicIds}::text[])
+                OR (record.active AND record.source_file_public_id
+                     <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
+            ORDER BY record.normalized_path COLLATE "C"
+          `;
       const descendantRows = await sql<Array<{ directory_path: string }>>`
         SELECT DISTINCT (
           ${input.scopePath} || '/' || split_part(

@@ -50,10 +50,18 @@ export async function scanBaseGraphDirectoryRecordKeys(
   let count = 0;
   while (true) {
     const rows: BaseGraphRecordKeyRow[] = await sql<BaseGraphRecordKeyRow[]>`
-      WITH base_keys AS (
-        SELECT DISTINCT first_page.page_path COLLATE "C" AS first_path,
-               second_page.page_path COLLATE "C" AS second_path,
-               relation.relation_kind::text COLLATE "C" AS relation_kind
+      WITH graph_rows AS (
+        SELECT first_page.page_path AS first_path,
+               second_page.page_path AS second_path,
+               relation.relation_kind::text AS relation_kind,
+               first_page.directory_path = ${input.scopePath}
+                 AND position('/' in substring(first_page.page_path
+                   from char_length(${input.scopePath}) + 2)) = 0
+                 AS first_direct,
+               second_page.directory_path = ${input.scopePath}
+                 AND position('/' in substring(second_page.page_path
+                   from char_length(${input.scopePath}) + 2)) = 0
+                 AS second_direct
         FROM focowiki.canonical_file_relations relation
         JOIN focowiki.document_projection_records first_record
           ON first_record.knowledge_base_id = relation.knowledge_base_id
@@ -89,15 +97,15 @@ export async function scanBaseGraphDirectoryRecordKeys(
           AND relation.created_at <= ${input.baseDeterministicChangedAt}
           AND (relation.retired_at IS NULL
             OR relation.retired_at > ${input.baseDeterministicChangedAt})
-          AND (
-            (first_page.directory_path = ${input.scopePath}
-              AND position('/' in substring(first_page.page_path
-                from char_length(${input.scopePath}) + 2)) = 0)
-            OR
-            (second_page.directory_path = ${input.scopePath}
-              AND position('/' in substring(second_page.page_path
-                from char_length(${input.scopePath}) + 2)) = 0)
-          )
+      ), base_keys AS (
+        SELECT DISTINCT
+               (CASE WHEN first_direct THEN first_path ELSE second_path END)
+                 COLLATE "C" AS first_path,
+               (CASE WHEN first_direct THEN second_path ELSE first_path END)
+                 COLLATE "C" AS second_path,
+               relation_kind COLLATE "C" AS relation_kind
+        FROM graph_rows
+        WHERE first_direct OR second_direct
       )
       SELECT first_path, second_path, relation_kind
       FROM base_keys

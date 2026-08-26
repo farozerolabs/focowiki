@@ -81,16 +81,21 @@ describeOwnedOpenSearch("OpenSearch provider runtime integration", () => {
   const indexUid = `focowiki_it_${runOwner}_${randomUUID()
     .replaceAll("-", "").slice(0, 12)}`;
   const partialFailureIndexUid = `${indexUid}_partial`;
+  const delayedRetryIndexUid = `${indexUid}_delayed_retry`;
 
   beforeAll(async () => {
     await provider.admin.deleteIndex({ indexUid });
     await provider.admin.deleteIndex({ indexUid: partialFailureIndexUid });
+    await provider.admin.deleteIndex({ indexUid: delayedRetryIndexUid });
   });
 
   afterAll(async () => {
     await provider.admin.deleteIndex({ indexUid }).catch(() => undefined);
     await provider.admin.deleteIndex({
       indexUid: partialFailureIndexUid
+    }).catch(() => undefined);
+    await provider.admin.deleteIndex({
+      indexUid: delayedRetryIndexUid
     }).catch(() => undefined);
     await provider.close();
   });
@@ -278,6 +283,60 @@ describeOwnedOpenSearch("OpenSearch provider runtime integration", () => {
     });
     await unavailableProvider.close();
   }, 120_000);
+
+  it("retries one delayed real-provider write without duplicate documents",
+    async () => {
+      const originalBulk = client.bulk.bind(client);
+      let bulkAttempts = 0;
+      const delayedClient = Object.create(client) as OpenSearchClientPort;
+      delayedClient.bulk = async (request, options) => {
+        bulkAttempts += 1;
+        if (bulkAttempts === 1) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+          throw {
+            name: "ResponseError",
+            meta: { statusCode: 503 }
+          };
+        }
+        return originalBulk(request, options);
+      };
+      const retryingProvider = createOpenSearchProviderRuntime({
+        client: delayedClient,
+        tokenizer,
+        bulkLimits: {
+          maximumDocuments: 10,
+          maximumBytes: 256_000,
+          maximumInFlight: 1,
+          maximumAttempts: 2,
+          retryDelayMs: 10,
+          deadlineMs: 10_000
+        },
+        visibility: { pollIntervalMs: 20, deadlineMs: 10_000 },
+        query: createOpenSearchQueryPort({
+          client: delayedClient,
+          tokenizer,
+          maximumResultWindow: definition.maximumTotalHits,
+          engineSearchCutoffMs: definition.searchCutoffMs
+        })
+      });
+      await expect(retryingProvider.admin.createIndex({
+        indexUid: delayedRetryIndexUid,
+        definition
+      })).resolves.toEqual({ state: "completed" });
+      const documents = integrationDocuments();
+      await expect(retryingProvider.write.writeDocuments({
+        indexUid: delayedRetryIndexUid,
+        documents,
+        correlation: "integration-delayed-retry"
+      })).resolves.toEqual({ state: "completed" });
+      await retryingProvider.write.refreshIndex({
+        indexUid: delayedRetryIndexUid
+      });
+      expect(bulkAttempts).toBe(2);
+      await expect(retryingProvider.validation.countDocuments({
+        indexUid: delayedRetryIndexUid
+      })).resolves.toBe(documents.length);
+    }, 120_000);
 });
 
 const hasParityTarget = hasOwnedTarget && Boolean(
@@ -353,6 +412,14 @@ describeProviderParity("real search provider retrieval parity", () => {
         indexUid,
         documents,
         correlation: `provider-parity-${provider.kind}`
+      }));
+      await provider.write.refreshIndex({ indexUid });
+      await expect(provider.validation.countDocuments({ indexUid }))
+        .resolves.toBe(documents.length);
+      await settleProviderOperation(provider, await provider.write.writeDocuments({
+        indexUid,
+        documents,
+        correlation: `provider-restarted-attempt-${provider.kind}`
       }));
       await provider.write.refreshIndex({ indexUid });
       await expect(provider.validation.countDocuments({ indexUid }))

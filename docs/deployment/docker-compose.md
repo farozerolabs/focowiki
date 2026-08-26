@@ -149,23 +149,25 @@ Use `docker compose logs -f` for container output. Product log files are stored 
 
 ## Update an Existing Deployment
 
-This release is a complete breaking storage reset. It rejects every PostgreSQL schema from an earlier release and does not reuse earlier PostgreSQL rows, Redis state, S3 objects, runtime model settings, knowledge-base identities, generated content, or search indexes. Keep a coordinated backup and the complete old deployment only for rollback. Provision an empty PostgreSQL database, Redis namespace, S3 prefix, and search prefix for the target release, run migration, configure models again, create new knowledge bases, and import the source Markdown again. Do not restore an earlier-release backup into this release. Keep the old deployment until the new import's file counts, paths, previews, search, relationships, and API access have been checked.
+For an in-place update, keep API, worker, and Admin services stopped while the database command runs. The update preserves content that was already available and its active generated paths, source revisions, relationships, and search ownership. Unfinished final-publication coordination is reset to the current worker contract; completed model, GraphRAG, embedding, source-storage, and search-preparation results are retained. The migration does not call external providers, rewrite S3 objects, or rebuild a knowledge base.
 
-For a later release that supports the current database format:
+To update an existing deployment:
 
 1. Create a backup.
-2. Update all three image tags in `.env` and pull the images.
-3. Complete any preparation described in the release notes.
-4. Run the database command.
-5. Start the updated services.
+2. Stop `api`, `worker`, and `admin`. Do not run old and new workers against the same database.
+3. Update all image tags in `.env` and pull the images.
+4. Complete any preparation described in the release notes.
+5. Run the database command while the application services remain stopped.
+6. Start the updated services and verify existing reads before accepting writes.
 
 ```bash
 docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml stop api worker admin
 docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 ```
 
-The database command can be run again after a successful completion. It does not process uploaded files or rebuild search indexes. After the new deployment is running, changing a model, embedding dimension, output format, or search provider for existing content may require **Maintain index**. Existing readable files remain available while maintenance runs.
+The database command can be run again after a successful completion. It does not process uploaded files or rebuild search indexes. If rollback is required, stop the updated services and restore the coordinated backup with the image versions recorded for that backup. After the new deployment is running, changing a model, embedding dimension, output format, or search provider for existing content may require **Maintain index**. Existing readable files remain available while maintenance runs.
 
 ## Processing Failures
 

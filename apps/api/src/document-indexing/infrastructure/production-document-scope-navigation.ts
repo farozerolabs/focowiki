@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { portableByFileGraphDirectoryPath } from "@focowiki/okf";
-import type { DocumentProjectionScopeClaim } from
-  "../application/document-scope-projector-runtime.js";
+import type { DocumentPublicationRenderScope } from
+  "../application/document-publication-job-ports.js";
 import { reconcileDocumentDirectoryNavigationDelta } from
   "../application/document-directory-navigation-windows.js";
 import { renderDocumentDirectoryMutationPages } from
@@ -37,10 +37,9 @@ type ProjectedPage = {
   checksumSha256: string;
   byteCount: number;
 };
-
 export async function materializeMachineDirectoryNavigation(input: {
   dependencies: DocumentScopeNavigationDependencies;
-  scope: DocumentProjectionScopeClaim;
+  scope: DocumentPublicationRenderScope;
   directoryPath: string;
   projected: {
     pages: readonly ProjectedPage[];
@@ -64,10 +63,9 @@ export async function materializeMachineDirectoryNavigation(input: {
     dependencies: requireDirectoryNavigation(input.dependencies)
   });
 }
-
 export async function materializeSemanticDirectoryNavigation(input: {
   dependencies: DocumentScopeNavigationDependencies;
-  scope: DocumentProjectionScopeClaim;
+  scope: DocumentPublicationRenderScope;
   directoryPath: string;
   projected: Awaited<ReturnType<typeof projectSemanticDirectory>>;
   changedAt: string;
@@ -93,7 +91,7 @@ export async function materializeSemanticDirectoryNavigation(input: {
 
 export async function materializePerFileGraphDirectoryNavigation(input: {
   dependencies: DocumentScopeNavigationDependencies;
-  scope: DocumentProjectionScopeClaim;
+  scope: DocumentPublicationRenderScope;
   scopePath: string;
   projected: {
     pages: readonly ProjectedPage[];
@@ -143,7 +141,7 @@ export async function materializePerFileGraphDirectoryNavigation(input: {
 
 export async function materializeRootExtensionNavigation(input: {
   dependencies: DocumentScopeNavigationDependencies;
-  scope: DocumentProjectionScopeClaim;
+  scope: DocumentPublicationRenderScope;
   projected: {
     pages: readonly ProjectedPage[];
     removedLogicalPaths: readonly string[];
@@ -232,7 +230,7 @@ async function materializeDirectoryNavigation(input: {
     directoryNavigation: ReturnType<typeof createPostgresDocumentDirectoryNavigation>;
     directoryLeafLimits: OrderedDirectoryLeafLimits;
   };
-  scope: DocumentProjectionScopeClaim;
+  scope: DocumentPublicationRenderScope;
   directoryPath: string;
   projected: {
     pages: readonly ProjectedPage[];
@@ -279,7 +277,7 @@ async function materializeDirectoryNavigation(input: {
       kind: "directory" as const
     }))
   ];
-  const delta = input.scope.publicationGenerationPublicId
+  const delta = input.candidateEntryIds !== undefined
     ? await input.dependencies.directoryNavigation.readDelta({
         knowledgeBaseId: input.scope.knowledgeBaseId,
         directoryPath: input.directoryPath,
@@ -437,6 +435,8 @@ export async function projectSemanticDirectory(input: {
         affectedSourceFilePublicIds,
         includedSourceRevisionPublicIds:
           input.includedSourceRevisionPublicIds,
+        excludedActiveSourceFilePublicIds:
+          input.excludedActiveSourceFilePublicIds,
         navigationSourceFilePublicIds
       })
     : affectedSourceFilePublicIds.length > 0 && !input.planningMode
@@ -446,6 +446,8 @@ export async function projectSemanticDirectory(input: {
           affectedSourceFilePublicIds,
           includedSourceRevisionPublicIds:
             input.includedSourceRevisionPublicIds,
+          excludedActiveSourceFilePublicIds:
+            input.excludedActiveSourceFilePublicIds,
           navigationSourceFilePublicIds
         })
       : await input.dependencies.machineProjection.readSemanticDirectoryState({

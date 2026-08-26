@@ -1,4 +1,4 @@
-import { S3Client } from "@aws-sdk/client-s3";
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -132,9 +132,18 @@ describeExternal("external S3-compatible storage contract", () => {
       bytes,
       contentType: "text/markdown; charset=utf-8"
     });
+    const restartedAttempt = await sourceStore.putVerified({
+      bytes,
+      contentType: "text/markdown; charset=utf-8"
+    });
 
     expect(first).toMatchObject({ outcome: "stored", checksum });
     expect(second).toMatchObject({ outcome: "reused", objectId: first.objectId });
+    expect(restartedAttempt).toMatchObject({
+      outcome: "reused",
+      objectId: first.objectId,
+      storageKey: first.storageKey
+    });
     const stream = await sourceStore.readVerifiedStream({
       objectId: first.objectId,
       checksum,
@@ -156,6 +165,51 @@ describeExternal("external S3-compatible storage contract", () => {
       abortedMultipartUploads: 0
     });
     await expect(storage.headObjectMetadata(first.storageKey)).resolves.toBeNull();
+  }, 60_000);
+
+  it("retries safely after one delayed S3 write failure", async () => {
+    const delegate = client.send.bind(client) as (
+      command: unknown,
+      options?: unknown
+    ) => Promise<unknown>;
+    let injectedFailures = 0;
+    const faultClient = {
+      async send(command: unknown, options?: unknown) {
+        if (command instanceof PutObjectCommand && injectedFailures === 0) {
+          injectedFailures += 1;
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+          throw Object.assign(new Error("Injected delayed S3 failure"), {
+            $metadata: { httpStatusCode: 503 }
+          });
+        }
+        return delegate(command, options);
+      }
+    } as unknown as S3Client;
+    const sourceStore = createS3StorageVnextSourceBodyStore({
+      client: faultClient,
+      bucket: storageConfig.bucket,
+      prefix
+    });
+    const bytes = new TextEncoder().encode("# Restart after S3 failure\n");
+    await expect(sourceStore.putVerified({
+      bytes,
+      contentType: "text/markdown; charset=utf-8"
+    })).rejects.toThrow("Injected delayed S3 failure");
+    const stored = await sourceStore.putVerified({
+      bytes,
+      contentType: "text/markdown; charset=utf-8"
+    });
+    const replayed = await sourceStore.putVerified({
+      bytes,
+      contentType: "text/markdown; charset=utf-8"
+    });
+    expect(injectedFailures).toBe(1);
+    expect(stored.outcome).toBe("stored");
+    expect(replayed).toMatchObject({
+      outcome: "reused",
+      objectId: stored.objectId,
+      storageKey: stored.storageKey
+    });
   }, 60_000);
 
   it("completes a burst larger than the shared socket capacity", async () => {

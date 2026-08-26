@@ -16,50 +16,49 @@ export function createPostgresDocumentPerFileGraphDirectory(
     async readPerFileGraphDirectoryState(input: {
       knowledgeBaseId: string;
       scopePath: string;
-      publicationGenerationPublicId?: string;
       includedSourceRevisionPublicIds?: readonly string[];
       excludedActiveSourceFilePublicIds?: readonly string[];
     }) {
       const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
       const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds ?? []);
-      const rows = await sql<Array<{ page_path: string; title: string }>>`
-        SELECT membership.page_path COLLATE "C" AS page_path, record.title
-        FROM focowiki.document_semantic_directory_memberships membership
-        JOIN focowiki.document_projection_records record
-          ON record.knowledge_base_id = membership.knowledge_base_id
-         AND record.source_revision_public_id
-               = membership.source_revision_public_id
-        LEFT JOIN focowiki.projection_generation_graph_degrees overlay
-          ON overlay.publication_generation_public_id
-               = ${input.publicationGenerationPublicId ?? null}
-         AND overlay.knowledge_base_id = record.knowledge_base_id
-         AND overlay.source_revision_public_id
-               = record.source_revision_public_id
-        LEFT JOIN focowiki.document_graph_degrees active_degree
-          ON active_degree.knowledge_base_id = record.knowledge_base_id
-         AND active_degree.source_revision_public_id
-               = record.source_revision_public_id
-        WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
-          AND membership.directory_path = ${input.scopePath}
-          AND (record.source_revision_public_id = ANY(${included}::text[])
-            OR (record.active
-              AND record.source_file_public_id <> ALL(${excluded}::text[])))
-          AND (
-            CASE WHEN overlay.source_revision_public_id IS NOT NULL
-              THEN overlay.incoming_count + overlay.outgoing_count > 0
-              WHEN ${input.publicationGenerationPublicId ?? null}::text IS NOT NULL
-              THEN coalesce(active_degree.incoming_count, 0)
-                   + coalesce(active_degree.outgoing_count, 0) > 0
-              ELSE EXISTS (
+      const rows = included.length === 0 && excluded.length === 0
+        ? await sql<Array<{ page_path: string; title: string }>>`
+            SELECT membership.page_path COLLATE "C" AS page_path, record.title
+            FROM focowiki.document_semantic_directory_memberships membership
+            JOIN focowiki.document_projection_records record
+              ON record.knowledge_base_id = membership.knowledge_base_id
+             AND record.source_revision_public_id
+                   = membership.source_revision_public_id
+            JOIN focowiki.document_graph_degrees degree
+              ON degree.knowledge_base_id = record.knowledge_base_id
+             AND degree.source_revision_public_id
+                   = record.source_revision_public_id
+             AND degree.incoming_count + degree.outgoing_count > 0
+            WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
+              AND membership.directory_path = ${input.scopePath}
+              AND record.active
+            ORDER BY page_path
+          `
+        : await sql<Array<{ page_path: string; title: string }>>`
+            SELECT membership.page_path COLLATE "C" AS page_path, record.title
+            FROM focowiki.document_semantic_directory_memberships membership
+            JOIN focowiki.document_projection_records record
+              ON record.knowledge_base_id = membership.knowledge_base_id
+             AND record.source_revision_public_id
+                   = membership.source_revision_public_id
+            WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
+              AND membership.directory_path = ${input.scopePath}
+              AND (record.source_revision_public_id = ANY(${included}::text[])
+                OR (record.active
+                  AND record.source_file_public_id <> ALL(${excluded}::text[])))
+              AND EXISTS (
                 SELECT 1
                 FROM focowiki.canonical_file_relations relation
                 WHERE relation.knowledge_base_id = record.knowledge_base_id
-                  AND (
-                    relation.first_source_revision_public_id
-                      = record.source_revision_public_id
+                  AND (relation.first_source_revision_public_id
+                         = record.source_revision_public_id
                     OR relation.second_source_revision_public_id
-                      = record.source_revision_public_id
-                  )
+                         = record.source_revision_public_id)
                   AND (${visibleDocumentGraphRelation(sql, included, excluded)})
                   AND EXISTS (
                     SELECT 1
@@ -70,10 +69,8 @@ export function createPostgresDocumentPerFileGraphDirectory(
                       AND (${visibleDocumentGraphEvidence(sql, included, excluded)})
                   )
               )
-            END
-          )
-        ORDER BY page_path
-      `;
+            ORDER BY page_path
+          `;
       const directRows = rows.filter((row) =>
         directChildName(input.scopePath, row.page_path) === null);
       const childScopePaths = [...new Set(rows.flatMap((row) => {
@@ -96,12 +93,13 @@ export function createPostgresDocumentPerFileGraphDirectory(
     async readPerFileGraphDirectoryDeltaState(input: {
       knowledgeBaseId: string;
       scopePath: string;
-      publicationGenerationPublicId: string;
       includedSourceRevisionPublicIds: readonly string[];
+      excludedActiveSourceFilePublicIds: readonly string[];
       affectedSourceFilePublicIds: readonly string[];
       candidateChildScopePaths: readonly string[];
     }) {
       const included = sortedUnique(input.includedSourceRevisionPublicIds);
+      const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds);
       const affected = sortedUnique(input.affectedSourceFilePublicIds);
       const candidateChildren = sortedUnique(input.candidateChildScopePaths);
       if (affected.length === 0 || affected.length > 10_000
@@ -115,23 +113,27 @@ export function createPostgresDocumentPerFileGraphDirectory(
           ON record.knowledge_base_id = membership.knowledge_base_id
          AND record.source_revision_public_id
                = membership.source_revision_public_id
-        LEFT JOIN focowiki.projection_generation_graph_degrees overlay
-          ON overlay.publication_generation_public_id
-               = ${input.publicationGenerationPublicId}
-         AND overlay.knowledge_base_id = record.knowledge_base_id
-         AND overlay.source_revision_public_id
-               = record.source_revision_public_id
-        LEFT JOIN focowiki.document_graph_degrees active_degree
-          ON active_degree.knowledge_base_id = record.knowledge_base_id
-         AND active_degree.source_revision_public_id
-               = record.source_revision_public_id
         WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
           AND membership.directory_path = ${input.scopePath}
           AND record.source_file_public_id = ANY(${affected}::text[])
-          AND record.source_revision_public_id = ANY(${included}::text[])
-          AND coalesce(overlay.incoming_count, active_degree.incoming_count, 0)
-            + coalesce(overlay.outgoing_count, active_degree.outgoing_count, 0)
-              > 0
+          AND (record.source_revision_public_id = ANY(${included}::text[])
+            OR (record.active
+              AND record.source_file_public_id <> ALL(${excluded}::text[])))
+          AND EXISTS (
+            SELECT 1 FROM focowiki.canonical_file_relations relation
+            WHERE relation.knowledge_base_id = record.knowledge_base_id
+              AND (relation.first_source_revision_public_id
+                     = record.source_revision_public_id
+                OR relation.second_source_revision_public_id
+                     = record.source_revision_public_id)
+              AND (${visibleDocumentGraphRelation(sql, included, excluded)})
+              AND EXISTS (
+                SELECT 1 FROM focowiki.relation_directed_evidence evidence
+                WHERE evidence.knowledge_base_id = relation.knowledge_base_id
+                  AND evidence.pair_public_id = relation.pair_public_id
+                  AND (${visibleDocumentGraphEvidence(sql, included, excluded)})
+              )
+          )
         ORDER BY page_path
         LIMIT ${affected.length + 1}
       `;
@@ -151,25 +153,31 @@ export function createPostgresDocumentPerFileGraphDirectory(
                 ON record.knowledge_base_id = membership.knowledge_base_id
                AND record.source_revision_public_id
                      = membership.source_revision_public_id
-              LEFT JOIN focowiki.projection_generation_graph_degrees overlay
-                ON overlay.publication_generation_public_id
-                     = ${input.publicationGenerationPublicId}
-               AND overlay.knowledge_base_id = record.knowledge_base_id
-               AND overlay.source_revision_public_id
-                     = record.source_revision_public_id
-              LEFT JOIN focowiki.document_graph_degrees active_degree
-                ON active_degree.knowledge_base_id = record.knowledge_base_id
-               AND active_degree.source_revision_public_id
-                     = record.source_revision_public_id
               WHERE membership.knowledge_base_id = ${input.knowledgeBaseId}
                 AND membership.directory_path = candidate.scope_path
                 AND (record.source_revision_public_id = ANY(${included}::text[])
                   OR (record.active
-                    AND record.source_file_public_id <> ALL(${affected}::text[])))
-                AND coalesce(overlay.incoming_count,
-                      active_degree.incoming_count, 0)
-                  + coalesce(overlay.outgoing_count,
-                      active_degree.outgoing_count, 0) > 0
+                    AND record.source_file_public_id <> ALL(${excluded}::text[])))
+                AND EXISTS (
+                  SELECT 1 FROM focowiki.canonical_file_relations relation
+                  WHERE relation.knowledge_base_id = record.knowledge_base_id
+                    AND (relation.first_source_revision_public_id
+                           = record.source_revision_public_id
+                      OR relation.second_source_revision_public_id
+                           = record.source_revision_public_id)
+                    AND (${visibleDocumentGraphRelation(
+                      sql, included, excluded
+                    )})
+                    AND EXISTS (
+                      SELECT 1 FROM focowiki.relation_directed_evidence evidence
+                      WHERE evidence.knowledge_base_id
+                              = relation.knowledge_base_id
+                        AND evidence.pair_public_id = relation.pair_public_id
+                        AND (${visibleDocumentGraphEvidence(
+                          sql, included, excluded
+                        )})
+                    )
+                )
               LIMIT 1
             )
             ORDER BY scope_path

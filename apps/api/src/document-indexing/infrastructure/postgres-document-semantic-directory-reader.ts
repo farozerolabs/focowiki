@@ -75,11 +75,13 @@ export function createPostgresDocumentSemanticDirectoryReader(
       scopePath: string;
       affectedSourceFilePublicIds: readonly string[];
       includedSourceRevisionPublicIds: readonly string[];
+      excludedActiveSourceFilePublicIds?: readonly string[];
       navigationSourceFilePublicIds?: readonly string[];
-      publicationGenerationPublicId?: string;
     }) {
       const affected = sortedUnique(input.affectedSourceFilePublicIds);
       const included = sortedUnique(input.includedSourceRevisionPublicIds);
+      const excluded = sortedUnique(
+        input.excludedActiveSourceFilePublicIds ?? []);
       const navigationSources = sortedUnique(
         input.navigationSourceFilePublicIds ?? affected);
       const affectedSourceSet = new Set(affected);
@@ -111,14 +113,16 @@ export function createPostgresDocumentSemanticDirectoryReader(
                        AND membership.source_revision_public_id
                              = record.source_revision_public_id
                    ) AS page_path,
-                   record.source_revision_public_id = ANY(${included}::text[])
-                     AS visible,
+                   (record.source_revision_public_id = ANY(${included}::text[])
+                     OR (record.active AND record.source_file_public_id
+                       <> ALL(${excluded}::text[]))) AS visible,
                    row_number() OVER (
                      PARTITION BY record.source_file_public_id
                      ORDER BY
                        (record.source_revision_public_id
                           = ANY(${included}::text[])) DESC,
-                       record.active DESC,
+                       (record.active AND record.source_file_public_id
+                          <> ALL(${excluded}::text[])) DESC,
                        record.created_at DESC,
                        record.source_revision_public_id COLLATE "C" DESC
                    ) AS source_rank
@@ -135,26 +139,15 @@ export function createPostgresDocumentSemanticDirectoryReader(
                  record.content_type, record.checksum_sha256,
                  record.byte_count, record.active, record.visible,
                  record.source_rank,
-                 CASE
-                   WHEN overlay.source_revision_public_id IS NOT NULL
-                     THEN CASE WHEN overlay.incoming_count
-                       + overlay.outgoing_count > 0 THEN 1 ELSE 0 END
-                   ELSE CASE WHEN coalesce(active_degree.incoming_count, 0)
-                     + coalesce(active_degree.outgoing_count, 0) > 0
-                     THEN 1 ELSE 0 END
-                 END AS relationship_count
+                 CASE WHEN coalesce(active_degree.incoming_count, 0)
+                   + coalesce(active_degree.outgoing_count, 0) > 0
+                   THEN 1 ELSE 0 END AS relationship_count
           FROM affected_records record
-          LEFT JOIN focowiki.projection_generation_graph_degrees overlay
-            ON overlay.publication_generation_public_id
-                 = ${input.publicationGenerationPublicId ?? null}
-           AND overlay.knowledge_base_id = record.knowledge_base_id
-           AND overlay.source_revision_public_id
-                 = record.source_revision_public_id
           LEFT JOIN focowiki.document_graph_degrees active_degree
             ON active_degree.knowledge_base_id = record.knowledge_base_id
            AND active_degree.source_revision_public_id
                  = record.source_revision_public_id
-          WHERE (record.visible OR record.active OR record.source_rank = 1)
+          WHERE (record.visible OR record.source_rank = 1)
             AND (
               record.source_file_public_id
                 = ANY(${navigationSources}::text[])
@@ -201,15 +194,14 @@ export function createPostgresDocumentSemanticDirectoryReader(
               AND membership.directory_path
                     = ANY(${candidateChildScopePaths}::text[])
               AND (record.source_revision_public_id = ANY(${included}::text[])
-                OR (record.active
-                  AND record.source_file_public_id
-                        <> ALL(${navigationSources}::text[])))
+                OR (record.active AND record.source_file_public_id
+                      <> ALL(${excluded}::text[])))
             ORDER BY directory_path
           `;
       return {
         records: rows.flatMap((row) => {
           return Number(row.source_rank) === 1
-              && (row.visible || row.active)
+              && row.visible
               && posix.dirname(row.page_path) === input.scopePath
             ? [mapDocumentProjectionRecord(row)] : [];
         }),
