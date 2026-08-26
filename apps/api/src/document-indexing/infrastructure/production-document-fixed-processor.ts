@@ -59,21 +59,13 @@ import {
 } from "./production-document-fixed-runtime-support.js";
 import type { DocumentWorkerObservability } from
   "../application/document-worker-observability.js";
-import { createDocumentProjectionCleanupRuntime } from
-  "../application/document-projection-cleanup-runtime.js";
-import { createPostgresProjectionCleanupOutbox } from
-  "./postgres-projection-cleanup-outbox.js";
 import {
   observeProductionDocumentWorkEvent
 } from "./production-document-failure-observability.js";
 import { createProductionDocumentFixedResources } from
   "./production-document-fixed-resources.js";
-import { createProductionDocumentPublicationScopeRuntime } from
-  "./production-document-publication-scope-runtime.js";
-import { createProductionDocumentPublicationCoordinatorRuntime } from
-  "./production-document-publication-coordinator-runtime.js";
-import { createProductionDocumentPublicationCutoverRuntime } from
-  "./production-document-publication-cutover-runtime.js";
+import { createProductionDocumentPublicationJobRuntime } from
+  "./production-document-publication-job-runtime.js";
 
 export function createProductionDocumentFixedProcessor(input: {
   sql: DatabaseClient;
@@ -87,9 +79,8 @@ export function createProductionDocumentFixedProcessor(input: {
   observability?: Pick<
     DocumentWorkerObservability,
     "work" | "providerFailure" | "ingestionFailure" | "publication"
-      | "publicationBacklog" | "publicationScope" | "publicationStorage"
-      | "publicationProjection" | "publicationScopeStage"
-      | "publicationResourcePressure" | "storageRequest" | "cleanup"
+      | "publicationRuntime"
+      | "storageRequest" | "cleanup"
   >;
 }) {
   let currentResourceCapacity = { ...input.resourceCapacity };
@@ -302,18 +293,24 @@ export function createProductionDocumentFixedProcessor(input: {
       okfLogMaxEntries: input.config.generated.okfLogMaxEntries,
       okfLogMaxBytes: input.config.generated.okfLogMaxBytes
     },
-    objectWriter: resources.writer,
+    objectWriter: {
+      putVerified(request) {
+        return resources.lanes.run(
+          "postgres_s3",
+          () => resources.writer.putVerified(request),
+          request.signal
+        );
+      }
+    },
     objectBodies: resources.bodies,
     ownership: resources.ownership,
     maximumRecordsPerShard: graphConfig.shardSize,
     maximumShardBytes: 1_048_576
   });
-  const publicationScopeRuntime =
-    createProductionDocumentPublicationScopeRuntime({
+  const publicationJobRuntime =
+    createProductionDocumentPublicationJobRuntime({
       sql: input.sql,
       workerId: input.workerId,
-      leaseDurationMs: input.workerConfig.lockTtlSeconds * 1_000,
-      heartbeatIntervalMs: input.workerConfig.heartbeatIntervalMs,
       maximumConcurrency: publicationMemoryCapacity(Math.min(
         projectionCapacities.scopeProjection,
         publicationS3Capacities.scopeProjection
@@ -322,37 +319,11 @@ export function createProductionDocumentFixedProcessor(input: {
       ...(input.observability
         ? { observability: input.observability } : {})
     });
-  const publicationCoordinatorRuntime =
-    createProductionDocumentPublicationCoordinatorRuntime({
-      sql: input.sql,
-      ...(input.observability
-        ? { observability: input.observability } : {})
-    });
-  const publicationCutoverRuntime =
-    createProductionDocumentPublicationCutoverRuntime({ sql: input.sql });
-  const projectionCleanup = createDocumentProjectionCleanupRuntime({
-    workerId: `${input.workerId}:projection-cleanup`,
-    leaseDurationMs: input.workerConfig.lockTtlSeconds * 1_000,
-    concurrency: Math.min(4, projectionCapacities.scopeProjection),
-    retryDelayMs: input.workerConfig.jobRetryDelayMs,
-    outbox: createPostgresProjectionCleanupOutbox(input.sql),
-    ownership: resources.ownership,
-    now: () => new Date().toISOString(),
-    wait: waitForDocumentWork,
-    ...(input.observability
-      ? { onMetrics: (fields: Parameters<
-        DocumentWorkerObservability["cleanup"]
-      >[0]) => input.observability?.cleanup(fields) }
-      : {})
-  });
   return {
     async run(signal: AbortSignal) {
       await Promise.all([
         runtime.run(signal),
-        publicationScopeRuntime.run(signal),
-        publicationCoordinatorRuntime.run(signal),
-        publicationCutoverRuntime.run(signal),
-        projectionCleanup.run(signal)
+        publicationJobRuntime.run(signal)
       ]);
     },
     async start() { await resources.graphRag.start(); },
@@ -381,7 +352,7 @@ export function createProductionDocumentFixedProcessor(input: {
       repositories.work.updateProjectionBacklogLimit(
         projectionBacklogLimit(next.resourceCapacity.documentConcurrency)
       );
-      publicationScopeRuntime.updateMaximumConcurrency(
+      publicationJobRuntime.updateMaximumConcurrency(
         publicationMemoryCapacity(Math.min(
           projection.scopeProjection,
           publicationS3Capacities.scopeProjection
@@ -399,7 +370,7 @@ export function createProductionDocumentFixedProcessor(input: {
         activeWork: runtime.activeCount(),
         activeScopeProjection: 0,
         activePublicationScopeProjection:
-          publicationScopeRuntime.activeCount(),
+          publicationJobRuntime.activeCount(),
         resources: resources.lanes.snapshot(),
         generation: generation.snapshot()
       };

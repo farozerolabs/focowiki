@@ -18,54 +18,52 @@ export type PublicationDocument = {
   operation_public_id: string | null;
   source_file_public_id: string;
   source_revision_public_id: string;
-  fact_kind: "create" | "replace" | "move" | "delete" | "repair" | "shadow";
+  fact_kind: "create" | "replace" | "move" | "rename" | "delete" | "repair";
   prior_source_revision_public_id: string | null;
   semantic_generation_public_id: string | null;
 };
 
 export async function activatePostgresDocumentPublicationSources(input: {
   transaction: DatabaseClient;
-  generationPublicId: string;
+  jobPublicId: string;
   knowledgeBaseId: string;
-  targetFactEpoch: number;
+  targetReadinessSequence: number;
   activatedAt: string;
 }): Promise<readonly PublicationDocument[]> {
   const sql = input.transaction;
   const documents = await sql<PublicationDocument[]>`
-    SELECT document.mutation_public_id, document.document_job_public_id,
-           job.operation_public_id, document.source_file_public_id,
-           document.source_revision_public_id, epoch.fact_kind,
+    SELECT item.mutation_public_id, item.document_job_public_id,
+           job.operation_public_id, item.source_file_public_id,
+           item.source_revision_public_id, item.operation AS fact_kind,
            active.active_source_revision_public_id
              AS prior_source_revision_public_id,
            job.semantic_generation_public_id
-    FROM focowiki.projection_generation_documents document
+    FROM focowiki.publication_job_items membership
+    JOIN focowiki.publication_items item
+      ON item.public_id = membership.item_public_id
     LEFT JOIN focowiki.document_processing_jobs job
-      ON job.public_id = document.document_job_public_id
-    JOIN focowiki.projection_fact_epochs epoch
-      ON epoch.knowledge_base_id = ${input.knowledgeBaseId}
-     AND epoch.mutation_public_id = document.mutation_public_id
-     AND epoch.fact_epoch = document.fact_epoch
+      ON job.public_id = item.document_job_public_id
     JOIN focowiki.source_file_active_revisions active
       ON active.knowledge_base_id = ${input.knowledgeBaseId}
-     AND active.source_file_public_id = document.source_file_public_id
-    WHERE document.generation_public_id = ${input.generationPublicId}
-      AND (epoch.fact_kind = 'delete'
+     AND active.source_file_public_id = item.source_file_public_id
+    WHERE membership.job_public_id = ${input.jobPublicId}
+      AND (item.operation = 'delete'
         OR (job.knowledge_base_id = ${input.knowledgeBaseId}
-          AND job.source_file_public_id = document.source_file_public_id
-          AND job.source_revision_public_id = document.source_revision_public_id
+          AND job.source_file_public_id = item.source_file_public_id
+          AND job.source_revision_public_id = item.source_revision_public_id
           AND active.current_source_revision_public_id
-                = document.source_revision_public_id
+                = item.source_revision_public_id
           AND (job.state = 'processing'
             OR (job.state = 'available'
               AND active.active_source_revision_public_id
-                    = document.source_revision_public_id))))
-    ORDER BY document.source_file_public_id COLLATE "C"
+                    = item.source_revision_public_id))))
+    ORDER BY membership.membership_order
     FOR UPDATE OF active
   `;
   const expected = await sql<Array<{ count: number | string }>>`
     SELECT count(*) AS count
-    FROM focowiki.projection_generation_documents
-    WHERE generation_public_id = ${input.generationPublicId}
+    FROM focowiki.publication_job_items
+    WHERE job_public_id = ${input.jobPublicId}
   `;
   if (documents.length !== Number(expected[0]?.count ?? -1)) {
     throw activationError("publication_source_precondition_failed");
@@ -100,7 +98,7 @@ export async function activatePostgresDocumentPublicationSources(input: {
     await sql`
       UPDATE focowiki.source_file_active_revisions active
       SET active_source_revision_public_id = desired.source_revision_public_id,
-          activation_sequence = ${input.targetFactEpoch},
+          activation_sequence = ${input.targetReadinessSequence},
           updated_at = ${input.activatedAt}
       FROM jsonb_to_recordset(${sql.json(live as never)}::jsonb) desired(
         source_file_public_id text, source_revision_public_id text
@@ -115,7 +113,7 @@ export async function activatePostgresDocumentPublicationSources(input: {
     await sql`
       UPDATE focowiki.source_file_active_revisions active
       SET active_source_revision_public_id = NULL,
-          activation_sequence = ${input.targetFactEpoch},
+          activation_sequence = ${input.targetReadinessSequence},
           updated_at = ${input.activatedAt}
       FROM jsonb_to_recordset(${sql.json(deleted as never)}::jsonb) desired(
         source_file_public_id text
@@ -142,7 +140,7 @@ export async function activatePostgresDocumentPublicationSources(input: {
       knowledgeBaseId: input.knowledgeBaseId,
       sourceFilePublicId: document.source_file_public_id,
       sourceRevisionPublicId: document.source_revision_public_id,
-      readinessSequence: input.targetFactEpoch,
+      readinessSequence: input.targetReadinessSequence,
       relationPublicIds: [],
       activatedAt: input.activatedAt
     });
@@ -318,7 +316,11 @@ async function activateProjectionRecords(
 
 async function activateIdentityKeys(
   sql: DatabaseClient,
-  input: { knowledgeBaseId: string; targetFactEpoch: number; activatedAt: string },
+  input: {
+    knowledgeBaseId: string;
+    targetReadinessSequence: number;
+    activatedAt: string;
+  },
   documents: readonly PublicationDocument[]
 ): Promise<void> {
   if (documents.length === 0) return;
@@ -329,7 +331,7 @@ async function activateIdentityKeys(
                  = desired.source_revision_public_id
             AND desired.fact_kind <> 'delete' THEN 'active'
           ELSE 'obsolete' END,
-        activation_revision = ${input.targetFactEpoch},
+        activation_revision = ${input.targetReadinessSequence},
         updated_at = ${input.activatedAt}
     FROM jsonb_to_recordset(${sql.json(documents as never)}::jsonb) desired(
       source_file_public_id text, source_revision_public_id text,

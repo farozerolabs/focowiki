@@ -27,8 +27,8 @@ import {
   documentSourcePathRewrites,
   renderAffectedDocumentSourcePages
 } from "../application/document-affected-source-pages.js";
-import { allocatePostgresDocumentFactEpoch } from
-  "./postgres-document-publication-repository.js";
+import { createPostgresReadyDocumentPublicationItem } from
+  "./postgres-document-publication-item-repository.js";
 
 export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
   contexts: ReturnType<typeof createPostgresDocumentWorkContext>;
@@ -164,17 +164,34 @@ export function createProductionDocumentKnowledgeProjectionWorkHandler(input: {
             knowledgeBaseId: request.claimed.knowledgeBaseId,
             pages: persisted.generatedPageFacts
           });
-        await allocatePostgresDocumentFactEpoch({
+        await createPostgresReadyDocumentPublicationItem({
           transaction,
           knowledgeBaseId: request.claimed.knowledgeBaseId,
           mutationPublicId: request.claimed.documentJobPublicId,
+          documentJobPublicId: request.claimed.documentJobPublicId,
           sourceFilePublicId: request.claimed.sourceFilePublicId,
           sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
-          factKind: projectionFactKind({
+          operation: projectionFactKind({
             operationKind: context.job.operationKind,
             priorActiveSourceRevisionPublicId:
               context.source.priorActiveSourceRevisionPublicId
           }),
+          affectedEvidence: {
+            affectedSourceFilePublicIds:
+              relationPlan.affectedSourceFilePublicIds.slice(0, 256),
+            relationPublicIds: relationPlan.relationPublicIds.slice(0, 256),
+            runtimeSettingsRevisionPublicId:
+              context.job.runtimeSettingsRevisionPublicId,
+            generationModelConfigurationPublicId:
+              context.job.generationModelConfigurationPublicId,
+            generationModelConfigurationRevision:
+              context.job.generationModelConfigurationRevision,
+            embeddingConfigurationRevisionPublicId:
+              context.job.embeddingConfigurationRevisionPublicId,
+            semanticGenerationPublicId:
+              context.job.semanticGenerationPublicId,
+            semanticContractVersion: context.job.semanticContractVersion
+          },
           createdAt: persisted.receipt.serviceEndedAt
         });
       }

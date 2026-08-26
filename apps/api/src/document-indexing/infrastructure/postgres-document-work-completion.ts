@@ -134,31 +134,34 @@ export async function updatePostgresDocumentJobSummary(
              coalesce(array_agg(work_kind ORDER BY work_kind)
                FILTER (WHERE state = 'running'), '{}'::text[]) AS active_kinds,
              CASE
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM focowiki.projection_generation_documents document
-                 JOIN focowiki.projection_publication_generations generation
-                   ON generation.public_id = document.generation_public_id
-                 JOIN focowiki.document_artifact_work activation_work
-                   ON activation_work.document_job_public_id
-                        = document.document_job_public_id
+              WHEN EXISTS (
+                SELECT 1
+                FROM focowiki.publication_items item
+                JOIN focowiki.publication_job_items membership
+                  ON membership.item_public_id = item.public_id
+                JOIN focowiki.publication_jobs publication_job
+                  ON publication_job.public_id = membership.job_public_id
+                JOIN focowiki.document_artifact_work activation_work
+                  ON activation_work.document_job_public_id
+                       = item.document_job_public_id
                   AND activation_work.work_kind = 'activate'
                   AND activation_work.state <> 'completed'
-                 WHERE document.document_job_public_id
-                         = ${documentJobPublicId}
-                   AND generation.state = 'ready'
-               ) THEN 'activate'
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM focowiki.projection_generation_documents document
-                 JOIN focowiki.projection_publication_generations generation
-                   ON generation.public_id = document.generation_public_id
-                 WHERE document.document_job_public_id
-                         = ${documentJobPublicId}
-                   AND generation.state IN (
-                     'planned', 'rendering', 'validating'
-                   )
-               ) THEN 'knowledge_projection'
+                WHERE item.document_job_public_id = ${documentJobPublicId}
+                  AND publication_job.outcome = 'pending'
+                  AND publication_job.manifest_fingerprint_sha256 IS NOT NULL
+              ) THEN 'activate'
+              WHEN EXISTS (
+                SELECT 1
+                FROM focowiki.publication_items item
+                LEFT JOIN focowiki.publication_job_items membership
+                  ON membership.item_public_id = item.public_id
+                LEFT JOIN focowiki.publication_jobs publication_job
+                  ON publication_job.public_id = membership.job_public_id
+                WHERE item.document_job_public_id = ${documentJobPublicId}
+                  AND item.outcome = 'pending'
+                  AND (publication_job.public_id IS NULL
+                    OR publication_job.outcome = 'pending')
+              ) THEN 'knowledge_projection'
                ELSE (array_agg(work_kind ORDER BY CASE work_kind
                  WHEN 'prepare' THEN 1 WHEN 'first_layer' THEN 2
                  WHEN 'content_projection' THEN 3 WHEN 'graphrag' THEN 4

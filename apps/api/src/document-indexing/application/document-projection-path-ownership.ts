@@ -7,11 +7,11 @@ import {
   portableGraphDirectoryPath,
   portableIndexDirectoryPath
 } from "@focowiki/okf";
-import type { DocumentProjectionScopeClaim } from
-  "./document-scope-projector-runtime.js";
+import type { DocumentPublicationRenderScope } from
+  "./document-publication-job-ports.js";
 
 export type DocumentProjectionScopeIdentity = Pick<
-  DocumentProjectionScopeClaim,
+  DocumentPublicationRenderScope,
   "kind" | "key"
 >;
 

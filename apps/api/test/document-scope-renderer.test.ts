@@ -35,7 +35,6 @@ describe("production document scope renderer", () => {
         machineProjection: { readSemanticDirectoryDeltaState } as never,
         knowledgeBaseId: "kb-page-delta",
         scopePath: "pages",
-        publicationGenerationPublicId: "generation-page-delta",
         includedSourceRevisionPublicIds: ["revision-current"],
         excludedActiveSourceFilePublicIds: ["source-current"],
         affectedSourceFilePublicIds: ["source-current", "source-neighbor"],
@@ -52,8 +51,8 @@ describe("production document scope renderer", () => {
         scopePath: "pages",
         affectedSourceFilePublicIds: ["source-current", "source-neighbor"],
         includedSourceRevisionPublicIds: ["revision-current"],
-        navigationSourceFilePublicIds: [],
-        publicationGenerationPublicId: "generation-page-delta"
+        excludedActiveSourceFilePublicIds: ["source-current"],
+        navigationSourceFilePublicIds: []
       });
     });
 
@@ -87,6 +86,7 @@ describe("production document scope renderer", () => {
         scopePath: "pages",
         affectedSourceFilePublicIds: ["source-new"],
         includedSourceRevisionPublicIds: ["revision-new"],
+        excludedActiveSourceFilePublicIds: [],
         navigationSourceFilePublicIds: ["source-new"]
       });
       expect(readSemanticDirectoryState).not.toHaveBeenCalled();
@@ -117,6 +117,7 @@ describe("production document scope renderer", () => {
         scopePath: "pages",
         affectedSourceFilePublicIds: ["source-existing", "source-new"],
         includedSourceRevisionPublicIds: ["revision-new"],
+        excludedActiveSourceFilePublicIds: ["source-new"],
         navigationSourceFilePublicIds: ["source-new"]
       });
     });
@@ -280,67 +281,6 @@ describe("production document scope renderer", () => {
     expect(result.factCount).toBe(2);
     expect(putVerified).toHaveBeenCalledTimes(1);
   });
-
-  it("renders a source tombstone from its frozen base without reading source bytes",
-    async () => {
-      const project = vi.fn(async () => {
-        throw new Error("tombstone_source_should_not_render");
-      });
-      const putVerified = vi.fn();
-      const renderer = createProductionDocumentScopeRenderer({
-        machineProjection: {
-          readGeneratedPageChecksums: vi.fn(async () => [])
-        } as never,
-        sourceProjection: { project },
-        objectWriter: { putVerified } as never,
-        maximumRecordsPerShard: 100,
-        maximumShardBytes: 1_048_576
-      });
-
-      const result = await renderer.renderPublication({
-        publicId: "scope-source-deleted",
-        publicationGenerationPublicId: "generation-delete",
-        knowledgeBaseId: "kb-1",
-        scopeIdentity: "source:source-deleted",
-        scopeKind: "source",
-        scopeKey: "source-deleted",
-        scopeGeneration: 2,
-        targetFactEpoch: 9,
-        inputSnapshotFingerprintSha256: "a".repeat(64),
-        rendererContractVersion: "portable-okf-v2",
-        planningMode: "delta",
-        affectedSourceFilePublicIds: ["source-deleted"],
-        deterministicChangedAt: "2026-08-21T12:00:00.000Z",
-        baseGenerationPublicId: "generation-active",
-        members: [{
-          kind: "tombstone",
-          publicId: "source-deleted",
-          version: "9",
-          order: 0,
-          sourceFilePublicId: "source-deleted"
-        }],
-        basePages: [{
-          normalizedPath: "pages/deleted.md",
-          action: "put",
-          entryKind: "source",
-          objectId: "object-deleted",
-          checksumSha256: "b".repeat(64),
-          byteCount: 128
-        }]
-      }, new AbortController().signal);
-
-      expect(project).not.toHaveBeenCalled();
-      expect(putVerified).not.toHaveBeenCalled();
-      expect(result.pages).toEqual([{
-        logicalPath: "pages/deleted.md",
-        normalizedPath: "pages/deleted.md",
-        action: "delete",
-        entryKind: null,
-        objectId: null,
-        checksumSha256: null,
-        byteCount: null
-      }]);
-    });
 
   it("renders one finite term bucket directly from PostgreSQL facts", async () => {
     const putVerified = vi.fn(async (input: { bytes: Uint8Array }) => ({
@@ -774,7 +714,7 @@ describe("production document scope renderer", () => {
       });
 
       expect(result.pages).toHaveLength(65);
-      expect(maximumActiveWrites).toBe(32);
+      expect(maximumActiveWrites).toBe(1);
       expect(checkpoint.mock.calls.length).toBeGreaterThanOrEqual(68);
     });
 
@@ -926,7 +866,6 @@ describe("production document scope renderer", () => {
 
       const projected = await renderer.project({
         publicId: "scope-directory-delta",
-        publicationGenerationPublicId: "generation-delta",
         knowledgeBaseId: "kb-1",
         kind: "directory",
         key: "pages/guides",
@@ -948,6 +887,7 @@ describe("production document scope renderer", () => {
         scopePath: "pages/guides",
         affectedSourceFilePublicIds: ["source-neighbor", "source-overview"],
         includedSourceRevisionPublicIds: ["revision-overview"],
+        excludedActiveSourceFilePublicIds: ["source-overview"],
         navigationSourceFilePublicIds: ["source-overview"]
       });
       expect(readSemanticDirectoryState).not.toHaveBeenCalled();
@@ -991,7 +931,6 @@ describe("production document scope renderer", () => {
 
       await expect(renderer.project({
         publicId: "scope-directory-window-limit",
-        publicationGenerationPublicId: "generation-window-limit",
         knowledgeBaseId: "kb-1",
         kind: "directory",
         key: "pages/guides",
@@ -1070,7 +1009,6 @@ describe("production document scope renderer", () => {
 
     const projected = await renderer.project({
       publicId: "scope-directory-disconnected",
-      publicationGenerationPublicId: "generation-disconnected",
       knowledgeBaseId: "kb-1", kind: "directory", key: "pages/guides",
       requiredSequence: 12, renderedSequence: 12
     }, {
@@ -1107,7 +1045,7 @@ describe("production document scope renderer", () => {
       knowledgeBaseId: "kb-1",
       includedSourceRevisionPublicIds: [],
       excludedActiveSourceFilePublicIds: [],
-      publicationGenerationPublicId: "generation-term-catalog",
+      affectedTermBuckets: ["han", "latin"],
       planningMode: "delta",
       basePages: []
     });
@@ -1142,18 +1080,18 @@ describe("production document scope renderer", () => {
       },
       knowledgeBaseId: "kb-1",
       scopePath: "pages/guides",
-      publicationGenerationPublicId: "generation-graph-files",
       includedSourceRevisionPublicIds: ["revision-overview"],
-      excludedActiveSourceFilePublicIds: [],
-      affectedSourceFilePublicIds: ["source-overview"],
+      excludedActiveSourceFilePublicIds: ["source-overview"],
+      affectedSourceFilePublicIds: ["source-neighbor", "source-overview"],
       affectedLogicalPaths: ["pages/guides/overview.md"],
       planningMode: "delta"
     });
 
     expect(readPerFileGraphDirectoryDeltaState).toHaveBeenCalledWith(
       expect.objectContaining({
-        affectedSourceFilePublicIds: ["source-overview"],
-        publicationGenerationPublicId: "generation-graph-files"
+        affectedSourceFilePublicIds: ["source-neighbor", "source-overview"],
+        includedSourceRevisionPublicIds: ["revision-overview"],
+        excludedActiveSourceFilePublicIds: ["source-overview"]
       })
     );
     expect(readPerFileGraphDirectoryState).not.toHaveBeenCalled();

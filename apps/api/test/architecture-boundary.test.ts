@@ -390,8 +390,38 @@ describe("lightweight architecture boundaries", () => {
     expect(projection).toContain("createProductionDocumentKnowledgeProjectionWorkHandler");
     expect(projection).toContain("createPostgresDocumentProjectionFacts");
     expect(projection).not.toContain("createPostgresProjectionScopeContributions");
-    expect(projection).toContain("allocatePostgresDocumentFactEpoch");
+    expect(projection).toContain("createPostgresReadyDocumentPublicationItem");
+    expect(projection).not.toContain("allocatePostgresDocumentFactEpoch");
     expect(projection).toContain("waitForProjectionWithMutation");
+  });
+
+  it("keeps removed publication coordination unreachable", () => {
+    const removedModules = [
+      "document-publication-coordinator-runtime.ts",
+      "document-publication-scope-runtime.ts",
+      "document-publication-scope-generation-runtime.ts",
+      "document-publication-planner.ts",
+      "document-publication-dag.ts",
+      "document-publication-recovery.ts",
+      "document-publication-shadow-migration.ts",
+      "document-publication-window.ts"
+    ];
+    const roots = [
+      "apps/api/src/document-indexing/application",
+      "apps/api/src/document-indexing/infrastructure"
+    ];
+    for (const root of roots) {
+      for (const module of removedModules) {
+        expect(existsSync(resolve(workspaceRoot, root, module)), module)
+          .toBe(false);
+      }
+    }
+    const processor = readWorkspaceFile(
+      "apps/api/src/document-indexing/infrastructure/production-document-fixed-processor.ts"
+    );
+    expect(processor).toContain("createProductionDocumentPublicationJobRuntime");
+    expect(processor).not.toContain("createProductionDocumentPublicationCoordinatorRuntime");
+    expect(processor).not.toContain("createProductionDocumentPublicationScopeRuntime");
   });
 
   it("keeps upload acceptance out of process-local source-file workers", () => {
@@ -498,7 +528,9 @@ describe("lightweight architecture boundaries", () => {
     expect(processor).toContain('eventType: "document.available"');
     expect(processor).not.toContain("createStorageVnextPublicationProcessor");
     expect(processor).not.toContain("activateCandidate");
-    expect(activation).toContain("activation_sequence = ${input.targetFactEpoch}");
+    expect(activation).toContain(
+      "activation_sequence = ${input.targetReadinessSequence}"
+    );
     expect(activation).toContain("activateProjectionRecords");
     expect(activation).toContain("UPDATE focowiki.source_file_identity_keys");
   });

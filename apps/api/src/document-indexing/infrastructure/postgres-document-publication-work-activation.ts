@@ -10,7 +10,7 @@ const RESULT_RETENTION_MILLISECONDS = 30 * 86_400_000;
 
 export async function completePostgresDocumentPublicationWork(input: {
   transaction: DatabaseClient;
-  generationPublicId: string;
+  jobPublicId: string;
   knowledgeBaseId: string;
   outputFingerprintSha256: string;
   activatedAt: string;
@@ -38,7 +38,9 @@ export async function completePostgresDocumentPublicationWork(input: {
              AS activation_input_fingerprint_sha256,
            job.operation_public_id, operation.operation_kind,
            job.revision AS job_revision
-    FROM focowiki.projection_generation_documents document
+    FROM focowiki.publication_job_items membership
+    JOIN focowiki.publication_items document
+      ON document.public_id = membership.item_public_id
     JOIN focowiki.document_processing_jobs job
       ON job.public_id = document.document_job_public_id
     JOIN focowiki.document_artifact_work projection
@@ -52,7 +54,7 @@ export async function completePostgresDocumentPublicationWork(input: {
     JOIN focowiki.operations operation
       ON operation.knowledge_base_id = job.knowledge_base_id
      AND operation.public_id = job.operation_public_id
-    WHERE document.generation_public_id = ${input.generationPublicId}
+    WHERE membership.job_public_id = ${input.jobPublicId}
       AND job.knowledge_base_id = ${input.knowledgeBaseId}
       AND job.state = 'processing'
     ORDER BY job.public_id COLLATE "C"
@@ -83,10 +85,12 @@ export async function completePostgresDocumentPublicationWork(input: {
                    AND activation.state = 'completed'
                )
              ))) AS invalid_count
-    FROM focowiki.projection_generation_documents document
+    FROM focowiki.publication_job_items membership
+    JOIN focowiki.publication_items document
+      ON document.public_id = membership.item_public_id
     LEFT JOIN focowiki.document_processing_jobs job
       ON job.public_id = document.document_job_public_id
-    WHERE document.generation_public_id = ${input.generationPublicId}
+    WHERE membership.job_public_id = ${input.jobPublicId}
       AND document.document_job_public_id IS NOT NULL
   `;
   const precondition = preconditions[0];
@@ -96,7 +100,7 @@ export async function completePostgresDocumentPublicationWork(input: {
   }
   if (works.length === 0) return 0;
   const receipts = works.flatMap((work) => [{
-    public_id: receiptId(input.generationPublicId,
+    public_id: receiptId(input.jobPublicId,
       work.document_job_public_id, "projection"),
     knowledge_base_id: input.knowledgeBaseId,
     document_job_public_id: work.document_job_public_id,
@@ -108,11 +112,11 @@ export async function completePostgresDocumentPublicationWork(input: {
     input_fingerprint_sha256: work.projection_input_fingerprint_sha256,
     output_fingerprint_sha256: input.outputFingerprintSha256,
     receipt: {
-      schemaVersion: "document-publication-generation-receipt-v1",
-      generationPublicId: input.generationPublicId
+      schemaVersion: "document-publication-job-receipt-v1",
+      publicationJobPublicId: input.jobPublicId
     }
   }, {
-    public_id: receiptId(input.generationPublicId,
+    public_id: receiptId(input.jobPublicId,
       work.document_job_public_id, "activation"),
     knowledge_base_id: input.knowledgeBaseId,
     document_job_public_id: work.document_job_public_id,
@@ -124,8 +128,8 @@ export async function completePostgresDocumentPublicationWork(input: {
     input_fingerprint_sha256: work.activation_input_fingerprint_sha256,
     output_fingerprint_sha256: input.outputFingerprintSha256,
     receipt: {
-      schemaVersion: "document-publication-activation-receipt-v1",
-      generationPublicId: input.generationPublicId
+      schemaVersion: "document-publication-activation-receipt-v2",
+      publicationJobPublicId: input.jobPublicId
     }
   }]);
   await sql`
@@ -236,11 +240,11 @@ export async function completePostgresDocumentPublicationWork(input: {
 }
 
 function receiptId(
-  generationPublicId: string,
+  jobPublicId: string,
   documentJobPublicId: string,
   kind: string
 ): string {
-  const value = `${generationPublicId}-${documentJobPublicId}-${kind}`;
+  const value = `${jobPublicId}-${documentJobPublicId}-${kind}`;
   return `document-receipt-publication-${createHash("sha256")
     .update(value).digest("hex")}`;
 }

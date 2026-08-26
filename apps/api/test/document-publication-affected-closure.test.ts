@@ -11,11 +11,11 @@ describe("document publication affected closure", () => {
         documentJobPublicId: "job-1",
         sourceFilePublicId: "source-a",
         sourceRevisionPublicId: "revision-a",
-        factEpoch: 7,
+        readinessSequence: 7,
         operation: "move",
         priorLogicalPath: "old/a.md",
         nextLogicalPath: "new/deep/a.md",
-        priorTermBuckets: [], nextTermBuckets: [],
+        priorTermBuckets: ["old-term"], nextTermBuckets: ["new-term"],
         relatedSourceFilePublicIds: ["source-b"],
         priorGraphDirectoryPaths: ["pages/old"],
         nextGraphDirectoryPaths: ["pages/new/deep"]
@@ -25,7 +25,12 @@ describe("document publication affected closure", () => {
       expect.objectContaining({ kind: "source", publicId: "source-a" }),
       expect.objectContaining({ kind: "relation_endpoint", publicId: "source-b" }),
       expect.objectContaining({ kind: "directory", publicId: "pages" }),
-      expect.objectContaining({ kind: "directory", publicId: "pages/new/deep" })
+      expect.objectContaining({ kind: "directory", publicId: "pages/new/deep" }),
+      expect.objectContaining({ kind: "term_bucket", publicId: "new-term" }),
+      expect.objectContaining({ kind: "graph_directory", publicId: "pages/new/deep" }),
+      expect.objectContaining({ kind: "search_owner", publicId: "source-b" }),
+      expect.objectContaining({ kind: "tombstone", publicId: "source-a" }),
+      expect.objectContaining({ kind: "root", publicId: "index.md" })
     ]));
     expect(closure.fingerprintSha256).toMatch(/^[0-9a-f]{64}$/u);
   });
@@ -41,6 +46,7 @@ describe("document publication affected closure", () => {
   it.each([
     ["create", null, "new/a.md"],
     ["replace", "old/a.md", "old/a.md"],
+    ["rename", "old/a.md", "old/b.md"],
     ["move", "old/a.md", "new/deep/a.md"],
     ["delete", "old/a.md", null],
     ["repair", "old/a.md", "old/a.md"]
@@ -49,7 +55,8 @@ describe("document publication affected closure", () => {
       const closure = buildDocumentPublicationAffectedClosure({
         planningMode: operation === "repair" ? "repair" : "delta",
         documents: [document({
-          operation, priorLogicalPath, nextLogicalPath,
+          operation: operation === "rename" ? "move" : operation,
+          priorLogicalPath, nextLogicalPath,
           relatedSourceFilePublicIds: ["source-neighbor"]
         })]
       });
@@ -72,6 +79,63 @@ describe("document publication affected closure", () => {
         }));
       }
     });
+
+  it.each([
+    ["relation add", [], ["source-neighbor"]],
+    ["relation remove", ["source-neighbor"], []]
+  ] as const)("keeps reciprocal endpoints for %s",
+    (_name, priorRelations, nextRelations) => {
+      const closure = buildDocumentPublicationAffectedClosure({
+        planningMode: "delta",
+        documents: [document({
+          relatedSourceFilePublicIds: [...new Set([
+            ...priorRelations, ...nextRelations
+          ])]
+        })]
+      });
+      expect(closure.members).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "relation_endpoint", publicId: "source-neighbor",
+          sourceFilePublicId: "source-neighbor"
+        }),
+        expect.objectContaining({
+          kind: "search_owner", publicId: "source-neighbor",
+          sourceFilePublicId: "source-neighbor"
+        })
+      ]));
+    });
+
+  it("covers both sides of directory split and merge mutations", () => {
+    const closure = buildDocumentPublicationAffectedClosure({
+      planningMode: "delta",
+      documents: [
+        document({
+          operation: "move",
+          priorLogicalPath: "combined/a.md",
+          nextLogicalPath: "split/left/a.md",
+          priorGraphDirectoryPaths: ["pages/combined"],
+          nextGraphDirectoryPaths: ["pages/split/left"]
+        }),
+        document({
+          sourceFilePublicId: "source-b",
+          sourceRevisionPublicId: "revision-b",
+          operation: "move",
+          priorLogicalPath: "split/right/b.md",
+          nextLogicalPath: "combined/b.md",
+          priorGraphDirectoryPaths: ["pages/split/right"],
+          nextGraphDirectoryPaths: ["pages/combined"]
+        })
+      ]
+    });
+    for (const path of [
+      "pages/combined", "pages/split", "pages/split/left",
+      "pages/split/right"
+    ]) {
+      expect(closure.members).toContainEqual(expect.objectContaining({
+        kind: "directory", publicId: path
+      }));
+    }
+  });
 
   it("is bytewise deterministic across contributor order", () => {
     const first = document({ sourceFilePublicId: "source-a",
@@ -103,7 +167,7 @@ function document(overrides: Partial<Parameters<
     documentJobPublicId: "job-a",
     sourceFilePublicId: "source-a",
     sourceRevisionPublicId: "revision-a",
-    factEpoch: 1,
+    readinessSequence: 1,
     operation: "create" as const,
     priorLogicalPath: null,
     nextLogicalPath: "new/a.md",

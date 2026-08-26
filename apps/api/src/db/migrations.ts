@@ -32,6 +32,8 @@ export class RuntimeSchemaSignatureError extends Error {
 export type MigrationPreflightResult = {
   currentGeneration: string | "absent";
   pendingFiles: MigrationFile[];
+  requiresStoppedWorkers: boolean;
+  requiresDatabaseBackup: boolean;
 };
 
 export function readMigrationSql(fileName: MigrationFile): string {
@@ -89,7 +91,13 @@ export async function preflightMigrations(
 
   return {
     currentGeneration: state,
-    pendingFiles: plan.pendingFiles
+    pendingFiles: plan.pendingFiles,
+    requiresStoppedWorkers: plan.pendingMigrations.some(
+      (migration) => migration.safety === "breaking_cutover"
+    ),
+    requiresDatabaseBackup: plan.pendingMigrations.some(
+      (migration) => migration.safety === "breaking_cutover"
+    )
   };
 }
 
@@ -164,29 +172,11 @@ async function assertDocumentIndexingSchemaSignature(
           'upload_operation_summaries',
           'operation_tombstones',
           'projection_cleanup_outbox',
-          'projection_fact_epochs',
-          'knowledge_base_projection_heads',
-          'projection_publication_generations',
-          'projection_generation_documents',
-          'projection_activation_owner_reservations',
-          'projection_artifact_owners',
-          'projection_directory_owners',
-          'projection_scope_generations',
-          'projection_scope_generation_dependencies',
-          'projection_scope_snapshot_members',
-          'projection_scope_generation_pages',
-          'projection_generation_directory_claims',
-          'projection_scope_navigation_mutations',
-          'projection_scope_generation_object_refs',
-          'projection_generation_validation_results',
-          'projection_invariant_diagnostics',
-          'projection_cutover_states',
-          'projection_shadow_parity_results',
-          'projection_generation_retention'
-          ,'projection_generation_graph_degrees'
-          ,'projection_generation_affected_members'
-          ,'projection_generation_statistics'
-          ,'projection_legacy_cleanup_state'
+          'publication_items'
+          ,'publication_jobs'
+          ,'publication_job_items'
+          ,'publication_job_outputs'
+          ,'knowledge_base_publication_heads'
         ]) AS required(name)
         WHERE to_regclass('focowiki.' || required.name) IS NULL
       )
@@ -239,29 +229,14 @@ async function assertDocumentIndexingSchemaSignature(
           ,('upload_operation_summaries', 'session_public_id')
           ,('upload_operation_summaries', 'received_entry_count')
           ,('upload_operation_summaries', 'expires_at')
-          ,('knowledge_base_projection_heads', 'active_generation_public_id')
-          ,('projection_publication_generations', 'target_fact_epoch')
-          ,('projection_artifact_owners', 'ownership_epoch')
-          ,('projection_scope_generations', 'lease_generation')
-          ,('projection_scope_generations', 'validation_evidence')
-          ,('projection_scope_generations', 'next_eligible_at')
-          ,('projection_scope_generations', 'resource_failure_started_at')
-          ,('projection_scope_generations', 'resource_failure_count')
-          ,('projection_scope_generation_pages', 'normalized_path')
-          ,('projection_scope_generation_pages', 'logical_path')
-          ,('projection_scope_generation_pages', 'publication_generation_public_id')
-          ,('projection_scope_generation_pages', 'owner_scope_identity')
-          ,('projection_scope_navigation_mutations', 'publication_generation_public_id')
-          ,('projection_scope_navigation_mutations', 'owner_scope_identity')
-          ,('generated_page_heads', 'projection_generation_public_id')
           ,('projection_cleanup_outbox', 'write_attempt_public_id')
-          ,('projection_publication_generations', 'planning_mode')
-          ,('projection_publication_generations', 'affected_closure_fingerprint_sha256')
-          ,('projection_publication_generations', 'supersession_reason')
-          ,('projection_publication_generations', 'superseded_by_generation_public_id')
-          ,('projection_scope_generations', 'consecutive_lease_loss_count')
-          ,('projection_scope_generations', 'last_progress_at')
-          ,('projection_scope_generations', 'progress_evidence')
+          ,('publication_items', 'readiness_sequence')
+          ,('publication_items', 'affected_evidence')
+          ,('publication_jobs', 'attempt_token')
+          ,('publication_jobs', 'attempt_deadline')
+          ,('publication_jobs', 'manifest_fingerprint_sha256')
+          ,('publication_job_outputs', 'normalized_path')
+          ,('knowledge_base_publication_heads', 'active_revision')
         ) AS required(table_name, column_name)
         WHERE NOT EXISTS (
           SELECT 1 FROM information_schema.columns actual
@@ -312,17 +287,6 @@ async function assertDocumentIndexingSchemaSignature(
           'webhook_subscriptions_public_idempotency_key'
           ,'projection_cleanup_outbox_claim_idx'
           ,'projection_cleanup_outbox_expired_lease_idx'
-          ,'projection_publication_generations_one_candidate_idx'
-          ,'projection_activation_owner_reservations_lock_idx'
-          ,'projection_artifact_owners_scope_idx'
-          ,'projection_directory_owners_scope_idx'
-          ,'projection_scope_generations_claim_idx'
-          ,'projection_scope_generations_expired_idx'
-          ,'projection_scope_generation_dependencies_reverse_idx'
-          ,'projection_scope_generation_pages_path_idx'
-          ,'projection_scope_generation_object_refs_object_idx'
-          ,'projection_invariant_diagnostics_open_idx'
-          ,'projection_generation_graph_degrees_directory_idx'
           ,'document_projection_records_revision_visibility_idx'
           ,'document_semantic_memberships_directory_revision_idx'
           ,'canonical_file_relations_first_revision_visible_idx'
@@ -330,12 +294,14 @@ async function assertDocumentIndexingSchemaSignature(
           ,'canonical_file_relations_first_file_history_idx'
           ,'canonical_file_relations_second_file_history_idx'
           ,'relation_directed_evidence_pair_visible_idx'
-          ,'projection_generation_affected_members_source_idx'
-          ,'projection_publication_generations_contract_recovery_idx'
-          ,'projection_publication_generations_supersession_idx'
-          ,'projection_scope_generations_lease_loss_idx'
-          ,'projection_generation_statistics_knowledge_base_idx'
-          ,'projection_publication_generations_stranded_recovery_idx'
+          ,'publication_items_eligibility_idx'
+          ,'publication_items_oldest_idx'
+          ,'publication_jobs_one_nonterminal_idx'
+          ,'publication_jobs_claim_idx'
+          ,'publication_jobs_expiry_idx'
+          ,'publication_jobs_retention_idx'
+          ,'publication_job_items_order_idx'
+          ,'publication_job_outputs_path_idx'
         ]) AS required(name)
         WHERE NOT EXISTS (
           SELECT 1 FROM pg_indexes actual
@@ -402,6 +368,29 @@ async function assertDocumentIndexingSchemaSignature(
           ,'document_revision_artifacts'
           ,'file_relations'
           ,'file_relation_evidence'
+          ,'projection_fact_epochs'
+          ,'knowledge_base_projection_heads'
+          ,'projection_publication_generations'
+          ,'projection_generation_documents'
+          ,'projection_activation_owner_reservations'
+          ,'projection_artifact_owners'
+          ,'projection_directory_owners'
+          ,'projection_scope_generations'
+          ,'projection_scope_generation_dependencies'
+          ,'projection_scope_snapshot_members'
+          ,'projection_scope_generation_pages'
+          ,'projection_generation_directory_claims'
+          ,'projection_scope_navigation_mutations'
+          ,'projection_scope_generation_object_refs'
+          ,'projection_generation_validation_results'
+          ,'projection_invariant_diagnostics'
+          ,'projection_cutover_states'
+          ,'projection_shadow_parity_results'
+          ,'projection_generation_retention'
+          ,'projection_generation_graph_degrees'
+          ,'projection_generation_affected_members'
+          ,'projection_generation_statistics'
+          ,'projection_legacy_cleanup_state'
         ]) AS removed(name)
         WHERE to_regclass('focowiki.' || removed.name) IS NOT NULL
       )

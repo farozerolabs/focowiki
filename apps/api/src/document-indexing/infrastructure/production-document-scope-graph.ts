@@ -35,7 +35,6 @@ type Dependencies = {
 
 type Visibility = {
   knowledgeBaseId: string;
-  publicationGenerationPublicId?: string;
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
   affectedSourceFilePublicIds?: readonly string[];
@@ -62,9 +61,6 @@ export async function projectGraphCatalog(input: {
 } & Visibility) {
   const state = await input.dependencies.machineProjection.readGraphCatalogState({
     knowledgeBaseId: input.knowledgeBaseId,
-    ...(input.publicationGenerationPublicId
-      ? { publicationGenerationPublicId:
-          input.publicationGenerationPublicId } : {}),
     includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
     excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
   });
@@ -386,18 +382,18 @@ export async function projectPerFileGraphDirectory(input: {
         ? [`${input.scopePath}/${child}`] : [];
     }))].sort();
   if (input.planningMode === "delta"
-    && (!input.publicationGenerationPublicId || affected.length === 0)) {
+    && affected.length === 0) {
     throw graphProjectionError("publication_delta_closure_incomplete");
   }
-  const publicationGenerationPublicId = input.publicationGenerationPublicId;
   const state = input.planningMode === "delta"
     ? await input.dependencies.machineProjection
       .readPerFileGraphDirectoryDeltaState({
         knowledgeBaseId: input.knowledgeBaseId,
         scopePath: input.scopePath,
-        publicationGenerationPublicId: publicationGenerationPublicId!,
         includedSourceRevisionPublicIds:
           input.includedSourceRevisionPublicIds,
+        excludedActiveSourceFilePublicIds:
+          input.excludedActiveSourceFilePublicIds,
         affectedSourceFilePublicIds: affected,
         candidateChildScopePaths
       })
@@ -405,9 +401,6 @@ export async function projectPerFileGraphDirectory(input: {
       .readPerFileGraphDirectoryState({
       knowledgeBaseId: input.knowledgeBaseId,
       scopePath: input.scopePath,
-      ...(input.publicationGenerationPublicId
-        ? { publicationGenerationPublicId:
-            input.publicationGenerationPublicId } : {}),
       includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
       excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
       });

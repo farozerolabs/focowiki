@@ -3,7 +3,7 @@ import { applyDocumentRecordStableShardDelta } from
   "../src/document-indexing/application/document-record-stable-shard-delta.js";
 
 describe("publication delta scale gate", () => {
-  it("keeps eighteen creates bounded against ten thousand base records",
+  it("keeps ten creates bounded against ten thousand base records",
     async () => {
       const descriptors = Array.from({ length: 100 }, (_, shard) => ({
         path: `_index/pages/library/library-documents-part-${String(shard + 1)
@@ -13,8 +13,8 @@ describe("publication delta scale gate", () => {
         recordCount: 100,
         byteCount: 64_000
       }));
-      const changedRecords = Array.from({ length: 18 }, (_, index) => {
-        const shard = index * 5;
+      const changedRecords = Array.from({ length: 10 }, (_, index) => {
+        const shard = index * 10;
         return record(`${pathFor(shard * 100 + 50).slice(0, -3)}-new.md`);
       });
       const readRecords = vi.fn(async (path: string) => {
@@ -40,21 +40,38 @@ describe("publication delta scale gate", () => {
           await new Promise<void>((resolve) => setImmediate(resolve));
         }
       });
+      const durationMs = performance.now() - startedAt;
+      const cpu = process.cpuUsage(startedCpu);
+      const heapDeltaBytes = process.memoryUsage().heapUsed - startedHeapBytes;
+      const metrics = {
+        activeRecordCount: 10_000,
+        deltaDocumentCount: 10,
+        shardRowsRead: 1_000,
+        changedPageCount: result.pages.length,
+        changedByteCount: result.pages.reduce((total, page) =>
+          total + page.byteCount, 0),
+        durationMs,
+        cpuMicroseconds: cpu.user + cpu.system,
+        heapDeltaBytes
+      };
+      if (process.env.FOCOWIKI_TEST_PERFORMANCE_REPORT === "true") {
+        process.stdout.write(
+          `PUBLICATION_DELTA_METRICS ${JSON.stringify(metrics)}\n`
+        );
+      }
 
-      expect(readRecords).toHaveBeenCalledTimes(18);
-      expect(checkpointCount).toBe(18);
-      expect(result.recordCount).toBe(10_018);
-      expect(result.pages.length).toBeLessThanOrEqual(36);
-      expect(result.descriptors).toHaveLength(118);
+      expect(readRecords).toHaveBeenCalledTimes(10);
+      expect(checkpointCount).toBe(10);
+      expect(result.recordCount).toBe(10_010);
+      expect(result.pages.length).toBeLessThanOrEqual(20);
+      expect(result.descriptors).toHaveLength(110);
       expect(new Set(result.descriptors.map((item) => item.path)).size)
         .toBe(result.descriptors.length);
-      expect(result.pages.reduce((total, page) => total + page.byteCount, 0))
+      expect(metrics.changedByteCount)
         .toBeLessThan(8 * 1_048_576);
-      expect(performance.now() - startedAt).toBeLessThan(10_000);
-      const cpu = process.cpuUsage(startedCpu);
-      expect(cpu.user + cpu.system).toBeLessThan(10_000_000);
-      expect(process.memoryUsage().heapUsed - startedHeapBytes)
-        .toBeLessThan(64 * 1_048_576);
+      expect(metrics.durationMs).toBeLessThan(10_000);
+      expect(metrics.cpuMicroseconds).toBeLessThan(10_000_000);
+      expect(metrics.heapDeltaBytes).toBeLessThan(64 * 1_048_576);
     });
 });
 

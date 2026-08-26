@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
-import type { DocumentProjectionScopeClaim } from
-  "../application/document-scope-projector-runtime.js";
+import type { DocumentPublicationRenderScope } from
+  "../application/document-publication-job-ports.js";
 import {
   DOCUMENT_TERM_BUCKETS,
   type DocumentTermBucket
 } from "../application/document-term-routing.js";
 
 export function sourceFileScope(
-  scope: DocumentProjectionScopeClaim
+  scope: DocumentPublicationRenderScope
 ): string | null {
   if (scope.kind !== "source") return null;
   if (!scope.key.trim()) {
@@ -32,7 +32,7 @@ export function latestContributors<T extends {
 }
 
 export function termBucket(
-  scope: DocumentProjectionScopeClaim
+  scope: DocumentPublicationRenderScope
 ): DocumentTermBucket | null {
   if (scope.kind !== "_index" || !scope.key.startsWith("term:")) return null;
   const bucket = scope.key.slice("term:".length) as DocumentTermBucket;
@@ -43,7 +43,7 @@ export function termBucket(
 }
 
 export function pageDirectoryScope(
-  scope: DocumentProjectionScopeClaim
+  scope: DocumentPublicationRenderScope
 ): string | null {
   if (scope.kind !== "_index" || !scope.key.startsWith("pages:")) return null;
   return requirePageScope(
@@ -53,7 +53,7 @@ export function pageDirectoryScope(
 }
 
 export function semanticDirectoryScope(
-  scope: DocumentProjectionScopeClaim
+  scope: DocumentPublicationRenderScope
 ): string | null {
   if (scope.kind !== "directory") return null;
   return requirePageScope(
@@ -63,7 +63,7 @@ export function semanticDirectoryScope(
 }
 
 export function graphDirectoryScope(
-  scope: DocumentProjectionScopeClaim
+  scope: DocumentPublicationRenderScope
 ): string | null {
   if (scope.kind !== "_graph" || !scope.key.startsWith("directory:")) {
     return null;
@@ -75,7 +75,7 @@ export function graphDirectoryScope(
 }
 
 export function perFileGraphDirectoryScope(
-  scope: DocumentProjectionScopeClaim
+  scope: DocumentPublicationRenderScope
 ): string | null {
   if (scope.kind !== "_graph" || !scope.key.startsWith("file-directory:")) {
     return null;
@@ -87,7 +87,7 @@ export function perFileGraphDirectoryScope(
 }
 
 export function perFileGraphSourceId(
-  scope: DocumentProjectionScopeClaim
+  scope: DocumentPublicationRenderScope
 ): string | null {
   if (scope.kind !== "_graph"
     || scope.key === "catalog"
@@ -100,7 +100,7 @@ export function perFileGraphSourceId(
 }
 
 export function writeAttemptId(
-  scope: DocumentProjectionScopeClaim,
+  scope: DocumentPublicationRenderScope,
   normalizedPath: string,
   checksumSha256: string
 ): string {

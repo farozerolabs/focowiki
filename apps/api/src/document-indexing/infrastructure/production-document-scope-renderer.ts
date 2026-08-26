@@ -3,9 +3,8 @@ import { portableGraphDirectoryPath, portableIndexDirectoryPath } from "@focowik
 import type { StorageVnextImmutableObjectWriter } from "../../storage-vnext/ownership/immutable-object-writer.js";
 import type { StorageVnextOwnershipRepository } from "../../storage-vnext/ownership/ports.js";
 import type { StorageVnextImmutableBodyStore } from "../../storage-vnext/ownership/s3-immutable-body-store.js";
-import type { DocumentProjectionScopeClaim } from "../application/document-scope-projector-runtime.js";
-import type { DocumentPublicationImmutableScopeSnapshot } from "../application/document-publication-scope-generation-runtime.js";
-import { normalizeDocumentPublicationScopeOutput } from "../application/document-publication-scope-output.js";
+import type { DocumentPublicationBasePage, DocumentPublicationRenderScope } from
+  "../application/document-publication-job-ports.js";
 import { validateDocumentProjectionScopeOutputOwnership } from "../application/document-projection-path-ownership.js";
 import type { createPostgresDocumentMachineProjectionReader } from "./postgres-document-machine-projection-reader.js";
 import type { createPostgresDocumentDirectoryNavigation } from "./postgres-document-directory-navigation.js";
@@ -45,13 +44,11 @@ import {
 import {
   projectTermBucket,
   projectTermCatalog,
-  publicationScopeClaim,
   requireSourceProjection,
   selectChangedPages,
   type DocumentSourceScopeProjection
 } from "./production-document-scope-renderer-helpers.js";
 import { storeDocumentProjectionPages } from "./production-document-scope-object-writer.js";
-import { finalizeDocumentPublicationOutput } from "./production-document-publication-output.js";
 import { readDocumentProjectionMetrics } from "./production-document-projection-metrics.js";
 export type { DocumentSourceScopeProjection } from "./production-document-scope-renderer-helpers.js";
 type DocumentScopeContributor = Readonly<{ sourceFilePublicId: string; sourceRevisionPublicId: string | null; requiredSequence: number }>;
@@ -62,7 +59,8 @@ type DocumentScopeRenderOptions = Readonly<{ pageIntegrityOverrides?:
   planningMode?: "initial" | "delta" | "repair";
   baseDeterministicChangedAt?: string | null;
   affectedLogicalPaths?: readonly string[];
-  basePages?: DocumentPublicationImmutableScopeSnapshot["basePages"] }>;
+  affectedTermBuckets?: readonly string[];
+  basePages?: readonly DocumentPublicationBasePage[] }>;
 export function createProductionDocumentScopeRenderer(input: {
   machineProjection: ReturnType<typeof createPostgresDocumentMachineProjectionReader>;
   sourceProjection?: DocumentSourceScopeProjection;
@@ -80,13 +78,10 @@ export function createProductionDocumentScopeRenderer(input: {
   validateScopeRendererConfiguration(input);
   const clock = input.now ?? (() => new Date().toISOString());
   async function project(
-    scope: DocumentProjectionScopeClaim,
+    scope: DocumentPublicationRenderScope,
     signal: AbortSignal,
     options: DocumentScopeRenderOptions = {}
   ) {
-    if (scope.publicationGenerationPublicId && !options.planningMode) {
-      throw scopeRenderError("publication_planning_mode_missing");
-    }
     const deterministicEventTime = scope.deterministicEventTime ?? clock();
     const sourceFile = sourceFileScope(scope);
     const bucket = termBucket(scope);
@@ -128,9 +123,6 @@ export function createProductionDocumentScopeRenderer(input: {
           ...(input.objectBodies ? { objectBodies: input.objectBodies } : {}),
           knowledgeBaseId: scope.knowledgeBaseId,
           scopePath: pageDirectory,
-          ...(scope.publicationGenerationPublicId
-            ? { publicationGenerationPublicId:
-                scope.publicationGenerationPublicId } : {}),
           includedSourceRevisionPublicIds,
           excludedActiveSourceFilePublicIds,
           ...(options.affectedSourceFilePublicIds
@@ -182,9 +174,6 @@ export function createProductionDocumentScopeRenderer(input: {
         ? await projectPerFileGraphDirectory({
             dependencies: input,
             knowledgeBaseId: scope.knowledgeBaseId,
-            ...(scope.publicationGenerationPublicId
-              ? { publicationGenerationPublicId:
-                  scope.publicationGenerationPublicId } : {}),
             scopePath: perFileGraphDirectory,
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds,
@@ -200,9 +189,6 @@ export function createProductionDocumentScopeRenderer(input: {
         ? await projectGraphCatalog({
             dependencies: input,
             knowledgeBaseId: scope.knowledgeBaseId,
-            ...(scope.publicationGenerationPublicId
-              ? { publicationGenerationPublicId:
-                  scope.publicationGenerationPublicId } : {}),
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds
           })
@@ -212,9 +198,7 @@ export function createProductionDocumentScopeRenderer(input: {
             knowledgeBaseId: scope.knowledgeBaseId,
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds,
-            ...(scope.publicationGenerationPublicId
-              ? { publicationGenerationPublicId:
-                  scope.publicationGenerationPublicId } : {}),
+            affectedTermBuckets: options.affectedTermBuckets ?? [],
             ...(options.planningMode
               ? { planningMode: options.planningMode } : {}),
             ...(options.basePages ? { basePages: options.basePages } : {}),
@@ -225,9 +209,6 @@ export function createProductionDocumentScopeRenderer(input: {
         ? await projectRoot({
             dependencies: input,
             knowledgeBaseId: scope.knowledgeBaseId,
-            ...(scope.publicationGenerationPublicId
-              ? { publicationGenerationPublicId:
-                  scope.publicationGenerationPublicId } : {}),
             includedSourceRevisionPublicIds,
             excludedActiveSourceFilePublicIds,
             changedAt: deterministicEventTime
@@ -341,7 +322,7 @@ export function createProductionDocumentScopeRenderer(input: {
   }
   const renderer = {
     async project(
-      scope: DocumentProjectionScopeClaim,
+      scope: DocumentPublicationRenderScope,
       options: DocumentScopeRenderOptions = {}
     ) {
       const projected = await project(
@@ -353,12 +334,12 @@ export function createProductionDocumentScopeRenderer(input: {
       return projected;
     },
     async render(
-      scope: DocumentProjectionScopeClaim,
+      scope: DocumentPublicationRenderScope,
       signal: AbortSignal,
       options: Pick<DocumentScopeRenderOptions,
         "contributors" | "checkpoint" | "affectedSourceFilePublicIds"
           | "planningMode" | "baseDeterministicChangedAt" | "basePages"
-          | "affectedLogicalPaths"> = {}
+          | "affectedLogicalPaths" | "affectedTermBuckets"> = {}
     ) {
       const materialized = await project(scope, signal, options);
       if (!materialized) {
@@ -368,13 +349,14 @@ export function createProductionDocumentScopeRenderer(input: {
               kind: scope.kind,
               key: scope.key,
               renderedSequence: scope.renderedSequence,
-              deterministicEventTime: scope.deterministicEventTime ?? null,
+              deterministicEventTime: scope.deterministicEventTime,
               contributors: options.contributors ?? []
             })).digest("hex"),
           factCount: options.contributors?.length ?? 0,
           pages: [],
           removedNormalizedPaths: [],
           navigationMutations: [],
+          objectReuseCount: 0,
           storageRequests: zeroStorageRequests(),
           verifiedReservations: []
         };
@@ -427,71 +409,12 @@ export function createProductionDocumentScopeRenderer(input: {
           objectId: result.objectId,
           writeAttemptPublicId
         })),
+        objectReuseCount: stored.filter(({ result }) =>
+          result.outcome === "reused").length,
         storageRequests,
         factCount: materialized.factCount,
         ...(projectionMetrics ? { projectionMetrics } : {})
       };
-    },
-    async renderPublication(
-      snapshot: DocumentPublicationImmutableScopeSnapshot,
-      signal: AbortSignal,
-      checkpoint: () => Promise<void> = async () => undefined
-    ) {
-      const validationEvidence = {
-        scopeIdentity: snapshot.scopeIdentity,
-        memberCount: snapshot.members.length,
-        basePageCount: snapshot.basePages.length
-      };
-      if (snapshot.scopeKind === "validation") {
-        const normalized = normalizeDocumentPublicationScopeOutput({
-          scope: { kind: "validation", key: snapshot.scopeKey },
-          inputSnapshotFingerprintSha256:
-            snapshot.inputSnapshotFingerprintSha256,
-          rendererContractVersion: snapshot.rendererContractVersion,
-          pages: [], navigationMutations: [], validationEvidence
-        });
-        return { ...normalized, verifiedReservations: [] };
-      }
-      const scope = publicationScopeClaim(snapshot);
-      const contributors = snapshot.members.flatMap((member) => member.sourceFilePublicId ? [{
-          sourceFilePublicId: member.sourceFilePublicId,
-          sourceRevisionPublicId: member.kind === "source_revision"
-            ? member.publicId : null,
-          requiredSequence: Number(member.version)
-        }] : []);
-      const sourceTombstone = snapshot.scopeKind === "source"
-        && snapshot.members.some((member) =>
-          member.kind === "tombstone"
-            && member.sourceFilePublicId === snapshot.scopeKey)
-        && !snapshot.members.some((member) =>
-          member.kind === "source_revision"
-            && member.sourceFilePublicId === snapshot.scopeKey);
-      const rendered = sourceTombstone ? {
-          pages: [],
-          removedNormalizedPaths: [],
-          navigationMutations: [],
-          verifiedReservations: [],
-          storageRequests: zeroStorageRequests(),
-          factCount: 0
-        }
-        : await renderer.render(scope, signal, {
-            contributors,
-            checkpoint,
-            affectedSourceFilePublicIds:
-              snapshot.affectedSourceFilePublicIds,
-            planningMode: snapshot.planningMode,
-            ...(snapshot.baseDeterministicChangedAt
-              ? { baseDeterministicChangedAt:
-                  snapshot.baseDeterministicChangedAt } : {}),
-            ...(snapshot.affectedLogicalPaths
-              ? { affectedLogicalPaths: snapshot.affectedLogicalPaths } : {}),
-            basePages: snapshot.basePages
-          });
-      return finalizeDocumentPublicationOutput({
-        snapshot,
-        rendered,
-        validationEvidence
-      });
     }
   };
   return renderer;

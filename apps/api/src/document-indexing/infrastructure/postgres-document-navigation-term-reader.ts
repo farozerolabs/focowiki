@@ -99,35 +99,48 @@ export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) 
       return { buckets: rows.map((row) => row.bucket as DocumentTermBucket) };
     },
     async readNavigationTermCatalogDeltaState(input: {
-      publicationGenerationPublicId: string;
-    }): Promise<ReadonlyArray<{
-      bucket: DocumentTermBucket; present: boolean;
-    }>> {
+      knowledgeBaseId: string;
+      buckets: readonly DocumentTermBucket[];
+      includedSourceRevisionPublicIds?: readonly string[];
+      excludedActiveSourceFilePublicIds?: readonly string[];
+    }): Promise<readonly Readonly<{
+      bucket: DocumentTermBucket;
+      present: boolean;
+    }>[]> {
+      const buckets = sortedUnique(input.buckets);
+      if (buckets.length === 0) return [];
+      if (buckets.length > DOCUMENT_TERM_BUCKETS.length
+        || buckets.some((bucket) => !isDocumentTermBucket(bucket))) {
+        throw termReaderError("navigation_term_catalog_delta_invalid");
+      }
+      const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
+      const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds ?? []);
       const rows = await sql<Array<{ bucket: string; present: boolean }>>`
-        SELECT substring(scope.scope_key from char_length('term:') + 1)
-                 COLLATE "C" AS bucket,
-               bool_or(page.action = 'put'
-                 AND page.normalized_path = '_index/terms/'
-                   || substring(scope.scope_key from char_length('term:') + 1)
-                   || '/index.json') AS present
-        FROM focowiki.projection_scope_generations scope
-        JOIN focowiki.projection_scope_generation_pages page
-          ON page.scope_generation_public_id = scope.public_id
-        WHERE scope.publication_generation_public_id
-                = ${input.publicationGenerationPublicId}
-          AND scope.scope_kind = '_index'
-          AND scope.scope_key LIKE 'term:%'
-          AND scope.state = 'completed'
-        GROUP BY scope.scope_key
-        ORDER BY bucket
-        LIMIT 7
+        SELECT desired.bucket,
+               EXISTS (
+                 SELECT 1
+                 FROM focowiki.document_navigation_terms term
+                 JOIN focowiki.document_projection_records record
+                   ON record.knowledge_base_id = term.knowledge_base_id
+                  AND record.source_revision_public_id
+                        = term.source_revision_public_id
+                 WHERE term.knowledge_base_id = ${input.knowledgeBaseId}
+                   AND term.bucket = desired.bucket
+                   AND (record.source_revision_public_id
+                          = ANY(${included}::text[])
+                     OR (record.active AND record.source_file_public_id
+                          <> ALL(${excluded}::text[])))
+               ) AS present
+        FROM unnest(${buckets}::text[]) AS desired(bucket)
+        ORDER BY desired.bucket COLLATE "C"
       `;
-      if (rows.length > 6 || rows.some((row) =>
+      if (rows.length !== buckets.length || rows.some((row) =>
         !isDocumentTermBucket(row.bucket))) {
-        throw termReaderError("navigation_term_catalog_invalid");
+        throw termReaderError("navigation_term_catalog_delta_invalid");
       }
       return rows.map((row) => ({
-        bucket: row.bucket as DocumentTermBucket, present: row.present
+        bucket: row.bucket as DocumentTermBucket,
+        present: row.present
       }));
     },
     async listNavigationTermRecords(input: {

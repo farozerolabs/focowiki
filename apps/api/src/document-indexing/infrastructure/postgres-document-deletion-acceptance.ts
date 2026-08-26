@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../../db/client.js";
 import type { TransactionSql } from "postgres";
+import { createStorageVnextUploadIdentity } from
+  "../../storage-vnext/upload/identity.js";
 import { enqueuePostgresDocumentWebhookEvent } from
   "./postgres-document-webhook-event.js";
 import { terminalizePostgresDocumentWork } from
@@ -85,7 +87,12 @@ export function createPostgresDocumentDeletionAcceptance(sql: DatabaseClient) {
           public_id, knowledge_base_id, idempotency_key, request_hash,
           operation_public_id, expires_at, created_at
         ) VALUES (
-          ${`idempotency-document-deletion-${requestHash}`},
+          ${createStorageVnextUploadIdentity(
+            "idempotency",
+            "document-deletion",
+            input.knowledgeBaseId,
+            input.idempotencyKey
+          )},
           ${input.knowledgeBaseId}, ${input.idempotencyKey}, ${requestHash},
           ${input.operationPublicId}, ${input.expiresAt}, ${input.requestedAt}
         )
@@ -281,10 +288,20 @@ async function enqueueDeletionCleanup(
       checkpoint, state, attempt_count, maximum_attempts, not_before,
       created_at, updated_at
     ) VALUES (
-      ${`cleanup-document-deletion-${requestHash}`}, ${input.knowledgeBaseId},
+      ${createStorageVnextUploadIdentity(
+        "cleanup",
+        "document-deletion",
+        input.knowledgeBaseId,
+        input.operationPublicId
+      )}, ${input.knowledgeBaseId},
       ${input.operationPublicId}, 'document_resource_deletion', 'postgres',
       ${input.targetKind}, ${input.targetPublicId}, true, 10, 0,
-      ${`document-deletion-${requestHash}`}, ${requestHash},
+      ${createStorageVnextUploadIdentity(
+        "idempotency",
+        "document-deletion-cleanup",
+        input.knowledgeBaseId,
+        input.operationPublicId
+      )}, ${requestHash},
       ${sql.json({ phase, affectedSourceCount, cursor: null })}, 'queued', 0,
       ${input.maximumAttempts},
       ${input.requestedAt}, ${input.requestedAt}, ${input.requestedAt}

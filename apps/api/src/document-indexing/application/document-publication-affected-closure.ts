@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import type { DocumentPublicationFactDelta } from
-  "./document-publication-planner.js";
+import type { DocumentPublicationItemDelta } from
+  "./document-publication-job-plan.js";
 
 export const DOCUMENT_PUBLICATION_PLANNING_MODES = [
   "initial", "delta", "repair"
@@ -13,7 +13,8 @@ export type DocumentPublicationPlanningMode =
 export type DocumentPublicationAffectedMember = Readonly<{
   kind: "source" | "revision" | "prior_path" | "successor_path"
     | "relation_endpoint" | "directory" | "record_owner"
-    | "navigation_neighbor";
+    | "navigation_neighbor" | "term_bucket" | "graph_directory"
+    | "search_owner" | "tombstone" | "root";
   publicId: string;
   sourceFilePublicId: string | null;
   order: number;
@@ -21,7 +22,7 @@ export type DocumentPublicationAffectedMember = Readonly<{
 
 export function buildDocumentPublicationAffectedClosure(input: Readonly<{
   planningMode: DocumentPublicationPlanningMode;
-  documents: readonly DocumentPublicationFactDelta[];
+  documents: readonly DocumentPublicationItemDelta[];
 }>) {
   if (!DOCUMENT_PUBLICATION_PLANNING_MODES.includes(input.planningMode)) {
     throw closureError("publication_planning_mode_invalid");
@@ -39,6 +40,8 @@ export function buildDocumentPublicationAffectedClosure(input: Readonly<{
   for (const document of input.documents) {
     add("source", document.sourceFilePublicId, document.sourceFilePublicId);
     add("record_owner", document.sourceFilePublicId, document.sourceFilePublicId);
+    add("search_owner", document.sourceFilePublicId,
+      document.sourceFilePublicId);
     add("revision", document.sourceRevisionPublicId,
       document.sourceFilePublicId);
     add("prior_path", document.priorLogicalPath, document.sourceFilePublicId);
@@ -46,7 +49,12 @@ export function buildDocumentPublicationAffectedClosure(input: Readonly<{
       document.sourceFilePublicId);
     for (const sourceFilePublicId of document.relatedSourceFilePublicIds) {
       add("relation_endpoint", sourceFilePublicId, sourceFilePublicId);
+      add("search_owner", sourceFilePublicId, sourceFilePublicId);
     }
+    for (const bucket of [
+      ...document.priorTermBuckets,
+      ...document.nextTermBuckets
+    ]) add("term_bucket", bucket, null);
     for (const path of [document.priorLogicalPath, document.nextLogicalPath]) {
       for (const directory of directoryAncestors(path)) {
         add("directory", directory, null);
@@ -56,7 +64,21 @@ export function buildDocumentPublicationAffectedClosure(input: Readonly<{
     for (const directory of [
       ...document.priorGraphDirectoryPaths,
       ...document.nextGraphDirectoryPaths
-    ]) add("directory", directory, null);
+    ]) {
+      add("directory", directory, null);
+      add("graph_directory", directory, null);
+    }
+    if (document.operation === "delete"
+      || (document.priorLogicalPath !== null
+        && document.priorLogicalPath !== document.nextLogicalPath)) {
+      add("tombstone", document.sourceFilePublicId,
+        document.sourceFilePublicId);
+    }
+  }
+  if (input.documents.length > 0) {
+    for (const root of ["index.md", "_index/index.md", "_graph/index.md"]) {
+      add("root", root, null);
+    }
   }
   const ordered = [...members.values()].sort((left, right) =>
     bytewise(left.kind, right.kind) || bytewise(left.publicId, right.publicId)

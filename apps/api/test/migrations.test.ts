@@ -40,7 +40,9 @@ describe("storage vNext runtime schema guard", () => {
 
     await expect(preflightMigrations(database.sql)).resolves.toEqual({
       currentGeneration: "absent",
-      pendingFiles: [...MIGRATION_FILES]
+      pendingFiles: [...MIGRATION_FILES],
+      requiresStoppedWorkers: true,
+      requiresDatabaseBackup: true
     });
     expect(database.unsafeCalls).toBe(0);
     expect(database.beginCalls).toBe(0);
@@ -80,14 +82,18 @@ describe("storage vNext runtime schema guard", () => {
       .rejects.toThrow("simulated migration failure");
     await expect(preflightMigrations(database.sql)).resolves.toEqual({
       currentGeneration: "absent",
-      pendingFiles: [...MIGRATION_FILES]
+      pendingFiles: [...MIGRATION_FILES],
+      requiresStoppedWorkers: true,
+      requiresDatabaseBackup: true
     });
 
     database.setFailUnsafeAt(null);
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     await expect(preflightMigrations(database.sql)).resolves.toEqual({
       currentGeneration: RUNTIME_SCHEMA_GENERATION,
-      pendingFiles: []
+      pendingFiles: [],
+      requiresStoppedWorkers: false,
+      requiresDatabaseBackup: false
     });
   });
 

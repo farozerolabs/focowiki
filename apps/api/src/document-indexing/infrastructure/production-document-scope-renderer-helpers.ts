@@ -4,10 +4,8 @@ import { buildDocumentTermCatalogPage,
   "../application/document-page-term-projection.js";
 import { applyDocumentTermStableShardDelta } from
   "../application/document-term-stable-shard-delta.js";
-import type { DocumentPublicationImmutableScopeSnapshot } from
-  "../application/document-publication-scope-generation-runtime.js";
-import type { DocumentProjectionScopeClaim } from
-  "../application/document-scope-projector-runtime.js";
+import type { DocumentPublicationBasePage } from
+  "../application/document-publication-job-ports.js";
 import { documentDirectoryEntryId } from
   "../domain/document-directory-entry-identity.js";
 import { DOCUMENT_TERM_BUCKETS, type DocumentTermBucket } from
@@ -52,23 +50,6 @@ export type DocumentScopeRendererProjectionDependencies = {
   maximumShardBytes: number;
 };
 
-export function publicationScopeClaim(
-  snapshot: DocumentPublicationImmutableScopeSnapshot
-): DocumentProjectionScopeClaim {
-  if (snapshot.scopeKind === "validation") {
-    throw scopeRenderError("projection_validation_scope_not_renderable");
-  }
-  return {
-    publicId: snapshot.publicId,
-    knowledgeBaseId: snapshot.knowledgeBaseId,
-    kind: snapshot.scopeKind as DocumentProjectionScopeClaim["kind"],
-    key: snapshot.scopeKey,
-    requiredSequence: snapshot.targetFactEpoch,
-    renderedSequence: snapshot.scopeGeneration,
-    publicationGenerationPublicId: snapshot.publicationGenerationPublicId,
-    deterministicEventTime: snapshot.deterministicChangedAt
-  };
-}
 export function requireSourceProjection(input: {
   sourceProjection?: DocumentSourceScopeProjection;
 }): DocumentSourceScopeProjection {
@@ -105,26 +86,35 @@ export async function projectTermCatalog(input: {
   knowledgeBaseId: string;
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
-  publicationGenerationPublicId?: string;
+  affectedTermBuckets?: readonly string[];
   planningMode?: "initial" | "delta" | "repair";
-  basePages?: DocumentPublicationImmutableScopeSnapshot["basePages"];
+  basePages?: readonly DocumentPublicationBasePage[];
   checkpoint?: () => Promise<void>;
   signal?: AbortSignal;
 }) {
   if (input.planningMode === "delta") {
-    if (!input.publicationGenerationPublicId) {
-      throw scopeRenderError("publication_generation_identity_missing");
+    const affectedBuckets = [...new Set(input.affectedTermBuckets ?? [])]
+      .sort();
+    if (affectedBuckets.length === 0
+      || affectedBuckets.some((bucket) =>
+        !(DOCUMENT_TERM_BUCKETS as readonly string[]).includes(bucket))) {
+      throw scopeRenderError("publication_delta_term_buckets_invalid");
     }
-    const baseBuckets = await readTermCatalogBaseBuckets(input);
-    const changed = await input.input.machineProjection
-      .readNavigationTermCatalogDeltaState({
-        publicationGenerationPublicId: input.publicationGenerationPublicId
-      });
-    const buckets = new Set(baseBuckets);
-    changed.forEach((item) => item.present
-      ? buckets.add(item.bucket) : buckets.delete(item.bucket));
-    const ordered = [...buckets].sort();
-    const changedBuckets = changed.map((item) => item.bucket);
+    const [baseBuckets, changed] = await Promise.all([
+      readTermCatalogBaseBuckets(input),
+      input.input.machineProjection.readNavigationTermCatalogDeltaState({
+      knowledgeBaseId: input.knowledgeBaseId,
+      buckets: affectedBuckets as DocumentTermBucket[],
+      includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
+      excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds
+      })
+    ]);
+    const merged = new Set<DocumentTermBucket>(baseBuckets);
+    for (const item of changed) {
+      if (item.present) merged.add(item.bucket);
+      else merged.delete(item.bucket);
+    }
+    const ordered = [...merged].sort();
     return {
       pages: [buildDocumentTermCatalogPage(ordered)],
       removedLogicalPaths: [] as string[],
@@ -136,7 +126,7 @@ export async function projectTermCatalog(input: {
       })),
       navigationCandidateEntryIds: [
         documentDirectoryEntryId("file", "_index/terms/index.json"),
-        ...changedBuckets.map((bucket) => documentDirectoryEntryId(
+        ...changed.map(({ bucket }) => documentDirectoryEntryId(
           "directory", `_index/terms/${bucket}/index.md`
         ))
       ],
@@ -168,23 +158,24 @@ async function readTermCatalogBaseBuckets(
     (candidate.logicalPath ?? candidate.normalizedPath)
       === "_index/terms/index.json" && candidate.action === "put");
   if (!page) return [];
-  const value = await readVerifiedBaseJson(input, page,
-    "term_catalog_delta_base");
+  const value = await readVerifiedBaseJson(input, page, "term_catalog_base");
   if (!Array.isArray(value.buckets)) {
-    throw scopeRenderError("term_catalog_delta_base_invalid");
+    throw scopeRenderError("term_catalog_base_buckets_invalid");
   }
-  return value.buckets.map((entry) => {
+  const buckets = value.buckets.map((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)
       || typeof (entry as Record<string, unknown>).bucket !== "string") {
-      throw scopeRenderError("term_catalog_delta_base_invalid");
+      throw scopeRenderError("term_catalog_base_buckets_invalid");
     }
-    const bucket = (entry as { bucket: string }).bucket;
-    if (!DOCUMENT_TERM_BUCKETS.some((candidate) => candidate === bucket)) {
-      throw scopeRenderError("term_catalog_delta_base_invalid");
-    }
-    return bucket as DocumentTermBucket;
+    return (entry as Record<string, unknown>).bucket as string;
   });
+  if (buckets.some((bucket) =>
+    !(DOCUMENT_TERM_BUCKETS as readonly string[]).includes(bucket))) {
+    throw scopeRenderError("term_catalog_base_buckets_invalid");
+  }
+  return [...new Set(buckets as DocumentTermBucket[])].sort();
 }
+
 export async function projectTermBucket(input: {
   input: DocumentScopeRendererProjectionDependencies;
   knowledgeBaseId: string;
@@ -193,7 +184,7 @@ export async function projectTermBucket(input: {
   excludedActiveSourceFilePublicIds: readonly string[];
   affectedSourceFilePublicIds?: readonly string[];
   planningMode?: "initial" | "delta" | "repair";
-  basePages?: DocumentPublicationImmutableScopeSnapshot["basePages"];
+  basePages?: readonly DocumentPublicationBasePage[];
   checkpoint?: () => Promise<void>;
   signal?: AbortSignal;
 }) {
@@ -343,7 +334,7 @@ async function readVerifiedBaseJson(
     checkpoint?: () => Promise<void>;
     signal?: AbortSignal;
   },
-  page: NonNullable<DocumentPublicationImmutableScopeSnapshot["basePages"]>[number],
+  page: DocumentPublicationBasePage,
   errorPrefix: string
 ): Promise<Record<string, unknown>> {
   if (!input.input.objectBodies || !page.objectId || !page.storageKey
