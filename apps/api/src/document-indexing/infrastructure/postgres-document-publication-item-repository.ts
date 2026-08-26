@@ -257,6 +257,70 @@ export async function supersedeOlderPostgresDocumentPublicationItems(
   return rows.length;
 }
 
+export async function rebaseStalePendingPostgresDocumentPublicationItems(
+  sql: DatabaseClient,
+  input: Readonly<{
+    knowledgeBaseId: string;
+    activeReadinessSequence: number;
+    updatedAt: string;
+  }>
+): Promise<number> {
+  const rows = await sql<Array<{ rebased_count: number | string }>>`
+    WITH bounds AS (
+      SELECT greatest(
+        head.latest_readiness_sequence,
+        head.active_readiness_sequence,
+        coalesce((
+          SELECT max(existing.readiness_sequence)
+          FROM focowiki.publication_items existing
+          WHERE existing.knowledge_base_id = ${input.knowledgeBaseId}
+        ), 0)
+      ) AS base_sequence
+      FROM focowiki.knowledge_base_publication_heads head
+      WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
+    ), ranked AS (
+      SELECT item.public_id,
+             bounds.base_sequence + row_number() OVER (
+               ORDER BY item.readiness_sequence, item.public_id COLLATE "C"
+             ) AS next_sequence
+      FROM focowiki.publication_items item
+      CROSS JOIN bounds
+      WHERE item.knowledge_base_id = ${input.knowledgeBaseId}
+        AND item.outcome = 'pending'
+        AND item.readiness_sequence <= ${input.activeReadinessSequence}
+        AND NOT EXISTS (
+          SELECT 1 FROM focowiki.publication_job_items membership
+          WHERE membership.item_public_id = item.public_id
+        )
+    ), rebased AS (
+      UPDATE focowiki.publication_items item
+      SET readiness_sequence = ranked.next_sequence,
+          updated_at = ${input.updatedAt}
+      FROM ranked
+      WHERE item.public_id = ranked.public_id
+      RETURNING item.readiness_sequence
+    ), summary AS (
+      SELECT count(*) AS rebased_count,
+             max(readiness_sequence) AS maximum_sequence
+      FROM rebased
+    ), head_updated AS (
+      UPDATE focowiki.knowledge_base_publication_heads head
+      SET latest_readiness_sequence = greatest(
+            head.latest_readiness_sequence,
+            coalesce(summary.maximum_sequence,
+                     head.latest_readiness_sequence)
+          ),
+          updated_at = CASE WHEN summary.rebased_count > 0
+            THEN ${input.updatedAt} ELSE head.updated_at END
+      FROM summary
+      WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
+      RETURNING summary.rebased_count
+    )
+    SELECT rebased_count FROM head_updated
+  `;
+  return Number(rows[0]?.rebased_count ?? 0);
+}
+
 export async function updatePostgresDocumentPublicationPendingHead(input: {
   transaction: DatabaseClient;
   knowledgeBaseId: string;

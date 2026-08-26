@@ -53,7 +53,8 @@ describe("storage vNext clean bootstrap and reset contract", () => {
       "013_single_job_publication_foundation.sql",
       "014_single_job_publication_upgrade_baseline.sql",
       "015_single_job_publication_retry_recovery.sql",
-      "016_single_job_publication_scale_safety.sql"
+      "016_single_job_publication_scale_safety.sql",
+      "017_single_job_publication_monotonic_recovery.sql"
     ]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
@@ -113,6 +114,12 @@ describe("storage vNext clean bootstrap and reset contract", () => {
     );
     expect(manifest).toContain(
       'targetGeneration: "storage-vnext-v24-single-job-publication-scale-safety"'
+    );
+    expect(manifest).toContain(
+      'fileName: "017_single_job_publication_monotonic_recovery.sql"'
+    );
+    expect(manifest).toContain(
+      '"storage-vnext-v25-single-job-publication-monotonic-recovery"'
     );
     expect(manifest).toContain('safety: "breaking_cutover"');
     expect(manifest).toContain('targetGeneration: "storage-vnext-v14-projection-publication-coherence"');

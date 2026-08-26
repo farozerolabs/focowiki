@@ -369,6 +369,68 @@ const enabled = Boolean(databaseUrl && runOwner
       `;
     });
 
+  it("rebases stale unowned items above the active readiness sequence",
+    async () => {
+      await sql`
+        INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+        VALUES ('single-monotonic-kb', 'Monotonic recovery', 1)
+      `;
+      await sql`
+        INSERT INTO focowiki.knowledge_base_publication_heads (
+          knowledge_base_id, active_revision, active_readiness_sequence,
+          latest_readiness_sequence, pending_item_count, updated_at
+        ) VALUES ('single-monotonic-kb', 4, 10, 10, 0,
+                  '2026-08-25T13:10:00.000Z')
+      `;
+      const repository = createPostgresDocumentPublicationJobRepository(database);
+      await repository.createItem({
+        ...item(2_010),
+        publicId: "single-monotonic-stale-item",
+        mutationPublicId: "single-monotonic-stale-mutation",
+        knowledgeBaseId: "single-monotonic-kb",
+        readinessSequence: 5,
+        createdAt: "2026-08-25T13:10:00.000Z"
+      });
+      await repository.createItem({
+        ...item(2_011),
+        publicId: "single-monotonic-current-item",
+        mutationPublicId: "single-monotonic-current-mutation",
+        knowledgeBaseId: "single-monotonic-kb",
+        readinessSequence: 11,
+        createdAt: "2026-08-25T13:10:00.100Z"
+      });
+
+      const job = await repository.admitOne({
+        now: "2026-08-25T13:10:02.000Z",
+        rendererContractVersion: "portable-okf-v2"
+      });
+
+      expect(job).toMatchObject({
+        knowledgeBaseId: "single-monotonic-kb",
+        targetReadinessSequence: 12
+      });
+      expect(job?.items.map((entry) => ({
+        publicId: entry.publicId,
+        readinessSequence: entry.readinessSequence
+      }))).toEqual([
+        {
+          publicId: "single-monotonic-current-item",
+          readinessSequence: 11
+        },
+        {
+          publicId: "single-monotonic-stale-item",
+          readinessSequence: 12
+        }
+      ]);
+      await expect(sql<Array<{
+        latest_readiness_sequence: number | string;
+      }>>`
+        SELECT latest_readiness_sequence
+        FROM focowiki.knowledge_base_publication_heads
+        WHERE knowledge_base_id = 'single-monotonic-kb'
+      `).resolves.toEqual([{ latest_readiness_sequence: "12" }]);
+    });
+
   it("releases a graceful shutdown attempt without consuming retry budget",
     async () => {
       await sql`
