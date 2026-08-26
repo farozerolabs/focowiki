@@ -171,7 +171,7 @@ async function assertDocumentIndexingSchemaSignature(
           'search_document_owners',
           'upload_operation_summaries',
           'operation_tombstones',
-          'projection_cleanup_outbox',
+          'document_deletion_embedding_artifacts',
           'publication_items'
           ,'publication_jobs'
           ,'publication_job_items'
@@ -229,7 +229,8 @@ async function assertDocumentIndexingSchemaSignature(
           ,('upload_operation_summaries', 'session_public_id')
           ,('upload_operation_summaries', 'received_entry_count')
           ,('upload_operation_summaries', 'expires_at')
-          ,('projection_cleanup_outbox', 'write_attempt_public_id')
+          ,('document_deletion_embedding_artifacts', 'operation_public_id')
+          ,('document_deletion_embedding_artifacts', 'artifact_public_id')
           ,('publication_items', 'readiness_sequence')
           ,('publication_items', 'affected_evidence')
           ,('publication_jobs', 'attempt_token')
@@ -285,8 +286,7 @@ async function assertDocumentIndexingSchemaSignature(
           'operation_tombstones_expiry_idx',
           'operation_tombstones_scope_time_idx',
           'webhook_subscriptions_public_idempotency_key'
-          ,'projection_cleanup_outbox_claim_idx'
-          ,'projection_cleanup_outbox_expired_lease_idx'
+          ,'document_deletion_embedding_artifacts_knowledge_base_idx'
           ,'document_projection_records_revision_visibility_idx'
           ,'document_semantic_memberships_directory_revision_idx'
           ,'canonical_file_relations_first_revision_visible_idx'

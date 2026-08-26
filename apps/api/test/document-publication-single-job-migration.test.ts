@@ -23,6 +23,7 @@ describe("single-job publication foundation migration", () => {
       "projection_scope_generations",
       "projection_scope_snapshot_members",
       "projection_scope_generation_pages",
+      "projection_cleanup_outbox",
       "projection_cutover_states",
       "projection_generation_retention"
     ]) expect(migration).toContain(`focowiki.${legacyTable}`);

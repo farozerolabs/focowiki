@@ -391,6 +391,7 @@ ALTER TABLE focowiki.generated_page_heads
     DROP COLUMN IF EXISTS projection_generation_public_id;
 
 DROP TABLE IF EXISTS
+    focowiki.projection_cleanup_outbox,
     focowiki.projection_scope_storage_metrics,
     focowiki.projection_scope_object_refs,
     focowiki.projection_scope_receipts,

@@ -52,6 +52,7 @@ const removedTables = [
   "projection_dirty_scopes",
   "projection_scope_storage_metrics",
   "scoped_activation_owners",
+  "projection_cleanup_outbox",
   "projection_publication_generations",
   "projection_fact_epochs",
   "knowledge_base_projection_heads"
