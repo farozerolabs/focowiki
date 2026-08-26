@@ -17,7 +17,6 @@ import {
 import { createPostgresDocumentNavigationTermReader } from
   "./postgres-document-navigation-term-reader.js";
 
-const MAXIMUM_ROOT_RECORDS = 100_000;
 const MAXIMUM_CHECKSUM_PATHS = 100_000;
 
 type DocumentDirectoryRow = {
@@ -98,7 +97,8 @@ export function createPostgresDocumentMachineProjectionReader(
         input.includedSourceRevisionPublicIds ?? []);
       const excludedActiveSourceFilePublicIds = sortedUnique(
         input.excludedActiveSourceFilePublicIds ?? []);
-      const [knowledgeBases, records, graph, previousLogs] = await Promise.all([
+      const [knowledgeBases, rootStats, currentLogs, graph, previousLogs] =
+        await Promise.all([
         sql<Array<{ public_id: string; name: string; description: string | null }>>`
           SELECT public_id, name, description
           FROM focowiki.knowledge_bases
@@ -107,24 +107,33 @@ export function createPostgresDocumentMachineProjectionReader(
           LIMIT 1
         `,
         sql<Array<{
-          source_file_public_id: string;
-          source_revision_public_id: string;
-          logical_path: string;
-          title: string;
-          created_at: Date | string;
+          source_file_count: number | string;
+          root_entry_count: number | string;
         }>>`
-          SELECT record.source_file_public_id,
-                 record.source_revision_public_id,
-                 record.logical_path, record.title, record.created_at
+          SELECT count(DISTINCT record.source_file_public_id)
+                   AS source_file_count,
+                 count(DISTINCT CASE
+                   WHEN position('/' in record.logical_path) > 0
+                     THEN 'directory:' || split_part(record.logical_path, '/', 1)
+                   ELSE 'file:' || record.source_file_public_id
+                 END) AS root_entry_count
           FROM focowiki.document_projection_records record
           WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
             AND (record.source_revision_public_id
                    = ANY(${includedSourceRevisionPublicIds}::text[])
               OR (record.active AND record.source_file_public_id
                    <> ALL(${excludedActiveSourceFilePublicIds}::text[])))
-          ORDER BY record.normalized_path COLLATE "C"
-          LIMIT ${MAXIMUM_ROOT_RECORDS + 1}
         `,
+        includedSourceRevisionPublicIds.length > 0 ? sql<Array<{
+          logical_path: string; title: string; created_at: Date | string;
+        }>>`
+          SELECT logical_path, title, created_at
+          FROM focowiki.document_projection_records
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND source_revision_public_id
+                  = ANY(${includedSourceRevisionPublicIds}::text[])
+          ORDER BY normalized_path COLLATE "C"
+        ` : Promise.resolve([]),
         graphProjection.readGraphCatalogState({
           knowledgeBaseId: input.knowledgeBaseId,
           includedSourceRevisionPublicIds,
@@ -153,27 +162,17 @@ export function createPostgresDocumentMachineProjectionReader(
       ]);
       const knowledgeBase = knowledgeBases[0];
       if (!knowledgeBase) throw projectionReaderError("knowledge_base_missing");
-      if (records.length > MAXIMUM_ROOT_RECORDS) {
-        throw projectionReaderError("root_projection_record_limit_exceeded");
-      }
-      const included = new Set(includedSourceRevisionPublicIds);
-      const topLevelEntries = new Set(records.map((record) => {
-        const first = record.logical_path.split("/")[0]!;
-        return record.logical_path.includes("/") ? `directory:${first}`
-          : `file:${record.source_file_public_id}`;
-      }));
+      const stats = rootStats[0];
       return {
         knowledgeBase: {
           id: knowledgeBase.public_id,
           name: knowledgeBase.name,
           description: knowledgeBase.description
         },
-        sourceFileCount: new Set(records.map((record) =>
-          record.source_file_public_id)).size,
+        sourceFileCount: Number(stats?.source_file_count ?? 0),
         graphEdgeCount: graph.relationshipCount,
-        rootEntryCount: topLevelEntries.size,
-        currentLogEntries: records.filter((record) =>
-          included.has(record.source_revision_public_id)).map((record) => ({
+        rootEntryCount: Number(stats?.root_entry_count ?? 0),
+        currentLogEntries: currentLogs.map((record) => ({
             occurredAt: normalizeTimestamp(record.created_at),
             action: "Updated page",
             message: `Updated pages/${record.logical_path}.`,

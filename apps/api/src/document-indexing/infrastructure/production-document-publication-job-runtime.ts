@@ -223,6 +223,11 @@ export function createProductionDocumentPublicationJobRuntime(input: {
       objectRequestCount: number;
       objectAttemptedBytes: number;
       peakActiveScopeCount: number;
+      outputCount: number;
+      navigationMutationCount: number;
+      navigationLeafCount: number;
+      navigationEntryCount: number;
+      maximumNavigationMutationBytes: number;
     }>
   ): void {
     const memory = process.memoryUsage();
@@ -306,7 +311,12 @@ function zeroObjectMetrics() {
     objectReuseCount: 0,
     objectRequestCount: 0,
     objectAttemptedBytes: 0,
-    peakActiveScopeCount: 0
+    peakActiveScopeCount: 0,
+    outputCount: 0,
+    navigationMutationCount: 0,
+    navigationLeafCount: 0,
+    navigationEntryCount: 0,
+    maximumNavigationMutationBytes: 0
   } as const;
 }
 
@@ -330,7 +340,7 @@ async function readObjectMetadata(
   }));
 }
 
-function retryablePublicationError(code: string): boolean {
+export function retryablePublicationError(code: string): boolean {
   return ![
     "publication_job_item_limit_invalid",
     "publication_job_knowledge_base_mismatch",
@@ -344,7 +354,20 @@ function retryablePublicationError(code: string): boolean {
     "publication_search_receipts_incomplete",
     "publication_active_base_changed",
     "publication_source_precondition_failed",
-    "publication_work_precondition_failed"
+    "publication_work_precondition_failed",
+    "publication_navigation_mutations_invalid",
+    "publication_path_invalid",
+    "publication_output_path_invalid",
+    "publication_manifest_fingerprint_invalid",
+    "publication_settings_snapshot_invalid",
+    "publication_job_term_limit",
+    "publication_job_relation_limit",
+    "publication_base_page_limit_exceeded",
+    "navigation_delta_window_exceeded",
+    "leaf_limit_exceeded",
+    "entry_limit_exceeded",
+    "mutation_set_invalid",
+    "mutation_invalid"
   ].includes(code);
 }
 

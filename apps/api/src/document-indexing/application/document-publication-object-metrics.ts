@@ -4,6 +4,11 @@ export type DocumentPublicationObjectMetrics = Readonly<{
   objectRequestCount: number;
   objectAttemptedBytes: number;
   peakActiveScopeCount: number;
+  outputCount: number;
+  navigationMutationCount: number;
+  navigationLeafCount: number;
+  navigationEntryCount: number;
+  maximumNavigationMutationBytes: number;
 }>;
 
 export function selectDocumentPublicationObjectMetrics(
@@ -14,6 +19,11 @@ export function selectDocumentPublicationObjectMetrics(
     objectReuseCount: input.objectReuseCount,
     objectRequestCount: input.objectRequestCount,
     objectAttemptedBytes: input.objectAttemptedBytes,
-    peakActiveScopeCount: input.peakActiveScopeCount
+    peakActiveScopeCount: input.peakActiveScopeCount,
+    outputCount: input.outputCount,
+    navigationMutationCount: input.navigationMutationCount,
+    navigationLeafCount: input.navigationLeafCount,
+    navigationEntryCount: input.navigationEntryCount,
+    maximumNavigationMutationBytes: input.maximumNavigationMutationBytes
   };
 }

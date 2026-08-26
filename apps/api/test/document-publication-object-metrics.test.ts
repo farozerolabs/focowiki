@@ -11,7 +11,12 @@ describe("document publication object metrics", () => {
       objectReuseCount: 4,
       objectRequestCount: 8,
       objectAttemptedBytes: 1024,
-      peakActiveScopeCount: 2
+      peakActiveScopeCount: 2,
+      outputCount: 5,
+      navigationMutationCount: 2,
+      navigationLeafCount: 20,
+      navigationEntryCount: 1_000,
+      maximumNavigationMutationBytes: 80_000
     };
     const metrics = selectDocumentPublicationObjectMetrics(buildResult);
 
@@ -20,7 +25,12 @@ describe("document publication object metrics", () => {
       objectReuseCount: 4,
       objectRequestCount: 8,
       objectAttemptedBytes: 1024,
-      peakActiveScopeCount: 2
+      peakActiveScopeCount: 2,
+      outputCount: 5,
+      navigationMutationCount: 2,
+      navigationLeafCount: 20,
+      navigationEntryCount: 1_000,
+      maximumNavigationMutationBytes: 80_000
     });
     expect(metrics).not.toHaveProperty("outputs");
     expect(metrics).not.toHaveProperty("fingerprintSha256");

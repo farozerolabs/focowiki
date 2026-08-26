@@ -29,9 +29,10 @@ import {
   type DocumentPublicationItemRow
 } from "./postgres-document-publication-item-repository.js";
 import {
-  enqueuePostgresDocumentPublicationOutputCleanup,
   validateDocumentPublicationJobOutputs
 } from "./postgres-document-publication-output-cleanup.js";
+import { replacePostgresDocumentPublicationManifest } from
+  "./postgres-document-publication-manifest-repository.js";
 import { failPostgresDocumentPublicationJob } from
   "./postgres-document-publication-job-failure.js";
 import {
@@ -295,59 +296,12 @@ export function createPostgresDocumentPublicationJobRepository(
           FOR UPDATE
         `;
         if (!jobs[0]) return false;
-        await enqueuePostgresDocumentPublicationOutputCleanup({
+        await replacePostgresDocumentPublicationManifest({
           transaction,
           jobPublicId,
-          retainedObjectIds: outputs.flatMap((output) =>
-            output.objectId ? [output.objectId] : []),
-          queuedAt: persistedAt
+          outputs,
+          persistedAt
         });
-        await transaction`
-          DELETE FROM focowiki.publication_job_outputs
-          WHERE job_public_id = ${jobPublicId}
-        `;
-        if (outputs.length > 0) {
-          const records = outputs.map((output, outputOrder) => ({
-            normalized_path: output.normalizedPath,
-            output_order: outputOrder,
-            action: output.action,
-            logical_path: output.logicalPath,
-            entry_kind: output.entryKind,
-            source_file_public_id: output.sourceFilePublicId,
-            source_revision_public_id: output.sourceRevisionPublicId,
-            object_id: output.objectId,
-            checksum_sha256: output.checksumSha256,
-            byte_count: output.byteCount,
-            content_type: output.contentType,
-            producer_fingerprint_sha256: output.producerFingerprintSha256,
-            navigation_mutations: output.navigationMutations
-          }));
-          await transaction`
-            INSERT INTO focowiki.publication_job_outputs (
-              job_public_id, normalized_path, output_order, action,
-              logical_path, entry_kind, source_file_public_id,
-              source_revision_public_id, object_id, checksum_sha256,
-              byte_count, content_type, producer_fingerprint_sha256,
-              navigation_mutations, created_at
-            )
-            SELECT ${jobPublicId}, desired.normalized_path,
-                   desired.output_order, desired.action, desired.logical_path,
-                   desired.entry_kind, desired.source_file_public_id,
-                   desired.source_revision_public_id, desired.object_id,
-                   desired.checksum_sha256, desired.byte_count,
-                   desired.content_type, desired.producer_fingerprint_sha256,
-                   desired.navigation_mutations, ${persistedAt}
-            FROM jsonb_to_recordset(${transaction.json(records as never)})
-              AS desired(
-                normalized_path text, output_order integer, action text,
-                logical_path text, entry_kind text,
-                source_file_public_id text, source_revision_public_id text,
-                object_id text, checksum_sha256 text, byte_count bigint,
-                content_type text, producer_fingerprint_sha256 text,
-                navigation_mutations jsonb
-              )
-          `;
-        }
         const updated = await transaction<Array<{ public_id: string }>>`
           UPDATE focowiki.publication_jobs
           SET manifest_fingerprint_sha256 = ${fingerprint},
