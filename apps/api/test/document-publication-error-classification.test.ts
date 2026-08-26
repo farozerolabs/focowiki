@@ -6,6 +6,7 @@ describe("publication error classification", () => {
   it("does not repeat deterministic capacity and contract failures", () => {
     for (const code of [
       "publication_navigation_mutations_invalid",
+      "publication_page_owner_revision_stale",
       "publication_job_relation_limit",
       "publication_job_term_limit",
       "publication_base_page_limit_exceeded",

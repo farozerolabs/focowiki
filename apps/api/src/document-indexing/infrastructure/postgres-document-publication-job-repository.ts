@@ -24,6 +24,7 @@ import {
 import {
   createPostgresDocumentPublicationItem,
   mapDocumentPublicationItem,
+  rebaseStalePendingPostgresDocumentPublicationItems,
   supersedeOlderPostgresDocumentPublicationItems,
   updatePostgresDocumentPublicationPendingHead,
   type DocumentPublicationItemRow
@@ -102,9 +103,11 @@ export function createPostgresDocumentPublicationJobRepository(
         if (!knowledgeBaseId) return null;
         const heads = await transaction<Array<{
           active_revision: number | string;
+          active_readiness_sequence: number | string;
           pending_item_count: number | string;
         }>>`
-          SELECT active_revision, pending_item_count
+          SELECT active_revision, active_readiness_sequence,
+                 pending_item_count
           FROM focowiki.knowledge_base_publication_heads
           WHERE knowledge_base_id = ${knowledgeBaseId}
           FOR UPDATE
@@ -116,6 +119,15 @@ export function createPostgresDocumentPublicationJobRepository(
           await supersedeOlderPostgresDocumentPublicationItems(
           transaction, knowledgeBaseId, now
         );
+        await rebaseStalePendingPostgresDocumentPublicationItems(
+          transaction,
+          {
+            knowledgeBaseId,
+            activeReadinessSequence:
+              Number(heads[0].active_readiness_sequence),
+            updatedAt: now
+          }
+        );
         const items = await transaction<DocumentPublicationItemRow[]>`
           SELECT public_id, mutation_public_id, knowledge_base_id,
                  document_job_public_id, source_file_public_id,
@@ -125,6 +137,8 @@ export function createPostgresDocumentPublicationJobRepository(
           FROM focowiki.publication_items
           WHERE knowledge_base_id = ${knowledgeBaseId}
             AND outcome = 'pending'
+            AND readiness_sequence
+                  > ${Number(heads[0].active_readiness_sequence)}
             AND NOT EXISTS (
               SELECT 1 FROM focowiki.publication_job_items membership
               WHERE membership.item_public_id = publication_items.public_id

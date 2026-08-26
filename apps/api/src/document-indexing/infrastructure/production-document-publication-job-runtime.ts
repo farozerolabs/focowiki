@@ -356,6 +356,7 @@ export function retryablePublicationError(code: string): boolean {
     "publication_source_precondition_failed",
     "publication_work_precondition_failed",
     "publication_navigation_mutations_invalid",
+    "publication_page_owner_revision_stale",
     "publication_path_invalid",
     "publication_output_path_invalid",
     "publication_manifest_fingerprint_invalid",
