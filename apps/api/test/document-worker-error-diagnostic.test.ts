@@ -47,6 +47,17 @@ describe("document worker error diagnostic", () => {
     });
   });
 
+  it("preserves an AWS service error name when no explicit code exists", () => {
+    const error = Object.assign(new Error("provider payload"), {
+      name: "InternalError",
+      $metadata: { httpStatusCode: 500, attempts: 3 }
+    });
+    expect(safeWorkerErrorDiagnostic(error)).toMatchObject({
+      errorCode: "InternalError",
+      errorName: "InternalError"
+    });
+  });
+
   it("reports the portable record family and ordered field", () => {
     expect(safeWorkerErrorDiagnostic(Object.assign(new Error("invalid order"), {
       code: "portable_record_order_invalid",

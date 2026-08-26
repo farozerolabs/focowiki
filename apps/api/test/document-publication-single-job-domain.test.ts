@@ -53,11 +53,11 @@ describe("single-job publication domain", () => {
     ])).not.toThrow();
   });
 
-  it("uses one fixed thirty-minute attempt deadline and three retries", () => {
+  it("uses a renewable ninety-second attempt deadline and three retries", () => {
     const claimedAt = "2026-08-25T10:00:00.000Z";
-    expect(DOCUMENT_PUBLICATION_ATTEMPT_MILLISECONDS).toBe(30 * 60 * 1_000);
+    expect(DOCUMENT_PUBLICATION_ATTEMPT_MILLISECONDS).toBe(90 * 1_000);
     expect(publicationAttemptDeadline(claimedAt))
-      .toBe("2026-08-25T10:30:00.000Z");
+      .toBe("2026-08-25T10:01:30.000Z");
     expect(publicationRetryDelayMilliseconds(1)).toBe(1_000);
     expect(publicationRetryDelayMilliseconds(2)).toBe(2_000);
     expect(publicationRetryDelayMilliseconds(3)).toBe(4_000);

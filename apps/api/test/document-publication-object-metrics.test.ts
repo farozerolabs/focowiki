@@ -10,7 +10,8 @@ describe("document publication object metrics", () => {
       objectPutCount: 3,
       objectReuseCount: 4,
       objectRequestCount: 8,
-      objectAttemptedBytes: 1024
+      objectAttemptedBytes: 1024,
+      peakActiveScopeCount: 2
     };
     const metrics = selectDocumentPublicationObjectMetrics(buildResult);
 
@@ -18,7 +19,8 @@ describe("document publication object metrics", () => {
       objectPutCount: 3,
       objectReuseCount: 4,
       objectRequestCount: 8,
-      objectAttemptedBytes: 1024
+      objectAttemptedBytes: 1024,
+      peakActiveScopeCount: 2
     });
     expect(metrics).not.toHaveProperty("outputs");
     expect(metrics).not.toHaveProperty("fingerprintSha256");

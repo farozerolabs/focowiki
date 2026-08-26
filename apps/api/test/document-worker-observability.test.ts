@@ -19,6 +19,10 @@ describe("document worker observability", () => {
       objectReuseCount: 5,
       objectRequestCount: 4,
       objectAttemptedBytes: 1024,
+      peakActiveScopeCount: 2,
+      heapUsedBytes: 100,
+      heapLimitBytes: 512,
+      rssBytes: 200,
       errorCode: null
     });
     expect(events).toEqual([{
@@ -35,6 +39,10 @@ describe("document worker observability", () => {
         objectReuseCount: 5,
         objectRequestCount: 4,
         objectAttemptedBytes: 1024,
+        peakActiveScopeCount: 2,
+        heapUsedBytes: 100,
+        heapLimitBytes: 512,
+        rssBytes: 200,
         errorCode: null
       }
     }]);
@@ -59,8 +67,43 @@ describe("document worker observability", () => {
       objectReuseCount: 0,
       objectRequestCount: 0,
       objectAttemptedBytes: 0,
+      peakActiveScopeCount: 0,
+      heapUsedBytes: 100,
+      heapLimitBytes: 512,
+      rssBytes: 200,
       errorCode: "unsafe error"
     })).toThrow("error code is invalid");
+  });
+
+  it("records bounded S3 retry and status diagnostics", () => {
+    const events: unknown[] = [];
+    const observer = createDocumentWorkerObservability({
+      write: (event) => events.push(event)
+    });
+
+    observer.storageRequest({
+      operation: "put",
+      safeObjectKeyHash: "a".repeat(64),
+      durationMs: 1250,
+      outcome: "failed",
+      errorCode: "InternalError",
+      attemptCount: 3,
+      httpStatusCode: 500
+    });
+
+    expect(events).toEqual([{
+      level: "info",
+      event: "worker.storage_request",
+      fields: {
+        operation: "put",
+        safeObjectKeyHash: "a".repeat(64),
+        durationMs: 1250,
+        outcome: "failed",
+        errorCode: "InternalError",
+        attemptCount: 3,
+        httpStatusCode: 500
+      }
+    }]);
   });
 
   it("records bounded publication runtime failure and recovery diagnostics", () => {
