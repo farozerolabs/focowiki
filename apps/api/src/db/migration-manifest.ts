@@ -92,6 +92,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v20-projection-runtime-recovery",
     targetGeneration: "storage-vnext-v21-single-job-publication-foundation",
     safety: "breaking_cutover"
+  },
+  {
+    fileName: "014_single_job_publication_upgrade_baseline.sql",
+    sourceGeneration: "storage-vnext-v21-single-job-publication-foundation",
+    targetGeneration: "storage-vnext-v22-single-job-publication-upgrade-baseline",
+    safety: "breaking_cutover"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
