@@ -18,7 +18,7 @@ export function createProductionDocumentDeletionProjection(input: {
   s3: S3Client;
   ownership: ReturnType<typeof createPostgresStorageVnextOwnershipRepository>;
 }) {
-  const publicationGenerationCoordinator = {
+  const publicationVisibility = {
     isDeletionActive(action: DocumentResourceDeletionAction) {
       return isPostgresDocumentDeletionPublicationActive({
         transaction: input.sql as never,
@@ -35,7 +35,7 @@ export function createProductionDocumentDeletionProjection(input: {
       signal: AbortSignal;
     }) {
       request.signal.throwIfAborted();
-      const active = await publicationGenerationCoordinator
+      const active = await publicationVisibility
         .isDeletionActive(request.action);
       return {
         done: false,

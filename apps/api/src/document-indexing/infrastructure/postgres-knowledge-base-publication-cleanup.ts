@@ -16,18 +16,12 @@ export async function prepareKnowledgeBasePublicationObjectCleanup(input: {
       FROM focowiki.generated_page_bases base
       WHERE base.knowledge_base_id = ${input.knowledgeBaseId}
       UNION
-      SELECT reference.object_id
-      FROM focowiki.projection_scope_generation_object_refs reference
-      JOIN focowiki.projection_scope_generations scope
-        ON scope.public_id = reference.scope_generation_public_id
-      WHERE scope.knowledge_base_id = ${input.knowledgeBaseId}
-      UNION
-      SELECT page.object_id
-      FROM focowiki.projection_scope_generation_pages page
-      JOIN focowiki.projection_scope_generations scope
-        ON scope.public_id = page.scope_generation_public_id
-      WHERE scope.knowledge_base_id = ${input.knowledgeBaseId}
-        AND page.action = 'put' AND page.object_id IS NOT NULL
+      SELECT output.object_id
+      FROM focowiki.publication_job_outputs output
+      JOIN focowiki.publication_jobs job
+        ON job.public_id = output.job_public_id
+      WHERE job.knowledge_base_id = ${input.knowledgeBaseId}
+        AND output.action = 'put' AND output.object_id IS NOT NULL
     )
     INSERT INTO focowiki.cleanup_actions (
       public_id, knowledge_base_id,
@@ -46,7 +40,7 @@ export async function prepareKnowledgeBasePublicationObjectCleanup(input: {
              || ':' || candidate.object_id,
            md5(candidate.object_id),
            jsonb_build_object(
-             'schemaVersion', 'knowledge-base-publication-cleanup-v1',
+             'schemaVersion', 'knowledge-base-publication-cleanup-v2',
              'operationPublicId', ${input.operationPublicId}::text
            ),
            'queued', 0, 8, ${input.queuedAt}, ${input.queuedAt},
@@ -77,8 +71,10 @@ export async function finalizeKnowledgeBasePublicationObjectCleanup(input: {
     FROM focowiki.cleanup_actions action
     WHERE action.knowledge_base_id = ${input.knowledgeBaseId}
       AND action.action_kind = 'zero_owner_object'
-      AND action.checkpoint ->> 'schemaVersion'
-            = 'knowledge-base-publication-cleanup-v1'
+      AND action.checkpoint ->> 'schemaVersion' IN (
+            'knowledge-base-publication-cleanup-v1',
+            'knowledge-base-publication-cleanup-v2'
+          )
       AND action.checkpoint ->> 'operationPublicId'
             = ${input.operationPublicId}
       AND action.resource_public_id = registration.object_id
@@ -107,21 +103,15 @@ export async function finalizeKnowledgeBasePublicationObjectCleanup(input: {
         SELECT 1 FROM focowiki.embedding_artifacts artifact
         WHERE artifact.object_id = registration.object_id
       )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM focowiki.projection_scope_generation_object_refs reference
-        WHERE reference.object_id = registration.object_id
-      )
-      AND NOT focowiki.legacy_projection_object_is_referenced(
-        registration.object_id
-      )
   `;
   await input.sql`
     DELETE FROM focowiki.cleanup_actions action
     WHERE action.knowledge_base_id = ${input.knowledgeBaseId}
       AND action.action_kind = 'zero_owner_object'
-      AND action.checkpoint ->> 'schemaVersion'
-            = 'knowledge-base-publication-cleanup-v1'
+      AND action.checkpoint ->> 'schemaVersion' IN (
+            'knowledge-base-publication-cleanup-v1',
+            'knowledge-base-publication-cleanup-v2'
+          )
       AND action.checkpoint ->> 'operationPublicId'
             = ${input.operationPublicId}
       AND NOT EXISTS (

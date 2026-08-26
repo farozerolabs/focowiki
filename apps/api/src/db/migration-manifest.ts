@@ -1,6 +1,7 @@
 export const MIGRATION_SAFETY_CLASSES = [
   "clean_bootstrap",
   "compatible",
+  "breaking_cutover",
   "breaking_reset"
 ] as const;
 
@@ -85,6 +86,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v19-projection-delta-lease-safety",
     targetGeneration: "storage-vnext-v20-projection-runtime-recovery",
     safety: "compatible"
+  },
+  {
+    fileName: "013_single_job_publication_foundation.sql",
+    sourceGeneration: "storage-vnext-v20-projection-runtime-recovery",
+    targetGeneration: "storage-vnext-v21-single-job-publication-foundation",
+    safety: "breaking_cutover"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
@@ -219,7 +226,10 @@ export function createBootstrapPlan(
   );
   if (sourceIndex >= 0) {
     const pendingMigrations = MIGRATION_MANIFEST.slice(sourceIndex);
-    if (pendingMigrations.every((migration) => migration.safety === "compatible")) {
+    if (pendingMigrations.every((migration) =>
+      migration.safety === "compatible"
+      || migration.safety === "breaking_cutover"
+    )) {
       return {
         pendingMigrations,
         pendingFiles: pendingMigrations.map((migration) => migration.fileName),

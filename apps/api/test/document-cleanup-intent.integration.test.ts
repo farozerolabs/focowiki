@@ -12,8 +12,6 @@ import {
   createPostgresDocumentRevisionPurge,
   enqueuePostgresReplacedDocumentRevisionPurge
 } from "../src/document-indexing/infrastructure/postgres-document-revision-purge.js";
-import { rehomePostgresCurrentDocumentPageCandidates } from
-  "../src/document-indexing/infrastructure/postgres-document-page-candidate-rehome.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
 
@@ -261,36 +259,6 @@ const enabled = Boolean(databaseUrl && runOwner
   });
 
   it("purges a replaced revision and queues every orphaned object", async () => {
-    await expect(rehomePostgresCurrentDocumentPageCandidates({
-      transaction: sql as unknown as DatabaseClient,
-      knowledgeBaseId: "kb-cleanup",
-      documentJobPublicId: "job-cleanup",
-      sourceFilePublicId: "source-cleanup",
-      sourceRevisionPublicId: "revision-cleanup-new",
-      previousSourceRevisionPublicId: "revision-cleanup-old",
-      activationRevision: 3,
-      activatedAt: "2026-08-15T14:01:59.000Z"
-    })).resolves.toBe(1);
-    await expect(sql<Array<{
-      candidate_id: string;
-      candidate_revision: string;
-      head_revision: string | null;
-    }>>`
-      SELECT candidate.public_id AS candidate_id,
-             candidate.source_revision_public_id AS candidate_revision,
-             head.source_revision_public_id AS head_revision
-      FROM focowiki.generated_page_heads head
-      JOIN focowiki.generated_page_candidates candidate
-        ON candidate.knowledge_base_id = head.knowledge_base_id
-       AND candidate.public_id = head.page_candidate_public_id
-      WHERE head.knowledge_base_id = 'kb-cleanup'
-        AND head.normalized_path = 'shared.md'
-    `).resolves.toEqual([{
-      candidate_id: "candidate-cleanup-shared-current",
-      candidate_revision: "revision-cleanup-new",
-      head_revision: "revision-cleanup-new"
-    }]);
-
     await expect(enqueuePostgresReplacedDocumentRevisionPurge({
       transaction: sql as unknown as DatabaseClient,
       knowledgeBaseId: "kb-cleanup",
@@ -331,6 +299,45 @@ const enabled = Boolean(databaseUrl && runOwner
       limit: 1,
       now: "2026-08-15T14:02:03.000Z",
       leaseExpiresAt: "2026-08-15T14:03:03.000Z"
+    })).resolves.toEqual({ claimed: 1, completed: 0, retried: 1, failed: 0 });
+    await expect(sql<Array<{ state: string; safe_error_code: string | null }>>`
+      SELECT state, safe_error_code FROM focowiki.cleanup_actions
+      WHERE action_kind = 'document_revision_purge'
+        AND resource_public_id = 'revision-cleanup-old'
+    `).resolves.toEqual([{
+      state: "retry",
+      safe_error_code: "DOCUMENT_REVISION_GENERATED_HEAD_ACTIVE"
+    }]);
+    await sql`
+      UPDATE focowiki.generated_page_heads
+      SET source_revision_public_id = 'revision-cleanup-new',
+          page_candidate_public_id = 'candidate-cleanup-shared-current',
+          object_id = 'object-cleanup-shared-current',
+          checksum_sha256 = ${"0".repeat(64)}, byte_count = 3,
+          activation_revision = 3,
+          updated_at = '2026-08-15T14:02:04.000Z'
+      WHERE knowledge_base_id = 'kb-cleanup'
+        AND normalized_path = 'shared.md'
+    `;
+    await expect(purge.runBatch({
+      owner: "revision-purge-owner-3",
+      limit: 1,
+      now: "2026-08-15T14:02:05.000Z",
+      leaseExpiresAt: "2026-08-15T14:03:05.000Z"
+    })).resolves.toEqual({ claimed: 1, completed: 0, retried: 1, failed: 0 });
+    await sql`
+      UPDATE focowiki.cleanup_actions
+      SET state = 'completed', completed_at = '2026-08-15T14:02:06.000Z',
+          updated_at = '2026-08-15T14:02:06.000Z'
+      WHERE action_kind = 'document_obsolete_artifact'
+        AND checkpoint->>'parentRevisionPurgeActionPublicId' IS NOT NULL
+        AND state IN ('queued', 'retry')
+    `;
+    await expect(purge.runBatch({
+      owner: "revision-purge-owner-4",
+      limit: 1,
+      now: "2026-08-15T14:02:07.000Z",
+      leaseExpiresAt: "2026-08-15T14:03:07.000Z"
     })).resolves.toEqual({ claimed: 1, completed: 1, retried: 0, failed: 0 });
 
     await expect(sql<Array<{ count: number }>>`
@@ -357,7 +364,7 @@ const enabled = Boolean(databaseUrl && runOwner
       FROM focowiki.object_registrations
       WHERE object_id = 'object-cleanup-old'
     `).resolves.toEqual([{
-      zero_owner_since: new Date("2026-08-15T14:02:03.000Z")
+      zero_owner_since: new Date("2026-08-15T14:02:07.000Z")
     }]);
   });
 });

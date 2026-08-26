@@ -16,7 +16,9 @@ try {
   const plan = await preflightMigrations(sql);
   logger.info("database.migration_preflight_passed", {
     currentGeneration: plan.currentGeneration,
-    pendingMigrationCount: plan.pendingFiles.length
+    pendingMigrationCount: plan.pendingFiles.length,
+    requiresStoppedWorkers: plan.requiresStoppedWorkers,
+    requiresDatabaseBackup: plan.requiresDatabaseBackup
   });
 } finally {
   await closeDatabaseClient(sql);

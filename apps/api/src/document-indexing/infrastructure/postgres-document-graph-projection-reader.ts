@@ -121,12 +121,8 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
       const resourceRows = await sql<Array<{ logical_path: string }>>`
         SELECT head.logical_path
         FROM focowiki.generated_page_heads head
-        JOIN focowiki.projection_artifact_owners owner
-          ON owner.knowledge_base_id = head.knowledge_base_id
-         AND owner.normalized_path = head.normalized_path
         WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
-          AND owner.owner_scope_identity
-            = ${`_graph:${input.sourceFilePublicId}`}
+          AND head.source_file_public_id = ${input.sourceFilePublicId}
           AND left(head.normalized_path, char_length('_graph/by-file/'))
             = '_graph/by-file/'
           AND right(head.normalized_path, 5) = '.json'
@@ -147,31 +143,11 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
 
     async readGraphCatalogState(input: {
       knowledgeBaseId: string;
-      publicationGenerationPublicId?: string;
       includedSourceRevisionPublicIds?: readonly string[];
       excludedActiveSourceFilePublicIds?: readonly string[];
     }) {
       const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
       const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds ?? []);
-      if (input.publicationGenerationPublicId) {
-        const statistics = await sql<Array<{
-          relationship_count: number | string;
-        }>>`
-          SELECT relationship_count
-          FROM focowiki.projection_generation_statistics
-          WHERE publication_generation_public_id
-                  = ${input.publicationGenerationPublicId}
-            AND knowledge_base_id = ${input.knowledgeBaseId}
-        `;
-        const relationshipCount = Number(
-          statistics[0]?.relationship_count ?? -1
-        );
-        if (!Number.isSafeInteger(relationshipCount)
-          || relationshipCount < 0) {
-          throw graphReaderError("graph_catalog_statistics_missing");
-        }
-        return { relationshipCount };
-      }
       const rows = await sql<Array<{ relationship_count: number | string }>>`
         SELECT count(DISTINCT relation.public_id) AS relationship_count
         FROM focowiki.canonical_file_relations relation

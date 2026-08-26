@@ -74,6 +74,11 @@ describe("document indexing migration manifest", () => {
       sourceGeneration: "storage-vnext-v19-projection-delta-lease-safety",
       targetGeneration: "storage-vnext-v20-projection-runtime-recovery",
       safety: "compatible"
+    }, {
+      fileName: "013_single_job_publication_foundation.sql",
+      sourceGeneration: "storage-vnext-v20-projection-runtime-recovery",
+      targetGeneration: "storage-vnext-v21-single-job-publication-foundation",
+      safety: "breaking_cutover"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
@@ -87,10 +92,11 @@ describe("document indexing migration manifest", () => {
       "009_projection_resource_recovery.sql",
       "010_projection_large_directory_deltas.sql",
       "011_projection_delta_lease_safety.sql",
-      "012_projection_runtime_recovery.sql"
+      "012_projection_runtime_recovery.sql",
+      "013_single_job_publication_foundation.sql"
     ]);
     expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      "storage-vnext-v20-projection-runtime-recovery"
+      "storage-vnext-v21-single-job-publication-foundation"
     );
   });
 
@@ -105,7 +111,7 @@ describe("document indexing migration manifest", () => {
     })).not.toThrow();
   });
 
-  it("initializes only an absent schema and rejects persisted generations", () => {
+  it("initializes an absent schema and permits the declared breaking cutover source", () => {
     expect(createBootstrapPlan("absent").pendingFiles).toEqual([
       "001_storage_vnext.sql",
       "002_document_queue_throughput.sql",
@@ -118,9 +124,13 @@ describe("document indexing migration manifest", () => {
       "009_projection_resource_recovery.sql",
       "010_projection_large_directory_deltas.sql",
       "011_projection_delta_lease_safety.sql",
-      "012_projection_runtime_recovery.sql"
+      "012_projection_runtime_recovery.sql",
+      "013_single_job_publication_foundation.sql"
     ]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
+    expect(createBootstrapPlan(
+      "storage-vnext-v20-projection-runtime-recovery"
+    ).pendingFiles).toEqual(["013_single_job_publication_foundation.sql"]);
     for (const generation of [
       "storage-vnext-v9-document-indexing-hybrid",
       "storage-vnext-v10-document-indexing-throughput",

@@ -113,60 +113,62 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     await admin.end({ timeout: 5 });
   }, 120_000);
 
-  it("writes coherent deletion tombstones without hiding the active projection", async () => {
+  it("writes deletion tombstones without hiding the active projection", async () => {
     const sourceFilePublicId = "source-file-coherent-delete";
     const operationPublicId = "operation-coherent-delete";
     await seedAvailableSource(sourceFilePublicId, "coherent-delete.md", null);
     await sql`
-      INSERT INTO focowiki.projection_cutover_states (
-        knowledge_base_id, writer_mode
-      ) VALUES ('knowledge-base-delete', 'coherent')
-      ON CONFLICT (knowledge_base_id) DO UPDATE SET writer_mode = 'coherent'
+      INSERT INTO focowiki.document_projection_records (
+        knowledge_base_id, source_file_public_id, source_revision_public_id,
+        logical_path, normalized_path, title, summary, metadata, headings,
+        entities, content_type, checksum_sha256, byte_count,
+        tokenizer_contract_version, navigation_term_fingerprint_sha256, active
+      ) VALUES (
+        'knowledge-base-delete', ${sourceFilePublicId},
+        ${`${sourceFilePublicId}-revision`}, 'coherent-delete.md',
+        'coherent-delete.md', 'Coherent delete', 'Deletion projection fact',
+        '{}'::jsonb, '{}'::text[], '{}'::text[],
+        'text/markdown; charset=utf-8', ${"2".repeat(64)}, 10,
+        'nodejieba-test-v1', ${"3".repeat(64)}, true
+      )
     `;
-    try {
-      await accept({
-        knowledgeBaseId: "knowledge-base-delete",
-        targetKind: "source_file",
-        targetPublicId: sourceFilePublicId,
-        expectedResourceRevision: 1,
-        operationPublicId,
-        idempotencyKey: "coherent-delete-request",
-        maximumAttempts: 3,
-        requestedAt: "2026-08-14T10:00:00.000Z",
-        expiresAt: "2026-08-15T10:00:00.000Z"
-      });
-      await expect(sql`
-        SELECT source.deleted_at IS NOT NULL AS deleted,
-               active.active_source_revision_public_id,
-               epoch.fact_kind, epoch.state,
-               cleanup.checkpoint->>'phase' AS cleanup_phase
-        FROM focowiki.source_files source
-        JOIN focowiki.source_file_active_revisions active
-          ON active.knowledge_base_id = source.knowledge_base_id
-         AND active.source_file_public_id = source.public_id
-        JOIN focowiki.projection_fact_epochs epoch
-          ON epoch.knowledge_base_id = source.knowledge_base_id
-         AND epoch.source_file_public_id = source.public_id
-         AND epoch.mutation_group_public_id = ${operationPublicId}
-        JOIN focowiki.cleanup_actions cleanup
-          ON cleanup.knowledge_base_id = source.knowledge_base_id
-         AND cleanup.operation_public_id = ${operationPublicId}
-         AND cleanup.action_kind = 'document_resource_deletion'
-        WHERE source.public_id = ${sourceFilePublicId}
-      `).resolves.toEqual([{
-        deleted: true,
-        active_source_revision_public_id: `${sourceFilePublicId}-revision`,
-        fact_kind: "delete",
-        state: "ready",
-        cleanup_phase: "reconcile_projection"
-      }]);
-    } finally {
-      await sql`
-        UPDATE focowiki.projection_cutover_states
-        SET writer_mode = 'legacy'
-        WHERE knowledge_base_id = 'knowledge-base-delete'
-      `;
-    }
+    await accept({
+      knowledgeBaseId: "knowledge-base-delete",
+      targetKind: "source_file",
+      targetPublicId: sourceFilePublicId,
+      expectedResourceRevision: 1,
+      operationPublicId,
+      idempotencyKey: "coherent-delete-request",
+      maximumAttempts: 3,
+      requestedAt: "2026-08-14T10:00:00.000Z",
+      expiresAt: "2026-08-15T10:00:00.000Z"
+    });
+    await expect(sql`
+      SELECT source.deleted_at IS NOT NULL AS deleted,
+             active.active_source_revision_public_id,
+             item.operation, item.outcome,
+             cleanup.checkpoint->>'phase' AS cleanup_phase
+      FROM focowiki.source_files source
+      JOIN focowiki.source_file_active_revisions active
+        ON active.knowledge_base_id = source.knowledge_base_id
+       AND active.source_file_public_id = source.public_id
+      JOIN focowiki.publication_items item
+        ON item.knowledge_base_id = source.knowledge_base_id
+       AND item.source_file_public_id = source.public_id
+       AND item.affected_evidence->>'deletionOperationPublicId'
+             = ${operationPublicId}
+      JOIN focowiki.cleanup_actions cleanup
+        ON cleanup.knowledge_base_id = source.knowledge_base_id
+       AND cleanup.operation_public_id = ${operationPublicId}
+       AND cleanup.action_kind = 'document_resource_deletion'
+      WHERE source.public_id = ${sourceFilePublicId}
+    `).resolves.toEqual([{
+      deleted: true,
+      active_source_revision_public_id: `${sourceFilePublicId}-revision`,
+      operation: "delete",
+      outcome: "pending",
+      cleanup_phase: "reconcile_projection"
+    }]);
   });
 
   it("immediately excludes a file and makes replay return the same affected count", async () => {
@@ -267,7 +269,7 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     `).resolves.toEqual([{ count: "0" }]);
     await expect(sql`
       SELECT count(*) AS count
-      FROM focowiki.projection_publication_generations
+      FROM focowiki.publication_jobs
       WHERE knowledge_base_id = 'knowledge-base-delete-empty'
     `).resolves.toEqual([{ count: "0" }]);
     await expect(sql<Array<{ zero_owner_since: Date | string | null }>>`
@@ -281,7 +283,7 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       WHERE action_kind = 'zero_owner_object'
         AND resource_public_id = 'empty-knowledge-base-generated-object'
         AND checkpoint ->> 'schemaVersion'
-              = 'knowledge-base-publication-cleanup-v1'
+              = 'knowledge-base-publication-cleanup-v2'
     `).resolves.toEqual([{ state: "queued" }]);
     const operationRead = createPostgresStorageVnextOperationRead(
       sql as unknown as DatabaseClient
@@ -314,14 +316,71 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
         SELECT count(*) FROM focowiki.generated_page_bases
         WHERE knowledge_base_id = 'knowledge-base-delete-empty'
         UNION ALL
-        SELECT count(*) FROM focowiki.projection_dirty_scopes
-        WHERE knowledge_base_id = 'knowledge-base-delete-empty'
-        UNION ALL
-        SELECT count(*) FROM focowiki.scoped_activation_owners
+        SELECT count(*) FROM focowiki.publication_jobs
         WHERE knowledge_base_id = 'knowledge-base-delete-empty'
       ) scoped_rows
     `).resolves.toEqual([{ count: "0" }]);
   });
+
+  it("accepts a new deletion after the same directory path is recreated",
+    async () => {
+      await sql`
+        INSERT INTO focowiki.source_directories (
+          public_id, knowledge_base_id, parent_public_id,
+          logical_path, normalized_path, title, revision
+        ) VALUES (
+          'source-directory-recreated', 'knowledge-base-delete', NULL,
+          'Recreated', 'recreated', 'Recreated', 1
+        )
+      `;
+      await seedAvailableSource(
+        "source-file-recreated",
+        "Recreated/document.md",
+        "source-directory-recreated"
+      );
+      const first = {
+        knowledgeBaseId: "knowledge-base-delete",
+        targetKind: "source_directory" as const,
+        targetPublicId: "source-directory-recreated",
+        expectedResourceRevision: 1,
+        operationPublicId: "operation-delete-recreated-first",
+        idempotencyKey: "delete-recreated-first",
+        maximumAttempts: 3,
+        requestedAt: "2026-08-14T12:07:00.000Z",
+        expiresAt: "2026-08-15T12:07:00.000Z"
+      };
+      await expect(accept(first)).resolves.toMatchObject({
+        affectedSourceCount: 1,
+        replayed: false
+      });
+      await sql`
+        UPDATE focowiki.source_directories
+        SET deleted_at = NULL, revision = 1
+        WHERE public_id = 'source-directory-recreated'
+      `;
+      await sql`
+        UPDATE focowiki.source_files
+        SET deleted_at = NULL
+        WHERE public_id = 'source-file-recreated'
+      `;
+      await sql`
+        UPDATE focowiki.document_processing_jobs
+        SET state = 'available', terminal_at = now(), revision = revision + 1
+        WHERE source_file_public_id = 'source-file-recreated'
+      `;
+
+      await expect(accept({
+        ...first,
+        operationPublicId: "operation-delete-recreated-second",
+        idempotencyKey: "delete-recreated-second",
+        requestedAt: "2026-08-14T12:08:00.000Z",
+        expiresAt: "2026-08-15T12:08:00.000Z"
+      })).resolves.toMatchObject({
+        operationPublicId: "operation-delete-recreated-second",
+        affectedSourceCount: 1,
+        replayed: false
+      });
+    });
 
   it("resumes bounded directory cleanup from its durable checkpoint", async () => {
     const requestedAt = new Date().toISOString();
@@ -340,8 +399,22 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
     const ports = createPostgresDocumentResourceDeletion(
       sql as unknown as DatabaseClient
     );
+    await sql`
+      UPDATE focowiki.cleanup_actions
+      SET state = 'completed', completed_at = now(), updated_at = now()
+      WHERE action_kind = 'document_resource_deletion'
+        AND operation_public_id <> 'operation-cleanup-directory'
+        AND state IN ('queued', 'running', 'retry')
+    `;
     let completed = false;
     for (let iteration = 0; iteration < 8 && !completed; iteration += 1) {
+      await sql`
+        UPDATE focowiki.cleanup_actions
+        SET state = 'completed', completed_at = now(), updated_at = now()
+        WHERE operation_public_id = 'operation-cleanup-directory'
+          AND action_kind <> 'document_resource_deletion'
+          AND state IN ('queued', 'running', 'retry')
+      `;
       await sql`
         UPDATE focowiki.cleanup_actions SET not_before = now() - interval '1 second'
         WHERE operation_public_id = 'operation-cleanup-directory'
@@ -352,11 +425,18 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
         ...ports,
         projections: {
           async reconcile({ action }) {
+            await sql`
+              UPDATE focowiki.publication_items
+              SET outcome = 'committed', completed_at = now(), updated_at = now()
+              WHERE knowledge_base_id = ${action.knowledgeBaseId}
+                AND affected_evidence->>'deletionOperationPublicId'
+                      = ${action.operationPublicId}
+            `;
             return {
               done: false,
               processedSourceCount: 0,
               checkpoint: {
-                phase: "await_external" as const,
+                phase: "deactivate" as const,
                 cursor: null,
                 affectedSourceCount: action.checkpoint.affectedSourceCount
               }
@@ -1109,6 +1189,30 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       WHERE knowledge_base_id = 'knowledge-base-delete'
         AND source_file_public_id = 'source-file-embedding-delete'
     `).resolves.toEqual([{ active: false, retired: true }]);
+    await sql`
+      INSERT INTO focowiki.object_registrations (
+        object_id, storage_key, checksum_sha256, byte_count, content_type,
+        object_format, state, write_attempt_public_id, verified_at
+      ) VALUES (
+        'embedding-object-unrelated', 'semantic/unrelated-vector',
+        ${"f".repeat(64)}, 12, 'application/octet-stream',
+        'semantic-vector-v1', 'verified', 'write-embedding-unrelated', now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.embedding_artifacts (
+        public_id, knowledge_base_id, object_id, owner_kind, owner_public_id,
+        source_revision_public_id, canonical_input_sha256, input_kind,
+        embedding_configuration_revision_public_id, normalization, dimension,
+        artifact_schema_version, vector_checksum_sha256, byte_count, state
+      ) VALUES (
+        'embedding-artifact-unrelated', 'knowledge-base-delete',
+        'embedding-object-unrelated', 'content', 'chunk-unrelated',
+        'unrelated-retired-revision', ${"f".repeat(64)}, 'content',
+        'embedding-revision-delete', 'l2', 3, 'semantic-vector-v1',
+        ${"f".repeat(64)}, 12, 'orphaned'
+      )
+    `;
     const firstPurge = await ports.processor.processPage({
       action: { ...action, checkpoint: { ...action.checkpoint, phase: "purge" } },
       pageSize: 10,
@@ -1130,6 +1234,10 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       SELECT count(*) AS count FROM focowiki.embedding_artifacts
       WHERE public_id = 'embedding-artifact-delete'
     `).resolves.toEqual([{ count: "0" }]);
+    await expect(sql`
+      SELECT state FROM focowiki.embedding_artifacts
+      WHERE public_id = 'embedding-artifact-unrelated'
+    `).resolves.toEqual([{ state: "orphaned" }]);
     await expect(sql`
       SELECT count(*) AS count FROM focowiki.object_owners
       WHERE object_id = 'embedding-object-delete'
@@ -1303,64 +1411,38 @@ const enabled = Boolean(databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.te
       )
     `;
     await sql`
-      INSERT INTO focowiki.projection_publication_generations (
-        public_id, knowledge_base_id, target_fact_epoch,
-        renderer_contract_version, deterministic_changed_at, state,
-        input_fingerprint_sha256, output_fingerprint_sha256,
+      INSERT INTO focowiki.publication_jobs (
+        public_id, knowledge_base_id, base_active_revision,
+        target_readiness_sequence, renderer_contract_version,
+        settings_snapshot, outcome, attempt_count,
+        manifest_fingerprint_sha256, manifest_attempt_token,
         completed_at
       ) VALUES (
-        'generation-empty-knowledge-base', 'knowledge-base-delete-empty', 1,
-        'portable-okf-v2', now(), 'active', ${"c".repeat(64)},
-        ${"d".repeat(64)}, now()
+        'publication-job-empty-knowledge-base',
+        'knowledge-base-delete-empty', 0, 1,
+        'portable-okf-v2', '{}'::jsonb, 'committed', 1,
+        ${"c".repeat(64)}, 'manifest-empty-knowledge-base', now()
       )
     `;
     await sql`
-      INSERT INTO focowiki.projection_scope_generations (
-        public_id, publication_generation_public_id, knowledge_base_id,
-        scope_identity, scope_kind, scope_key, scope_generation, state,
-        input_snapshot_fingerprint_sha256, output_fingerprint_sha256,
-        completed_at
+      INSERT INTO focowiki.publication_job_outputs (
+        job_public_id, normalized_path, output_order, action,
+        logical_path, entry_kind, object_id, checksum_sha256,
+        byte_count, content_type, producer_fingerprint_sha256
       ) VALUES (
-        'scope-generation-empty-knowledge-base',
-        'generation-empty-knowledge-base', 'knowledge-base-delete-empty',
-        'root:index', 'root', 'index', 1, 'completed', ${"e".repeat(64)},
-        ${"f".repeat(64)}, now()
-      )
-    `;
-    await sql`
-      INSERT INTO focowiki.projection_scope_generation_object_refs (
-        scope_generation_public_id, object_id
-      ) VALUES (
-        'scope-generation-empty-knowledge-base',
-        'empty-knowledge-base-generated-object'
+        'publication-job-empty-knowledge-base', 'index.md', 0, 'put',
+        'index.md', 'index', 'empty-knowledge-base-generated-object',
+        ${"7".repeat(64)}, 2, 'text/markdown; charset=utf-8',
+        ${"d".repeat(64)}
       )
     `;
     await sql`
       INSERT INTO focowiki.generated_page_heads (
         knowledge_base_id, logical_path, normalized_path, entry_kind,
-        object_id, checksum_sha256, byte_count, activation_revision,
-        projection_generation_public_id
+        object_id, checksum_sha256, byte_count, activation_revision
       ) VALUES (
         'knowledge-base-delete-empty', 'index.md', 'index.md', 'index',
-        'empty-knowledge-base-generated-object', ${"7".repeat(64)}, 2, 1,
-        'generation-empty-knowledge-base'
-      )
-    `;
-    await sql`
-      INSERT INTO focowiki.projection_dirty_scopes (
-        public_id, knowledge_base_id, scope_kind, scope_key,
-        required_sequence, state, next_eligible_at, coalesce_until
-      ) VALUES (
-        'scope-empty-knowledge-base', 'knowledge-base-delete-empty',
-        'root', 'root', 1, 'waiting', now(), now()
-      )
-    `;
-    await sql`
-      INSERT INTO focowiki.scoped_activation_owners (
-        public_id, knowledge_base_id, owner_kind, owner_key
-      ) VALUES (
-        'owner-empty-knowledge-base', 'knowledge-base-delete-empty',
-        'source', 'source-a'
+        'empty-knowledge-base-generated-object', ${"7".repeat(64)}, 2, 1
       )
     `;
   }

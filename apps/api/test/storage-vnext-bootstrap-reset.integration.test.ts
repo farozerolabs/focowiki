@@ -28,11 +28,14 @@ const requiredTables = [
   "canonical_file_relations",
   "search_family_receipts",
   "generated_page_bases",
-  "projection_dirty_scopes",
-  "projection_scope_storage_metrics",
   "document_projection_waiting_completions",
-  "scoped_activation_owners",
   "knowledge_base_sequences",
+  "publication_items",
+  "publication_jobs",
+  "publication_job_items",
+  "publication_job_outputs",
+  "knowledge_base_publication_heads",
+  "document_deletion_embedding_artifacts",
   "cleanup_actions",
   "runtime_generation"
 ] as const;
@@ -45,10 +48,17 @@ const removedTables = [
   "processing_stage_dependencies",
   "release_candidates",
   "release_roots",
-  "active_snapshots"
+  "active_snapshots",
+  "projection_dirty_scopes",
+  "projection_scope_storage_metrics",
+  "scoped_activation_owners",
+  "projection_cleanup_outbox",
+  "projection_publication_generations",
+  "projection_fact_epochs",
+  "knowledge_base_projection_heads"
 ] as const;
 
-describeOwnedDatabase("storage vNext fixed-DAG clean bootstrap", () => {
+describeOwnedDatabase("storage vNext single-job clean bootstrap", () => {
   const connectionUrl = databaseUrl
     ?? "postgres://unused:unused@127.0.0.1:5432/unused";
   const ownerToken = (runOwner ?? "invalid").replaceAll("-", "_");
@@ -74,7 +84,7 @@ describeOwnedDatabase("storage vNext fixed-DAG clean bootstrap", () => {
     await admin.end({ timeout: 5 });
   }, 120_000);
 
-  it("creates only the final fixed-DAG authorities from an absent database", async () => {
+  it("creates only the final single-job authorities from an absent database", async () => {
     const rows = await sql.unsafe<Array<{ table_name: string }>>(
       "SELECT table_name FROM information_schema.tables "
       + "WHERE table_schema = 'focowiki' ORDER BY table_name"
@@ -122,7 +132,7 @@ describeOwnedDatabase("storage vNext fixed-DAG clean bootstrap", () => {
   it("accepts the exact generation and rejects signature drift", async () => {
     const database = sql as unknown as DatabaseClient;
     await expect(assertRuntimeSchemaGeneration(database)).resolves.toBeUndefined();
-    const rollback = new Error("rollback fixed-DAG signature fixture");
+    const rollback = new Error("rollback single-job signature fixture");
 
     await expect(sql.begin(async (transaction) => {
       await transaction.unsafe(
@@ -141,7 +151,7 @@ describeOwnedDatabase("storage vNext fixed-DAG clean bootstrap", () => {
     await expect(sql.unsafe<Array<{ generation: string }>>(
       "SELECT generation FROM focowiki.runtime_generation WHERE singleton = true"
     )).resolves.toEqual([{
-      generation: "storage-vnext-v20-projection-runtime-recovery"
+      generation: "storage-vnext-v21-single-job-publication-foundation"
     }]);
   });
 });

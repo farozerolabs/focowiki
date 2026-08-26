@@ -21,16 +21,12 @@ export async function projectRoot(input: {
   includedSourceRevisionPublicIds: readonly string[];
   excludedActiveSourceFilePublicIds: readonly string[];
   changedAt: string;
-  publicationGenerationPublicId?: string;
 }) {
   const limits = input.dependencies.rootLimits;
   if (!limits) throw rootProjectionError(
     "projection_scope_root_configuration_invalid");
   const state = await input.dependencies.machineProjection.readRootProjectionState({
     knowledgeBaseId: input.knowledgeBaseId,
-    ...(input.publicationGenerationPublicId
-      ? { publicationGenerationPublicId:
-          input.publicationGenerationPublicId } : {}),
     includedSourceRevisionPublicIds: input.includedSourceRevisionPublicIds,
     excludedActiveSourceFilePublicIds: input.excludedActiveSourceFilePublicIds,
     logLimit: limits.okfLogMaxEntries

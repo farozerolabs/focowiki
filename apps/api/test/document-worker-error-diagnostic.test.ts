@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  isProjectionInvariantCode,
+  isPublicationInvariantCode,
   planDocumentFailureRetry,
   safeWorkerErrorDiagnostic
 } from
@@ -85,24 +85,13 @@ describe("document worker error diagnostic", () => {
       attemptCount: 1,
       nowMilliseconds: Date.parse("2026-08-14T16:50:53.000Z")
     })).toEqual({ retryable: true, nextAttemptAt: null });
-    expect(planDocumentFailureRetry({
-      error: Object.assign(new Error("projection scope contract invalid"), {
-        code: "projection_scope_contribution_count_invalid"
-      }),
-      attemptCount: 1,
-      nowMilliseconds: Date.parse("2026-08-14T16:50:53.000Z")
-    })).toEqual({ retryable: false, nextAttemptAt: null });
   });
 
   it.each([
     "projection_path_owner_mismatch",
-    "projection_directory_owner_mismatch",
-    "projection_scope_output_conflict",
-    "projection_scope_page_conflict",
-    "projection_scope_navigation_conflict",
-    "projection_scope_owner_version_conflict"
+    "projection_directory_owner_mismatch"
   ])("quarantines projection invariant %s without blind retry", (code) => {
-    expect(isProjectionInvariantCode(code)).toBe(true);
+    expect(isPublicationInvariantCode(code)).toBe(true);
     expect(planDocumentFailureRetry({
       error: Object.assign(new Error("projection invariant"), { code }),
       attemptCount: 1,

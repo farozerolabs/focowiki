@@ -236,6 +236,28 @@ async function processAction(
     sourceRevisionPublicId: action.sourceRevisionPublicId
   });
 
+  const generatedHeadOwners = await sql<Array<{ owned: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1 FROM focowiki.generated_page_heads head
+      WHERE head.knowledge_base_id = ${action.knowledgeBaseId}
+        AND head.source_revision_public_id = ${action.sourceRevisionPublicId}
+    ) AS owned
+  `;
+  if (generatedHeadOwners[0]?.owned) {
+    const retried = await sql<Array<{ public_id: string }>>`
+      UPDATE focowiki.cleanup_actions
+      SET state = 'retry', lease_owner = NULL, lease_expires_at = NULL,
+          safe_error_code = 'DOCUMENT_REVISION_GENERATED_HEAD_ACTIVE',
+          not_before = ${now}::timestamptz + interval '1 second',
+          updated_at = ${now}
+      WHERE public_id = ${action.publicId}
+        AND state = 'running' AND lease_owner = ${owner}
+      RETURNING public_id
+    `;
+    if (!retried[0]) throw purgeError("lease_lost");
+    return "retried";
+  }
+
   const completed = await sql<Array<{ public_id: string }>>`
     UPDATE focowiki.cleanup_actions
     SET state = 'completed', document_job_public_id = NULL,
