@@ -233,6 +233,39 @@ describe("single-job publication builder", () => {
         scope === "directory:pages/large-directory")).toHaveLength(1);
       expect(new Set(renderedScopes).size).toBe(renderedScopes.length);
     });
+
+  it("cancels and drains sibling renders before reporting one scope failure",
+    async () => {
+      const input = builderInput(Array.from({ length: 24 }, (_, index) =>
+        document(index)));
+      let active = 0;
+      let aborted = 0;
+      const failure = Object.assign(new Error("Injected S3 failure"), {
+        code: "InternalError"
+      });
+
+      await expect(buildDocumentPublicationJob({
+        ...input,
+        maximumConcurrency: 8,
+        async render(scope, _options, signal) {
+          if (scope.kind === "source" && scope.key === "builder-source-0") {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            throw failure;
+          }
+          active += 1;
+          return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => {
+              active -= 1;
+              aborted += 1;
+              reject(signal.reason);
+            }, { once: true });
+          });
+        }
+      })).rejects.toBe(failure);
+
+      expect(aborted).toBeGreaterThan(0);
+      expect(active).toBe(0);
+    });
 });
 
 function builderInput(documents: readonly DocumentPublicationItemDelta[]) {

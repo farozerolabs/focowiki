@@ -5,6 +5,7 @@ import { createDocumentResourcePermits } from
   "../src/document-indexing/application/document-resource-permits.js";
 import {
   deriveDocumentResourceCapacities,
+  resolveDocumentPublicationConcurrency,
   resolveDocumentFinalizationCapacity,
   resolveDocumentPublicationMemoryCapacity,
   resolveDocumentPublicationS3Capacities,
@@ -58,6 +59,16 @@ describe("document resource permits", () => {
       requestedConcurrency: 6,
       heapLimitBytes: 2 * 1_024 * 1_024 * 1_024
     })).toBe(6);
+    expect(resolveDocumentPublicationConcurrency(1)).toEqual({
+      jobConcurrency: 1,
+      scopeConcurrencyPerJob: 1,
+      maximumActiveScopes: 1
+    });
+    expect(resolveDocumentPublicationConcurrency(6)).toEqual({
+      jobConcurrency: 2,
+      scopeConcurrencyPerJob: 3,
+      maximumActiveScopes: 6
+    });
   });
 
   it("bounds configured search concurrency by the active document window", () => {

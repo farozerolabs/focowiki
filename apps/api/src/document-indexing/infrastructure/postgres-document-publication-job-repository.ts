@@ -34,6 +34,11 @@ import {
 } from "./postgres-document-publication-output-cleanup.js";
 import { failPostgresDocumentPublicationJob } from
   "./postgres-document-publication-job-failure.js";
+import {
+  releasePostgresDocumentPublicationAttempt,
+  renewPostgresDocumentPublicationAttempt,
+  terminalizeExhaustedPostgresPublicationAttempts
+} from "./postgres-document-publication-attempt-lease.js";
 const MAXIMUM_SETTINGS_SNAPSHOT_BYTES = 65_536;
 type JobRow = {
   public_id: string;
@@ -203,7 +208,7 @@ export function createPostgresDocumentPublicationJobRepository(
         const now = await repositoryTimestamp(transaction, input.now);
         const deadline = new Date(Date.parse(now)
           + DOCUMENT_PUBLICATION_ATTEMPT_MILLISECONDS).toISOString();
-        await terminalizeExhaustedAttempts(transaction, now);
+        await terminalizeExhaustedPostgresPublicationAttempts(transaction, now);
         const rows = await transaction<Array<{ public_id: string }>>`
           SELECT job.public_id
           FROM focowiki.publication_jobs job
@@ -234,6 +239,34 @@ export function createPostgresDocumentPublicationJobRepository(
         return updated[0]?.public_id ?? null;
       });
       return claimed ? readJob(sql, claimed) : null;
+    },
+    async renewAttempt(input) {
+      const jobPublicId = assertRepositoryIdentity(
+        input.jobPublicId, "job_public_id"
+      );
+      const attemptToken = assertRepositoryIdentity(
+        input.attemptToken, "attempt_token"
+      );
+      return renewPostgresDocumentPublicationAttempt({
+        sql,
+        jobPublicId,
+        attemptToken,
+        renewedAt: await repositoryTimestamp(sql, input.renewedAt)
+      });
+    },
+    async releaseAttempt(input) {
+      const jobPublicId = assertRepositoryIdentity(
+        input.jobPublicId, "job_public_id"
+      );
+      const attemptToken = assertRepositoryIdentity(
+        input.attemptToken, "attempt_token"
+      );
+      return releasePostgresDocumentPublicationAttempt({
+        sql,
+        jobPublicId,
+        attemptToken,
+        releasedAt: await repositoryTimestamp(sql, input.releasedAt)
+      });
     },
     async persistManifest(input) {
       const jobPublicId = assertRepositoryIdentity(
@@ -422,28 +455,6 @@ async function readJob(
     deterministicEventTime: timestamp(job.created_at)!,
     items: Object.freeze(items.map(mapDocumentPublicationItem))
   };
-}
-
-async function terminalizeExhaustedAttempts(
-  sql: DatabaseClient,
-  now: string
-): Promise<void> {
-  const exhausted = await sql<Array<{ public_id: string }>>`
-    SELECT public_id FROM focowiki.publication_jobs
-    WHERE outcome = 'pending'
-      AND attempt_count >= ${DOCUMENT_PUBLICATION_MAXIMUM_ATTEMPTS}
-      AND attempt_token IS NOT NULL AND attempt_deadline <= ${now}
-    ORDER BY public_id COLLATE "C"
-    FOR UPDATE SKIP LOCKED
-  `;
-  for (const job of exhausted) {
-    await failPostgresDocumentPublicationJob({
-      transaction: sql,
-      jobPublicId: job.public_id,
-      errorCode: "publication_attempt_limit_exceeded",
-      failedAt: now
-    });
-  }
 }
 
 function assertContractVersion(value: string): string {

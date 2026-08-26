@@ -118,26 +118,31 @@ const enabled = Boolean(databaseUrl && runOwner
     const first = winners[0]!;
     expect(first).toMatchObject({
       attemptCount: 1,
-      attemptDeadline: "2026-08-25T10:31:00.000Z"
+      attemptDeadline: "2026-08-25T10:02:30.000Z"
     });
+    await expect(repository.renewAttempt({
+      jobPublicId: first.publicId,
+      attemptToken: first.attemptToken!,
+      renewedAt: "2026-08-25T10:02:00.000Z"
+    })).resolves.toBe("2026-08-25T10:03:30.000Z");
     await expect(repository.claimOne({
       workerId: "worker-b",
-      now: "2026-08-25T10:30:59.999Z"
+      now: "2026-08-25T10:03:29.999Z"
     })).resolves.toBeNull();
     await expect(repository.claimOne({
       workerId: "worker-a",
-      now: "2026-08-25T10:30:59.999Z"
+      now: "2026-08-25T10:03:29.999Z"
     })).resolves.toBeNull();
     // No shutdown write is required. An exited owner is reclaimed at the
     // fixed database-time deadline on the same durable job.
     const reclaimed = await repository.claimOne({
       workerId: "worker-b",
-      now: "2026-08-25T10:31:00.001Z"
+      now: "2026-08-25T10:03:30.001Z"
     });
     expect(reclaimed).toMatchObject({
       publicId: first?.publicId,
       attemptCount: 2,
-      attemptDeadline: "2026-08-25T11:01:00.001Z"
+      attemptDeadline: "2026-08-25T10:05:00.001Z"
     });
     expect(reclaimed?.attemptToken).not.toBe(first?.attemptToken);
 
@@ -146,14 +151,14 @@ const enabled = Boolean(databaseUrl && runOwner
       attemptToken: first!.attemptToken!,
       fingerprintSha256: fingerprintDocumentPublicationOutputs([]),
       outputs: [],
-      persistedAt: "2026-08-25T10:31:01.000Z"
+      persistedAt: "2026-08-25T10:03:31.000Z"
     })).resolves.toBe(false);
     await expect(repository.persistManifest({
       jobPublicId: reclaimed!.publicId,
       attemptToken: reclaimed!.attemptToken!,
       fingerprintSha256: "b".repeat(64),
       outputs: [],
-      persistedAt: "2026-08-25T10:31:01.000Z"
+      persistedAt: "2026-08-25T10:03:31.000Z"
     })).rejects.toMatchObject({
       code: "publication_manifest_fingerprint_invalid"
     });
@@ -162,7 +167,7 @@ const enabled = Boolean(databaseUrl && runOwner
       attemptToken: reclaimed!.attemptToken!,
       fingerprintSha256: fingerprintDocumentPublicationOutputs([]),
       outputs: [],
-      persistedAt: "2026-08-25T10:31:01.000Z"
+      persistedAt: "2026-08-25T10:03:31.000Z"
     })).resolves.toBe(true);
   });
 
@@ -174,14 +179,14 @@ const enabled = Boolean(databaseUrl && runOwner
       const second = await repository.failAttempt({
         jobPublicId: job!.publicId,
         attemptToken: job!.attemptToken!,
-        failedAt: "2026-08-25T10:31:02.000Z",
+        failedAt: "2026-08-25T10:03:32.000Z",
         errorCode: "search_provider_unavailable",
         retryable: true
       });
       expect(second).toBe("retrying");
       const thirdClaim = await repository.claimOne({
         workerId: "worker-c",
-        now: "2026-08-25T10:31:04.000Z"
+        now: "2026-08-25T10:03:34.000Z"
       });
       expect(thirdClaim?.attemptCount).toBe(3);
       await sql`
@@ -194,14 +199,14 @@ const enabled = Boolean(databaseUrl && runOwner
           'objects/replaced-job-output-object', ${"5".repeat(64)}, 11,
           'text/markdown; charset=utf-8', 'okf-generated-markdown-v1',
           'verified', 'replaced-job-output-attempt',
-          '2026-08-25T10:31:04.000Z'
+          '2026-08-25T10:03:34.000Z'
         ),
         (
           'terminal-job-output-object',
           'objects/terminal-job-output-object', ${"6".repeat(64)}, 12,
           'text/markdown; charset=utf-8', 'okf-generated-markdown-v1',
           'verified', 'terminal-job-output-attempt',
-          '2026-08-25T10:31:04.000Z'
+          '2026-08-25T10:03:34.000Z'
         )
       `;
       const replacedOutput = [publicationOutput({
@@ -217,7 +222,7 @@ const enabled = Boolean(databaseUrl && runOwner
         fingerprintSha256:
           fingerprintDocumentPublicationOutputs(replacedOutput),
         outputs: replacedOutput,
-        persistedAt: "2026-08-25T10:31:04.200Z"
+        persistedAt: "2026-08-25T10:03:34.200Z"
       })).resolves.toBe(true);
       const terminalOutput = [publicationOutput({
         normalizedPath: "terminal.md",
@@ -232,7 +237,7 @@ const enabled = Boolean(databaseUrl && runOwner
         fingerprintSha256:
           fingerprintDocumentPublicationOutputs(terminalOutput),
         outputs: terminalOutput,
-        persistedAt: "2026-08-25T10:31:04.500Z"
+        persistedAt: "2026-08-25T10:03:34.500Z"
       })).resolves.toBe(true);
       await expect(sql<Array<{ state: string }>>`
         SELECT state FROM focowiki.cleanup_actions
@@ -242,7 +247,7 @@ const enabled = Boolean(databaseUrl && runOwner
       await expect(repository.failAttempt({
         jobPublicId: thirdClaim!.publicId,
         attemptToken: thirdClaim!.attemptToken!,
-        failedAt: "2026-08-25T10:31:05.000Z",
+        failedAt: "2026-08-25T10:03:35.000Z",
         errorCode: "search_provider_unavailable",
         retryable: true
       })).resolves.toBe("failed");
@@ -263,7 +268,7 @@ const enabled = Boolean(databaseUrl && runOwner
       }]);
 
       const successor = await repository.admitOne({
-        now: "2026-08-25T10:31:06.000Z",
+        now: "2026-08-25T10:03:36.000Z",
         rendererContractVersion: "portable-okf-v2"
       });
       expect(successor?.items.map((entry) => entry.publicId)).toEqual([
@@ -358,6 +363,58 @@ const enabled = Boolean(databaseUrl && runOwner
       expect([first?.knowledgeBaseId, second?.knowledgeBaseId]).toEqual([
         "single-fair-a", "single-fair-b"
       ]);
+      await sql`
+        DELETE FROM focowiki.knowledge_bases
+        WHERE public_id IN ('single-fair-a', 'single-fair-b')
+      `;
+    });
+
+  it("releases a graceful shutdown attempt without consuming retry budget",
+    async () => {
+      await sql`
+        INSERT INTO focowiki.knowledge_bases (public_id, name, revision)
+        VALUES ('single-release-kb', 'Release attempt', 1)
+      `;
+      const repository = createPostgresDocumentPublicationJobRepository(database);
+      await repository.createItem({
+        ...item(2_100),
+        publicId: "single-release-item",
+        mutationPublicId: "single-release-mutation",
+        knowledgeBaseId: "single-release-kb",
+        createdAt: "2026-08-25T13:30:00.000Z"
+      });
+      const job = await repository.admitOne({
+        now: "2026-08-25T13:30:02.000Z",
+        rendererContractVersion: "portable-okf-v2"
+      });
+      await sql`
+        UPDATE focowiki.publication_jobs
+        SET next_eligible_at = '2100-01-01T00:00:00.000Z'
+        WHERE outcome = 'pending' AND public_id <> ${job!.publicId}
+      `;
+      const claimed = await repository.claimOne({
+        workerId: "worker-release-a",
+        now: "2026-08-25T13:30:03.000Z"
+      });
+      expect(claimed?.publicId).toBe(job?.publicId);
+      await expect(repository.releaseAttempt({
+        jobPublicId: claimed!.publicId,
+        attemptToken: claimed!.attemptToken!,
+        releasedAt: "2026-08-25T13:30:04.000Z"
+      })).resolves.toBe(true);
+      await expect(repository.readJob(claimed!.publicId)).resolves.toMatchObject({
+        attemptCount: 0,
+        attemptOwner: null,
+        attemptToken: null,
+        attemptDeadline: null
+      });
+      await expect(repository.claimOne({
+        workerId: "worker-release-b",
+        now: "2026-08-25T13:30:04.001Z"
+      })).resolves.toMatchObject({
+        publicId: claimed!.publicId,
+        attemptCount: 1
+      });
     });
 
   it("reads relation deltas when no related projection row exists", async () => {

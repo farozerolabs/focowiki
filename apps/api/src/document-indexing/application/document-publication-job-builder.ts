@@ -12,6 +12,8 @@ import {
   canonicalDocumentPublicationValue,
   fingerprintDocumentPublicationOutputs
 } from "./document-publication-manifest.js";
+import { runDocumentPublicationScopesBounded } from
+  "./document-publication-scope-scheduler.js";
 
 export type DocumentPublicationRenderedScope = Readonly<{
   outputFingerprintSha256: string;
@@ -77,6 +79,7 @@ export async function buildDocumentPublicationJob(input: Readonly<{
   objectReuseCount: number;
   objectRequestCount: number;
   objectAttemptedBytes: number;
+  peakActiveScopeCount: number;
 }>> {
   const planningMode = input.baseActiveRevision === 0 ? "initial" : "delta";
   const closure = buildDocumentPublicationAffectedClosure({
@@ -109,24 +112,24 @@ export async function buildDocumentPublicationJob(input: Readonly<{
   const renderableNodes = plan.work.filter((node) =>
     node.kind !== "validation"
     && !(node.kind === "source" && deletedSources.has(node.key)));
-  const renderableIdentities = new Set(renderableNodes.map((node) =>
-    node.identity));
-  const renderableByIdentity = new Map(renderableNodes.map((node) =>
-    [node.identity, node] as const));
-  const limiter = createPromiseLimiter(validateMaximumConcurrency(
-    input.maximumConcurrency ?? 8
-  ));
-  const rendering = new Map<string, Promise<DocumentPublicationRenderedScope>>();
-  const renderNode = (node: (typeof renderableNodes)[number]) => {
-    const existing = rendering.get(node.identity);
-    if (existing) return existing;
-    const execution = (async () => {
-      await Promise.all(node.dependsOn.filter((dependency) =>
-        renderableIdentities.has(dependency)).map((dependency) => {
-          const prerequisite = renderableByIdentity.get(dependency);
-          if (!prerequisite) throw builderError("publication_dependency_missing");
-          return renderNode(prerequisite);
-        }));
+  const putPages: Array<DocumentPublicationRenderedScope["pages"][number]
+    & { producerFingerprintSha256: string;
+      navigationMutations: readonly Readonly<Record<string, unknown>>[] }> = [];
+  const removedPaths = new Set(plan.deletePaths.map((path) =>
+    path.toLocaleLowerCase("en-US")));
+  const detachedNavigationMutations = new Map<string,
+    Readonly<Record<string, unknown>>[]>();
+  let objectPutCount = 0;
+  let objectReuseCount = 0;
+  let objectRequestCount = 0;
+  let objectAttemptedBytes = 0;
+  const scheduling = await runDocumentPublicationScopesBounded({
+    nodes: renderableNodes,
+    maximumConcurrency: validateMaximumConcurrency(
+      input.maximumConcurrency ?? 8
+    ),
+    signal: input.signal,
+    async execute(node, renderSignal) {
       await input.checkpoint();
       const scope: DocumentPublicationRenderScope = {
         publicId: `${input.jobPublicId}:${node.identity}`,
@@ -137,48 +140,50 @@ export async function buildDocumentPublicationJob(input: Readonly<{
         renderedSequence: 0,
         deterministicEventTime: input.deterministicChangedAt
       };
-      return limiter(async () => {
-        const basePages = input.baseActiveRevision === 0
-          ? [] : await input.readBasePages(scope);
-        return input.render(scope, {
-          contributors,
-          affectedSourceFilePublicIds,
-          affectedLogicalPaths,
-          affectedTermBuckets,
-          planningMode,
-          ...(input.baseDeterministicChangedAt
-            ? { baseDeterministicChangedAt:
-                input.baseDeterministicChangedAt } : {}),
-          basePages
-        }, input.signal);
-      });
-    })();
-    rendering.set(node.identity, execution);
-    return execution;
-  };
-  const rendered = await Promise.all(renderableNodes.map(renderNode));
+      const basePages = input.baseActiveRevision === 0
+        ? [] : await input.readBasePages(scope);
+      return input.render(scope, {
+        contributors,
+        affectedSourceFilePublicIds,
+        affectedLogicalPaths,
+        affectedTermBuckets,
+        planningMode,
+        ...(input.baseDeterministicChangedAt
+          ? { baseDeterministicChangedAt:
+              input.baseDeterministicChangedAt } : {}),
+        basePages
+      }, renderSignal);
+    },
+    consume(_node, rendered) {
+      putPages.push(...rendered.pages.map((page, index) => ({
+        ...page,
+        producerFingerprintSha256: rendered.outputFingerprintSha256,
+        navigationMutations: index === 0 ? rendered.navigationMutations : []
+      })));
+      rendered.removedNormalizedPaths.forEach((path) =>
+        removedPaths.add(path));
+      if (rendered.pages.length === 0
+        && rendered.navigationMutations.length > 0) {
+        const targetPath = [...rendered.removedNormalizedPaths]
+          .sort(bytewise)[0]?.toLocaleLowerCase("en-US");
+        if (!targetPath) {
+          throw builderError("publication_navigation_output_missing");
+        }
+        detachedNavigationMutations.set(targetPath, [
+          ...(detachedNavigationMutations.get(targetPath) ?? []),
+          ...rendered.navigationMutations
+        ]);
+      }
+      objectPutCount += rendered.storageRequests?.put ?? 0;
+      objectReuseCount += rendered.objectReuseCount ?? 0;
+      objectRequestCount += rendered.storageRequests
+        ? rendered.storageRequests.put + rendered.storageRequests.head
+          + rendered.storageRequests.verification
+        : 0;
+      objectAttemptedBytes += rendered.storageRequests?.attemptedBytes ?? 0;
+    }
+  });
   await input.checkpoint();
-  const putPages = rendered.flatMap((scope) => scope.pages.map((page, index) => ({
-    ...page,
-    producerFingerprintSha256: scope.outputFingerprintSha256,
-    navigationMutations: index === 0 ? scope.navigationMutations : []
-  })));
-  const detachedNavigationMutations = new Map<string,
-    Readonly<Record<string, unknown>>[]>();
-  for (const scope of rendered) {
-    if (scope.pages.length > 0 || scope.navigationMutations.length === 0) {
-      continue;
-    }
-    const targetPath = [...scope.removedNormalizedPaths]
-      .sort(bytewise)[0]?.toLocaleLowerCase("en-US");
-    if (!targetPath) {
-      throw builderError("publication_navigation_output_missing");
-    }
-    detachedNavigationMutations.set(targetPath, [
-      ...(detachedNavigationMutations.get(targetPath) ?? []),
-      ...scope.navigationMutations
-    ]);
-  }
   const objectMetadata = new Map((await input.readObjectMetadata(
     [...new Set(putPages.map((page) => page.objectId))]
   )).map((object) => [object.objectId, object]));
@@ -201,10 +206,6 @@ export async function buildDocumentPublicationJob(input: Readonly<{
       navigationMutations: page.navigationMutations
     });
   }
-  const removedPaths = new Set([
-    ...plan.deletePaths.map((path) => path.toLocaleLowerCase("en-US")),
-    ...rendered.flatMap((scope) => scope.removedNormalizedPaths)
-  ]);
   for (const normalizedPath of removedPaths) {
     if (byPath.has(normalizedPath)) continue;
     addOutput(byPath, {
@@ -234,7 +235,10 @@ export async function buildDocumentPublicationJob(input: Readonly<{
       ...output,
       navigationMutations: [
         ...output.navigationMutations,
-        ...navigationMutations
+        ...navigationMutations.sort((left, right) => bytewise(
+          canonicalDocumentPublicationValue(left),
+          canonicalDocumentPublicationValue(right)
+        ))
       ]
     });
   }
@@ -246,17 +250,11 @@ export async function buildDocumentPublicationJob(input: Readonly<{
   return {
     fingerprintSha256: fingerprintDocumentPublicationOutputs(outputs),
     outputs,
-    objectPutCount: rendered.reduce((total, scope) =>
-      total + (scope.storageRequests?.put ?? 0), 0),
-    objectReuseCount: rendered.reduce((total, scope) =>
-      total + (scope.objectReuseCount ?? 0), 0),
-    objectRequestCount: rendered.reduce((total, scope) =>
-      total + (scope.storageRequests
-        ? scope.storageRequests.put + scope.storageRequests.head
-          + scope.storageRequests.verification
-        : 0), 0),
-    objectAttemptedBytes: rendered.reduce((total, scope) =>
-      total + (scope.storageRequests?.attemptedBytes ?? 0), 0)
+    objectPutCount,
+    objectReuseCount,
+    objectRequestCount,
+    objectAttemptedBytes,
+    peakActiveScopeCount: scheduling.peakActiveCount
   };
 }
 
@@ -287,21 +285,4 @@ function builderError(code: string): Error & { code: string } {
   return Object.assign(new Error(`Publication job builder error: ${code}`), {
     code
   });
-}
-
-function createPromiseLimiter(maximumConcurrency: number) {
-  let activeCount = 0;
-  const waiting: (() => void)[] = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    if (activeCount >= maximumConcurrency) {
-      await new Promise<void>((resolve) => waiting.push(resolve));
-    }
-    activeCount += 1;
-    try {
-      return await task();
-    } finally {
-      activeCount -= 1;
-      waiting.shift()?.();
-    }
-  };
 }

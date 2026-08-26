@@ -1,8 +1,17 @@
 import type { DatabaseClient } from "../../db/client.js";
+import { totalmem } from "node:os";
+import { getHeapStatistics } from "node:v8";
 import { buildDocumentPublicationJob } from
   "../application/document-publication-job-builder.js";
 import type { DocumentPublicationJob } from
   "../application/document-publication-job-ports.js";
+import {
+  hasDocumentPublicationMemoryHeadroom,
+  resolveDocumentPublicationConcurrency
+} from
+  "../application/document-resource-capacity.js";
+import { DOCUMENT_PUBLICATION_HEARTBEAT_MILLISECONDS } from
+  "../domain/document-publication-job.js";
 import { DOCUMENT_PUBLICATION_RENDERER_CONTRACT_VERSION } from
   "../application/document-publication-renderer-contract.js";
 import { selectDocumentPublicationObjectMetrics } from
@@ -43,7 +52,7 @@ export function createProductionDocumentPublicationJobRuntime(input: {
     sql: input.sql
   });
   const workerId = `${input.workerId}:publication-job`;
-  let maximumConcurrency = validateConcurrency(input.maximumConcurrency);
+  let maximumActiveScopes = validateConcurrency(input.maximumConcurrency);
   const active = new Set<Promise<void>>();
   const runtimeFailureReporter =
     createDocumentPublicationRuntimeFailureReporter({
@@ -54,8 +63,17 @@ export function createProductionDocumentPublicationJobRuntime(input: {
     while (!signal.aborted) {
       let claimed = false;
       try {
-        await admitAvailable(Math.max(0, maximumConcurrency - active.size));
-        while (!signal.aborted && active.size < maximumConcurrency) {
+        if (!publicationMemoryHeadroom()) {
+          await waitForDocumentWork(100, signal);
+          continue;
+        }
+        const concurrency = resolveDocumentPublicationConcurrency(
+          maximumActiveScopes
+        );
+        await admitAvailable(Math.max(0,
+          concurrency.jobConcurrency - active.size));
+        while (!signal.aborted
+          && active.size < concurrency.jobConcurrency) {
           const job = await repository.claimOne({
             workerId
           });
@@ -100,7 +118,20 @@ export function createProductionDocumentPublicationJobRuntime(input: {
   ): Promise<void> {
     const startedAt = Date.now();
     const attemptToken = requireAttemptToken(job);
+    const attemptController = new AbortController();
+    const attemptSignal = AbortSignal.any([signal, attemptController.signal]);
+    let leaseFailure: unknown = null;
+    const heartbeat = maintainAttemptLease({
+      repository,
+      jobPublicId: job.publicId,
+      attemptToken,
+      signal: attemptSignal
+    }).catch((error) => {
+      leaseFailure = error;
+      attemptController.abort(error);
+    });
     observe("claimed", job, startedAt, null, zeroObjectMetrics());
+    let executionError: unknown = null;
     try {
       const documents = await readPublicationJobFactDeltas(input.sql,
         job.publicId);
@@ -118,7 +149,10 @@ export function createProductionDocumentPublicationJobRuntime(input: {
         rendererContractVersion: job.rendererContractVersion,
         deterministicChangedAt: job.deterministicEventTime,
         documents,
-        signal,
+        signal: attemptSignal,
+        maximumConcurrency: resolveDocumentPublicationConcurrency(
+          maximumActiveScopes
+        ).scopeConcurrencyPerJob,
         checkpoint: () => assertCurrentAttempt(job.publicId, attemptToken),
         render: (scope, options, renderSignal) => input.renderer.render(
           scope,
@@ -148,9 +182,24 @@ export function createProductionDocumentPublicationJobRuntime(input: {
       observe("activated", job, startedAt, null,
         selectDocumentPublicationObjectMetrics(built));
     } catch (error) {
+      executionError = leaseFailure ?? error;
+    } finally {
+      attemptController.abort();
+      await heartbeat;
+    }
+    if (executionError !== null) {
       const current = await repository.readJob(job.publicId);
       if (current?.outcome === "committed") return;
-      const code = safeErrorCode(error);
+      if (signal.aborted) {
+        await repository.releaseAttempt({
+          jobPublicId: job.publicId,
+          attemptToken
+        });
+        observe("retrying", job, startedAt, "worker_shutdown",
+          zeroObjectMetrics());
+        return;
+      }
+      const code = safeErrorCode(executionError);
       const result = await repository.failAttempt({
         jobPublicId: job.publicId,
         attemptToken,
@@ -173,8 +222,11 @@ export function createProductionDocumentPublicationJobRuntime(input: {
       objectReuseCount: number;
       objectRequestCount: number;
       objectAttemptedBytes: number;
+      peakActiveScopeCount: number;
     }>
   ): void {
+    const memory = process.memoryUsage();
+    const heapLimitBytes = getHeapStatistics().heap_size_limit;
     input.observability?.publication({
       event,
       knowledgeBaseId: job.knowledgeBaseId,
@@ -183,6 +235,9 @@ export function createProductionDocumentPublicationJobRuntime(input: {
       attemptCount: job.attemptCount,
       durationMs: Math.max(0, Date.now() - startedAt),
       ...objectMetrics,
+      heapUsedBytes: memory.heapUsed,
+      heapLimitBytes,
+      rssBytes: memory.rss,
       errorCode
     });
   }
@@ -203,7 +258,7 @@ export function createProductionDocumentPublicationJobRuntime(input: {
   return {
     run,
     updateMaximumConcurrency(value: number) {
-      maximumConcurrency = validateConcurrency(value);
+      maximumActiveScopes = validateConcurrency(value);
     },
     activeCount() {
       return active.size;
@@ -211,12 +266,47 @@ export function createProductionDocumentPublicationJobRuntime(input: {
   };
 }
 
+async function maintainAttemptLease(input: {
+  repository: ReturnType<typeof createPostgresDocumentPublicationJobRepository>;
+  jobPublicId: string;
+  attemptToken: string;
+  signal: AbortSignal;
+}): Promise<void> {
+  while (!input.signal.aborted) {
+    await waitForDocumentWork(
+      DOCUMENT_PUBLICATION_HEARTBEAT_MILLISECONDS,
+      input.signal
+    );
+    if (input.signal.aborted) return;
+    const deadline = await input.repository.renewAttempt({
+      jobPublicId: input.jobPublicId,
+      attemptToken: input.attemptToken
+    });
+    if (!deadline) throw runtimeError("publication_attempt_fenced");
+  }
+}
+
+function publicationMemoryHeadroom(): boolean {
+  const memory = process.memoryUsage();
+  const heapLimitBytes = getHeapStatistics().heap_size_limit;
+  const constrainedMemory = process.constrainedMemory?.() ?? 0;
+  const residentLimitBytes = constrainedMemory > 0
+    ? Math.min(totalmem(), constrainedMemory) : totalmem();
+  return hasDocumentPublicationMemoryHeadroom({
+    heapUsedBytes: memory.heapUsed,
+    heapLimitBytes,
+    rssBytes: memory.rss,
+    residentLimitBytes
+  });
+}
+
 function zeroObjectMetrics() {
   return {
     objectPutCount: 0,
     objectReuseCount: 0,
     objectRequestCount: 0,
-    objectAttemptedBytes: 0
+    objectAttemptedBytes: 0,
+    peakActiveScopeCount: 0
   } as const;
 }
 
