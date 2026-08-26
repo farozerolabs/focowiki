@@ -1,5 +1,4 @@
 import {
-  portableByFileGraphDirectoryPath,
   portableGraphDirectoryPath,
   portableIndexDirectoryPath
 } from "@focowiki/okf";
@@ -39,6 +38,7 @@ export async function readPostgresDocumentPublicationJobBasePages(
   scope: DocumentPublicationRenderScope
 ): Promise<readonly DocumentPublicationBasePage[]> {
   const selector = baseSelector(scope);
+  if (selector.mode === "none") return [];
   const rows = await sql<Array<{
     logical_path: string;
     normalized_path: string;
@@ -108,15 +108,17 @@ export async function readPostgresDocumentPublicationJobBasePages(
   }));
 }
 
-function baseSelector(scope: DocumentPublicationRenderScope): Readonly<{
+type BaseSelector = Readonly<{ mode: "none" }> | Readonly<{
   mode: "exact" | "directory" | "source_pages" | "source_graph" | "root";
   path: string;
-}> {
+}>;
+
+function baseSelector(scope: DocumentPublicationRenderScope): BaseSelector {
   if (scope.kind === "source") {
     return { mode: "source_pages", path: "pages" };
   }
   if (scope.kind === "directory") {
-    return { mode: "directory", path: scope.key };
+    return { mode: "none" };
   }
   if (scope.kind === "_index" && scope.key.startsWith("pages:")) {
     return {
@@ -143,12 +145,7 @@ function baseSelector(scope: DocumentPublicationRenderScope): Readonly<{
     };
   }
   if (scope.kind === "_graph" && scope.key.startsWith("file-directory:")) {
-    return {
-      mode: "directory",
-      path: portableByFileGraphDirectoryPath(
-        scope.key.slice("file-directory:".length)
-      )
-    };
+    return { mode: "none" };
   }
   if (scope.kind === "_graph") {
     return { mode: "source_graph", path: "_graph/by-file" };
