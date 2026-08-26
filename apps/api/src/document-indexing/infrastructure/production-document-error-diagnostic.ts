@@ -9,8 +9,15 @@ const PUBLICATION_INVARIANT_CODES = new Set([
 export function safeErrorCode(error: unknown): string {
   const code = typeof error === "object" && error !== null && "code" in error
     ? (error as { code?: unknown }).code : null;
-  return typeof code === "string" && /^[A-Za-z0-9_]{1,128}$/u.test(code)
-    ? code : "DOCUMENT_PROCESSING_FAILED";
+  if (typeof code === "string" && /^[A-Za-z0-9_]{1,128}$/u.test(code)) {
+    return code;
+  }
+  const providerError = typeof error === "object" && error !== null
+    && "$metadata" in error;
+  const name = providerError && error instanceof Error ? error.name : null;
+  return typeof name === "string" && name !== "Error"
+    && /^[A-Za-z][A-Za-z0-9_]{0,127}$/u.test(name)
+    ? name : "DOCUMENT_PROCESSING_FAILED";
 }
 
 export function safeWorkerErrorDiagnostic(error: unknown): {

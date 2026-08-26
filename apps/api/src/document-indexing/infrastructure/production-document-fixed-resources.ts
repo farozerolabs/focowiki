@@ -70,7 +70,9 @@ export function createProductionDocumentFixedResources(input: {
           .update(event.storageKey).digest("hex"),
         durationMs: event.durationMs,
         outcome: event.outcome,
-        errorCode: event.errorCode
+        errorCode: event.errorCode,
+        attemptCount: event.attemptCount,
+        httpStatusCode: event.httpStatusCode
       });
     }
   });

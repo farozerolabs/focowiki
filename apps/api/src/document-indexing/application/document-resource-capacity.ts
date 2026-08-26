@@ -59,6 +59,26 @@ export function resolveDocumentPublicationMemoryCapacity(input: {
   )));
 }
 
+export function resolveDocumentPublicationConcurrency(
+  maximumActiveScopes: number
+): {
+  jobConcurrency: number;
+  scopeConcurrencyPerJob: number;
+  maximumActiveScopes: number;
+} {
+  if (!Number.isSafeInteger(maximumActiveScopes)
+    || maximumActiveScopes < 1 || maximumActiveScopes > 64) {
+    throw new Error("Document publication concurrency input is invalid");
+  }
+  const jobConcurrency = Math.min(2, maximumActiveScopes);
+  return {
+    jobConcurrency,
+    scopeConcurrencyPerJob: Math.max(1,
+      Math.floor(maximumActiveScopes / jobConcurrency)),
+    maximumActiveScopes
+  };
+}
+
 export function hasDocumentPublicationMemoryHeadroom(input: {
   heapUsedBytes: number;
   heapLimitBytes: number;

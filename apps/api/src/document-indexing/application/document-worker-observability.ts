@@ -113,6 +113,10 @@ export function createDocumentWorkerObservability(input: {
       objectReuseCount: number;
       objectRequestCount: number;
       objectAttemptedBytes: number;
+      peakActiveScopeCount: number;
+      heapUsedBytes: number;
+      heapLimitBytes: number;
+      rssBytes: number;
       errorCode: string | null;
     }) {
       identity(fields.knowledgeBaseId);
@@ -126,7 +130,11 @@ export function createDocumentWorkerObservability(input: {
         objectPutCount: metric(fields.objectPutCount),
         objectReuseCount: metric(fields.objectReuseCount),
         objectRequestCount: metric(fields.objectRequestCount),
-        objectAttemptedBytes: metric(fields.objectAttemptedBytes)
+        objectAttemptedBytes: metric(fields.objectAttemptedBytes),
+        peakActiveScopeCount: metric(fields.peakActiveScopeCount),
+        heapUsedBytes: metric(fields.heapUsedBytes),
+        heapLimitBytes: metric(fields.heapLimitBytes),
+        rssBytes: metric(fields.rssBytes)
       });
     },
     publicationRuntime(fields: {
@@ -155,13 +163,19 @@ export function createDocumentWorkerObservability(input: {
       durationMs: number;
       outcome: "completed" | "failed";
       errorCode: string | null;
+      attemptCount: number;
+      httpStatusCode: number | null;
     }) {
       if (!/^[0-9a-f]{64}$/u.test(fields.safeObjectKeyHash)) {
         throw new Error("Storage object key hash is invalid");
       }
       optionalToken(fields.errorCode, "error code");
       write("worker.storage_request", {
-        ...fields, durationMs: metric(Math.round(fields.durationMs))
+        ...fields,
+        durationMs: metric(Math.round(fields.durationMs)),
+        attemptCount: metric(fields.attemptCount),
+        httpStatusCode: fields.httpStatusCode === null
+          ? null : metric(fields.httpStatusCode)
       });
     },
     cleanup(fields: {

@@ -1,4 +1,9 @@
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client
+} from "@aws-sdk/client-s3";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
@@ -14,6 +19,132 @@ import type {
 } from "../src/storage-vnext/ownership/ports.js";
 
 describe("storage vNext immutable object writer", () => {
+  it("lets the AWS SDK replay one immutable PUT after transient 500 errors",
+    async () => {
+      let requests = 0;
+      const events: unknown[] = [];
+      const client = new S3Client({
+        region: "us-east-1",
+        credentials: { accessKeyId: "test", secretAccessKey: "test" },
+        maxAttempts: 3,
+        retryMode: "standard",
+        requestHandler: {
+          async handle() {
+            requests += 1;
+            if (requests < 3) {
+              return {
+                response: {
+                  statusCode: 500,
+                  headers: { "content-type": "application/xml" },
+                  body: Readable.from([
+                    "<Error><Code>InternalError</Code><Message>retry</Message></Error>"
+                  ])
+                }
+              };
+            }
+            return {
+              response: { statusCode: 200, headers: {}, body: Readable.from([]) }
+            };
+          }
+        } as never
+      });
+      const bytes = new TextEncoder().encode("sdk-replayable-body");
+      const bodyStore = createS3StorageVnextImmutableBodyStore({
+        client,
+        bucket: "owned-bucket",
+        prefix: "runs/svnext-sdk-retry",
+        onRequest: (event) => events.push(event)
+      });
+      const descriptor = bodyStore.describe({
+        bytes,
+        objectFormat: "okf-generated-json-v1"
+      });
+
+      try {
+        await expect(bodyStore.putVerified({ descriptor, bytes }))
+          .resolves.toMatchObject({
+            requests: {
+              retries: 2,
+              attemptedBytes: bytes.byteLength * 3
+            }
+          });
+      } finally {
+        client.destroy();
+      }
+      expect(requests).toBe(3);
+      expect(events).toEqual([expect.objectContaining({
+        outcome: "completed",
+        attemptCount: 3,
+        httpStatusCode: 200
+      })]);
+    });
+
+  it("reports provider attempts and status for a replayable immutable PUT",
+    async () => {
+      const events: unknown[] = [];
+      const bytes = new TextEncoder().encode("retryable-body");
+      const bodyStore = createS3StorageVnextImmutableBodyStore({
+        client: {
+          async send() {
+            return { $metadata: { attempts: 3, httpStatusCode: 200 } };
+          }
+        } as never,
+        bucket: "owned-bucket",
+        prefix: "runs/svnext-retry01",
+        onRequest: (event) => events.push(event)
+      });
+      const descriptor = bodyStore.describe({
+        bytes,
+        objectFormat: "okf-generated-json-v1"
+      });
+
+      await expect(bodyStore.putVerified({ descriptor, bytes }))
+        .resolves.toMatchObject({
+          requests: {
+            retries: 2,
+            attemptedBytes: bytes.byteLength * 3
+          }
+        });
+      expect(events).toEqual([expect.objectContaining({
+        operation: "put",
+        outcome: "completed",
+        attemptCount: 3,
+        httpStatusCode: 200
+      })]);
+    });
+
+  it("reports the final provider failure after SDK retry exhaustion", async () => {
+    const events: unknown[] = [];
+    const bytes = new TextEncoder().encode("failed-retryable-body");
+    const bodyStore = createS3StorageVnextImmutableBodyStore({
+      client: {
+        async send() {
+          throw Object.assign(new Error("provider unavailable"), {
+            name: "InternalError",
+            $metadata: { attempts: 3, httpStatusCode: 500 }
+          });
+        }
+      } as never,
+      bucket: "owned-bucket",
+      prefix: "runs/svnext-retry02",
+      onRequest: (event) => events.push(event)
+    });
+    const descriptor = bodyStore.describe({
+      bytes,
+      objectFormat: "okf-generated-json-v1"
+    });
+
+    await expect(bodyStore.putVerified({ descriptor, bytes }))
+      .rejects.toMatchObject({ name: "InternalError" });
+    expect(events).toEqual([expect.objectContaining({
+      operation: "put",
+      outcome: "failed",
+      errorCode: "InternalError",
+      attemptCount: 3,
+      httpStatusCode: 500
+    })]);
+  });
+
   it("reserves before PUT and verifies one content-addressed source registration", async () => {
     const bytes = new TextEncoder().encode("# Source\n");
     const checksum = createHash("sha256").update(bytes).digest("hex");
@@ -57,11 +188,9 @@ describe("storage vNext immutable object writer", () => {
       .map(([command]) => command)
       .find((command) => command instanceof PutObjectCommand) as PutObjectCommand;
     expect(put.input.ContentLength).toBe(bytes.byteLength);
-    expect(put.input.Body).toBeInstanceOf(Readable);
+    expect(put.input.Body).toBeInstanceOf(Uint8Array);
     expect(put.input.IfNoneMatch).toBeUndefined();
-    const uploaded: Buffer[] = [];
-    for await (const chunk of put.input.Body as Readable) uploaded.push(Buffer.from(chunk));
-    expect(Buffer.concat(uploaded)).toEqual(Buffer.from(bytes));
+    expect(Buffer.from(put.input.Body as Uint8Array)).toEqual(Buffer.from(bytes));
     expect(registration).toMatchObject({
       objectId: result.objectId,
       state: "verified",

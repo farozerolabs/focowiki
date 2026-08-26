@@ -95,6 +95,16 @@ export interface DocumentPublicationJobRepository {
     Promise<DocumentPublicationJob | null>;
   claimOne(input: Readonly<{ workerId: string; now?: string }>):
     Promise<DocumentPublicationJob | null>;
+  renewAttempt(input: Readonly<{
+    jobPublicId: string;
+    attemptToken: string;
+    renewedAt?: string;
+  }>): Promise<string | null>;
+  releaseAttempt(input: Readonly<{
+    jobPublicId: string;
+    attemptToken: string;
+    releasedAt?: string;
+  }>): Promise<boolean>;
   persistManifest(input: Readonly<{
     jobPublicId: string;
     attemptToken: string;

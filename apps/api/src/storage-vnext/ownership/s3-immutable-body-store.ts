@@ -5,7 +5,6 @@ import {
   type S3Client
 } from "@aws-sdk/client-s3";
 import { createHash } from "node:crypto";
-import { Readable } from "node:stream";
 import { areContentTypesEquivalent } from "../../storage/content-type.js";
 import {
   assertStorageVnextImmutableObjectDescriptor,
@@ -75,6 +74,8 @@ export function createS3StorageVnextImmutableBodyStore(input: {
     durationMs: number;
     outcome: "completed" | "failed";
     errorCode: string | null;
+    attemptCount: number;
+    httpStatusCode: number | null;
   }>): void;
 }): StorageVnextImmutableBodyStore {
   const bucket = requireBucket(input.bucket);
@@ -87,18 +88,20 @@ export function createS3StorageVnextImmutableBodyStore(input: {
     async putVerified(request) {
       assertWriteRequest(request);
       const startedAt = performance.now();
-      await observeRequest(input.onRequest, "put", request.descriptor.storageKey,
+      const response = await observeRequest(
+        input.onRequest, "put", request.descriptor.storageKey,
         () => input.client.send(new PutObjectCommand({
           Bucket: bucket,
           Key: request.descriptor.storageKey,
-          Body: Readable.from([request.bytes]),
+          Body: request.bytes,
           ContentLength: request.descriptor.byteCount,
           ContentType: request.descriptor.contentType,
           Metadata: {
             "checksum-sha256": request.descriptor.checksum,
             "object-format": request.descriptor.objectFormat
           }
-        }), sendOptions(request.signal)));
+        }), sendOptions(request.signal))
+      );
       return {
         ...request.descriptor,
         outcome: "stored",
@@ -106,8 +109,9 @@ export function createS3StorageVnextImmutableBodyStore(input: {
           put: 1,
           head: 0,
           verification: 0,
-          attemptedBytes: request.descriptor.byteCount,
-          retries: 0,
+          attemptedBytes: request.descriptor.byteCount
+            * requestAttemptCount(response),
+          retries: Math.max(0, requestAttemptCount(response) - 1),
           latencyMilliseconds: Math.max(0, performance.now() - startedAt)
         }
       };
@@ -211,7 +215,9 @@ async function observeRequest<T>(
       storageKey,
       durationMs: Math.max(0, performance.now() - startedAt),
       outcome: "completed",
-      errorCode: null
+      errorCode: null,
+      attemptCount: requestAttemptCount(result),
+      httpStatusCode: requestHttpStatusCode(result)
     });
     return result;
   } catch (error) {
@@ -220,10 +226,37 @@ async function observeRequest<T>(
       storageKey,
       durationMs: Math.max(0, performance.now() - startedAt),
       outcome: "failed",
-      errorCode: requestErrorCode(error)
+      errorCode: requestErrorCode(error),
+      attemptCount: requestAttemptCount(error),
+      httpStatusCode: requestHttpStatusCode(error)
     });
     throw error;
   }
+}
+
+function requestAttemptCount(value: unknown): number {
+  const metadata = requestMetadata(value);
+  const attempts = metadata?.attempts;
+  return Number.isSafeInteger(attempts) && Number(attempts) > 0
+    ? Number(attempts) : 1;
+}
+
+function requestHttpStatusCode(value: unknown): number | null {
+  const status = requestMetadata(value)?.httpStatusCode;
+  return Number.isSafeInteger(status) && Number(status) >= 100
+    && Number(status) <= 599 ? Number(status) : null;
+}
+
+function requestMetadata(value: unknown): Readonly<{
+  attempts?: number;
+  httpStatusCode?: number;
+}> | null {
+  if (typeof value !== "object" || value === null || !("$metadata" in value)) {
+    return null;
+  }
+  const metadata = (value as { $metadata?: unknown }).$metadata;
+  return typeof metadata === "object" && metadata !== null
+    ? metadata as { attempts?: number; httpStatusCode?: number } : null;
 }
 
 function requestErrorCode(error: unknown): string {
