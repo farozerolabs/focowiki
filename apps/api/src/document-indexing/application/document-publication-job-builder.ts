@@ -80,6 +80,11 @@ export async function buildDocumentPublicationJob(input: Readonly<{
   objectRequestCount: number;
   objectAttemptedBytes: number;
   peakActiveScopeCount: number;
+  outputCount: number;
+  navigationMutationCount: number;
+  navigationLeafCount: number;
+  navigationEntryCount: number;
+  maximumNavigationMutationBytes: number;
 }>> {
   const planningMode = input.baseActiveRevision === 0 ? "initial" : "delta";
   const closure = buildDocumentPublicationAffectedClosure({
@@ -247,6 +252,8 @@ export async function buildDocumentPublicationJob(input: Readonly<{
   if (outputs.length === 0) {
     throw builderError("publication_output_manifest_empty");
   }
+  const navigationMutations = outputs.flatMap((output) =>
+    output.navigationMutations);
   return {
     fingerprintSha256: fingerprintDocumentPublicationOutputs(outputs),
     outputs,
@@ -254,7 +261,20 @@ export async function buildDocumentPublicationJob(input: Readonly<{
     objectReuseCount,
     objectRequestCount,
     objectAttemptedBytes,
-    peakActiveScopeCount: scheduling.peakActiveCount
+    peakActiveScopeCount: scheduling.peakActiveCount,
+    outputCount: outputs.length,
+    navigationMutationCount: navigationMutations.length,
+    navigationLeafCount: navigationMutations.reduce((count, mutation) =>
+      count + (Array.isArray(mutation.touchedLeaves)
+        ? mutation.touchedLeaves.length : 0), 0),
+    navigationEntryCount: navigationMutations.reduce((count, mutation) =>
+      count + (Array.isArray(mutation.touchedLeaves)
+        ? mutation.touchedLeaves.reduce((leafCount, leaf) =>
+            leafCount + (Array.isArray(leaf.entries) ? leaf.entries.length : 0), 0)
+        : 0), 0),
+    maximumNavigationMutationBytes: navigationMutations.reduce(
+      (maximum, mutation) => Math.max(maximum,
+        Buffer.byteLength(JSON.stringify(mutation), "utf8")), 0)
   };
 }
 

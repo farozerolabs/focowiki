@@ -114,6 +114,11 @@ export function createDocumentWorkerObservability(input: {
       objectRequestCount: number;
       objectAttemptedBytes: number;
       peakActiveScopeCount: number;
+      outputCount: number;
+      navigationMutationCount: number;
+      navigationLeafCount: number;
+      navigationEntryCount: number;
+      maximumNavigationMutationBytes: number;
       heapUsedBytes: number;
       heapLimitBytes: number;
       rssBytes: number;
@@ -132,6 +137,12 @@ export function createDocumentWorkerObservability(input: {
         objectRequestCount: metric(fields.objectRequestCount),
         objectAttemptedBytes: metric(fields.objectAttemptedBytes),
         peakActiveScopeCount: metric(fields.peakActiveScopeCount),
+        outputCount: metric(fields.outputCount),
+        navigationMutationCount: metric(fields.navigationMutationCount),
+        navigationLeafCount: metric(fields.navigationLeafCount),
+        navigationEntryCount: metric(fields.navigationEntryCount),
+        maximumNavigationMutationBytes:
+          metric(fields.maximumNavigationMutationBytes),
         heapUsedBytes: metric(fields.heapUsedBytes),
         heapLimitBytes: metric(fields.heapLimitBytes),
         rssBytes: metric(fields.rssBytes)

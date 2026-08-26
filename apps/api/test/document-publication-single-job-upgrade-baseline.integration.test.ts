@@ -169,6 +169,10 @@ const correctionIndex = MIGRATION_FILES.indexOf(CORRECTION_MIGRATION);
         document_state: "error"
       }]);
 
+      for (const file of MIGRATION_FILES.slice(correctionIndex + 1)) {
+        await sql.unsafe(readMigrationSql(file));
+      }
+
       const repository = createPostgresDocumentPublicationJobRepository(database);
       const firstJob = await repository.admitOne({
         now: "2026-08-26T04:14:48.000Z",

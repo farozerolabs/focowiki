@@ -92,6 +92,13 @@ describe("document indexing migration manifest", () => {
       targetGeneration:
         "storage-vnext-v23-single-job-publication-retry-recovery",
       safety: "breaking_cutover"
+    }, {
+      fileName: "016_single_job_publication_scale_safety.sql",
+      sourceGeneration:
+        "storage-vnext-v23-single-job-publication-retry-recovery",
+      targetGeneration:
+        "storage-vnext-v24-single-job-publication-scale-safety",
+      safety: "breaking_cutover"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
@@ -108,10 +115,11 @@ describe("document indexing migration manifest", () => {
       "012_projection_runtime_recovery.sql",
       "013_single_job_publication_foundation.sql",
       "014_single_job_publication_upgrade_baseline.sql",
-      "015_single_job_publication_retry_recovery.sql"
+      "015_single_job_publication_retry_recovery.sql",
+      "016_single_job_publication_scale_safety.sql"
     ]);
     expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      "storage-vnext-v23-single-job-publication-retry-recovery"
+      "storage-vnext-v24-single-job-publication-scale-safety"
     );
   });
 
@@ -142,7 +150,8 @@ describe("document indexing migration manifest", () => {
       "012_projection_runtime_recovery.sql",
       "013_single_job_publication_foundation.sql",
       "014_single_job_publication_upgrade_baseline.sql",
-      "015_single_job_publication_retry_recovery.sql"
+      "015_single_job_publication_retry_recovery.sql",
+      "016_single_job_publication_scale_safety.sql"
     ]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     expect(createBootstrapPlan(
@@ -150,18 +159,26 @@ describe("document indexing migration manifest", () => {
     ).pendingFiles).toEqual([
       "013_single_job_publication_foundation.sql",
       "014_single_job_publication_upgrade_baseline.sql",
-      "015_single_job_publication_retry_recovery.sql"
+      "015_single_job_publication_retry_recovery.sql",
+      "016_single_job_publication_scale_safety.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v21-single-job-publication-foundation"
     ).pendingFiles).toEqual([
       "014_single_job_publication_upgrade_baseline.sql",
-      "015_single_job_publication_retry_recovery.sql"
+      "015_single_job_publication_retry_recovery.sql",
+      "016_single_job_publication_scale_safety.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v22-single-job-publication-upgrade-baseline"
     ).pendingFiles).toEqual([
-      "015_single_job_publication_retry_recovery.sql"
+      "015_single_job_publication_retry_recovery.sql",
+      "016_single_job_publication_scale_safety.sql"
+    ]);
+    expect(createBootstrapPlan(
+      "storage-vnext-v23-single-job-publication-retry-recovery"
+    ).pendingFiles).toEqual([
+      "016_single_job_publication_scale_safety.sql"
     ]);
     for (const generation of [
       "storage-vnext-v9-document-indexing-hybrid",

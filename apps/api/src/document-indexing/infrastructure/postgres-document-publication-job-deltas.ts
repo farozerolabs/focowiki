@@ -4,7 +4,6 @@ import type { DocumentPublicationItemDelta } from
   "../application/document-publication-job-plan.js";
 
 const CONTRIBUTOR_CAP = 256;
-const RELATED_RECORD_CAP = 10_000;
 
 export async function readPublicationJobFactDeltas(
   sql: DatabaseClient,
@@ -60,11 +59,7 @@ export async function readPublicationJobFactDeltas(
     FROM focowiki.document_navigation_terms
     WHERE source_revision_public_id IN ${sql(revisionIds)}
     ORDER BY source_revision_public_id COLLATE "C", bucket COLLATE "C"
-    LIMIT ${RELATED_RECORD_CAP + 1}
   `;
-  if (termRows.length > RELATED_RECORD_CAP) {
-    throw runtimeError("publication_job_term_limit");
-  }
   const termsByRevision = groupValues(termRows,
     (row) => row.source_revision_public_id, (row) => row.bucket);
   const requestedSources = rows.map((row) => row.source_file_public_id);
@@ -128,11 +123,7 @@ export async function readPublicationJobFactDeltas(
                THEN relation.second_source_file_public_id
                ELSE relation.first_source_file_public_id END COLLATE "C",
              related_record.logical_path COLLATE "C" NULLS LAST
-    LIMIT ${RELATED_RECORD_CAP + 1}
   `;
-  if (relationRows.length > RELATED_RECORD_CAP) {
-    throw runtimeError("publication_job_relation_limit");
-  }
   const relationsBySource = groupValues(relationRows,
     (row) => row.source_file_public_id,
     (row) => row.related_source_file_public_id);

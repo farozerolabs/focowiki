@@ -11,8 +11,6 @@ import { createPostgresDocumentPerFileGraphDirectory } from
 import { createPostgresDocumentGraphDirectoryScanner } from
   "./postgres-document-graph-directory-scanner.js";
 
-const MAXIMUM_DIRECTORY_RECORDS = 10_000;
-const MAXIMUM_PER_FILE_GRAPH_RESOURCE_PATHS = 256;
 
 export type PerFileGraphRow = {
   relation_public_id: string;
@@ -113,11 +111,7 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
             OR relation.second_source_file_public_id = ${input.sourceFilePublicId})
           AND (${visibleRelation(sql, included, excluded)})
         ORDER BY relation.public_id COLLATE "C", evidence.public_id COLLATE "C"
-        LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
       `;
-      if (rows.length > MAXIMUM_DIRECTORY_RECORDS) {
-        throw graphReaderError("per_file_graph_record_limit_exceeded");
-      }
       const resourceRows = await sql<Array<{ logical_path: string }>>`
         SELECT head.logical_path
         FROM focowiki.generated_page_heads head
@@ -127,11 +121,7 @@ export function createPostgresDocumentGraphProjectionReader(sql: DatabaseClient)
             = '_graph/by-file/'
           AND right(head.normalized_path, 5) = '.json'
         ORDER BY head.normalized_path COLLATE "C"
-        LIMIT ${MAXIMUM_PER_FILE_GRAPH_RESOURCE_PATHS + 1}
       `;
-      if (resourceRows.length > MAXIMUM_PER_FILE_GRAPH_RESOURCE_PATHS) {
-        throw graphReaderError("per_file_graph_resource_path_limit_exceeded");
-      }
       return {
         source: sourceRows[0]
           ? { path: sourceRows[0].page_path, title: sourceRows[0].title }

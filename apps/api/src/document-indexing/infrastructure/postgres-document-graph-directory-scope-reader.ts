@@ -6,7 +6,6 @@ import {
   visibleDocumentGraphRelation as visibleRelation
 } from "./postgres-document-graph-visibility.js";
 
-const MAXIMUM_DIRECTORY_RECORDS = 10_000;
 const GRAPH_RECORD_KEY_PAGE_SIZE = 1_000;
 type BaseGraphRecordKeyRow = {
   first_path: string;
@@ -179,11 +178,7 @@ export async function readGraphChildScopes(sql: DatabaseClient, input: {
       AND left(membership.directory_path, char_length(${input.scopePath}) + 1)
         = ${`${input.scopePath}/`}
     ORDER BY directory_path
-    LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
   `;
-  if (rows.length > MAXIMUM_DIRECTORY_RECORDS) {
-    throw scopeReadError("graph_directory_child_limit_exceeded");
-  }
   return [...new Set(rows.flatMap((row) => {
     const relative = row.directory_path.slice(input.scopePath.length + 1);
     const child = relative.split("/")[0];
@@ -259,18 +254,8 @@ export async function readMachineResourcePaths(sql: DatabaseClient, input: {
         = ${`${input.machineDirectory}/`}
       AND right(normalized_path, 5) = '.json'
     ORDER BY normalized_path COLLATE "C"
-    LIMIT ${MAXIMUM_DIRECTORY_RECORDS + 1}
   `;
-  if (rows.length > MAXIMUM_DIRECTORY_RECORDS) {
-    throw scopeReadError("machine_resource_path_limit_exceeded");
-  }
   return rows.map((row) => row.logical_path).filter((path) =>
     posix.dirname(path) === input.machineDirectory
     && posix.basename(path) !== "index.json");
-}
-
-function scopeReadError(code: string): Error & { code: string } {
-  return Object.assign(new Error(`Graph directory scope read error: ${code}`), {
-    code
-  });
 }

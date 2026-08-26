@@ -287,14 +287,11 @@ async function materializeDirectoryNavigation(input: {
           : desiredEntries,
         ...(input.candidateEntryIds
           ? { candidateEntryIds: input.candidateEntryIds } : {}),
-        maximumChanges: 2_048,
+        maximumChanges: 100_000,
         maximumLeaves: 10_000,
         maximumEntries: 100_000
       })
     : null;
-  if (input.candidateEntryIds !== undefined && delta?.mode === "full") {
-    throw scopeNavigationError("navigation_delta_window_exceeded");
-  }
   const boundedDelta = delta?.mode === "window" || delta?.mode === "windows"
     ? delta : null;
   const previous = delta?.mode === "window" ? delta.leaves

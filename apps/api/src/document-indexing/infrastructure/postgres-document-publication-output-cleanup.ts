@@ -6,7 +6,6 @@ import {
   repositoryContractError
 } from "./document-repository-validation.js";
 
-const MAXIMUM_MANIFEST_METADATA_BYTES = 65_536;
 const MAXIMUM_PATH_BYTES = 4_096;
 
 export function validateDocumentPublicationJobOutputs(
@@ -27,7 +26,6 @@ export function validateDocumentPublicationJobOutputs(
     paths.add(normalizedPath);
     assertRepositorySha256(output.producerFingerprintSha256,
       "producer_fingerprint");
-    assertJsonSize(output.navigationMutations);
     return { ...output, normalizedPath, logicalPath };
   });
 }
@@ -131,13 +129,4 @@ function validatePath(value: string | null): string | null {
     throw repositoryContractError("publication_path_invalid");
   }
   return path;
-}
-
-function assertJsonSize(value: unknown): void {
-  const serialized = JSON.stringify(value);
-  if (serialized === undefined
-    || Buffer.byteLength(serialized, "utf8")
-      > MAXIMUM_MANIFEST_METADATA_BYTES) {
-    throw repositoryContractError("publication_navigation_mutations_invalid");
-  }
 }
