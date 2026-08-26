@@ -7,6 +7,8 @@ const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
 const enabled = Boolean(databaseUrl && runOwner
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner));
+const FOUNDATION_MIGRATION = "013_single_job_publication_foundation.sql";
+const foundationIndex = MIGRATION_FILES.indexOf(FOUNDATION_MIGRATION);
 
 (enabled ? describe : describe.skip)("single-job publication migration", () => {
   const connectionUrl = databaseUrl
@@ -21,7 +23,7 @@ const enabled = Boolean(databaseUrl && runOwner
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quote(databaseName)}`);
     databaseCreated = true;
-    for (const file of MIGRATION_FILES.slice(0, -1)) {
+    for (const file of MIGRATION_FILES.slice(0, foundationIndex)) {
       await sql.unsafe(readMigrationSql(file));
     }
     await seedLegacyStrandedState();
@@ -37,7 +39,7 @@ const enabled = Boolean(databaseUrl && runOwner
 
   it("preserves active data and converts the unfinished boundary once",
     async () => {
-      await sql.unsafe(readMigrationSql(MIGRATION_FILES.at(-1)!));
+      await sql.unsafe(readMigrationSql(FOUNDATION_MIGRATION));
       await expect(sql<Array<{
         mutation_public_id: string;
         outcome: string;
@@ -226,18 +228,18 @@ const enabled = Boolean(databaseUrl && runOwner
       });
       await admin.unsafe(`CREATE DATABASE ${quote(retryDatabaseName)}`);
       try {
-        for (const file of MIGRATION_FILES.slice(0, -1)) {
+        for (const file of MIGRATION_FILES.slice(0, foundationIndex)) {
           await retrySql.unsafe(readMigrationSql(file));
         }
         await expect(retrySql.begin(async (rawTransaction) => {
           const transaction = rawTransaction as unknown as typeof retrySql;
-          await transaction.unsafe(readMigrationSql(MIGRATION_FILES.at(-1)!));
+          await transaction.unsafe(readMigrationSql(FOUNDATION_MIGRATION));
           throw new Error("injected migration interruption");
         })).rejects.toThrow("injected migration interruption");
         await expect(retrySql<Array<{ relation: string | null }>>`
           SELECT to_regclass('focowiki.publication_items')::text AS relation
         `).resolves.toEqual([{ relation: null }]);
-        await retrySql.unsafe(readMigrationSql(MIGRATION_FILES.at(-1)!));
+        await retrySql.unsafe(readMigrationSql(FOUNDATION_MIGRATION));
         await expect(retrySql<Array<{
           relation: string | null;
           item_count: number | string;
