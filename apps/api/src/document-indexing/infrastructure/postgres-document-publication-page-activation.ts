@@ -1,8 +1,8 @@
 import type { DatabaseClient } from "../../db/client.js";
 import type { DocumentDirectoryNavigationMutation } from
   "../application/document-directory-navigation-mutation.js";
-import { applyPostgresDocumentDirectoryNavigation } from
-  "./postgres-document-directory-navigation.js";
+import { applyPostgresDocumentPublicationNavigationManifest } from
+  "./postgres-document-publication-navigation-manifest.js";
 
 export async function activatePostgresDocumentPublicationPages(input: {
   transaction: DatabaseClient;
@@ -43,15 +43,18 @@ export async function activatePostgresDocumentPublicationPages(input: {
     throw activationError("publication_output_manifest_invalid");
   }
   const affectedPaths = [...new Set(pages.map((page) => page.normalized_path))];
-  const displacedHeads = affectedPaths.length === 0 ? []
-    : await sql<Array<{ object_id: string }>>`
-      SELECT object_id FROM focowiki.generated_page_heads
-      WHERE knowledge_base_id = ${input.knowledgeBaseId}
-        AND normalized_path IN ${sql(affectedPaths)}
-      ORDER BY normalized_path COLLATE "C"
-      FOR UPDATE
-    `;
-  if (puts.length > 0) {
+  const displacedHeads: Array<{ object_id: string }> = [];
+  for (const paths of batches(affectedPaths, 500)) {
+    displacedHeads.push(...await sql<Array<{ object_id: string }>>`
+        SELECT object_id FROM focowiki.generated_page_heads
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND normalized_path IN ${sql(paths)}
+        ORDER BY normalized_path COLLATE "C"
+        FOR UPDATE
+      `);
+  }
+  let activatedPutCount = 0;
+  for (const batch of batches(puts, 500)) {
     const activated = await sql<Array<{ normalized_path: string }>>`
       INSERT INTO focowiki.generated_page_heads (
         knowledge_base_id, logical_path, normalized_path, entry_kind,
@@ -65,7 +68,7 @@ export async function activatePostgresDocumentPublicationPages(input: {
              NULL, desired.object_id, desired.checksum_sha256,
              desired.byte_count, ${input.targetReadinessSequence},
              ${input.activatedAt}
-      FROM jsonb_to_recordset(${sql.json(puts as never)}::jsonb) desired(
+      FROM jsonb_to_recordset(${sql.json(batch as never)}::jsonb) desired(
         logical_path text, normalized_path text, entry_kind text,
         source_file_public_id text, source_revision_public_id text,
         object_id text, checksum_sha256 text, byte_count bigint
@@ -85,29 +88,32 @@ export async function activatePostgresDocumentPublicationPages(input: {
               <= excluded.activation_revision
       RETURNING normalized_path
     `;
-    if (activated.length !== puts.length) {
+    if (activated.length !== batch.length) {
       throw activationError("publication_page_owner_revision_stale");
     }
+    activatedPutCount += activated.length;
   }
-  if (deletes.length > 0) {
+  for (const batch of batches(deletes, 500)) {
     await sql`
       DELETE FROM focowiki.generated_page_heads head
-      USING unnest(${deletes.map((page) => page.normalized_path)}::text[])
+      USING unnest(${batch.map((page) => page.normalized_path)}::text[])
         desired(normalized_path)
       WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
         AND head.normalized_path = desired.normalized_path
         AND head.activation_revision <= ${input.targetReadinessSequence}
     `;
   }
-  const mutations = pages.flatMap((page) =>
+  const legacyMutations = pages.flatMap((page) =>
     Array.isArray(page.navigation_mutations)
       ? page.navigation_mutations as DocumentDirectoryNavigationMutation[] : []);
-  await applyPostgresDocumentDirectoryNavigation({
+  const directoryCount =
+    await applyPostgresDocumentPublicationNavigationManifest({
     transaction: sql,
+    jobPublicId: input.jobPublicId,
     knowledgeBaseId: input.knowledgeBaseId,
     activationRevision: input.targetReadinessSequence,
-    mutations,
-    activatedAt: input.activatedAt
+    activatedAt: input.activatedAt,
+    legacyMutations
   });
   await enqueueDisplacedHeadObjectCleanup({
     sql,
@@ -117,11 +123,18 @@ export async function activatePostgresDocumentPublicationPages(input: {
     activatedAt: input.activatedAt
   });
   return {
-    putCount: puts.length,
+    putCount: activatedPutCount,
     deleteCount: deletes.length,
-    directoryCount: new Set(mutations.map((mutation) =>
-      mutation.directoryPath)).size
+    directoryCount
   };
+}
+
+function batches<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
 }
 
 async function enqueueDisplacedHeadObjectCleanup(input: Readonly<{
@@ -132,13 +145,14 @@ async function enqueueDisplacedHeadObjectCleanup(input: Readonly<{
   activatedAt: string;
 }>): Promise<void> {
   if (input.objectIds.length === 0) return;
-  await input.sql`
+  for (const objectIds of batches(input.objectIds, 500)) {
+    await input.sql`
     WITH marked_objects AS (
       UPDATE focowiki.object_registrations registration
       SET zero_owner_since = coalesce(
             registration.zero_owner_since, ${input.activatedAt}
           )
-      WHERE registration.object_id IN ${input.sql(input.objectIds)}
+      WHERE registration.object_id IN ${input.sql(objectIds)}
         AND registration.state = 'verified'
         AND NOT EXISTS (
           SELECT 1 FROM focowiki.object_owners owner
@@ -191,7 +205,8 @@ async function enqueueDisplacedHeadObjectCleanup(input: Readonly<{
         AND existing.state IN ('queued', 'running', 'retry')
     )
     ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
-  `;
+    `;
+  }
 }
 
 function activationError(code: string): Error & { code: string } {

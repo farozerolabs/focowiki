@@ -114,13 +114,13 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
         maximumEntries: input.maximumEntries
       });
       if (!Number.isSafeInteger(input.maximumChanges)
-        || input.maximumChanges < 1 || input.maximumChanges > 10_000
+        || input.maximumChanges < 1 || input.maximumChanges > 100_000
         || input.desiredEntries.length > input.maximumEntries) {
         throw directoryNavigationError("delta_read_input_invalid");
       }
       const candidateEntryIds = input.candidateEntryIds
         ? [...new Set(input.candidateEntryIds)].sort() : null;
-      if (candidateEntryIds && (candidateEntryIds.length > 10_000
+      if (candidateEntryIds && (candidateEntryIds.length > 100_000
         || candidateEntryIds.some((entryId) => !entryId))) {
         throw directoryNavigationError("delta_candidate_input_invalid");
       }

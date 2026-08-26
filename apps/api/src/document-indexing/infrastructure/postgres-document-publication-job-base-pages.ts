@@ -8,8 +8,6 @@ import type {
   DocumentPublicationRenderScope
 } from "../application/document-publication-job-ports.js";
 
-const MAXIMUM_SCOPE_BASE_PAGES = 10_000;
-
 export async function readPostgresDocumentPublicationBaseEventTime(
   sql: DatabaseClient,
   input: Readonly<{
@@ -89,11 +87,7 @@ export async function readPostgresDocumentPublicationJobBasePages(
                     from char_length('_graph/') + 1)) = 0)))
       )
     ORDER BY head.normalized_path COLLATE "C"
-    LIMIT ${MAXIMUM_SCOPE_BASE_PAGES + 1}
   `;
-  if (rows.length > MAXIMUM_SCOPE_BASE_PAGES) {
-    throw basePageError("publication_base_page_limit_exceeded");
-  }
   return rows.map((row) => ({
     logicalPath: row.logical_path,
     normalizedPath: row.normalized_path,

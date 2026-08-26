@@ -59,6 +59,10 @@ const foundationIndex = MIGRATION_FILES.indexOf(FOUNDATION_MIGRATION);
           AND outcome = 'pending'
       `).resolves.toEqual([{ count: "18" }]);
 
+      for (const file of MIGRATION_FILES.slice(foundationIndex + 1)) {
+        await sql.unsafe(readMigrationSql(file));
+      }
+
       const repository = createPostgresDocumentPublicationJobRepository(database);
       const job = await repository.admitOne({
         now: "2026-08-25T20:00:02.000Z",

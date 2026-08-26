@@ -3,8 +3,7 @@ import { comparePortableRecordKeys } from "@focowiki/okf";
 import { DOCUMENT_TERM_BUCKETS, type DocumentTermBucket } from
   "../application/document-term-routing.js";
 
-const MAXIMUM_TERM_RECORDS = 100_000;
-const MAXIMUM_TERM_PARTS = 10_000;
+const TERM_RECORD_PAGE_SIZE = 10_000;
 const MAXIMUM_DIRECTORY_RECORDS = 10_000;
 
 export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) {
@@ -151,8 +150,10 @@ export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) 
     }): Promise<ReadonlyArray<Record<string, unknown>>> {
       const included = sortedUnique(input.includedSourceRevisionPublicIds ?? []);
       const excluded = sortedUnique(input.excludedActiveSourceFilePublicIds ?? []);
-      return sql<Array<{ term: string; postings: unknown }>>`
-        SELECT term.term,
+      return readTermRecordPages((cursor) => sql<Array<{
+        term: string; postings: unknown;
+      }>>`
+        SELECT term.term COLLATE "C" AS term,
                jsonb_agg(jsonb_build_object(
                  'path', posting.page_path, 'fields', posting.fields
                ) ORDER BY posting.page_path COLLATE "C") AS postings
@@ -169,10 +170,11 @@ export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) 
           AND (record.source_revision_public_id = ANY(${included}::text[])
             OR (record.active AND record.source_file_public_id
                  <> ALL(${excluded}::text[])))
+          AND (${cursor === null} OR term.term COLLATE "C" > ${cursor ?? ""})
         GROUP BY term.term
         ORDER BY term.term COLLATE "C"
-        LIMIT ${MAXIMUM_TERM_RECORDS + 1}
-      `.then((rows) => checkedTermRows(rows));
+        LIMIT ${TERM_RECORD_PAGE_SIZE}
+      `);
     },
     async listNavigationTermDeltaRecords(input: {
       knowledgeBaseId: string;
@@ -188,7 +190,9 @@ export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) 
       if (affected.length > 10_000 || included.length > 10_000) {
         throw termReaderError("navigation_term_delta_limit_exceeded");
       }
-      return sql<Array<{ term: string; postings: unknown }>>`
+      return readTermRecordPages((cursor) => sql<Array<{
+        term: string; postings: unknown;
+      }>>`
         WITH affected_terms AS MATERIALIZED (
           SELECT DISTINCT term.term COLLATE "C" AS term
           FROM focowiki.document_navigation_terms term
@@ -197,10 +201,12 @@ export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) 
            AND record.source_revision_public_id = term.source_revision_public_id
           WHERE term.knowledge_base_id = ${input.knowledgeBaseId}
             AND term.bucket = ${input.bucket}
+            AND (${cursor === null}
+              OR term.term COLLATE "C" > ${cursor ?? ""})
             AND (record.source_file_public_id = ANY(${affected}::text[])
               OR record.source_revision_public_id = ANY(${included}::text[]))
           ORDER BY term
-          LIMIT ${MAXIMUM_TERM_RECORDS + 1}
+          LIMIT ${TERM_RECORD_PAGE_SIZE}
         ), visible_postings AS MATERIALIZED (
           SELECT term.term, posting.page_path, posting.fields
           FROM focowiki.document_navigation_terms term
@@ -228,8 +234,8 @@ export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) 
         LEFT JOIN visible_postings posting ON posting.term = affected.term
         GROUP BY affected.term
         ORDER BY affected.term COLLATE "C"
-        LIMIT ${MAXIMUM_TERM_RECORDS + 1}
-      `.then((rows) => checkedTermRows(rows));
+        LIMIT ${TERM_RECORD_PAGE_SIZE}
+      `);
     },
     async listTermPartPaths(input: {
       knowledgeBaseId: string;
@@ -242,23 +248,28 @@ export function createPostgresDocumentNavigationTermReader(sql: DatabaseClient) 
           AND left(normalized_path, char_length(${prefix})) = ${prefix}
           AND normalized_path LIKE '%.json'
         ORDER BY normalized_path COLLATE "C"
-        LIMIT ${MAXIMUM_TERM_PARTS + 1}
       `;
-      if (rows.length > MAXIMUM_TERM_PARTS) {
-        throw termReaderError("navigation_term_part_limit_exceeded");
-      }
       return rows.map((row) => row.logical_path);
     }
   };
 }
 
-function checkedTermRows(rows: Array<{ term: string; postings: unknown }>) {
-  if (rows.length > MAXIMUM_TERM_RECORDS) {
-    throw termReaderError("navigation_term_record_limit_exceeded");
+async function readTermRecordPages(
+  read: (cursor: string | null) => Promise<Array<{
+    term: string; postings: unknown;
+  }>>
+): Promise<ReadonlyArray<Record<string, unknown>>> {
+  const records: Array<Record<string, unknown>> = [];
+  let cursor: string | null = null;
+  while (true) {
+    const rows = await read(cursor);
+    records.push(...rows.map((row) => ({
+      term: row.term,
+      postings: Array.isArray(row.postings) ? row.postings : []
+    })));
+    if (rows.length < TERM_RECORD_PAGE_SIZE) return records;
+    cursor = rows.at(-1)!.term;
   }
-  return rows.map((row) => ({
-    term: row.term, postings: Array.isArray(row.postings) ? row.postings : []
-  }));
 }
 
 function sortedUnique(values: readonly string[]): string[] {

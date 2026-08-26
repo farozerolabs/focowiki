@@ -104,6 +104,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "storage-vnext-v22-single-job-publication-upgrade-baseline",
     targetGeneration: "storage-vnext-v23-single-job-publication-retry-recovery",
     safety: "breaking_cutover"
+  },
+  {
+    fileName: "016_single_job_publication_scale_safety.sql",
+    sourceGeneration: "storage-vnext-v23-single-job-publication-retry-recovery",
+    targetGeneration: "storage-vnext-v24-single-job-publication-scale-safety",
+    safety: "breaking_cutover"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

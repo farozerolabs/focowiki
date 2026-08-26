@@ -892,14 +892,14 @@ describe("production document scope renderer", () => {
       });
       expect(readSemanticDirectoryState).not.toHaveBeenCalled();
       expect(readDelta).toHaveBeenCalledWith(expect.objectContaining({
-        maximumChanges: 2_048,
+        maximumChanges: 100_000,
         candidateEntryIds: expect.arrayContaining([
           documentDirectoryEntryId("file", "pages/guides/overview.md")
         ])
       }));
     });
 
-  it("rejects an oversized ordinary navigation delta without a full fallback",
+  it("falls back to bounded full navigation for an oversized delta",
     async () => {
       const renderer = createProductionDocumentScopeRenderer({
         machineProjection: {
@@ -918,7 +918,7 @@ describe("production document scope renderer", () => {
             };
           },
           async read() {
-            throw new Error("Ordinary delta must not read all navigation leaves");
+            return [];
           }
         } as never,
         directoryLeafLimits: {
@@ -944,7 +944,7 @@ describe("production document scope renderer", () => {
         }],
         planningMode: "delta",
         affectedSourceFilePublicIds: ["source-overview"]
-      })).rejects.toMatchObject({ code: "navigation_delta_window_exceeded" });
+      })).resolves.toMatchObject({ navigationMutations: [] });
     });
 
   it("materializes disconnected bounded navigation windows", async () => {
