@@ -16,6 +16,8 @@ const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
 const enabled = Boolean(databaseUrl && runOwner
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner));
+const FOUNDATION_MIGRATION = "013_single_job_publication_foundation.sql";
+const foundationIndex = MIGRATION_FILES.indexOf(FOUNDATION_MIGRATION);
 
 (enabled ? describe : describe.skip)("single-job legacy recovery", () => {
   const connectionUrl = databaseUrl
@@ -31,7 +33,7 @@ const enabled = Boolean(databaseUrl && runOwner
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quote(databaseName)}`);
     databaseCreated = true;
-    for (const file of MIGRATION_FILES.slice(0, -1)) {
+    for (const file of MIGRATION_FILES.slice(0, foundationIndex)) {
       await sql.unsafe(readMigrationSql(file));
     }
     await seedEighteenStrandedDocuments();
@@ -49,7 +51,7 @@ const enabled = Boolean(databaseUrl && runOwner
     async () => {
       const before = await readProviderEvidence();
       expect(before).toEqual({ modelRequests: "36", searchReceipts: "90" });
-      await sql.unsafe(readMigrationSql(MIGRATION_FILES.at(-1)!));
+      await sql.unsafe(readMigrationSql(FOUNDATION_MIGRATION));
       await expect(sql<Array<{ count: number | string }>>`
         SELECT count(*) AS count
         FROM focowiki.publication_items
