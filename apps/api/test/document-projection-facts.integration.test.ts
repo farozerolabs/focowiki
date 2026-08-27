@@ -1108,6 +1108,7 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
         mode: "window",
         totalEntryCount: 5,
         firstLeafId: "delta-leaf-a",
+        occupiedLeafIds: leaves.map((leaf) => leaf.id),
         changes: [{
           entryId: "delta-entry-c2",
           desiredEntry: { targetPath: "pages/delta/c2.md" }
