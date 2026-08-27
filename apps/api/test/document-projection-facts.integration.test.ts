@@ -1120,6 +1120,79 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       });
     });
 
+  it("loads a full reconciliation snapshot for an asymmetric navigation chain",
+    async () => {
+      const leaves = ["a", "b", "c"].map((suffix, index, all) => ({
+        id: `repair-leaf-${suffix}`,
+        previousLeafId: index === 0 ? null : `repair-leaf-${all[index - 1]}`,
+        nextLeafId: index === all.length - 1
+          ? null : `repair-leaf-${all[index + 1]}`,
+        revision: 1,
+        changedAt: "2026-08-27T06:00:00.000Z",
+        entries: [{
+          id: `repair-entry-${suffix}`,
+          sortKey: `${suffix}.md`,
+          name: `${suffix}.md`,
+          targetPath: `pages/repair/${suffix}.md`,
+          kind: "file" as const
+        }]
+      }));
+      await applyPostgresDocumentDirectoryNavigation({
+        transaction: sql as unknown as DatabaseClient,
+        knowledgeBaseId: "kb-projection-facts",
+        activationRevision: 1,
+        mutations: [{
+          directoryPath: "pages/repair",
+          touchedLeaves: leaves,
+          removedLeafIds: []
+        }],
+        activatedAt: "2026-08-27T06:00:00.000Z"
+      });
+      await sql`
+        UPDATE focowiki.generated_directory_leaves
+        SET next_leaf_public_id = 'repair-leaf-c'
+        WHERE knowledge_base_id = 'kb-projection-facts'
+          AND directory_path = 'pages/repair'
+          AND leaf_public_id = 'repair-leaf-a'
+      `;
+      await sql`
+        UPDATE focowiki.generated_directory_leaves
+        SET previous_leaf_public_id = 'repair-leaf-a'
+        WHERE knowledge_base_id = 'kb-projection-facts'
+          AND directory_path = 'pages/repair'
+          AND leaf_public_id = 'repair-leaf-c'
+      `;
+
+      await expect(createPostgresDocumentDirectoryNavigation(
+        sql as unknown as DatabaseClient
+      ).readDelta({
+        knowledgeBaseId: "kb-projection-facts",
+        directoryPath: "pages/repair",
+        desiredEntries: [{
+          ...leaves[1]!.entries[0]!, name: "Updated b.md"
+        }],
+        candidateEntryIds: ["repair-entry-b"],
+        maximumChanges: 16,
+        maximumLeaves: 16,
+        maximumEntries: 32
+      })).resolves.toMatchObject({
+        mode: "reconcile",
+        totalEntryCount: 3,
+        firstLeafId: "repair-leaf-a",
+        changes: [{
+          entryId: "repair-entry-b",
+          desiredEntry: { name: "Updated b.md" }
+        }],
+        leaves: [{
+          id: "repair-leaf-a", nextLeafId: "repair-leaf-c"
+        }, {
+          id: "repair-leaf-b"
+        }, {
+          id: "repair-leaf-c", previousLeafId: "repair-leaf-a"
+        }]
+      });
+    });
+
   it("reads more than ten thousand direct relationship files without a directory cap",
     async () => {
       const count = 10_001;

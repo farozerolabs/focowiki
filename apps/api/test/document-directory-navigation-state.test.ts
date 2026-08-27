@@ -6,8 +6,36 @@ import {
   reconcileDocumentDirectoryNavigationWindows
 } from
   "../src/document-indexing/application/document-directory-navigation-windows.js";
+import { normalizeDocumentDirectoryNavigation } from
+  "../src/document-indexing/application/document-directory-navigation-normalization.js";
 
 describe("document directory navigation state", () => {
+  it("normalizes asymmetric persisted links from the stable leaf order", () => {
+    const result = normalizeDocumentDirectoryNavigation([{
+      id: "leaf-a", previousLeafId: null, nextLeafId: "leaf-c", revision: 2,
+      entries: [entry("source-a", "a.md")]
+    }, {
+      id: "leaf-b", previousLeafId: "leaf-a", nextLeafId: "leaf-c", revision: 3,
+      entries: [entry("source-b", "b.md")]
+    }, {
+      id: "leaf-c", previousLeafId: "leaf-a", nextLeafId: null, revision: 4,
+      entries: [entry("source-c", "c.md")]
+    }]);
+
+    expect(result.repairedLeafIds).toEqual(["leaf-a", "leaf-c"]);
+    expect(result.leaves).toEqual([
+      expect.objectContaining({
+        id: "leaf-a", previousLeafId: null, nextLeafId: "leaf-b", revision: 2
+      }),
+      expect.objectContaining({
+        id: "leaf-b", previousLeafId: "leaf-a", nextLeafId: "leaf-c", revision: 3
+      }),
+      expect.objectContaining({
+        id: "leaf-c", previousLeafId: "leaf-b", nextLeafId: null, revision: 4
+      })
+    ]);
+  });
+
   it("preserves existing leaf identities and touches only changed navigation", () => {
     let nextId = 0;
     const result = reconcileDocumentDirectoryNavigation({

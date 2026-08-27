@@ -367,6 +367,8 @@ export function retryablePublicationError(code: string): boolean {
     "navigation_delta_window_exceeded",
     "leaf_limit_exceeded",
     "entry_limit_exceeded",
+    "previous_state_invalid",
+    "navigation_chain_invalid",
     "mutation_set_invalid",
     "mutation_invalid"
   ].includes(code);
