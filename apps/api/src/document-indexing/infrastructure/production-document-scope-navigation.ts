@@ -1,23 +1,22 @@
 import { posix } from "node:path";
 import { portableByFileGraphDirectoryPath } from "@focowiki/okf";
-import type { DocumentPublicationRenderScope } from
-  "../application/document-publication-job-ports.js";
-import { reconcileDocumentDirectoryNavigationDelta } from
-  "../application/document-directory-navigation-windows.js";
-import { renderDocumentDirectoryMutationPages } from
-  "../application/document-generated-navigation.js";
-import { directoryLeafPath } from
-  "../application/document-directory-navigation-renderer.js";
-import type { OrderedDirectoryLeafLimits } from
-  "../domain/document-directory-leaves.js";
+import type { DocumentPublicationRenderScope } from "../application/document-publication-job-ports.js";
+import { reconcileDocumentDirectoryNavigationDelta } from "../application/document-directory-navigation-windows.js";
+import {
+  applyDocumentDirectoryNavigationRepairs,
+  buildDocumentDirectoryNavigationChanges,
+  normalizeDocumentDirectoryNavigation
+} from "../application/document-directory-navigation-normalization.js";
+import { renderDocumentDirectoryMutationPages } from "../application/document-generated-navigation.js";
+import { directoryLeafPath } from "../application/document-directory-navigation-renderer.js";
+import type { OrderedDirectoryLeafLimits } from "../domain/document-directory-leaves.js";
 import { documentDirectoryEntryId } from
   "../domain/document-directory-entry-identity.js";
 import type { createPostgresDocumentDirectoryNavigation } from
   "./postgres-document-directory-navigation.js";
 import type { createPostgresDocumentMachineProjectionReader } from
   "./postgres-document-machine-projection-reader.js";
-import { createDirectoryLeafId } from
-  "./production-document-processor-support.js";
+import { createDirectoryLeafIdFactory } from "./production-document-directory-leaf-identity.js";
 import type { DocumentRootProjectionLimits } from
   "./production-document-root-projection.js";
 export { projectRoot } from "./production-document-root-projection.js";
@@ -294,31 +293,29 @@ async function materializeDirectoryNavigation(input: {
     : null;
   const boundedDelta = delta?.mode === "window" || delta?.mode === "windows"
     ? delta : null;
-  const previous = delta?.mode === "window" ? delta.leaves
+  const incrementalDelta = delta && delta.mode !== "full" ? delta : null;
+  const persistedPrevious = delta?.mode === "window" ? delta.leaves
     : delta?.mode === "windows" ? delta.windows.flat()
+    : delta?.mode === "reconcile" ? delta.leaves
     : await input.dependencies.directoryNavigation.read({
         knowledgeBaseId: input.scope.knowledgeBaseId,
         directoryPath: input.directoryPath,
         maximumLeaves: 10_000,
         maximumEntries: 100_000
       });
-  const desiredById = new Map(desiredEntries.map((entry) => [entry.id, entry]));
-  const changes = boundedDelta ? [...boundedDelta.changes] : [
-    ...previous.flatMap((leaf) => leaf.entries)
-      .filter((entry) => !desiredById.has(entry.id))
-      .map((entry) => ({ entryId: entry.id, desiredEntry: null })),
-    ...desiredEntries.map((entry) => ({ entryId: entry.id, desiredEntry: entry }))
-  ].sort((left, right) => left.entryId.localeCompare(right.entryId, "en-US"));
-  let sequence = 0;
-  const occupiedLeafIds = new Set(previous.map((leaf) => leaf.id));
-  const createLeafId = () => createDirectoryLeafId({
+  const normalized = delta?.mode === "reconcile"
+    ? normalizeDocumentDirectoryNavigation(persistedPrevious)
+    : { leaves: [...persistedPrevious], repairedLeafIds: [] };
+  const previous = normalized.leaves;
+  const changes = incrementalDelta ? [...incrementalDelta.changes]
+    : buildDocumentDirectoryNavigationChanges(previous, desiredEntries);
+  const createLeafId = createDirectoryLeafIdFactory({
     prefix: input.leafPrefix ?? "extension-leaf",
     knowledgeBaseId: input.scope.knowledgeBaseId,
     directoryPath: input.directoryPath,
-    occupiedLeafIds,
-    sequence: ++sequence
+    occupiedLeafIds: previous.map((leaf) => leaf.id)
   });
-  const navigation = reconcileDocumentDirectoryNavigationDelta({
+  const reconciled = reconcileDocumentDirectoryNavigationDelta({
     previous,
     changes,
     delta: boundedDelta,
@@ -326,19 +323,25 @@ async function materializeDirectoryNavigation(input: {
     changedAt: input.changedAt,
     createLeafId
   });
-  const touchedLeafIds = new Set(navigation.touchedLeafIds);
-  const touchedLeaves = navigation.leaves.filter((leaf) =>
+  const repaired = applyDocumentDirectoryNavigationRepairs({
+    leaves: reconciled.leaves,
+    touchedLeafIds: reconciled.touchedLeafIds,
+    repairedLeafIds: normalized.repairedLeafIds,
+    changedAt: input.changedAt
+  });
+  const touchedLeafIds = new Set(repaired.touchedLeafIds);
+  const touchedLeaves = repaired.leaves.filter((leaf) =>
     touchedLeafIds.has(leaf.id));
-  const removeDirectory = input.removeWhenEmpty && navigation.entryCount === 0;
-  const navigationChanged = navigation.touchedLeafIds.length > 0
-    || navigation.removedLeafIds.length > 0;
+  const removeDirectory = input.removeWhenEmpty && reconciled.entryCount === 0;
+  const navigationChanged = touchedLeaves.length > 0
+    || reconciled.removedLeafIds.length > 0;
   const navigationPages = removeDirectory
     || (!navigationChanged && boundedDelta?.rootExists)
     ? []
     : renderDocumentDirectoryMutationPages({
         directoryPath: input.directoryPath,
-        entryCount: navigation.entryCount,
-        firstLeafId: navigation.firstLeafId,
+        entryCount: reconciled.entryCount,
+        firstLeafId: reconciled.firstLeafId,
         touchedLeaves,
         title: input.title ?? posix.basename(input.directoryPath),
         rootEntryKind: input.rootEntryKind ?? "extension_version",
@@ -352,17 +355,17 @@ async function materializeDirectoryNavigation(input: {
     removedLogicalPaths: [...new Set([
       ...input.projected.removedLogicalPaths,
       ...(removeDirectory ? [`${input.directoryPath}/index.md`] : []),
-      ...navigation.removedLeafIds.map((leafId) =>
+      ...reconciled.removedLeafIds.map((leafId) =>
         directoryLeafPath(input.directoryPath, leafId))
     ])].sort(),
-    navigationMutations: navigation.touchedLeafIds.length > 0
-      || navigation.removedLeafIds.length > 0
+    navigationMutations: touchedLeaves.length > 0
+      || reconciled.removedLeafIds.length > 0
       ? [{
           directoryPath: input.directoryPath,
           touchedLeaves,
-          removedLeafIds: navigation.removedLeafIds,
-          entryCount: navigation.entryCount,
-          firstLeafId: navigation.firstLeafId
+          removedLeafIds: reconciled.removedLeafIds,
+          entryCount: reconciled.entryCount,
+          firstLeafId: reconciled.firstLeafId
         }]
       : []
   };

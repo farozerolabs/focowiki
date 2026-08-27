@@ -1028,6 +1028,115 @@ describe("production document scope renderer", () => {
     });
   });
 
+  it("repairs a persisted navigation chain while applying a bounded change",
+    async () => {
+      const entryId = documentDirectoryEntryId(
+        "file", "pages/guides/overview.md");
+      const renderer = createProductionDocumentScopeRenderer({
+        machineProjection: {
+          async readSemanticDirectoryDeltaState() {
+            return {
+              records: [{
+                path: "pages/guides/overview.md", title: "Overview",
+                summary: "Overview", metadata: {}, subjects: [], tags: [],
+                headings: [], keywords: [], entities: [], type: "document",
+                contentType: "text/markdown", checksumSha256: "a".repeat(64),
+                byteCount: 10
+              }],
+              childDirectories: [], navigationCandidateEntryIds: [entryId]
+            };
+          }
+        } as never,
+        directoryNavigation: {
+          async readDelta(request: { desiredEntries: Array<{
+            id: string; sortKey: string; name: string; targetPath: string;
+            kind: "file" | "directory";
+          }> }) {
+            return {
+              mode: "reconcile" as const,
+              leaves: [{
+                id: "directory-leaf-a", previousLeafId: null,
+                nextLeafId: "directory-leaf-c", revision: 1,
+                entries: [{
+                  id: "entry-b", sortKey: "1/b.md/pages/guides/b.md",
+                  name: "B", targetPath: "pages/guides/b.md",
+                  kind: "file" as const
+                }]
+              }, {
+                id: "directory-leaf-b", previousLeafId: "directory-leaf-a",
+                nextLeafId: "directory-leaf-c", revision: 1,
+                entries: [{
+                  id: "entry-c", sortKey: "1/c.md/pages/guides/c.md",
+                  name: "C", targetPath: "pages/guides/c.md",
+                  kind: "file" as const
+                }]
+              }, {
+                id: "directory-leaf-c", previousLeafId: "directory-leaf-a",
+                nextLeafId: null, revision: 1,
+                entries: [{
+                  ...request.desiredEntries[0]!, name: "Old overview"
+                }]
+              }],
+              changes: request.desiredEntries.map((entry) => ({
+                entryId: entry.id, desiredEntry: entry
+              })),
+              totalEntryCount: 3,
+              firstLeafId: "directory-leaf-a",
+              rootExists: true
+            };
+          },
+          async read() {
+            throw new Error("Repair reconciliation must reuse the loaded state");
+          }
+        } as never,
+        directoryLeafLimits: {
+          maxEntries: 2, maxBytes: 65_536, mergeBelowEntries: 1
+        },
+        objectWriter: {} as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576,
+        now: () => "2026-08-27T06:00:00.000Z"
+      });
+
+      const projected = await renderer.project({
+        publicId: "scope-directory-repair",
+        knowledgeBaseId: "kb-1", kind: "directory", key: "pages/guides",
+        requiredSequence: 13, renderedSequence: 13
+      }, {
+        contributors: [{
+          sourceFilePublicId: "source-overview",
+          sourceRevisionPublicId: "revision-overview",
+          requiredSequence: 13
+        }],
+        planningMode: "delta",
+        affectedSourceFilePublicIds: ["source-overview"]
+      });
+
+      expect(projected.navigationMutations).toHaveLength(1);
+      expect(projected.navigationMutations[0]?.touchedLeaves.map((leaf) => ({
+        id: leaf.id,
+        previousLeafId: leaf.previousLeafId,
+        nextLeafId: leaf.nextLeafId
+      }))).toEqual([{
+        id: "directory-leaf-a",
+        previousLeafId: null,
+        nextLeafId: "directory-leaf-b"
+      }, {
+        id: "directory-leaf-b",
+        previousLeafId: "directory-leaf-a",
+        nextLeafId: null
+      }]);
+      expect(projected.navigationMutations[0]?.removedLeafIds).toEqual([
+        "directory-leaf-c"
+      ]);
+      expect(projected.pages.map((page) => page.logicalPath)).toEqual(
+        expect.arrayContaining([
+          "pages/guides/index-directory-leaf-a.md",
+          "pages/guides/index-directory-leaf-b.md"
+        ])
+      );
+    });
+
   it("bounds term catalog navigation to the changed buckets", async () => {
     const projected = await projectTermCatalog({
       input: {

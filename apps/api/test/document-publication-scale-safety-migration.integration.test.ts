@@ -10,6 +10,8 @@ const enabled = Boolean(databaseUrl && runOwner
 const SCALE_MIGRATION = "016_single_job_publication_scale_safety.sql";
 const MONOTONIC_RECOVERY_MIGRATION =
   "017_single_job_publication_monotonic_recovery.sql";
+const NAVIGATION_RECONCILIATION_MIGRATION =
+  "018_navigation_chain_reconciliation.sql";
 const migrationIndex = MIGRATION_FILES.indexOf(SCALE_MIGRATION);
 
 (enabled ? describe : describe.skip)("publication scale-safety migration", () => {
@@ -29,6 +31,7 @@ const migrationIndex = MIGRATION_FILES.indexOf(SCALE_MIGRATION);
       await sql.unsafe(readMigrationSql(file));
     }
     await seedFailures();
+    await seedNavigationChainFailure();
   }, 120_000);
 
   afterAll(async () => {
@@ -170,7 +173,149 @@ const migrationIndex = MIGRATION_FILES.indexOf(SCALE_MIGRATION);
       pending_item_count: 2,
       latest_readiness_sequence: "12002"
     }]);
+
+    await sql.unsafe(readMigrationSql(NAVIGATION_RECONCILIATION_MIGRATION));
+    await expect(sql<Array<{
+      item_outcome: string;
+      membership_count: number | string;
+      document_state: string;
+      document_error: string | null;
+      projection_state: string;
+      operation_state: string;
+      result_count: number | string;
+      pending_item_count: number | string;
+    }>>`
+      SELECT item.outcome AS item_outcome,
+             (SELECT count(*) FROM focowiki.publication_job_items membership
+              WHERE membership.item_public_id = item.public_id)
+               AS membership_count,
+             document_job.state AS document_state,
+             document_job.safe_error_code AS document_error,
+             work.state AS projection_state,
+             operation.state AS operation_state,
+             (SELECT count(*) FROM focowiki.operation_results result
+              WHERE result.public_id = operation.public_id) AS result_count,
+             head.pending_item_count
+      FROM focowiki.publication_items item
+      JOIN focowiki.document_processing_jobs document_job
+        ON document_job.public_id = item.document_job_public_id
+      JOIN focowiki.document_artifact_work work
+        ON work.document_job_public_id = document_job.public_id
+       AND work.work_kind = 'knowledge_projection'
+      JOIN focowiki.operations operation
+        ON operation.public_id = document_job.operation_public_id
+      JOIN focowiki.knowledge_base_publication_heads head
+        ON head.knowledge_base_id = item.knowledge_base_id
+      WHERE item.public_id = 'chain-item'
+    `).resolves.toEqual([{
+      item_outcome: "pending",
+      membership_count: "0",
+      document_state: "processing",
+      document_error: null,
+      projection_state: "waiting_on_projection",
+      operation_state: "processing",
+      result_count: "0",
+      pending_item_count: 1
+    }]);
   });
+
+  async function seedNavigationChainFailure(): Promise<void> {
+    await sql.begin(async (transaction) => {
+      await transaction`SET LOCAL session_replication_role = replica`;
+      await transaction`
+        INSERT INTO focowiki.operations (
+          public_id, knowledge_base_id, operation_kind, state,
+          target_kind, target_public_id, created_at, updated_at, completed_at
+        ) VALUES (
+          'chain-operation', 'chain-kb', 'source_upload', 'failed',
+          'source_file', 'chain-source', now(), now(), now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.document_processing_jobs (
+          public_id, knowledge_base_id, operation_public_id,
+          source_file_public_id, source_revision_public_id,
+          runtime_settings_revision_public_id,
+          generation_model_configuration_public_id,
+          generation_model_configuration_revision,
+          embedding_configuration_revision_public_id,
+          semantic_generation_public_id, semantic_contract_version,
+          readiness_sequence, state, attempt_count, failure_count,
+          total_attempt_count, maximum_attempts, required_work_count,
+          completed_work_count, blocking_work_kind, safe_error_code,
+          retryable, accepted_at, started_at, terminal_at, created_at,
+          updated_at
+        ) VALUES (
+          'chain-document-job', 'chain-kb', 'chain-operation',
+          'chain-source', 'chain-revision', 'chain-settings', 'chain-model', 1,
+          'chain-embedding', 'chain-semantic', 'chain-contract', 41,
+          'error', 1, 1, 1, 3, 2, 0, 'knowledge_projection',
+          'previous_state_invalid', true,
+          now(), now(), now(), now(), now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.document_artifact_work (
+          public_id, knowledge_base_id, document_job_public_id,
+          source_file_public_id, source_revision_public_id, work_kind,
+          resource_lane, input_fingerprint_sha256, state, attempt_count,
+          maximum_attempts, next_eligible_at, safe_error_code, retryable,
+          started_at, ended_at, created_at, updated_at
+        ) VALUES (
+          'chain-projection-work', 'chain-kb', 'chain-document-job',
+          'chain-source', 'chain-revision', 'knowledge_projection',
+          'projection', ${"5".repeat(64)}, 'error', 1, 3, now(),
+          'previous_state_invalid', true, now(), now(), now(), now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.knowledge_base_publication_heads (
+          knowledge_base_id, active_revision, active_readiness_sequence,
+          latest_readiness_sequence, pending_item_count, updated_at
+        ) VALUES ('chain-kb', 40, 40, 41, 0, now())
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_items (
+          public_id, mutation_public_id, knowledge_base_id,
+          document_job_public_id, source_file_public_id,
+          source_revision_public_id, operation, next_logical_path,
+          readiness_sequence, outcome, safe_error_code, created_at,
+          terminal_at, updated_at
+        ) VALUES (
+          'chain-item', 'chain-mutation', 'chain-kb', 'chain-document-job',
+          'chain-source', 'chain-revision', 'create', 'pages/chain.md', 41,
+          'failed', 'previous_state_invalid', now(), now(), now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_jobs (
+          public_id, knowledge_base_id, base_active_revision,
+          target_readiness_sequence, renderer_contract_version, outcome,
+          attempt_count, next_eligible_at, safe_error_code, created_at,
+          updated_at, completed_at
+        ) VALUES (
+          'chain-job', 'chain-kb', 40, 41, 'portable-okf-v5', 'failed',
+          3, now(), 'previous_state_invalid', now(), now(), now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_job_items (
+          job_public_id, item_public_id, membership_order, created_at
+        ) VALUES ('chain-job', 'chain-item', 0, now())
+      `;
+      await transaction`
+        INSERT INTO focowiki.operation_results (
+          public_id, knowledge_base_id, operation_kind, terminal_state,
+          result_code, result_summary, correlation_public_id,
+          completed_at, expires_at
+        ) VALUES (
+          'chain-operation', 'chain-kb', 'source_upload', 'failed',
+          'previous_state_invalid', '{}'::jsonb, 'chain-document-job',
+          now(), now() + interval '30 days'
+        )
+      `;
+    });
+  }
 
   async function seedFailures(): Promise<void> {
     await sql.begin(async (transaction) => {
