@@ -125,6 +125,14 @@ export const MIGRATION_MANIFEST = [
     targetGeneration:
       "storage-vnext-v26-navigation-chain-reconciliation",
     safety: "breaking_cutover"
+  },
+  {
+    fileName: "019_publication_window_cleanup_recovery.sql",
+    sourceGeneration:
+      "storage-vnext-v26-navigation-chain-reconciliation",
+    targetGeneration:
+      "storage-vnext-v27-publication-window-cleanup-recovery",
+    safety: "breaking_cutover"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

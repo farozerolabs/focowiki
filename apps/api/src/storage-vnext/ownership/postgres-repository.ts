@@ -554,7 +554,8 @@ async function reserveRegistration(
       const rows = await transaction<StorageVnextRegistrationRow[]>`
         UPDATE focowiki.object_registrations registration
         SET write_attempt_public_id = ${input.writeAttemptPublicId},
-            reservation_expires_at = ${input.holdVerifiedUntil}
+            reservation_expires_at = ${input.holdVerifiedUntil},
+            zero_owner_since = ${input.createdAt}
         WHERE registration.object_id = ${input.objectId}
           AND registration.state = 'verified'
           AND (

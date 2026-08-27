@@ -366,9 +366,19 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
           ...(leaf.changed_at ? { changedAt: leaf.changed_at.toISOString() } : {})
         }));
       const windows = partitionDocumentDirectoryNavigationWindows(mappedLeaves);
-      return windows.length > 1
-        ? { mode: "windows" as const, windows, ...result }
-        : { mode: "window" as const, leaves: mappedLeaves, ...result };
+      if (windows.length > 1) {
+        return {
+          mode: "reconcile" as const,
+          leaves: await readDirectoryLeaves(sql, {
+            knowledgeBaseId: input.knowledgeBaseId,
+            directoryPath: input.directoryPath,
+            maximumLeaves: input.maximumLeaves,
+            maximumEntries: input.maximumEntries
+          }),
+          ...result
+        };
+      }
+      return { mode: "window" as const, leaves: mappedLeaves, ...result };
     }
   };
 }

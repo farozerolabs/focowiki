@@ -1,7 +1,7 @@
 import type { DatabaseClient } from "../../db/client.js";
 import type { DocumentPublicationJobOutput } from
   "../application/document-publication-job-ports.js";
-import { enqueuePostgresDocumentPublicationOutputCleanup } from
+import { deferPostgresDocumentPublicationOutputCleanup } from
   "./postgres-document-publication-output-cleanup.js";
 import { replacePostgresDocumentPublicationNavigationManifest } from
   "./postgres-document-publication-navigation-manifest.js";
@@ -15,12 +15,12 @@ export async function replacePostgresDocumentPublicationManifest(input: {
   persistedAt: string;
 }): Promise<void> {
   const sql = input.transaction;
-  await enqueuePostgresDocumentPublicationOutputCleanup({
+  await deferPostgresDocumentPublicationOutputCleanup({
     transaction: sql,
     jobPublicId: input.jobPublicId,
     retainedObjectIds: input.outputs.flatMap((output) =>
       output.objectId ? [output.objectId] : []),
-    queuedAt: input.persistedAt
+    releasedAt: input.persistedAt
   });
   await sql`
     DELETE FROM focowiki.publication_job_outputs
