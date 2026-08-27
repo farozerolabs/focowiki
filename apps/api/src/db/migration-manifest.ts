@@ -133,6 +133,14 @@ export const MIGRATION_MANIFEST = [
     targetGeneration:
       "storage-vnext-v27-publication-window-cleanup-recovery",
     safety: "breaking_cutover"
+  },
+  {
+    fileName: "020_navigation_leaf_identity_recovery.sql",
+    sourceGeneration:
+      "storage-vnext-v27-publication-window-cleanup-recovery",
+    targetGeneration:
+      "storage-vnext-v28-navigation-leaf-identity-recovery",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

@@ -13,6 +13,8 @@ import { documentDirectoryEntryId } from
   "../src/document-indexing/domain/document-directory-entry-identity.js";
 import { createProductionDocumentScopeRenderer } from
   "../src/document-indexing/infrastructure/production-document-scope-renderer.js";
+import { createDirectoryLeafId } from
+  "../src/document-indexing/infrastructure/production-document-processor-support.js";
 import { projectDocumentPageDirectoryScope } from
   "../src/document-indexing/infrastructure/production-document-page-directory-scope.js";
 import { projectTermCatalog } from
@@ -1027,6 +1029,91 @@ describe("production document scope renderer", () => {
       firstLeafId: "directory-leaf-a"
     });
   });
+
+  it("avoids directory leaf identities occupied outside a bounded window",
+    async () => {
+      const entryId = documentDirectoryEntryId(
+        "file", "pages/guides/overview.md");
+      const collisionId = createDirectoryLeafId({
+        prefix: "directory-leaf",
+        knowledgeBaseId: "kb-1",
+        directoryPath: "pages/guides",
+        occupiedLeafIds: new Set(),
+        sequence: 1
+      });
+      const renderer = createProductionDocumentScopeRenderer({
+        machineProjection: {
+          async readSemanticDirectoryDeltaState() {
+            return {
+              records: [{
+                path: "pages/guides/overview.md", title: "Overview",
+                summary: "Overview", metadata: {}, subjects: [], tags: [],
+                headings: [], keywords: [], entities: [], type: "document",
+                contentType: "text/markdown", checksumSha256: "a".repeat(64),
+                byteCount: 10
+              }],
+              childDirectories: [], navigationCandidateEntryIds: [entryId]
+            };
+          }
+        } as never,
+        directoryNavigation: {
+          async readDelta(request: { desiredEntries: Array<{
+            id: string; sortKey: string; name: string; targetPath: string;
+            kind: "file" | "directory";
+          }> }) {
+            return {
+              mode: "window" as const,
+              leaves: [{
+                id: "directory-leaf-window", previousLeafId: null,
+                nextLeafId: null, revision: 1,
+                entries: [{
+                  id: "entry-y", sortKey: "1/y.md/pages/guides/y.md",
+                  name: "Y", targetPath: "pages/guides/y.md",
+                  kind: "file" as const
+                }, {
+                  id: "entry-z", sortKey: "1/z.md/pages/guides/z.md",
+                  name: "Z", targetPath: "pages/guides/z.md",
+                  kind: "file" as const
+                }]
+              }],
+              changes: request.desiredEntries.map((entry) => ({
+                entryId: entry.id, desiredEntry: entry
+              })),
+              occupiedLeafIds: ["directory-leaf-window", collisionId],
+              totalEntryCount: 2,
+              firstLeafId: "directory-leaf-window",
+              rootExists: true
+            };
+          }
+        } as never,
+        directoryLeafLimits: {
+          maxEntries: 2, maxBytes: 65_536, mergeBelowEntries: 1
+        },
+        objectWriter: {} as never,
+        maximumRecordsPerShard: 100,
+        maximumShardBytes: 1_048_576,
+        now: () => "2026-08-27T10:30:00.000Z"
+      });
+
+      const projected = await renderer.project({
+        publicId: "scope-directory-collision",
+        knowledgeBaseId: "kb-1", kind: "directory", key: "pages/guides",
+        requiredSequence: 13, renderedSequence: 13
+      }, {
+        contributors: [{
+          sourceFilePublicId: "source-overview",
+          sourceRevisionPublicId: "revision-overview",
+          requiredSequence: 13
+        }],
+        planningMode: "delta",
+        affectedSourceFilePublicIds: ["source-overview"]
+      });
+
+      const leafIds = projected.navigationMutations.flatMap((mutation) =>
+        mutation.touchedLeaves.map((leaf) => leaf.id));
+      expect(leafIds).toHaveLength(2);
+      expect(leafIds).not.toContain(collisionId);
+    });
 
   it("repairs a persisted navigation chain while applying a bounded change",
     async () => {
