@@ -313,7 +313,9 @@ async function materializeDirectoryNavigation(input: {
     prefix: input.leafPrefix ?? "extension-leaf",
     knowledgeBaseId: input.scope.knowledgeBaseId,
     directoryPath: input.directoryPath,
-    occupiedLeafIds: previous.map((leaf) => leaf.id)
+    occupiedLeafIds: previous.map((leaf) => leaf.id),
+    persistedOccupiedLeafIds: delta && "occupiedLeafIds" in delta
+      ? delta.occupiedLeafIds : undefined
   });
   const reconciled = reconcileDocumentDirectoryNavigationDelta({
     previous,
@@ -492,7 +494,5 @@ function requireDirectoryNavigation(
     directoryLeafLimits: limits };
 }
 function scopeNavigationError(code: string): Error & { code: string } {
-  return Object.assign(new Error(`Projection scope navigation error: ${code}`), {
-    code
-  });
+  return Object.assign(new Error(`Projection scope navigation error: ${code}`), { code });
 }

@@ -196,6 +196,7 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
       const summaries = await sql<Array<{
         total_entry_count: number | string;
         first_leaf_public_id: string | null;
+        occupied_leaf_public_ids: string[];
         root_exists: boolean;
         navigation_consistent: boolean;
       }>>`
@@ -221,6 +222,11 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
         SELECT coalesce(sum(entry_count), 0) AS total_entry_count,
                max(leaf_public_id) FILTER (WHERE leaf_order = 1)
                  AS first_leaf_public_id,
+               coalesce(
+                 array_agg(leaf_public_id ORDER BY leaf_order)
+                   FILTER (WHERE leaf_public_id IS NOT NULL),
+                 ARRAY[]::text[]
+               ) AS occupied_leaf_public_ids,
                EXISTS (
                  SELECT 1 FROM focowiki.generated_page_heads head
                  WHERE head.knowledge_base_id = ${input.knowledgeBaseId}
@@ -251,6 +257,7 @@ export function createPostgresDocumentDirectoryNavigation(sql: DatabaseClient) {
         })),
         totalEntryCount: Number(summary.total_entry_count),
         firstLeafId: summary.first_leaf_public_id,
+        occupiedLeafIds: summary.occupied_leaf_public_ids,
         rootExists: summary.root_exists
       };
       if (!summary.navigation_consistent
