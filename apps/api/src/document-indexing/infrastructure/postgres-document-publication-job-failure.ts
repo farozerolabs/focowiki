@@ -9,7 +9,7 @@ import { releasePostgresDocumentPageCandidates } from
   "./postgres-document-page-candidate-release.js";
 import { markDocumentDeletionOperationFailed } from
   "./postgres-document-resource-deletion-support.js";
-import { enqueuePostgresDocumentPublicationOutputCleanup } from
+import { deferPostgresDocumentPublicationOutputCleanup } from
   "./postgres-document-publication-output-cleanup.js";
 
 const RESULT_RETENTION_MILLISECONDS = 30 * 86_400_000;
@@ -32,11 +32,11 @@ export async function failPostgresDocumentPublicationJob(input: {
   `;
   const stage = stages[0]?.work_kind;
   if (!stage) return;
-  await enqueuePostgresDocumentPublicationOutputCleanup({
+  await deferPostgresDocumentPublicationOutputCleanup({
     transaction: sql,
     jobPublicId: input.jobPublicId,
     retainedObjectIds: [],
-    queuedAt: input.failedAt
+    releasedAt: input.failedAt
   });
   await sql`
     UPDATE focowiki.publication_items item
