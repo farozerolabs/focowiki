@@ -1193,6 +1193,69 @@ describeOwnedDatabase("PostgreSQL document projection fact set-diff", () => {
       });
     });
 
+  it("loads one reconciliation snapshot for disconnected delta windows",
+    async () => {
+      const leaves = ["a", "b", "c", "d", "e", "f", "g"].map(
+        (suffix, index, all) => ({
+          id: `disconnected-leaf-${suffix}`,
+          previousLeafId: index === 0
+            ? null : `disconnected-leaf-${all[index - 1]}`,
+          nextLeafId: index === all.length - 1
+            ? null : `disconnected-leaf-${all[index + 1]}`,
+          revision: 1,
+          changedAt: "2026-08-27T08:00:00.000Z",
+          entries: [{
+            id: `disconnected-entry-${suffix}`,
+            sortKey: `${suffix}.md`,
+            name: `${suffix}.md`,
+            targetPath: `pages/disconnected/${suffix}.md`,
+            kind: "file" as const
+          }]
+        })
+      );
+      await applyPostgresDocumentDirectoryNavigation({
+        transaction: sql as unknown as DatabaseClient,
+        knowledgeBaseId: "kb-projection-facts",
+        activationRevision: 1,
+        mutations: [{
+          directoryPath: "pages/disconnected",
+          touchedLeaves: leaves,
+          removedLeafIds: []
+        }],
+        activatedAt: "2026-08-27T08:00:00.000Z"
+      });
+      const additions = [{
+        id: "disconnected-entry-b2",
+        sortKey: "b2.md",
+        name: "b2.md",
+        targetPath: "pages/disconnected/b2.md",
+        kind: "file" as const
+      }, {
+        id: "disconnected-entry-f2",
+        sortKey: "f2.md",
+        name: "f2.md",
+        targetPath: "pages/disconnected/f2.md",
+        kind: "file" as const
+      }];
+
+      await expect(createPostgresDocumentDirectoryNavigation(
+        sql as unknown as DatabaseClient
+      ).readDelta({
+        knowledgeBaseId: "kb-projection-facts",
+        directoryPath: "pages/disconnected",
+        desiredEntries: additions,
+        candidateEntryIds: additions.map((entry) => entry.id),
+        maximumChanges: 16,
+        maximumLeaves: 16,
+        maximumEntries: 32
+      })).resolves.toMatchObject({
+        mode: "reconcile",
+        totalEntryCount: 7,
+        firstLeafId: "disconnected-leaf-a",
+        leaves: leaves.map((leaf) => ({ id: leaf.id }))
+      });
+    });
+
   it("reads more than ten thousand direct relationship files without a directory cap",
     async () => {
       const count = 10_001;

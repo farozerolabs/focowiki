@@ -110,6 +110,17 @@ describeOwnedDatabase("storage vNext object reservation leases", () => {
         writeAttemptPublicId: "write-reservation-projection"
       }
     });
+    await expect(sql<Array<{
+      reservation_expires_at: Date | null;
+      zero_owner_since: Date | null;
+    }>>`
+      SELECT reservation_expires_at, zero_owner_since
+      FROM focowiki.object_registrations
+      WHERE object_id = ${reservation.objectId}
+    `).resolves.toEqual([{
+      reservation_expires_at: new Date("2099-08-17T00:00:32.000Z"),
+      zero_owner_since: new Date("2099-08-17T00:00:02.000Z")
+    }]);
     await expect(repository.markDeleting(reservation.objectId))
       .rejects.toMatchObject({ code: "write_in_progress" });
     await expect(repository.releaseVerifiedReservation({

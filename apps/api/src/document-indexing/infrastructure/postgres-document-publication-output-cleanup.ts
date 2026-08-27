@@ -7,6 +7,7 @@ import {
 } from "./document-repository-validation.js";
 
 const MAXIMUM_PATH_BYTES = 4_096;
+const PUBLICATION_OUTPUT_CLEANUP_GRACE_MILLISECONDS = 86_400_000;
 
 export function validateDocumentPublicationJobOutputs(
   outputs: readonly DocumentPublicationJobOutput[]
@@ -30,14 +31,21 @@ export function validateDocumentPublicationJobOutputs(
   });
 }
 
-export async function enqueuePostgresDocumentPublicationOutputCleanup(input: {
+export async function deferPostgresDocumentPublicationOutputCleanup(input: {
   transaction: DatabaseClient;
   jobPublicId: string;
   retainedObjectIds: readonly string[];
-  queuedAt: string;
+  releasedAt: string;
 }): Promise<number> {
   const sql = input.transaction;
   const retainedObjectIds = [...new Set(input.retainedObjectIds)].sort();
+  const releasedAt = Date.parse(input.releasedAt);
+  if (!Number.isFinite(releasedAt)) {
+    throw repositoryContractError("publication_cleanup_timestamp_invalid");
+  }
+  const cleanupAt = new Date(
+    releasedAt + PUBLICATION_OUTPUT_CLEANUP_GRACE_MILLISECONDS
+  ).toISOString();
   const rows = await sql<Array<{ object_id: string }>>`
     WITH candidates AS (
       SELECT DISTINCT output.object_id
@@ -56,9 +64,7 @@ export async function enqueuePostgresDocumentPublicationOutputCleanup(input: {
         )
     ), marked AS (
       UPDATE focowiki.object_registrations registration
-      SET zero_owner_since = coalesce(
-            registration.zero_owner_since, ${input.queuedAt}
-          )
+      SET zero_owner_since = ${input.releasedAt}
       FROM candidates
       WHERE registration.object_id = candidates.object_id
         AND registration.state = 'verified'
@@ -91,28 +97,26 @@ export async function enqueuePostgresDocumentPublicationOutputCleanup(input: {
         state, attempt_count, maximum_attempts, not_before,
         created_at, updated_at
       )
-      SELECT 'cleanup-publication-job-output-' || md5(
+      SELECT 'cleanup-publication-job-output-v2-' || md5(
                ${input.jobPublicId} || chr(31) || marked.object_id
+               || chr(31) || ${input.releasedAt}
              ), job.knowledge_base_id, 'zero_owner_object',
              'object_storage', 'zero_owner_object', marked.object_id,
              true, 40,
              row_number() OVER (ORDER BY marked.object_id COLLATE "C")::integer,
-             'publication-job-output:' || marked.object_id,
-             md5(marked.object_id),
+             'publication-job-output-v2:' || md5(
+               ${input.jobPublicId} || chr(31) || marked.object_id
+               || chr(31) || ${input.releasedAt}
+             ), md5(marked.object_id || chr(31) || ${input.releasedAt}),
              jsonb_build_object(
-               'schemaVersion', 'publication-job-output-v1'
+               'schemaVersion', 'publication-job-output-v2',
+               'releasedAt', ${input.releasedAt}::text
              ),
-             'queued', 0, 8, ${input.queuedAt},
-             ${input.queuedAt}, ${input.queuedAt}
+             'queued', 0, 8, ${cleanupAt},
+             ${input.releasedAt}, ${input.releasedAt}
       FROM marked
       JOIN focowiki.publication_jobs job
         ON job.public_id = ${input.jobPublicId}
-      WHERE NOT EXISTS (
-        SELECT 1 FROM focowiki.cleanup_actions existing
-        WHERE existing.action_kind = 'zero_owner_object'
-          AND existing.resource_public_id = marked.object_id
-          AND existing.state IN ('queued', 'running', 'retry')
-      )
       ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
       RETURNING resource_public_id AS object_id
     )

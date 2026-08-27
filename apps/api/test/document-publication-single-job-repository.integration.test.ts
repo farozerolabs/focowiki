@@ -192,21 +192,22 @@ const enabled = Boolean(databaseUrl && runOwner
       await sql`
         INSERT INTO focowiki.object_registrations (
           object_id, storage_key, checksum_sha256, byte_count, content_type,
-          object_format, state, write_attempt_public_id, verified_at
+          object_format, state, write_attempt_public_id, verified_at,
+          zero_owner_since
         ) VALUES
         (
           'replaced-job-output-object',
           'objects/replaced-job-output-object', ${"5".repeat(64)}, 11,
           'text/markdown; charset=utf-8', 'okf-generated-markdown-v1',
           'verified', 'replaced-job-output-attempt',
-          '2026-08-25T10:03:34.000Z'
+          '2026-08-25T10:03:34.000Z', '2026-08-25T10:03:34.000Z'
         ),
         (
           'terminal-job-output-object',
           'objects/terminal-job-output-object', ${"6".repeat(64)}, 12,
           'text/markdown; charset=utf-8', 'okf-generated-markdown-v1',
           'verified', 'terminal-job-output-attempt',
-          '2026-08-25T10:03:34.000Z'
+          '2026-08-25T10:03:34.000Z', '2026-08-25T10:03:34.000Z'
         )
       `;
       const replacedOutput = [publicationOutput({
@@ -239,11 +240,25 @@ const enabled = Boolean(databaseUrl && runOwner
         outputs: terminalOutput,
         persistedAt: "2026-08-25T10:03:34.500Z"
       })).resolves.toBe(true);
-      await expect(sql<Array<{ state: string }>>`
-        SELECT state FROM focowiki.cleanup_actions
+      await expect(sql<Array<{ zero_owner_since: Date | null }>>`
+        SELECT zero_owner_since FROM focowiki.object_registrations
+        WHERE object_id = 'replaced-job-output-object'
+      `).resolves.toEqual([{ zero_owner_since: expect.any(Date) }]);
+      await expect(sql<Array<{
+        state: string;
+        not_before: Date;
+        schema_version: string;
+      }>>`
+        SELECT state, not_before,
+               checkpoint ->> 'schemaVersion' AS schema_version
+        FROM focowiki.cleanup_actions
         WHERE resource_public_id = 'replaced-job-output-object'
           AND action_kind = 'zero_owner_object'
-      `).resolves.toEqual([{ state: "queued" }]);
+      `).resolves.toEqual([{
+        state: "queued",
+        not_before: new Date("2026-08-26T10:03:34.500Z"),
+        schema_version: "publication-job-output-v2"
+      }]);
       await expect(repository.failAttempt({
         jobPublicId: thirdClaim!.publicId,
         attemptToken: thirdClaim!.attemptToken!,
@@ -254,9 +269,11 @@ const enabled = Boolean(databaseUrl && runOwner
       await expect(sql<Array<{
         zero_owner_since: Date | string | null;
         cleanup_state: string | null;
+        cleanup_not_before: Date | null;
       }>>`
         SELECT registration.zero_owner_since,
-               cleanup.state AS cleanup_state
+               cleanup.state AS cleanup_state,
+               cleanup.not_before AS cleanup_not_before
         FROM focowiki.object_registrations registration
         LEFT JOIN focowiki.cleanup_actions cleanup
           ON cleanup.resource_public_id = registration.object_id
@@ -264,7 +281,8 @@ const enabled = Boolean(databaseUrl && runOwner
         WHERE registration.object_id = 'terminal-job-output-object'
       `).resolves.toMatchObject([{
         zero_owner_since: expect.anything(),
-        cleanup_state: "queued"
+        cleanup_state: "queued",
+        cleanup_not_before: new Date("2026-08-26T10:03:35.000Z")
       }]);
 
       const successor = await repository.admitOne({
