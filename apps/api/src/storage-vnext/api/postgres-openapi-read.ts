@@ -433,45 +433,20 @@ export async function listStorageVnextGraphExpansionRelationships(
 
 export async function readStorageVnextGraphSearchSummary(
   sql: DatabaseClient,
-  knowledgeBaseId: string
+  knowledgeBaseId: string,
+  indexedRelationshipCount: number
 ) {
-  const rows = await sql<Array<{
-    indexed_document_count: number | string;
-    indexed_relationship_count: number | string;
-  }>>`
-    WITH active_sources AS MATERIALIZED (
-      SELECT active.source_file_public_id
-      FROM focowiki.source_file_active_revisions active
-      JOIN focowiki.generated_page_heads page
-        ON page.knowledge_base_id = active.knowledge_base_id
-       AND page.source_file_public_id = active.source_file_public_id
-       AND page.source_revision_public_id = active.active_source_revision_public_id
-       AND page.entry_kind = 'source'
-      WHERE active.knowledge_base_id = ${knowledgeBaseId}
-        AND active.active_source_revision_public_id IS NOT NULL
-    )
-    SELECT
-      (SELECT count(*) FROM active_sources) AS indexed_document_count,
-      (SELECT count(*) FROM focowiki.canonical_file_relations relation
-       WHERE relation.knowledge_base_id = ${knowledgeBaseId}
-         AND relation.active AND relation.retired_at IS NULL
-         AND relation.first_source_file_public_id IN (
-           SELECT source_file_public_id FROM active_sources
-         )
-         AND relation.second_source_file_public_id IN (
-           SELECT source_file_public_id FROM active_sources
-         )
-         AND EXISTS (
-           SELECT 1 FROM focowiki.relation_directed_evidence evidence
-           WHERE evidence.knowledge_base_id = relation.knowledge_base_id
-             AND evidence.pair_public_id = relation.pair_public_id
-             AND evidence.active AND evidence.retired_at IS NULL
-         )
-      ) AS indexed_relationship_count
+  const rows = await sql<Array<{ indexed_document_count: number | string }>>`
+    SELECT count(*) AS indexed_document_count
+    FROM focowiki.generated_page_heads page
+    WHERE page.knowledge_base_id = ${knowledgeBaseId}
+      AND page.entry_kind = 'source'
+      AND page.source_file_public_id IS NOT NULL
+      AND page.source_revision_public_id IS NOT NULL
   `;
   return {
     indexedDocumentCount: safeCount(rows[0]?.indexed_document_count ?? 0),
-    indexedRelationshipCount: safeCount(rows[0]?.indexed_relationship_count ?? 0)
+    indexedRelationshipCount: safeCount(indexedRelationshipCount)
   };
 }
 
