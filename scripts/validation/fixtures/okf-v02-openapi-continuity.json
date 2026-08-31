@@ -5,8 +5,9 @@
     "validate-comprehensive-large-scale-release",
     "replace-upload-processing-with-document-indexing",
     "make-okf-bundle-path-linked-portable",
-    "review-openapi-agent-continuity"
+    "review-openapi-agent-continuity",
+    "validate-cli-production-openapi-and-docs"
   ],
-  "contractSha256": "da04e9da65552797c9d3cd7a71d2259cfeb3eee04eb367fc3023386aaaf078f1",
+  "contractSha256": "3010428d00ba8631c364086427328adde0cc0ed812e1dc6a066106be6a94755e",
   "reviewedSurfaceSha256": "b0f2cbf7d93460fafc8ce2f336260c89aea3912f85af8699cde6137be1d24fd0"
 }

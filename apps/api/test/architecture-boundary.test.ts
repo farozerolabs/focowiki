@@ -655,6 +655,6 @@ describe("lightweight architecture boundaries", () => {
     expect(activeReadRepository).toContain("active_source_revision_public_id");
     expect(activeTreeReadModel).toContain("focowiki.generated_page_heads");
     expect(activeTreeReadModel).toContain("focowiki.source_file_active_revisions");
-    expect(activeTreeStatistics).toContain("focowiki.generated_page_heads");
+    expect(activeTreeStatistics).toContain("GENERATED_GRAPH_RESOURCES.catalogPath");
   });
 });

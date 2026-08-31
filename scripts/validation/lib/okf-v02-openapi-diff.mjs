@@ -122,7 +122,8 @@ export function validateReviewedOkfV02OpenApi(document, manifest) {
     "validate-comprehensive-large-scale-release",
     "replace-upload-processing-with-document-indexing",
     "make-okf-bundle-path-linked-portable",
-    "review-openapi-agent-continuity"
+    "review-openapi-agent-continuity",
+    "validate-cli-production-openapi-and-docs"
   ];
   if (JSON.stringify(manifest?.reviewedChangeIds) !== JSON.stringify(reviewedChangeIds)) {
     failures.push("The reviewed OpenAPI continuity change ID is invalid.");
