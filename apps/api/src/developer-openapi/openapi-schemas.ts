@@ -824,7 +824,11 @@ function sourceResourceFileSchema(): SchemaObject {
       contentType: { type: "string" },
       sizeBytes: { type: "integer", minimum: 0 },
       resourceRevision: { type: "integer", minimum: 1 },
-      contentRevision: { type: "integer", minimum: 1 },
+      contentRevision: {
+        type: "integer",
+        minimum: 0,
+        description: "Readable generated-content revision. Zero means that no generated output is available yet."
+      },
       state: {
         type: "string",
         enum: ["waiting", "processing", "available", "error", "deleting"],

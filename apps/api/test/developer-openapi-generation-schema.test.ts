@@ -703,6 +703,10 @@ describe("Developer OpenAPI generation schema", () => {
 
     const sourceFile = readObject(document.components.schemas.SourceResourceFile);
     const sourceFileProperties = readObject(sourceFile.properties);
+    expect(readObject(sourceFileProperties.contentRevision)).toMatchObject({
+      type: "integer",
+      minimum: 0
+    });
     for (const redundantField of [
       "activeRevisionId",
       "mutable",

@@ -214,7 +214,8 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
       const [graphContexts, graphSummary] = request.mode === "file"
         ? [new Map<string, StorageVnextOpenApiSearchGraphContext>(), {
             indexedDocumentCount: 0,
-            indexedRelationshipCount: 0
+            indexedRelationshipCount: 0,
+            graphIndexAvailable: false
           }] as const
         : await Promise.all([
             listStorageVnextSearchGraphContexts(input.sql, {
@@ -223,7 +224,7 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
               depth: request.graphDepth,
               limitPerSource: request.graphFanout
             }),
-            readStorageVnextGraphSearchSummary(input.sql, request.knowledgeBaseId)
+            readPublishedGraphSummary(input, request.knowledgeBaseId)
           ]);
       const items = page.items.map((item) => {
         const graph = graphContexts.get(item.sourceFilePublicId);
@@ -246,9 +247,11 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
         ...(page.rerankerStatus ? { rerankerStatus: page.rerankerStatus } : {}),
         searchStatus: items.length > 0 ? "ok" : "no_candidates",
         searchMode: request.mode,
-        graphStatus: request.mode === "file" ? "disabled_for_file_mode" : "available",
+        graphStatus: request.mode === "file"
+          ? "disabled_for_file_mode"
+          : graphSummary.graphIndexAvailable ? "available" : "index_unavailable",
         graphSummary: {
-          available: request.mode !== "file",
+          available: request.mode !== "file" && graphSummary.graphIndexAvailable,
           indexedDocumentCount: graphSummary.indexedDocumentCount,
           indexedRelationshipCount: graphSummary.indexedRelationshipCount,
           depth: request.graphDepth,
@@ -366,27 +369,16 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
 
     async getGraphOverview(request) {
       const rootId = await requireActiveContentRevision(input.sql, request.knowledgeBaseId);
-      const [graphSummary, rows] = await Promise.all([
-        readStorageVnextGraphSearchSummary(input.sql, request.knowledgeBaseId),
-        input.sql<Array<{
-        graph_index_available: boolean;
-        }>>`
-        SELECT
-          EXISTS (
-            SELECT 1 FROM focowiki.generated_page_heads page
-            WHERE page.knowledge_base_id = ${request.knowledgeBaseId}
-              AND page.logical_path = ${GENERATED_GRAPH_RESOURCES.index.path}
-          ) AS graph_index_available
-        `
-      ]);
-      const summary = rows[0];
-      const available = Boolean(summary?.graph_index_available);
+      const graphSummary = await readPublishedGraphSummary(
+        input,
+        request.knowledgeBaseId
+      );
       return presentOpenApiGraphOverview({
         knowledgeBaseId: request.knowledgeBaseId,
         activeContentRevision: rootId,
         nodeCount: graphSummary.indexedDocumentCount,
         edgeCount: graphSummary.indexedRelationshipCount,
-        graphIndexAvailable: available
+        graphIndexAvailable: graphSummary.graphIndexAvailable
       });
     },
 
@@ -406,6 +398,48 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
     deleteWebhook: (webhookId) => input.webhooks.remove(webhookId),
     listWebhookDeliveries: (request) => input.webhooks.listDeliveries(request),
     redeliverWebhook: (deliveryId) => input.webhooks.redeliver(deliveryId)
+  };
+}
+
+async function readPublishedGraphSummary(
+  input: Parameters<typeof createPostgresStorageVnextOpenApiApplication>[0],
+  knowledgeBaseId: string
+) {
+  const result = await input.adminCore.readGeneratedContent({
+    knowledgeBaseId,
+    logicalPath: GENERATED_GRAPH_RESOURCES.catalogPath,
+    includeRelationships: false
+  });
+  if (!result.ok) {
+    if (result.code === "NOT_FOUND") {
+      return {
+        ...(await readStorageVnextGraphSearchSummary(input.sql, knowledgeBaseId, 0)),
+        graphIndexAvailable: false
+      };
+    }
+    throw repositoryUnavailable();
+  }
+  if (result.value instanceof Response) throw repositoryUnavailable();
+  const value = record(result.value);
+  if (!value || typeof value.content !== "string") throw repositoryUnavailable();
+  let catalog: Record<string, unknown> | null = null;
+  try {
+    catalog = record(JSON.parse(value.content));
+  } catch {
+    throw repositoryUnavailable();
+  }
+  const relationshipCount = catalog?.relationshipCount;
+  if (typeof relationshipCount !== "number"
+    || !Number.isSafeInteger(relationshipCount) || relationshipCount < 0) {
+    throw repositoryUnavailable();
+  }
+  return {
+    ...(await readStorageVnextGraphSearchSummary(
+      input.sql,
+      knowledgeBaseId,
+      relationshipCount
+    )),
+    graphIndexAvailable: true
   };
 }
 

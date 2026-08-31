@@ -3,12 +3,35 @@ import { StorageVnextCatalogRepositoryError } from
   "../src/storage-vnext/catalog/postgres-repository.js";
 import { createPostgresStorageVnextOpenApiApplication } from
   "../src/storage-vnext/api/postgres-openapi-application.js";
+import { readStorageVnextGraphSearchSummary } from
+  "../src/storage-vnext/api/postgres-openapi-read.js";
 import { SearchProviderError } from
   "../src/application/ports/search-provider-runtime.js";
 import { StorageVnextActiveSearchInputError } from
   "../src/storage-vnext/search/active-search.js";
 
 describe("storage vNext Developer OpenAPI application", () => {
+  it("reads graph totals without scanning the complete relationship set", async () => {
+    let query = "";
+    const sql = (async (strings: TemplateStringsArray) => {
+      query = strings.join("?");
+      return [{ indexed_document_count: "12", indexed_relationship_count: "34" }];
+    }) as never;
+
+    await expect(readStorageVnextGraphSearchSummary(
+      sql,
+      "knowledge-base-graph-summary",
+      34
+    )).resolves.toEqual({
+      indexedDocumentCount: 12,
+      indexedRelationshipCount: 34
+    });
+    expect(query).not.toContain("AS MATERIALIZED");
+    expect(query).not.toContain(" IN (");
+    expect(query).not.toContain("canonical_file_relations");
+    expect(query.match(/generated_page_heads/gu)).toHaveLength(1);
+  });
+
   it.each(["id", "path"] as const)(
     "returns byte-equivalent uploaded Markdown for source-backed file content by %s",
     async (lookup) => {
@@ -380,7 +403,17 @@ describe("storage vNext Developer OpenAPI application", () => {
       sql,
       catalog: null as never,
       adminRead: null as never,
-      adminCore: null as never,
+      adminCore: {
+        async readGeneratedContent() {
+          return {
+            ok: true as const,
+            value: {
+              file: { logicalPath: "_graph/catalog.json" },
+              content: JSON.stringify({ relationshipCount: 34 })
+            }
+          };
+        }
+      } as never,
       resources: null as never,
       source: null as never,
       search: {

@@ -1013,8 +1013,8 @@
           },
           "contentRevision": {
             "type": "integer",
-            "minimum": 1,
-            "description": "File-content version number. It increases after each successful replacement."
+            "minimum": 0,
+            "description": "Readable generated-content revision. Zero means that no generated output is available yet."
           },
           "state": {
             "type": "string",
