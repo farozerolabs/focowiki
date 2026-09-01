@@ -29,6 +29,8 @@ import type { createPostgresDocumentWorkContext } from
   "./postgres-document-work-context.js";
 import type { createPostgresDocumentReceiptRepository } from
   "./postgres-document-receipt-repository.js";
+import type { createPostgresDocumentSourceMetadataRepository } from
+  "./postgres-document-source-metadata.js";
 import { loadReusableDocumentPreparedSource } from
   "./production-document-prepared-source-reuse.js";
 
@@ -41,6 +43,7 @@ export function createProductionDocumentPrepareWorkHandler(input: {
   objectWriter: StorageVnextImmutableObjectWriter;
   ownership: StorageVnextOwnershipRepository;
   referenceFacts: ReturnType<typeof createPostgresDocumentReferenceFactRepository>;
+  sourceMetadata: ReturnType<typeof createPostgresDocumentSourceMetadataRepository>;
   maximumSourceBytes: number;
   now?: () => string;
 }) {
@@ -157,6 +160,14 @@ export function createProductionDocumentPrepareWorkHandler(input: {
       kind: "source_revision",
       ownerPublicId: request.claimed.sourceRevisionPublicId,
       createdAt: clock()
+    });
+    await input.sourceMetadata.persistPrepared({
+      knowledgeBaseId: request.claimed.knowledgeBaseId,
+      sourceFilePublicId: request.claimed.sourceFilePublicId,
+      sourceRevisionPublicId: request.claimed.sourceRevisionPublicId,
+      title: prepared.resolvedMetadata.title,
+      metadata: prepared.parsedMetadata,
+      parsedAt: clock()
     });
     const identityKeys = buildDocumentIdentityKeys({
       logicalPath: context.source.logicalPath,

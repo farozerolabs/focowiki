@@ -90,6 +90,8 @@ import { createProductionDocumentStorageReconciliation } from
   "./production-document-storage-reconciliation.js";
 import { createPostgresDocumentDirectoryMove } from
   "./postgres-document-directory-move.js";
+import { createProductionDocumentSourceMetadataRepair } from
+  "./production-document-source-metadata-repair.js";
 
 const STALE_OBJECT_RESERVATION_AGE_MS = 60 * 60 * 1_000;
 
@@ -130,6 +132,11 @@ export function createProductionBackgroundRuntime(input: {
     webhookRetentionMilliseconds: completedWorkRetentionMilliseconds
   });
   const directoryMove = createPostgresDocumentDirectoryMove(input.sql);
+  const sourceMetadataRepair = createProductionDocumentSourceMetadataRepair({
+    sql: input.sql,
+    config: input.config,
+    s3
+  });
   const deletion = createDocumentResourceDeletionWorker({
     ...deletionRepository,
     projections: createProductionDocumentDeletionProjection({
@@ -265,6 +272,7 @@ export function createProductionBackgroundRuntime(input: {
           ).toISOString(),
           pageSize: Math.min(input.workerConfig.claimBatchSize, 100)
         });
+        await sourceMetadataRepair.run({ now, signal });
         return;
       }
       if (workClass === "deletion") {

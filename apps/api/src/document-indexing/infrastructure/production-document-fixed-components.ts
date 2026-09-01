@@ -30,6 +30,8 @@ import { createPostgresDocumentReceiptRepository } from
   "./postgres-document-receipt-repository.js";
 import { createPostgresDocumentSearchOwnerRepository } from
   "./postgres-document-search-owner-repository.js";
+import { createPostgresDocumentSourceMetadataRepository } from
+  "./postgres-document-source-metadata.js";
 import { createPostgresDocumentSemanticFactReuse } from
   "./postgres-document-semantic-fact-reuse.js";
 import { createPostgresDocumentWorkContext } from
@@ -60,6 +62,7 @@ export function createProductionDocumentFixedRepositories(
     relations: createPostgresCandidateFileRelationRepository(sql),
     searchFamilies: createPostgresSearchFamilyRepository(sql),
     searchOwners: createPostgresDocumentSearchOwnerRepository(sql),
+    sourceMetadata: createPostgresDocumentSourceMetadataRepository(sql),
     bases: createPostgresGeneratedPageBaseRepository(sql),
     directoryNavigation: createPostgresDocumentDirectoryNavigation(sql),
     generatedContext: createPostgresDocumentGeneratedContext(sql),

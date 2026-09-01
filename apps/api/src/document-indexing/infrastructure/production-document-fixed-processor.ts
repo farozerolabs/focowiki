@@ -165,6 +165,7 @@ export function createProductionDocumentFixedProcessor(input: {
       objectWriter: resources.writer,
       ownership: resources.ownership,
       referenceFacts: repositories.referenceFacts,
+      sourceMetadata: repositories.sourceMetadata,
       maximumSourceBytes: input.config.pagination.generatedContentMaxBytes
     }),
     first_layer: createProductionDocumentFirstLayerWorkHandler({
