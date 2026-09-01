@@ -5,7 +5,7 @@ import type { SemanticMaintenanceTarget } from
   "../../semantic/domain/contracts.js";
 
 export type StorageVnextSemanticAdoptionSnapshot = {
-  mode: "full" | "embedding_only" | "provider_only" | "query_policy_only";
+  mode: "full" | "embedding_only" | "provider_only";
   target: SemanticMaintenanceTarget;
   runtimeSettingsRevisionPublicId: string;
   maximumSourceBytes: number;

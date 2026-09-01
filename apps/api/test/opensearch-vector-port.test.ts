@@ -94,6 +94,33 @@ describe("OpenSearch semantic vector port", () => {
         }) } }
       })
     }), { requestTimeout: 1_000 });
+    const internalRequest = JSON.stringify(
+      vi.mocked(client.search).mock.calls[0]![0]
+    );
+    expect(internalRequest).not.toContain('"k":');
+  });
+
+  it("omits a score cutoff for public provider-neutral vector retrieval", async () => {
+    const client = clientStub();
+    const port = createValidatedSearchProviderVectorPort(
+      createOpenSearchVectorPort({ client })
+    );
+    await port.query({
+      indexUid: "semantic-candidate-1",
+      knowledgeBaseId: "kb-1",
+      semanticGenerationPublicId: "generation-1",
+      embeddingConfigurationRevisionPublicId: "embedding-1",
+      family: "content",
+      dimension: 3,
+      vector: [0.1, 0.2, 0.3],
+      limit: 30,
+      deadlineMs: 1_000
+    });
+    const sent = vi.mocked(client.search).mock.calls[0]![0];
+    expect(JSON.stringify(sent)).not.toContain("min_score");
+    expect(sent).toMatchObject({
+      body: { query: { knn: { vector: { k: 30 } } } }
+    });
   });
 
   it("deletes only scoped ids and validates mapping plus count", async () => {

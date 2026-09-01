@@ -28,6 +28,11 @@ export type RerankerStatus = {
   safeCode: string | null;
 };
 
+export type RerankerMetrics = {
+  windowCount: number;
+  thresholdRejectedCount: number;
+};
+
 export function createRerankerGateway(input: {
   resolveActiveConfiguration(): Promise<RerankerConfigurationPrivate | null>;
   transport: RerankerTransport;
@@ -67,7 +72,11 @@ export function createRerankerGateway(input: {
       rerankScoreThreshold: number;
       limit: number;
       signal: AbortSignal | null;
-    }): Promise<{ candidates: readonly RerankerCandidate[]; status: RerankerStatus }> {
+    }): Promise<{
+      candidates: readonly RerankerCandidate[];
+      status: RerankerStatus;
+      metrics?: RerankerMetrics;
+    }> {
       const safeCandidates = authorizedCandidates(
         request.candidates,
         request.knowledgeBaseId
@@ -131,9 +140,20 @@ export function createRerankerGateway(input: {
           .sort((left, right) => right.score - left.score
             || left.inputRank - right.inputRank)
           .map((item) => item.candidate);
+        const allBelowThreshold = request.rerankScoreThreshold > 0
+          && ranked.length === 0;
         return {
           candidates: [...exact, ...ranked].slice(0, request.limit),
-          status: { state: "applied", safeCode: null }
+          status: {
+            state: "applied",
+            safeCode: allBelowThreshold
+              ? "RERANKER_ALL_BELOW_THRESHOLD"
+              : null
+          },
+          metrics: {
+            windowCount: window.length,
+            thresholdRejectedCount: window.length - ranked.length
+          }
         };
       } catch (error) {
         return degraded(fallback, safeErrorCode(error));

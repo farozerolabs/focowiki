@@ -26,8 +26,6 @@ export type SemanticActiveProjectionRecord = SemanticGenerationRecord & {
   promptContractVersion: string;
   projectionContractPublicId: string;
   embeddingConfigurationRevisionPublicId: string;
-  embeddingQueryPolicyRevisionPublicId: string;
-  minimumVectorRelevance: number;
   searchProviderKind: "meilisearch" | "opensearch";
   resolvedDimension: number;
   normalization: "none" | "l2";
@@ -56,14 +54,6 @@ export type SemanticGenerationRepositoryPort = {
     sourceCount: number;
     factCount: number;
   }>;
-  adoptQueryPolicy(input: {
-    knowledgeBaseId: string;
-    semanticGenerationPublicId: string;
-    expectedGenerationRevision: number;
-    embeddingQueryPolicyRevisionPublicId: string;
-    minimumVectorRelevance: number;
-    contractFingerprintSha256: string;
-  }): Promise<boolean>;
   isWritableProjection(input: {
     knowledgeBaseId: string;
     semanticGenerationPublicId: SemanticPublicId;

@@ -142,6 +142,8 @@ Embedding configurations are managed in the **Embedding models** tab under **Mod
 
 Create a configuration, use **Test** to validate the endpoint and resolved embedding dimension, then use **Activate**. New document work uses the active configuration. Editing a saved configuration creates a new revision; existing knowledge bases adopt that revision only after **Maintain index** completes. Compatible embeddings can be reused when only the search provider changes, without making the same model calls again.
 
+Public hybrid search retrieves a limited ordered candidate set from every available vector family and combines those ranks with exact, text, Chinese-token, and relationship evidence. Embedding configurations do not contain a public-search relevance threshold. Upgrading from an earlier release reuses existing embeddings and search indexes; it does not require re-uploading, re-embedding, or maintaining each knowledge base. Search clients should restart pagination if an older cursor is rejected after the upgrade.
+
 The table shows the resolved dimension, validation state, and lifecycle state as read-only status. Pause prevents new work from selecting the configuration. Resume makes a paused revision selectable again. Delete is blocked while a configuration revision is still referenced by active or in-progress work. Secrets remain redacted in lists, status, errors, logs, and API responses.
 
 ## Reranker Models
@@ -150,7 +152,7 @@ Reranking is optional and query-time only. The **Reranker models** tab under **M
 
 Enter the provider base URL, such as `https://provider.example/v1`. Focowiki appends `/rerank` and sends the standard rerank request to `https://provider.example/v1/rerank`. Do not enter `/rerank` or `/v1/chat/completions` in this field; Chat Completions is not a supported Reranker protocol.
 
-The final result `limit`, `rerankTopK`, and `rerankScoreThreshold` are Developer OpenAPI request fields. They are intentionally absent from Admin Settings. `rerank` defaults to `false`; when enabled, the API sends only title, path, and limited source-grounded excerpts from already authorized candidates. The embedding cosine relevance threshold remains part of the active embedding query policy and is independent of the Reranker score threshold.
+The final result `limit`, `rerankTopK`, and `rerankScoreThreshold` are Developer OpenAPI request fields. They are intentionally absent from Admin Settings. `rerank` defaults to `false`; when enabled, the API sends only title, path, and limited source-grounded excerpts from already authorized candidates. The score threshold defaults to `0`, so reranking normally changes order without removing candidates. An explicitly positive threshold can remove non-exact candidates; if it removes all of them, the response reports `RERANKER_ALL_BELOW_THRESHOLD`.
 
 ## Models
 

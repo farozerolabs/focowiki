@@ -27,8 +27,6 @@ type ActiveProjectionRow = GenerationRow & {
   prompt_contract_version: string;
   projection_contract_public_id: string;
   embedding_configuration_revision_public_id: string;
-  embedding_query_policy_revision_public_id: string;
-  minimum_vector_relevance: number;
   search_provider_kind: "meilisearch" | "opensearch";
   resolved_dimension: number;
   normalization: "none" | "l2";
@@ -103,16 +101,13 @@ export function createPostgresSemanticGenerationRepository(
           INSERT INTO focowiki.semantic_projection_contracts (
             public_id, knowledge_base_id, semantic_generation_public_id,
             embedding_configuration_revision_public_id,
-            embedding_query_policy_revision_public_id,
-            minimum_vector_relevance, search_provider_kind,
+            search_provider_kind,
             resolved_dimension, normalization, artifact_schema_version,
             vector_schema_version, mapping_fingerprint_sha256
           ) VALUES (
             ${`semantic-contract-${input.candidatePublicId}`},
             ${input.target.knowledgeBaseId}, ${input.candidatePublicId},
             ${input.target.embeddingConfigurationRevisionPublicId},
-            ${input.target.embeddingQueryPolicyRevisionPublicId},
-            ${input.target.minimumVectorRelevance},
             ${input.target.searchProviderKind}, ${input.target.resolvedDimension},
             ${input.target.normalization}, ${input.target.artifactSchemaVersion},
             ${input.target.vectorSchemaVersion}, ${input.target.mappingFingerprintSha256}
@@ -143,8 +138,6 @@ export function createPostgresSemanticGenerationRepository(
                generation.prompt_contract_version,
                contract.public_id AS projection_contract_public_id,
                contract.embedding_configuration_revision_public_id,
-               contract.embedding_query_policy_revision_public_id,
-               contract.minimum_vector_relevance,
                contract.search_provider_kind, contract.resolved_dimension,
                contract.normalization, contract.artifact_schema_version,
                contract.vector_schema_version,
@@ -211,40 +204,6 @@ export function createPostgresSemanticGenerationRepository(
           factCount: result.factCount
         };
       }).catch(mapDatabaseError);
-    },
-
-    async adoptQueryPolicy(input) {
-      if (!Number.isFinite(input.minimumVectorRelevance)
-        || input.minimumVectorRelevance < 0
-        || input.minimumVectorRelevance > 1) {
-        throw repositoryError("invalid_input");
-      }
-      return sql.begin(async (transaction) => {
-        const generation = await transaction<Array<{ public_id: string }>>`
-          UPDATE focowiki.semantic_generations
-          SET contract_fingerprint_sha256 = ${input.contractFingerprintSha256},
-              revision = revision + 1
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND public_id = ${input.semanticGenerationPublicId}
-            AND generation_role = 'active'
-            AND state = 'active'
-            AND revision = ${input.expectedGenerationRevision}
-            AND deleted_at IS NULL
-          RETURNING public_id
-        `;
-        if (!generation[0]) return false;
-        const contract = await transaction<Array<{ public_id: string }>>`
-          UPDATE focowiki.semantic_projection_contracts
-          SET embedding_query_policy_revision_public_id
-                = ${input.embeddingQueryPolicyRevisionPublicId},
-              minimum_vector_relevance = ${input.minimumVectorRelevance}
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND semantic_generation_public_id = ${input.semanticGenerationPublicId}
-          RETURNING public_id
-        `;
-        if (!contract[0]) throw repositoryError("candidate_missing");
-        return true;
-      });
     },
 
     async isWritableProjection(input) {
@@ -527,9 +486,6 @@ function mapActiveProjection(row: ActiveProjectionRow): SemanticActiveProjection
     projectionContractPublicId: row.projection_contract_public_id,
     embeddingConfigurationRevisionPublicId:
       row.embedding_configuration_revision_public_id,
-    embeddingQueryPolicyRevisionPublicId:
-      row.embedding_query_policy_revision_public_id,
-    minimumVectorRelevance: row.minimum_vector_relevance,
     searchProviderKind: row.search_provider_kind,
     resolvedDimension: row.resolved_dimension,
     normalization: row.normalization,

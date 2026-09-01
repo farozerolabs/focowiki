@@ -103,8 +103,7 @@ describe("EmbeddingSettingsPanel", () => {
       retryCount: 1,
       minimumIntervalMs: 10,
       concurrency: 2,
-      maximumResponseBytes: 1048576,
-      minimumVectorRelevance: 0.7
+      maximumResponseBytes: 1048576
     }));
   });
 
@@ -157,8 +156,7 @@ describe("EmbeddingSettingsPanel", () => {
         retryCount: 1,
         minimumIntervalMs: 25,
         concurrency: 3,
-        maximumResponseBytes: 2097152,
-        minimumVectorRelevance: 0.7
+        maximumResponseBytes: 2097152
       }
     }));
   });
@@ -241,7 +239,6 @@ describe("EmbeddingSettingsPanel", () => {
     expect(await screen.findByText("暂无嵌入模型配置")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "添加嵌入模型" }));
     expect(screen.getByLabelText("请求嵌入维度")).toBeTruthy();
-    expect(screen.getByLabelText("最低嵌入相关度")).toBeTruthy();
     expect(screen.getByText(
       "仅在服务商支持自定义维度时填写；如果测试失败，建议留空，由系统使用模型返回的实际维度。"
     )).toBeTruthy();
@@ -278,9 +275,7 @@ function configuration() {
     minimumIntervalMs: 0,
     concurrency: 4,
     maximumResponseBytes: 8388608,
-    minimumVectorRelevance: 0.7,
     vectorProducingRevisionPublicId: "embedding-revision-a",
-    queryPolicyRevisionPublicId: "embedding-revision-a",
     validationStatus: "valid" as const,
     validationFingerprintSha256: "a".repeat(64),
     safeValidationErrorCode: null,

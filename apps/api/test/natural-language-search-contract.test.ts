@@ -42,7 +42,7 @@ describe("natural-language Developer OpenAPI search contract", () => {
   it.each([
     [{ rerank: undefined }, { rerank: false, topK: null, threshold: null }],
     [{ rerank: "false" }, { rerank: false, topK: null, threshold: null }],
-    [{ rerank: "true" }, { rerank: true, topK: 30, threshold: 0.35 }],
+    [{ rerank: "true" }, { rerank: true, topK: 30, threshold: 0 }],
     [{ rerank: "true", rerankTopK: "50", rerankScoreThreshold: "0" },
       { rerank: true, topK: 50, threshold: 0 }],
     [{ rerank: "true", rerankTopK: "50", rerankScoreThreshold: "1" },
@@ -107,7 +107,7 @@ describe("natural-language Developer OpenAPI search contract", () => {
       schema: { type: "integer", minimum: 1, maximum: 50 }
     });
     expect(parameters.get("rerankScoreThreshold")).toMatchObject({
-      schema: { type: "number", minimum: 0, maximum: 1 }
+      schema: { type: "number", minimum: 0, maximum: 1, default: 0 }
     });
   });
 

@@ -28,7 +28,6 @@ type ConfigurationRow = {
   minimum_interval_ms: number;
   concurrency: number;
   maximum_response_bytes: number;
-  minimum_vector_relevance: number;
   vector_producing_revision_public_id: string;
   validation_status: "not_tested" | "valid" | "invalid";
   validation_fingerprint_sha256: string | null;
@@ -237,8 +236,8 @@ async function insertRevision(
       authentication_mode, base_url, encrypted_api_key, model_name,
       requested_dimension, normalization, maximum_input_tokens, batch_size,
       timeout_ms, retry_count, minimum_interval_ms, concurrency,
-      maximum_response_bytes, minimum_vector_relevance,
-      vector_producing_revision_public_id, resolved_dimension,
+      maximum_response_bytes, vector_producing_revision_public_id,
+      resolved_dimension,
       validation_status, validation_fingerprint_sha256,
       safe_validation_error_code, validated_at, created_at
     ) VALUES (
@@ -250,8 +249,7 @@ async function insertRevision(
       ${input.modelName}, ${input.requestedDimension}, ${input.normalization},
       ${input.maximumInputTokens}, ${input.batchSize}, ${input.timeoutMs},
       ${input.retryCount}, ${input.minimumIntervalMs}, ${input.concurrency},
-      ${input.maximumResponseBytes}, ${input.minimumVectorRelevance},
-      ${input.vectorProducingRevisionPublicId},
+      ${input.maximumResponseBytes}, ${input.vectorProducingRevisionPublicId},
       ${reused?.resolved_dimension ?? null},
       ${reused?.validation_status ?? "not_tested"},
       ${reused?.validation_fingerprint_sha256 ?? null},
@@ -293,7 +291,7 @@ async function readConfigurationRows(
            revision.normalization, revision.maximum_input_tokens,
            revision.batch_size, revision.timeout_ms, revision.retry_count,
            revision.minimum_interval_ms, revision.concurrency,
-           revision.maximum_response_bytes, revision.minimum_vector_relevance,
+           revision.maximum_response_bytes,
            revision.vector_producing_revision_public_id,
            revision.validation_status,
            revision.validation_fingerprint_sha256,
@@ -323,7 +321,7 @@ async function readRevisionRows(
            revision.normalization, revision.maximum_input_tokens,
            revision.batch_size, revision.timeout_ms, revision.retry_count,
            revision.minimum_interval_ms, revision.concurrency,
-           revision.maximum_response_bytes, revision.minimum_vector_relevance,
+           revision.maximum_response_bytes,
            revision.vector_producing_revision_public_id,
            revision.validation_status,
            revision.validation_fingerprint_sha256,
@@ -358,9 +356,7 @@ function mapConfiguration(row: ConfigurationRow): EmbeddingConfigurationPrivate 
     minimumIntervalMs: row.minimum_interval_ms,
     concurrency: row.concurrency,
     maximumResponseBytes: row.maximum_response_bytes,
-    minimumVectorRelevance: row.minimum_vector_relevance,
     vectorProducingRevisionPublicId: row.vector_producing_revision_public_id,
-    queryPolicyRevisionPublicId: row.revision_public_id,
     validationStatus: row.validation_status,
     validationFingerprintSha256: row.validation_fingerprint_sha256,
     safeValidationErrorCode: row.safe_validation_error_code,

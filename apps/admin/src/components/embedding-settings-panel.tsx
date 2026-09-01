@@ -91,7 +91,6 @@ type EmbeddingForm = {
   minimumIntervalMs: EditableNumber;
   concurrency: EditableNumber;
   maximumResponseBytes: EditableNumber;
-  minimumVectorRelevance: EditableNumber;
 };
 
 const numberFields = [
@@ -102,8 +101,7 @@ const numberFields = [
   "retryCount",
   "minimumIntervalMs",
   "concurrency",
-  "maximumResponseBytes",
-  "minimumVectorRelevance"
+  "maximumResponseBytes"
 ] as const;
 
 export function EmbeddingSettingsPanel() {
@@ -484,10 +482,8 @@ function NumberInput(input: {
       aria-describedby={descriptionId}
       type="number"
       min={input.field === "retryCount"
-        || input.field === "minimumIntervalMs"
-        || input.field === "minimumVectorRelevance" ? 0 : 1}
-      max={input.field === "minimumVectorRelevance" ? 1 : undefined}
-      step={input.field === "minimumVectorRelevance" ? "any" : 1}
+        || input.field === "minimumIntervalMs" ? 0 : 1}
+      step={1}
       required={!optional}
       value={input.form[input.field]}
       onChange={(event) => input.setForm({
@@ -537,8 +533,7 @@ function createEmptyForm(): EmbeddingForm {
     retryCount: 2,
     minimumIntervalMs: 0,
     concurrency: 4,
-    maximumResponseBytes: 8388608,
-    minimumVectorRelevance: 0.7
+    maximumResponseBytes: 8388608
   };
 }
 
@@ -557,8 +552,7 @@ function toForm(value: EmbeddingConfiguration): EmbeddingForm {
     retryCount: value.retryCount,
     minimumIntervalMs: value.minimumIntervalMs,
     concurrency: value.concurrency,
-    maximumResponseBytes: value.maximumResponseBytes,
-    minimumVectorRelevance: value.minimumVectorRelevance
+    maximumResponseBytes: value.maximumResponseBytes
   };
 }
 
@@ -574,10 +568,6 @@ function buildDraft(
   if (
     !value.displayName.trim() || !value.baseUrl.trim() || !value.modelName.trim()
     || requiredNumbers.some((number) => !Number.isSafeInteger(number))
-    || typeof value.minimumVectorRelevance !== "number"
-    || !Number.isFinite(value.minimumVectorRelevance)
-    || value.minimumVectorRelevance < 0
-    || value.minimumVectorRelevance > 1
     || value.authenticationMode === "api_key"
       && !value.apiKey.trim()
       && !existing?.apiKeyConfigured
@@ -598,8 +588,7 @@ function buildDraft(
     retryCount: value.retryCount as number,
     minimumIntervalMs: value.minimumIntervalMs as number,
     concurrency: value.concurrency as number,
-    maximumResponseBytes: value.maximumResponseBytes as number,
-    minimumVectorRelevance: value.minimumVectorRelevance as number
+    maximumResponseBytes: value.maximumResponseBytes as number
   };
 }
 

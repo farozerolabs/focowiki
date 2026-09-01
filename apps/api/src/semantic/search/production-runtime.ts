@@ -11,12 +11,15 @@ import type { EmbeddingGateway } from "../embedding/gateway.js";
 import type { createRerankerGateway } from "../reranker/gateway.js";
 import { createSemanticSearchOrchestrator } from "./orchestrator.js";
 import type { SemanticRankObserver } from "./rank-observer.js";
+import type { RuntimeLogger } from "../../logger.js";
 import { createSemanticQueryEmbeddingGateway } from "./query-embedding.js";
 import { createSemanticRankedLaneAdapter } from "./ranked-lanes.js";
 import { createPostgresActiveVectorHitRepository } from
   "../infrastructure/postgres-active-vector-hit-repository.js";
 import { createPostgresActiveFileRelationshipHitRepository } from
   "../../document-indexing/infrastructure/postgres-active-file-relationship-hit-repository.js";
+import { createPostgresSemanticGraphNeighborRepository } from
+  "./postgres-graph-neighbors.js";
 
 export function createSemanticSearchProductionRuntime(input: {
   sql: DatabaseClient;
@@ -29,6 +32,7 @@ export function createSemanticSearchProductionRuntime(input: {
   runtimeSettings: RuntimeSettingsService;
   reranker: ReturnType<typeof createRerankerGateway>;
   observer?: SemanticRankObserver;
+  logger?: Pick<RuntimeLogger, "info">;
 }) {
   let queryGateway: ReturnType<typeof createSemanticQueryEmbeddingGateway> | null = null;
   let queryGatewayKey = "";
@@ -46,10 +50,13 @@ export function createSemanticSearchProductionRuntime(input: {
     }
   });
   const activeVectorHits = createPostgresActiveVectorHitRepository(input.sql);
+  const graphNeighbors = createPostgresSemanticGraphNeighborRepository(input.sql);
   return createSemanticSearchOrchestrator({
     reranker: input.reranker,
+    ...(input.logger ? { logger: input.logger } : {}),
     ...(input.observer ? { observer: input.observer } : {}),
     rankedLanes,
+    graphNeighbors,
     vectors: input.provider.vector,
     vectorDocuments: {
       async resolveActive(request) {

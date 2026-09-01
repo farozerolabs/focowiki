@@ -287,7 +287,6 @@ function toRevisionWrite(
     minimumIntervalMs: draft.minimumIntervalMs,
     concurrency: draft.concurrency,
     maximumResponseBytes: draft.maximumResponseBytes,
-    minimumVectorRelevance: draft.minimumVectorRelevance,
     vectorProducingRevisionPublicId
   };
 }

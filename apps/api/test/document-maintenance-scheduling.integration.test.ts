@@ -231,12 +231,12 @@ const enabled = Boolean(databaseUrl && runOwner
         requested_dimension, resolved_dimension, normalization,
         maximum_input_tokens, batch_size, timeout_ms, retry_count,
         minimum_interval_ms, concurrency, maximum_response_bytes,
-        minimum_vector_relevance, vector_producing_revision_public_id,
+        vector_producing_revision_public_id,
         validation_status, validation_fingerprint_sha256, validated_at
       ) VALUES (
         'embedding-maintenance-revision', 'embedding-maintenance', 1,
         'none', 'http://127.0.0.1:8080/v1', NULL, 'test-embedding',
-        8, 8, 'l2', 8192, 16, 5000, 1, 0, 2, 1048576, 0.7,
+        8, 8, 'l2', 8192, 16, 5000, 1, 0, 2, 1048576,
         'embedding-maintenance-revision', 'valid', ${"2".repeat(64)}, now()
       )
     `;
@@ -349,8 +349,6 @@ function target(knowledgeBaseId: string): SemanticMaintenanceTarget {
     graphSchemaVersion: "graph-v1",
     promptContractVersion: "prompt-v1",
     embeddingConfigurationRevisionPublicId: "embedding-maintenance-revision",
-    embeddingQueryPolicyRevisionPublicId: "embedding-maintenance-revision",
-    minimumVectorRelevance: 0.7,
     resolvedDimension: 8,
     normalization: "l2",
     artifactSchemaVersion: "artifact-v1",

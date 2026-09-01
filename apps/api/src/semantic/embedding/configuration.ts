@@ -19,7 +19,6 @@ export type EmbeddingConfigurationDraft = {
   minimumIntervalMs: number;
   concurrency: number;
   maximumResponseBytes: number;
-  minimumVectorRelevance: number;
 };
 
 export type EmbeddingConfigurationIssue = {
@@ -31,7 +30,7 @@ const EMBEDDING_CONFIGURATION_FIELDS = new Set([
   "displayName", "authenticationMode", "baseUrl", "apiKey", "modelName",
   "requestedDimension", "normalization", "maximumInputTokens", "batchSize",
   "timeoutMs", "retryCount", "minimumIntervalMs", "concurrency",
-  "maximumResponseBytes", "minimumVectorRelevance"
+  "maximumResponseBytes"
 ]);
 
 export type EmbeddingConfigurationPublic = Omit<
@@ -42,7 +41,6 @@ export type EmbeddingConfigurationPublic = Omit<
   revisionPublicId: string;
   revision: number;
   vectorProducingRevisionPublicId: string;
-  queryPolicyRevisionPublicId: string;
   apiKeyConfigured: boolean;
   resolvedDimension: number | null;
   validationStatus: "not_tested" | "valid" | "invalid";
@@ -95,13 +93,6 @@ export function validateEmbeddingConfigurationDraft(
   integer(issues, "minimumIntervalMs", value.minimumIntervalMs, 0, 60_000);
   integer(issues, "concurrency", value.concurrency, 1, 64);
   integer(issues, "maximumResponseBytes", value.maximumResponseBytes, 1_024, 67_108_864);
-  finiteNumber(
-    issues,
-    "minimumVectorRelevance",
-    value.minimumVectorRelevance,
-    0,
-    1
-  );
   return issues;
 }
 
@@ -179,23 +170,6 @@ function integer(
     || value > maximum
   ) {
     issues.push({ field, code: "out_of_bounds" });
-  }
-}
-
-function finiteNumber(
-  issues: EmbeddingConfigurationIssue[],
-  field: "minimumVectorRelevance",
-  value: unknown,
-  minimum: number,
-  maximum: number
-): void {
-  if (
-    typeof value !== "number"
-    || !Number.isFinite(value)
-    || value < minimum
-    || value > maximum
-  ) {
-    issues.push({ field, code: "invalid_number" });
   }
 }
 

@@ -36,6 +36,10 @@ describe("bounded source-grounded reranker gateway", () => {
     });
 
     expect(result.status).toEqual({ state: "applied", safeCode: null });
+    expect(result.metrics).toEqual({
+      windowCount: 2,
+      thresholdRejectedCount: 1
+    });
     expect(result.candidates.map((item) => item.sourceFilePublicId)).toEqual([
       "file-exact-path", "file-exact-title", "file-b"
     ]);
@@ -142,6 +146,36 @@ describe("bounded source-grounded reranker gateway", () => {
     });
     expect(result.status.state).toBe("degraded");
     expect(result.candidates).toEqual(candidates().slice(0, 3));
+  });
+
+  it("reports when an explicit positive threshold removes every non-exact candidate", async () => {
+    const gateway = createRerankerGateway({
+      resolveActiveConfiguration: async () => configuration(),
+      transport: { rerank: vi.fn(async () => ({ scores: [0.1, 0.2] })) },
+      deploymentSecret: "deployment-secret"
+    });
+
+    const result = await gateway.rerank({
+      query: "Which source applies?",
+      knowledgeBaseId: "kb-a",
+      candidates: candidates().slice(2),
+      rerankTopK: 2,
+      rerankScoreThreshold: 0.8,
+      limit: 2,
+      signal: null
+    });
+
+    expect(result).toEqual({
+      candidates: [],
+      status: {
+        state: "applied",
+        safeCode: "RERANKER_ALL_BELOW_THRESHOLD"
+      },
+      metrics: {
+        windowCount: 2,
+        thresholdRejectedCount: 2
+      }
+    });
   });
 
   it("never sends foreign, generated-only, full-file, vector, or internal candidate data", async () => {

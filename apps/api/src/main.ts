@@ -252,7 +252,8 @@ async function runApi(): Promise<void> {
           embeddingGateway,
           hydration: storageVnextSearchHydration,
           runtimeSettings,
-          reranker: rerankerGateway
+          reranker: rerankerGateway,
+          logger
         }),
         fallback: lexicalSearch,
         hydration: storageVnextSearchHydration,

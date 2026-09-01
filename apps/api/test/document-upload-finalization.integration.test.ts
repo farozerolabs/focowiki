@@ -502,12 +502,12 @@ async function seedRequiredProcessingContract(sql: postgres.Sql): Promise<void> 
       base_url, model_name, requested_dimension, resolved_dimension,
       normalization, maximum_input_tokens, batch_size, timeout_ms, retry_count,
       minimum_interval_ms, concurrency, maximum_response_bytes,
-      minimum_vector_relevance, vector_producing_revision_public_id,
+      vector_producing_revision_public_id,
       validation_status, validation_fingerprint_sha256, validated_at
     ) VALUES (
       'embedding-revision-document-upload', 'embedding-document-upload', 1,
       'none', 'http://embedding.local/v1', 'embedding-model', 3, 3,
-      'l2', 8192, 16, 5000, 1, 0, 2, 1048576, 0.7,
+      'l2', 8192, 16, 5000, 1, 0, 2, 1048576,
       'embedding-revision-document-upload', 'valid', ${"b".repeat(64)}, now()
     )
   `;
@@ -544,15 +544,13 @@ async function seedRequiredProcessingContract(sql: postgres.Sql): Promise<void> 
     INSERT INTO focowiki.semantic_projection_contracts (
       public_id, knowledge_base_id, semantic_generation_public_id,
       embedding_configuration_revision_public_id,
-      embedding_query_policy_revision_public_id,
-      minimum_vector_relevance, search_provider_kind,
+      search_provider_kind,
       resolved_dimension, normalization, artifact_schema_version,
       vector_schema_version, mapping_fingerprint_sha256
     ) VALUES (
       'semantic-contract-document-upload', 'knowledge-base-document-upload',
       'semantic-generation-document-upload',
-      'embedding-revision-document-upload',
-      'embedding-revision-document-upload', 0.7, 'opensearch', 3, 'l2',
+      'embedding-revision-document-upload', 'opensearch', 3, 'l2',
       'artifact-v1', 'vector-v1', ${"d".repeat(64)}
     )
   `;

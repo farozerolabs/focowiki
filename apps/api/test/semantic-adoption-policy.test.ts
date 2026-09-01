@@ -64,15 +64,6 @@ describe("semantic adoption policy", () => {
     )).toBe("provider_only");
   });
 
-  it("uses query-policy-only adoption when only the vector threshold changes", () => {
-    const current = target();
-    expect(classifySemanticAdoption(active(current), {
-      ...current,
-      embeddingQueryPolicyRevisionPublicId: "embedding-revision-2",
-      minimumVectorRelevance: 0.42
-    })).toBe("query_policy_only");
-  });
-
   it("requires full adoption if the stored contract fingerprint is inconsistent", () => {
     const current = target();
     expect(classifySemanticAdoption({
@@ -91,8 +82,6 @@ function target(): SemanticMaintenanceTarget {
     graphSchemaVersion: "graph-v1",
     promptContractVersion: "prompt-v1",
     embeddingConfigurationRevisionPublicId: "embedding-revision-1",
-    embeddingQueryPolicyRevisionPublicId: "embedding-revision-1",
-    minimumVectorRelevance: 0.7,
     resolvedDimension: 3,
     normalization: "l2",
     artifactSchemaVersion: "artifact-v1",
@@ -123,9 +112,6 @@ SemanticActiveProjectionRecord {
     projectionContractPublicId: "projection-active",
     embeddingConfigurationRevisionPublicId:
       targetContract.embeddingConfigurationRevisionPublicId,
-    embeddingQueryPolicyRevisionPublicId:
-      targetContract.embeddingQueryPolicyRevisionPublicId,
-    minimumVectorRelevance: targetContract.minimumVectorRelevance,
     searchProviderKind: targetContract.searchProviderKind,
     resolvedDimension: targetContract.resolvedDimension,
     normalization: targetContract.normalization,

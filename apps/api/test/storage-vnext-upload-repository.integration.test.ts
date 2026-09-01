@@ -1015,9 +1015,6 @@ function lateSemanticTarget(
     promptContractVersion: "prompt-v1",
     embeddingConfigurationRevisionPublicId:
       configurations.embeddingConfigurationRevisionPublicId,
-    embeddingQueryPolicyRevisionPublicId:
-      configurations.embeddingConfigurationRevisionPublicId,
-    minimumVectorRelevance: 0.7,
     resolvedDimension: 3,
     normalization: "l2",
     artifactSchemaVersion: "artifact-v1",

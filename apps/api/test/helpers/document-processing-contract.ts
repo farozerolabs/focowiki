@@ -38,12 +38,12 @@ export async function seedRequiredDocumentProcessingContract(
       base_url, model_name, requested_dimension, resolved_dimension,
       normalization, maximum_input_tokens, batch_size, timeout_ms, retry_count,
       minimum_interval_ms, concurrency, maximum_response_bytes,
-      minimum_vector_relevance, vector_producing_revision_public_id,
+      vector_producing_revision_public_id,
       validation_status, validation_fingerprint_sha256, validated_at
     ) VALUES (
       ${EMBEDDING_REVISION_ID}, ${EMBEDDING_ID}, 1, 'none',
       'http://embedding.local/v1', 'embedding-model', 3, 3, 'l2',
-      8192, 16, 5000, 1, 0, 2, 1048576, 0.7,
+      8192, 16, 5000, 1, 0, 2, 1048576,
       ${EMBEDDING_REVISION_ID}, 'valid', ${"e".repeat(64)}, now()
     )
     ON CONFLICT (public_id) DO NOTHING
@@ -82,14 +82,13 @@ export async function seedRequiredDocumentProcessingContract(
     INSERT INTO focowiki.semantic_projection_contracts (
       public_id, knowledge_base_id, semantic_generation_public_id,
       embedding_configuration_revision_public_id,
-      embedding_query_policy_revision_public_id,
-      minimum_vector_relevance, search_provider_kind,
+      search_provider_kind,
       resolved_dimension, normalization, artifact_schema_version,
       vector_schema_version, mapping_fingerprint_sha256
     ) VALUES (
       ${`semantic-contract-${scope}`}, ${knowledgeBaseId},
       ${semanticGenerationPublicId}, ${EMBEDDING_REVISION_ID},
-      ${EMBEDDING_REVISION_ID}, 0.7, 'opensearch', 3, 'l2',
+      'opensearch', 3, 'l2',
       'artifact-v1', 'vector-v1', ${"a".repeat(64)}
     )
     ON CONFLICT (knowledge_base_id, semantic_generation_public_id) DO NOTHING
