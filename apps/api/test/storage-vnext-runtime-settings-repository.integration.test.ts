@@ -112,12 +112,13 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
   });
 
   it("writes bounded security audit and exposes the live-work revision foreign key", async () => {
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
     await repository.createAuditLog({
       settingKey: "worker",
       action: "update",
       actor: "admin",
       value: { sourceFileConcurrency: 2 },
-      expiresAt: "2026-09-01T00:00:00.000Z"
+      expiresAt
     });
     const audit = await sql<Array<{
       event_type: string;
