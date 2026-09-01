@@ -98,18 +98,12 @@ export function assertSemanticMaintenanceTarget(input: SemanticMaintenanceTarget
   assertIdentity(input.knowledgeBaseId);
   assertIdentity(input.generationModelConfigurationPublicId);
   assertIdentity(input.embeddingConfigurationRevisionPublicId);
-  assertIdentity(input.embeddingQueryPolicyRevisionPublicId);
   if (!Number.isSafeInteger(input.generationModelConfigurationRevision)
     || input.generationModelConfigurationRevision < 0) {
     throw new Error("Semantic generation model revision is invalid");
   }
   if (!Number.isSafeInteger(input.resolvedDimension) || input.resolvedDimension < 1) {
     throw new Error("Semantic maintenance dimension is invalid");
-  }
-  if (!Number.isFinite(input.minimumVectorRelevance)
-    || input.minimumVectorRelevance < 0
-    || input.minimumVectorRelevance > 1) {
-    throw new Error("Semantic minimum vector relevance is invalid");
   }
   if (!SHA256_PATTERN.test(input.mappingFingerprintSha256)) {
     throw new Error("Semantic mapping fingerprint is invalid");

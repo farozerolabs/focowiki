@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SearchProviderKind } from
   "../../application/ports/search-provider-runtime.js";
-import { SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE } from
-  "../../application/ports/search-provider-runtime.js";
 import type { SemanticActiveProjectionRecord } from
   "../../semantic/application/ports.js";
 import { semanticVectorIndexUid } from
@@ -25,6 +23,8 @@ import type {
 } from "./ports.js";
 import { normalizeAndValidateSearchQuery } from "./query-contract.js";
 import { createSemanticSearchPlan } from "../../semantic/search/query-plan.js";
+import { SEMANTIC_RANKING_CONTRACT_REVISION } from
+  "../../semantic/search/orchestrator.js";
 
 type ActiveProjection = Pick<
   SemanticActiveProjectionRecord,
@@ -36,8 +36,6 @@ type ActiveProjection = Pick<
   | "mappingFingerprintSha256"
 > & {
   normalization?: "none" | "l2";
-  embeddingQueryPolicyRevisionPublicId?: string;
-  minimumVectorRelevance?: number;
 };
 
 type SemanticItem = {
@@ -101,8 +99,6 @@ export function createStorageVnextSemanticSearch(input: {
         vectorIndexUid: string;
         dimension: number;
         normalization?: "none" | "l2";
-        embeddingQueryPolicyRevisionPublicId?: string;
-        minimumVectorRelevance?: number;
       };
       signal: AbortSignal | null;
     }): Promise<{
@@ -195,14 +191,10 @@ export function createStorageVnextSemanticSearch(input: {
         rerankTopK: request.rerankTopK,
         rerankScoreThreshold: request.rerankScoreThreshold,
         activeRerankerRevisionPublicId,
+        semanticRankingContractRevision: SEMANTIC_RANKING_CONTRACT_REVISION,
         semanticGenerationPublicId: projection.publicId,
         embeddingConfigurationRevisionPublicId:
           projection.embeddingConfigurationRevisionPublicId,
-        embeddingQueryPolicyRevisionPublicId:
-          projection.embeddingQueryPolicyRevisionPublicId
-            ?? projection.embeddingConfigurationRevisionPublicId,
-        minimumVectorRelevance: projection.minimumVectorRelevance
-          ?? SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE,
         mappingFingerprintSha256: projection.mappingFingerprintSha256,
         lexicalIndexUid: lexicalProjection?.providerIndexUid ?? null
       });
@@ -251,12 +243,7 @@ export function createStorageVnextSemanticSearch(input: {
               ? { lexicalIndexUid: lexicalProjection.providerIndexUid }
               : {}),
             dimension: projection.resolvedDimension,
-            normalization: projection.normalization ?? "l2",
-            embeddingQueryPolicyRevisionPublicId:
-              projection.embeddingQueryPolicyRevisionPublicId
-                ?? projection.embeddingConfigurationRevisionPublicId,
-            minimumVectorRelevance: projection.minimumVectorRelevance
-              ?? SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE
+            normalization: projection.normalization ?? "l2"
           },
           signal: null
         });

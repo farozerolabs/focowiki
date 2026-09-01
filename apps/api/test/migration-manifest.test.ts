@@ -134,6 +134,13 @@ describe("document indexing migration manifest", () => {
       targetGeneration:
         "storage-vnext-v29-source-metadata-persistence-repair",
       safety: "compatible"
+    }, {
+      fileName: "022_provider_neutral_retrieval.sql",
+      sourceGeneration:
+        "storage-vnext-v29-source-metadata-persistence-repair",
+      targetGeneration:
+        "storage-vnext-v30-provider-neutral-retrieval",
+      safety: "compatible"
     }]);
     expect(MIGRATION_FILES).toEqual([
       "001_storage_vnext.sql",
@@ -156,10 +163,11 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      "storage-vnext-v29-source-metadata-persistence-repair"
+      "storage-vnext-v30-provider-neutral-retrieval"
     );
   });
 
@@ -196,7 +204,8 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION).pendingFiles).toEqual([]);
     expect(createBootstrapPlan(
@@ -210,7 +219,8 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v21-single-job-publication-foundation"
@@ -222,7 +232,8 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v22-single-job-publication-upgrade-baseline"
@@ -233,7 +244,8 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v23-single-job-publication-retry-recovery"
@@ -243,7 +255,8 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v24-single-job-publication-scale-safety"
@@ -252,7 +265,8 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v25-single-job-publication-monotonic-recovery"
@@ -260,25 +274,29 @@ describe("document indexing migration manifest", () => {
       "018_navigation_chain_reconciliation.sql",
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v26-navigation-chain-reconciliation"
     ).pendingFiles).toEqual([
       "019_publication_window_cleanup_recovery.sql",
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v27-publication-window-cleanup-recovery"
     ).pendingFiles).toEqual([
       "020_navigation_leaf_identity_recovery.sql",
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     expect(createBootstrapPlan(
       "storage-vnext-v28-navigation-leaf-identity-recovery"
     ).pendingFiles).toEqual([
-      "021_source_metadata_persistence_repair.sql"
+      "021_source_metadata_persistence_repair.sql",
+      "022_provider_neutral_retrieval.sql"
     ]);
     for (const generation of [
       "storage-vnext-v9-document-indexing-hybrid",

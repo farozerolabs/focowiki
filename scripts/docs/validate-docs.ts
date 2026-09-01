@@ -334,9 +334,10 @@ async function validateAgentSearchGuidance() {
     ].map((file) => fs.readFile(file, "utf8")))).join("\n");
     const required = locale.name === "Simplified Chinese"
       ? ["完整独立问题", "最多执行两轮", "来源 Markdown", "rerankTopK",
-          "rerankScoreThreshold", "余弦"]
+          "rerankScoreThreshold", "不再包含公共搜索相关性阈值"]
       : ["standalone natural-language question", "at most two", "source Markdown",
-          "rerankTopK", "rerankScoreThreshold", "cosine"];
+          "rerankTopK", "rerankScoreThreshold",
+          "do not contain a public-search relevance threshold"];
     for (const phrase of required) {
       if (!content.includes(phrase)) {
         throw new Error(
@@ -347,7 +348,9 @@ async function validateAgentSearchGuidance() {
     for (const stale of [
       "Do not send the full user question",
       "one phrase at a time",
-      "Repeat breadth and depth while new evidence"
+      "Repeat breadth and depth while new evidence",
+      "public cosine threshold",
+      "公共余弦阈值"
     ]) {
       if (content.includes(stale)) {
         throw new Error(

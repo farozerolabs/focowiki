@@ -5,8 +5,6 @@ import type { SearchProviderKind } from
   "../../application/ports/search-provider-runtime.js";
 import type { SearchProviderIndexDefinition } from
   "../../application/ports/search-provider-runtime.js";
-import { semanticContractFingerprint } from
-  "../../semantic/domain/maintenance-contract.js";
 import { createPostgresSemanticGenerationRepository } from
   "../../semantic/infrastructure/postgres-generation-repository.js";
 import type { DocumentMaintenancePort } from
@@ -61,26 +59,6 @@ export async function activateDocumentMaintenanceSemanticContract(
 ): Promise<void> {
   const adoption = context.checkpoint.semanticAdoption;
   if (!adoption) return;
-  if (adoption.mode === "query_policy_only") {
-    if (!adoption.expectedPredecessorPublicId) {
-      throw maintenanceError("semantic_predecessor_missing");
-    }
-    const active = await generations.getActive(context.knowledgeBaseId);
-    if (!active || active.publicId !== adoption.expectedPredecessorPublicId) {
-      throw maintenanceError("semantic_predecessor_conflict");
-    }
-    const adopted = await generations.adoptQueryPolicy({
-      knowledgeBaseId: context.knowledgeBaseId,
-      semanticGenerationPublicId: active.publicId,
-      expectedGenerationRevision: active.revision,
-      embeddingQueryPolicyRevisionPublicId:
-        adoption.target.embeddingQueryPolicyRevisionPublicId,
-      minimumVectorRelevance: adoption.target.minimumVectorRelevance,
-      contractFingerprintSha256: semanticContractFingerprint(adoption.target)
-    });
-    if (!adopted) throw maintenanceError("semantic_query_policy_conflict");
-    return;
-  }
   let candidate = await generations.getCandidateByOperation(context);
   if (!candidate) throw maintenanceError("semantic_candidate_missing");
   if (candidate.state === "building") {

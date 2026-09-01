@@ -396,11 +396,12 @@ export function fileSearchParameters(): ParameterObject[] {
       minimum: 1,
       maximum: SEARCH_RERANK_MAX_TOP_K
     }),
-    queryParameter("rerankScoreThreshold", "Minimum normalized reranker score for non-exact candidates. It is valid only with `rerank=true` and defaults to 0.35.", {
+    queryParameter("rerankScoreThreshold", "Minimum normalized reranker score for non-exact candidates. It is valid only with `rerank=true` and defaults to 0, so reranking reorders candidates without removing them unless a positive threshold is supplied.", {
       type: "number",
       minimum: 0,
       maximum: 1,
-      example: 0.35
+      default: 0,
+      example: 0
     }),
     queryParameter("limit", "Final source-file result count for this search request.", {
       type: "integer",

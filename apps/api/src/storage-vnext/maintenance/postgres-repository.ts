@@ -589,10 +589,6 @@ export function createPostgresStorageVnextMaintenanceRepository(
                  OR semantic_contract.embedding_configuration_revision_public_id
                     IS DISTINCT FROM
                       active_embedding.vector_producing_revision_public_id
-                 OR semantic_contract.embedding_query_policy_revision_public_id
-                    IS DISTINCT FROM active_embedding.query_policy_revision_public_id
-                 OR semantic_contract.minimum_vector_relevance
-                    IS DISTINCT FROM active_embedding.minimum_vector_relevance
                  OR semantic_contract.resolved_dimension
                     IS DISTINCT FROM active_embedding.resolved_dimension
                  OR semantic_contract.normalization
@@ -658,9 +654,6 @@ export function createPostgresStorageVnextMaintenanceRepository(
           SELECT count(*)::integer AS active_count,
                  min(revision.vector_producing_revision_public_id)
                    AS vector_producing_revision_public_id,
-                 min(revision.public_id) AS query_policy_revision_public_id,
-                 min(revision.minimum_vector_relevance)
-                   AS minimum_vector_relevance,
                  min(revision.resolved_dimension) AS resolved_dimension,
                  min(revision.normalization) AS normalization
           FROM focowiki.embedding_configurations configuration
@@ -847,9 +840,7 @@ function validateSemanticAdoption(
   if (value === undefined || value === null) return;
   if (
     typeof value !== "object"
-    || ![
-      "full", "embedding_only", "provider_only", "query_policy_only"
-    ].includes(value.mode)
+    || !["full", "embedding_only", "provider_only"].includes(value.mode)
     || !value.target
     || value.target.searchProviderKind !== searchProviderKind
     || value.target.knowledgeBaseId === ""

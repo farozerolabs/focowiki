@@ -215,7 +215,7 @@ describe("OpenSearch query runtime", () => {
       expect.objectContaining({
         type: "best_fields",
         operator: "or",
-        minimum_should_match: "2<-70%"
+        minimum_should_match: 2
       })
     ]));
   });
@@ -248,9 +248,9 @@ describe("OpenSearch query runtime", () => {
           must: [{
             match: {
               _focowikiJiebaText: {
-                query: "存在 火星 海洋 采矿 许可 续期",
+                query: "火星 海洋 采矿 许可 续期",
                 operator: "or",
-                minimum_should_match: "2<-20%"
+                minimum_should_match: 2
               }
             }
           }]

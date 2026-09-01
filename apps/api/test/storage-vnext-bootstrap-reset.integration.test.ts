@@ -151,7 +151,7 @@ describeOwnedDatabase("storage vNext single-job clean bootstrap", () => {
     await expect(sql.unsafe<Array<{ generation: string }>>(
       "SELECT generation FROM focowiki.runtime_generation WHERE singleton = true"
     )).resolves.toEqual([{
-      generation: "storage-vnext-v29-source-metadata-persistence-repair"
+      generation: "storage-vnext-v30-provider-neutral-retrieval"
     }]);
   });
 });

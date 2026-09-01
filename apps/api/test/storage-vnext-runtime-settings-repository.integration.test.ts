@@ -229,13 +229,13 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
         authentication_mode, base_url, model_name, requested_dimension,
         resolved_dimension, normalization, maximum_input_tokens, batch_size,
         timeout_ms, retry_count, minimum_interval_ms, concurrency,
-        maximum_response_bytes, minimum_vector_relevance,
+        maximum_response_bytes,
         vector_producing_revision_public_id, validation_status,
         validation_fingerprint_sha256, validated_at
       ) VALUES (
         'embedding-revision-model-running-work', 'embedding-model-running-work', 1,
         'none', 'http://embedding.local/v1', 'embedding-model', 3, 3, 'l2',
-        8192, 16, 5000, 1, 0, 2, 1048576, 0.7,
+        8192, 16, 5000, 1, 0, 2, 1048576,
         'embedding-revision-model-running-work', 'valid', ${"d".repeat(64)}, now()
       )
     `;

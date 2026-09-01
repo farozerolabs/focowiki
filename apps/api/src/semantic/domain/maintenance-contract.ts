@@ -12,8 +12,6 @@ export function semanticContractFingerprint(
     target.graphSchemaVersion,
     target.promptContractVersion,
     target.embeddingConfigurationRevisionPublicId,
-    target.embeddingQueryPolicyRevisionPublicId,
-    target.minimumVectorRelevance,
     target.resolvedDimension,
     target.normalization,
     target.artifactSchemaVersion,

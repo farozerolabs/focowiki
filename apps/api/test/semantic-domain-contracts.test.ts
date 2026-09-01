@@ -121,8 +121,6 @@ describe("Focowiki-owned semantic contracts", () => {
       graphSchemaVersion: "graph-v1",
       promptContractVersion: "prompt-v1",
       embeddingConfigurationRevisionPublicId: "embedding-revision-a",
-      embeddingQueryPolicyRevisionPublicId: "embedding-revision-a",
-      minimumVectorRelevance: 0.7,
       resolvedDimension: 8,
       normalization: "l2",
       artifactSchemaVersion: "artifact-v1",

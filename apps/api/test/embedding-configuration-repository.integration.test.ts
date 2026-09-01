@@ -112,14 +112,12 @@ describeOwnedDatabase('embedding configuration PostgreSQL repository', () => {
       INSERT INTO focowiki.semantic_projection_contracts (
         public_id, knowledge_base_id, semantic_generation_public_id,
         embedding_configuration_revision_public_id,
-        embedding_query_policy_revision_public_id,
-        minimum_vector_relevance, search_provider_kind,
+        search_provider_kind,
         resolved_dimension, normalization, artifact_schema_version,
         vector_schema_version, mapping_fingerprint_sha256
       ) VALUES (
         'semantic-contract-ref', 'kb-embedding-ref', 'semantic-embedding-ref',
-        'embedding-revision-a2', 'embedding-revision-a2', 0.7,
-        'opensearch', 3, 'l2',
+        'embedding-revision-a2', 'opensearch', 3, 'l2',
         'artifact-v1', 'vector-v1', ${'c'.repeat(64)}
       )
     `;
@@ -135,7 +133,6 @@ describeOwnedDatabase('embedding configuration PostgreSQL repository', () => {
       batchSize: 16, timeoutMs: 10_000, retryCount: 2,
       minimumIntervalMs: 20, concurrency: 2,
       maximumResponseBytes: 1_000_000,
-      minimumVectorRelevance: 0.7,
       vectorProducingRevisionPublicId
     };
   }

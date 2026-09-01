@@ -46,6 +46,7 @@ export function createSemanticRankedLaneAdapter(input: {
       limit: number;
       deadlineMs: number;
       signal: AbortSignal;
+      relaxedTermCoverage?: boolean;
     }): Promise<readonly SemanticLaneCandidate[]> {
       if (request.signal.aborted) throw request.signal.reason;
       const normalizedRequest = {
@@ -76,6 +77,7 @@ export function createSemanticRankedLaneAdapter(input: {
         cropLength: 1_200,
         deadlineMs: request.deadlineMs,
         matchingStrategy: branch.matchingStrategy,
+        relaxedTermCoverage: request.relaxedTermCoverage === true,
         distinctBy: "sourceFilePublicId"
       } satisfies SearchProviderQueryRequest);
       if (request.signal.aborted) throw request.signal.reason;

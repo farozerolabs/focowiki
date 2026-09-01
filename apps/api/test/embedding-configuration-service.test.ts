@@ -97,7 +97,7 @@ describe("embedding configuration application service", () => {
     });
   });
 
-  it("adopts a threshold-only query-policy revision without another model call", async () => {
+  it("reuses the vector-producing revision for a non-vector runtime update", async () => {
     const repository = createMemoryRepository();
     const transport = { embed: vi.fn(async () => ({
       modelName: "embedding-model",
@@ -120,15 +120,14 @@ describe("embedding configuration application service", () => {
     const updated = await service.update(created.publicId, tested.revision, {
       ...draft(),
       apiKey: null,
-      minimumVectorRelevance: 0.42
+      batchSize: 64
     }, null);
 
     expect(transport.embed).toHaveBeenCalledTimes(1);
     expect(updated).toMatchObject({
       revisionPublicId: "embedding-revision-revision-2",
-      queryPolicyRevisionPublicId: "embedding-revision-revision-2",
       vectorProducingRevisionPublicId: "embedding-revision-revision-1",
-      minimumVectorRelevance: 0.42,
+      batchSize: 64,
       validationStatus: "valid",
       resolvedDimension: 3
     });
@@ -189,8 +188,7 @@ function draft() {
     retryCount: 2,
     minimumIntervalMs: 20,
     concurrency: 4,
-    maximumResponseBytes: 8_388_608,
-    minimumVectorRelevance: 0.7
+    maximumResponseBytes: 8_388_608
   };
 }
 
@@ -320,9 +318,7 @@ function fromWrite(
     minimumIntervalMs: input.minimumIntervalMs,
     concurrency: input.concurrency,
     maximumResponseBytes: input.maximumResponseBytes,
-    minimumVectorRelevance: input.minimumVectorRelevance,
     vectorProducingRevisionPublicId: input.vectorProducingRevisionPublicId,
-    queryPolicyRevisionPublicId: input.revisionPublicId,
     validationStatus: "not_tested",
     validationFingerprintSha256: null,
     safeValidationErrorCode: null,

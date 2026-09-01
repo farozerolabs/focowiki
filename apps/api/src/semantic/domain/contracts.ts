@@ -160,8 +160,6 @@ export type SemanticMaintenanceTarget = {
   graphSchemaVersion: string;
   promptContractVersion: string;
   embeddingConfigurationRevisionPublicId: SemanticPublicId;
-  embeddingQueryPolicyRevisionPublicId: SemanticPublicId;
-  minimumVectorRelevance: number;
   resolvedDimension: number;
   normalization: EmbeddingNormalization;
   artifactSchemaVersion: string;

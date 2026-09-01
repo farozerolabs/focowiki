@@ -2,9 +2,6 @@ import type {
   SearchProviderVectorFamily,
   SearchProviderVectorPort
 } from "../../application/ports/search-provider-runtime.js";
-import {
-  SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE
-} from "../../application/ports/search-provider-runtime.js";
 import { generatedPagePath } from "../../domain/source-path.js";
 import type { OkfSearchFilters } from
   "../../storage-vnext/search/okf-signals.js";
@@ -17,8 +14,10 @@ import {
 } from "./rank-observer.js";
 import type {
   RerankerCandidate,
+  RerankerMetrics,
   RerankerStatus
 } from "../reranker/gateway.js";
+import type { RuntimeLogger } from "../../logger.js";
 
 export type SemanticRankedLane =
   | "exact_path" | "exact_title" | "lexical" | "jieba"
@@ -75,6 +74,12 @@ const WEIGHTS: Record<SemanticSearchLane, number> = {
   community_vector: 2
 };
 const RRF_CONSTANT = 60;
+const PRE_RERANKER_SOURCE_LIMIT = 100;
+const GRAPH_SEED_LIMIT = 5;
+const GRAPH_NEIGHBORS_PER_SEED = 5;
+const GRAPH_EXPANSION_SOURCE_LIMIT = 25;
+export const SEMANTIC_RANKING_CONTRACT_REVISION =
+  "semantic-ranking-v2-provider-neutral-rrf";
 
 export function createSemanticSearchOrchestrator(input: {
   queryEmbedding: {
@@ -101,6 +106,7 @@ export function createSemanticSearchOrchestrator(input: {
       limit: number;
       deadlineMs: number;
       signal: AbortSignal;
+      relaxedTermCoverage?: boolean;
     }): Promise<readonly SemanticLaneCandidate[]>;
   };
   vectors: Pick<SearchProviderVectorPort, "query">;
@@ -119,6 +125,15 @@ export function createSemanticSearchOrchestrator(input: {
       limit: number;
       signal: AbortSignal;
     }): Promise<readonly string[]>;
+  };
+  graphNeighbors?: {
+    expand(request: {
+      knowledgeBaseId: string;
+      seedSourceFilePublicIds: readonly string[];
+      neighborsPerSeed: number;
+      limit: number;
+      signal: AbortSignal;
+    }): Promise<readonly SemanticLaneCandidate[]>;
   };
   sources: {
     resolve(request: {
@@ -142,10 +157,12 @@ export function createSemanticSearchOrchestrator(input: {
     }): Promise<{
       candidates: readonly RerankerCandidate[];
       status: RerankerStatus;
+      metrics?: RerankerMetrics;
       hasMore?: boolean;
     }>;
   };
   observer?: SemanticRankObserver;
+  logger?: Pick<RuntimeLogger, "info">;
 }) {
   return {
     async search(rawRequest: {
@@ -168,8 +185,6 @@ export function createSemanticSearchOrchestrator(input: {
         lexicalIndexUid?: string;
         dimension: number;
         normalization?: "none" | "l2";
-        embeddingQueryPolicyRevisionPublicId?: string;
-        minimumVectorRelevance?: number;
       };
       signal: AbortSignal | null;
     }) {
@@ -188,12 +203,7 @@ export function createSemanticSearchOrchestrator(input: {
         rerankScoreThreshold: rawRequest.rerankScoreThreshold ?? null,
         projection: {
           ...rawRequest.projection,
-          normalization: rawRequest.projection.normalization ?? "l2" as const,
-          embeddingQueryPolicyRevisionPublicId:
-            rawRequest.projection.embeddingQueryPolicyRevisionPublicId
-              ?? rawRequest.projection.embeddingConfigurationRevisionPublicId,
-          minimumVectorRelevance: rawRequest.projection.minimumVectorRelevance
-            ?? SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE
+          normalization: rawRequest.projection.normalization ?? "l2" as const
         }
       };
       const normalized = normalizeRequest(request);
@@ -215,7 +225,7 @@ export function createSemanticSearchOrchestrator(input: {
           scope: request.scope,
           resultLimit: request.limit
         });
-        const laneLimit = plan.candidateLimitPerLane;
+        const rankedLaneLimit = plan.rankedCandidateLimit;
         const ranked = plan.rankedLanes.map((lane) =>
           runLane(lane, request.laneCutoffMs, root.signal, (signal) =>
             input.rankedLanes.run({
@@ -227,9 +237,10 @@ export function createSemanticSearchOrchestrator(input: {
               scope: request.scope,
               fileKind: request.fileKind,
               okfFilters: request.okfFilters,
-              limit: laneLimit,
+              limit: rankedLaneLimit,
               deadlineMs: request.laneCutoffMs,
-              signal
+              signal,
+              relaxedTermCoverage: false
             })));
         const vectorDefinitions = plan.vectorLanes;
         const embedding = vectorDefinitions.length === 0 ? null : withDeadline({
@@ -248,7 +259,7 @@ export function createSemanticSearchOrchestrator(input: {
             signal
           })
         });
-        const vectors = vectorDefinitions.map(({ lane, family }) =>
+        const vectors = vectorDefinitions.map(({ lane, family, candidateLimit }) =>
           runLane(lane, request.laneCutoffMs, root.signal, async () => {
             if (!embedding) throw searchError("semantic_query_embedding_unavailable");
             const vector = await embedding;
@@ -262,10 +273,9 @@ export function createSemanticSearchOrchestrator(input: {
               family,
               fileKind: request.fileKind,
               okfFilters: request.okfFilters,
-              minimumRelevance: request.projection.minimumVectorRelevance,
               dimension: request.projection.dimension,
               vector,
-              limit: laneLimit,
+              limit: candidateLimit,
               deadlineMs: request.laneCutoffMs
             });
             return result.hits.map((hit) => ({
@@ -280,7 +290,56 @@ export function createSemanticSearchOrchestrator(input: {
               semanticFamily: hit.family
             }));
           }));
-        const outcomes = await Promise.all([...ranked, ...vectors]);
+        let outcomes = await Promise.all([...ranked, ...vectors]);
+        let relaxationApplied = false;
+        let relaxationMs = 0;
+        const firstPassCandidateCount = outcomes.reduce(
+          (total, outcome) => total + (
+            outcome.state === "completed" ? outcome.candidates.length : 0
+          ),
+          0
+        );
+        if (firstPassCandidateCount === 0 && request.scope === "all") {
+          const relaxationLanes = plan.rankedLanes.filter((lane) =>
+            lane === "lexical" || lane === "jieba"
+          );
+          const remainingForRelaxation = request.overallDeadlineMs
+            - Math.max(0, Date.now() - startedAt);
+          if (relaxationLanes.length > 0 && remainingForRelaxation > 0) {
+            relaxationApplied = true;
+            const relaxationStartedAt = Date.now();
+            const relaxed = await Promise.all(relaxationLanes.map((lane) =>
+              runLane(
+                lane,
+                Math.min(request.laneCutoffMs, remainingForRelaxation),
+                root.signal,
+                (signal) => input.rankedLanes.run({
+                  lane,
+                  indexUid: request.projection.lexicalIndexUid
+                    ?? request.projection.vectorIndexUid,
+                  knowledgeBaseId: request.knowledgeBaseId,
+                  query: normalized,
+                  scope: request.scope,
+                  fileKind: request.fileKind,
+                  okfFilters: request.okfFilters,
+                  limit: rankedLaneLimit,
+                  deadlineMs: Math.min(
+                    request.laneCutoffMs,
+                    remainingForRelaxation
+                  ),
+                  signal,
+                  relaxedTermCoverage: true
+                })
+              )));
+            const replaced = new Map(outcomes.map((outcome) => [
+              outcome.lane,
+              outcome
+            ]));
+            for (const outcome of relaxed) replaced.set(outcome.lane, outcome);
+            outcomes = [...replaced.values()];
+            relaxationMs = Math.max(0, Date.now() - relaxationStartedAt);
+          }
+        }
         const completed = outcomes.flatMap((outcome) =>
           outcome.state === "completed" ? [outcome] : []);
         const failures = outcomes.flatMap((outcome) =>
@@ -296,6 +355,7 @@ export function createSemanticSearchOrchestrator(input: {
           throw searchError("semantic_search_deadline");
         }
         const semanticDocuments = uniqueSemanticDocuments(candidates);
+        const ownershipResolutionStartedAt = Date.now();
         const [sources, activeSemanticDocumentIds] = await Promise.all([
           withDeadline({
             deadlineMs: remainingMs,
@@ -322,17 +382,87 @@ export function createSemanticSearchOrchestrator(input: {
             })
           })
         ]);
+        const ownershipResolutionMs = Math.max(
+          0,
+          Date.now() - ownershipResolutionStartedAt
+        );
         const active = new Map(sources.map((source) => [
           source.sourceFilePublicId, source
         ]));
         const activeSemantic = new Set(activeSemanticDocumentIds);
-        const eligibleCandidates = candidates.filter((candidate) => {
+        let eligibleCandidates = candidates.filter((candidate) => {
           if (candidate.semanticDocumentId
             && !activeSemantic.has(candidate.semanticDocumentId)) return false;
           const source = active.get(candidate.sourceFilePublicId);
           return source?.sourceRevisionPublicId === candidate.sourceRevisionPublicId
             && source.logicalPath === candidatePublicPath(candidate);
         });
+        const ownershipRejectedCount = candidates.length
+          - eligibleCandidates.length;
+        let graphExpansionFailed = false;
+        let graphExpandedCount = 0;
+        let graphExpansionMs = 0;
+        if (
+          input.graphNeighbors
+          && request.mode !== "file"
+          && eligibleCandidates.length > 0
+        ) {
+          const graphExpansionStartedAt = Date.now();
+          const seeds = fuse(eligibleCandidates, active, request.scope)
+            .slice(0, GRAPH_SEED_LIMIT)
+            .map((candidate) => candidate.sourceFilePublicId);
+          try {
+            const expanded = validateLaneCandidates(
+              "file_relationship",
+              await withDeadline({
+                deadlineMs: Math.min(request.laneCutoffMs, remainingMs),
+                parent: root.signal,
+                operation: (signal) => input.graphNeighbors!.expand({
+                  knowledgeBaseId: request.knowledgeBaseId,
+                  seedSourceFilePublicIds: seeds,
+                  neighborsPerSeed: GRAPH_NEIGHBORS_PER_SEED,
+                  limit: GRAPH_EXPANSION_SOURCE_LIMIT,
+                  signal
+                })
+              })
+            );
+            const expandedIds = [...new Set(expanded.map(
+              (candidate) => candidate.sourceFilePublicId
+            ))].filter((sourceFilePublicId) => !active.has(sourceFilePublicId));
+            if (expandedIds.length > 0) {
+              const expandedSources = await withDeadline({
+                deadlineMs: Math.min(request.laneCutoffMs, remainingMs),
+                parent: root.signal,
+                operation: (signal) => input.sources.resolve({
+                  knowledgeBaseId: request.knowledgeBaseId,
+                  sourceFilePublicIds: expandedIds,
+                  fileKind: request.fileKind,
+                  okfFilters: request.okfFilters,
+                  limit: expandedIds.length,
+                  signal
+                })
+              });
+              for (const source of expandedSources) {
+                active.set(source.sourceFilePublicId, source);
+              }
+            }
+            const eligibleExpanded = expanded.filter((candidate) => {
+              const source = active.get(candidate.sourceFilePublicId);
+              return source?.sourceRevisionPublicId
+                  === candidate.sourceRevisionPublicId
+                && source.logicalPath === candidatePublicPath(candidate);
+            });
+            graphExpandedCount = eligibleExpanded.length;
+            eligibleCandidates = [...eligibleCandidates, ...eligibleExpanded];
+          } catch {
+            graphExpansionFailed = true;
+          } finally {
+            graphExpansionMs = Math.max(
+              0,
+              Date.now() - graphExpansionStartedAt
+            );
+          }
+        }
         for (const lane of [...plan.rankedLanes, ...plan.vectorLanes.map(
           (definition) => definition.lane
         )]) {
@@ -344,6 +474,7 @@ export function createSemanticSearchOrchestrator(input: {
               .map((candidate) => candidate.sourceFilePublicId)
           );
         }
+        const fusionStartedAt = Date.now();
         const fusedCandidates = fuse(eligibleCandidates, active, request.scope);
         observeSemanticRanks(
           input.observer,
@@ -353,12 +484,14 @@ export function createSemanticSearchOrchestrator(input: {
         const diversifiedCandidates = diversify(
           fusedCandidates,
           eligibleCandidates
-        );
+        ).slice(0, PRE_RERANKER_SOURCE_LIMIT);
+        const fusionMs = Math.max(0, Date.now() - fusionStartedAt);
         observeSemanticRanks(
           input.observer,
           "diversified",
           diversifiedCandidates.map((candidate) => candidate.sourceFilePublicId)
         );
+        const rerankerStartedAt = Date.now();
         const reranked = await applyReranker({
           reranker: input.reranker,
           request: {
@@ -376,6 +509,7 @@ export function createSemanticSearchOrchestrator(input: {
           },
           candidates: diversifiedCandidates
         });
+        const rerankerMs = Math.max(0, Date.now() - rerankerStartedAt);
         if (reranked.status.state === "applied") {
           observeSemanticRanks(
             input.observer,
@@ -383,9 +517,9 @@ export function createSemanticSearchOrchestrator(input: {
             reranked.items.map((candidate) => candidate.sourceFilePublicId)
           );
         }
-        return {
+        const response = {
           items: reranked.items,
-          semanticStatus: failures.length === 0
+          semanticStatus: failures.length === 0 && !graphExpansionFailed
             ? { state: "ready" as const, safeCode: null }
             : {
                 state: "degraded" as const,
@@ -394,13 +528,44 @@ export function createSemanticSearchOrchestrator(input: {
           evidenceStatus: {
             completedFamilies: completed.map((outcome) => outcome.lane)
               .sort((left, right) => left.localeCompare(right, "en")),
-            degradedFamilies: failures.sort((left, right) =>
-              left.localeCompare(right, "en"))
+            degradedFamilies: [
+              ...failures,
+              ...(graphExpansionFailed ? ["graph_expansion"] : [])
+            ].sort((left, right) => left.localeCompare(right, "en"))
           },
           rerankerStatus: reranked.status,
           hasMore: reranked.hasMore,
           failedLanes: failures.sort((left, right) => left.localeCompare(right, "en"))
         };
+        input.logger?.info("semantic_search.retrieval_completed", {
+          ...laneTelemetry(outcomes),
+          firstPassCandidateCount,
+          candidateCount: candidates.length,
+          ownershipRejectedCount,
+          ownershipResolutionMs,
+          graphExpandedCount,
+          graphExpansionFailed,
+          graphExpansionMs,
+          fusedCount: fusedCandidates.length,
+          deduplicatedCount: Math.max(
+            0,
+            eligibleCandidates.length - fusedCandidates.length
+          ),
+          preRerankerCount: diversifiedCandidates.length,
+          fusionMs,
+          rerankerState: reranked.status.state,
+          rerankerMs,
+          rerankerWindowCount: reranked.metrics?.windowCount ?? 0,
+          thresholdRejectedCount:
+            reranked.metrics?.thresholdRejectedCount ?? 0,
+          rerankerAllBelowThreshold:
+            reranked.status.safeCode === "RERANKER_ALL_BELOW_THRESHOLD",
+          relaxationApplied,
+          relaxationMs,
+          finalCount: reranked.items.length,
+          durationMs: Math.max(0, Date.now() - startedAt)
+        });
+        return response;
       } finally {
         clearTimeout(overallTimer);
         request.signal?.removeEventListener("abort", abortFromCaller);
@@ -458,15 +623,53 @@ async function runLane(
   parent: AbortSignal,
   operation: (signal: AbortSignal) => Promise<readonly SemanticLaneCandidate[]>
 ): Promise<
-  | { state: "completed"; lane: SemanticSearchLane; candidates: readonly SemanticLaneCandidate[] }
-  | { state: "failed"; lane: SemanticSearchLane }
+  | {
+      state: "completed";
+      lane: SemanticSearchLane;
+      candidates: readonly SemanticLaneCandidate[];
+      durationMs: number;
+    }
+  | { state: "failed"; lane: SemanticSearchLane; durationMs: number }
 > {
+  const startedAt = Date.now();
   try {
     const candidates = await withDeadline({ deadlineMs, parent, operation });
-    return { state: "completed", lane, candidates };
+    return {
+      state: "completed",
+      lane,
+      candidates,
+      durationMs: Math.max(0, Date.now() - startedAt)
+    };
   } catch {
-    return { state: "failed", lane };
+    return {
+      state: "failed",
+      lane,
+      durationMs: Math.max(0, Date.now() - startedAt)
+    };
   }
+}
+
+function laneTelemetry(
+  outcomes: readonly (
+    | {
+        state: "completed";
+        lane: SemanticSearchLane;
+        candidates: readonly SemanticLaneCandidate[];
+        durationMs: number;
+      }
+    | { state: "failed"; lane: SemanticSearchLane; durationMs: number }
+  )[]
+): Record<string, number | string> {
+  return Object.fromEntries(outcomes.flatMap((outcome) => {
+    const key = outcome.lane.replace(/_([a-z])/gu, (_match, value: string) =>
+      value.toUpperCase());
+    return [
+      [`${key}State`, outcome.state],
+      [`${key}Count`, outcome.state === "completed"
+        ? outcome.candidates.length : 0],
+      [`${key}Ms`, outcome.durationMs]
+    ];
+  }));
 }
 
 async function withDeadline<T>(input: {
@@ -642,6 +845,7 @@ async function applyReranker(input: {
   items: readonly SemanticSearchResultItem[];
   status: RerankerStatus;
   hasMore: boolean;
+  metrics?: RerankerMetrics;
 }> {
   const fallback = input.candidates.slice(0, input.request.limit);
   if (!input.request.rerank) {
@@ -703,7 +907,8 @@ async function applyReranker(input: {
       return value ? [value] : [];
     }),
     status: result.status,
-    hasMore: result.hasMore ?? false
+    hasMore: result.hasMore ?? false,
+    ...(result.metrics ? { metrics: result.metrics } : {})
   };
 }
 

@@ -149,6 +149,14 @@ export const MIGRATION_MANIFEST = [
     targetGeneration:
       "storage-vnext-v29-source-metadata-persistence-repair",
     safety: "compatible"
+  },
+  {
+    fileName: "022_provider_neutral_retrieval.sql",
+    sourceGeneration:
+      "storage-vnext-v29-source-metadata-persistence-repair",
+    targetGeneration:
+      "storage-vnext-v30-provider-neutral-retrieval",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

@@ -644,12 +644,12 @@ describeOwnedDatabase("embedding artifact PostgreSQL repository", () => {
         base_url, model_name, requested_dimension, resolved_dimension,
         normalization, maximum_input_tokens, batch_size, timeout_ms, retry_count,
         minimum_interval_ms, concurrency, maximum_response_bytes,
-        minimum_vector_relevance, vector_producing_revision_public_id,
+        vector_producing_revision_public_id,
         validation_status, validation_fingerprint_sha256, validated_at
       ) VALUES (
         'embedding-revision-artifact', 'embedding-artifact', 1, 'none',
         'http://embedding.local/v1', 'embedding-model', 3, 3, 'l2',
-        8192, 16, 5000, 1, 0, 2, 1048576, 0.7,
+        8192, 16, 5000, 1, 0, 2, 1048576,
         'embedding-revision-artifact', 'valid', ${"c".repeat(64)}, now()
       )
     `;

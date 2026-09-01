@@ -87,16 +87,13 @@ export async function ensurePostgresSemanticContractBootstrap(
     INSERT INTO focowiki.semantic_projection_contracts (
       public_id, knowledge_base_id, semantic_generation_public_id,
       embedding_configuration_revision_public_id,
-      embedding_query_policy_revision_public_id,
-      minimum_vector_relevance, search_provider_kind,
+      search_provider_kind,
       resolved_dimension, normalization, artifact_schema_version,
       vector_schema_version, mapping_fingerprint_sha256, created_at
     ) VALUES (
       ${`semantic-contract-${identity.generationPublicId}`},
       ${input.knowledgeBaseId}, ${identity.generationPublicId},
       ${input.target.embeddingConfigurationRevisionPublicId},
-      ${input.target.embeddingQueryPolicyRevisionPublicId},
-      ${input.target.minimumVectorRelevance},
       ${input.target.searchProviderKind}, ${input.target.resolvedDimension},
       ${input.target.normalization}, ${input.target.artifactSchemaVersion},
       ${input.target.vectorSchemaVersion},
