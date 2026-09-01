@@ -141,6 +141,14 @@ export const MIGRATION_MANIFEST = [
     targetGeneration:
       "storage-vnext-v28-navigation-leaf-identity-recovery",
     safety: "compatible"
+  },
+  {
+    fileName: "021_source_metadata_persistence_repair.sql",
+    sourceGeneration:
+      "storage-vnext-v28-navigation-leaf-identity-recovery",
+    targetGeneration:
+      "storage-vnext-v29-source-metadata-persistence-repair",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

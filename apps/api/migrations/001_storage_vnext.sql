@@ -1692,6 +1692,8 @@ CREATE TABLE focowiki.source_revision_presentations (
     title text NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     model_suggestions jsonb,
+    metadata_parsed_at timestamp with time zone,
+    metadata_repair_started_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT source_revision_presentations_metadata_check CHECK (((jsonb_typeof(metadata) = 'object'::text) AND (octet_length((metadata)::text) <= 8192))),
     CONSTRAINT source_revision_presentations_model_suggestions_check CHECK (((model_suggestions IS NULL) OR ((jsonb_typeof(model_suggestions) = 'object'::text) AND (octet_length((model_suggestions)::text) <= 65536)))),
@@ -3448,6 +3450,8 @@ CREATE INDEX source_files_active_directory_path_idx ON focowiki.source_files USI
 --
 
 CREATE UNIQUE INDEX source_revision_presentations_current_path_idx ON focowiki.source_revision_presentations USING btree (knowledge_base_id, normalized_path, source_revision_public_id);
+
+CREATE INDEX source_revision_presentations_metadata_repair_idx ON focowiki.source_revision_presentations USING btree (metadata_repair_started_at, created_at, source_revision_public_id) WHERE (metadata_parsed_at IS NULL);
 
 
 --
