@@ -52,9 +52,6 @@ export async function scheduleDocumentMaintenancePage(input: {
   pageSize: number;
   context: Context & { cursor: string | null };
 }) {
-  if (input.context.checkpoint.semanticAdoption?.mode === "query_policy_only") {
-    return emptyPage();
-  }
   const contract = await readSemanticContract(input.sql, input.context);
   const settingsRevisionPublicId = await readSettingsRevision(
     input.sql,
@@ -259,7 +256,7 @@ async function readSemanticContract(
   context: Context
 ): Promise<SemanticContract> {
   const adoption = context.checkpoint.semanticAdoption;
-  if (adoption && adoption.mode !== "query_policy_only") {
+  if (adoption) {
     return contractFromTarget(
       createSemanticAdoptionCandidatePublicId(context),
       adoption.target,

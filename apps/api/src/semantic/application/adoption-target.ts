@@ -53,9 +53,6 @@ export function resolveSemanticAdoptionTarget(input: {
       promptContractVersion: SEMANTIC_PROMPT_CONTRACT_VERSION,
       embeddingConfigurationRevisionPublicId:
         embedding.vectorProducingRevisionPublicId,
-      embeddingQueryPolicyRevisionPublicId:
-        embedding.queryPolicyRevisionPublicId,
-      minimumVectorRelevance: embedding.minimumVectorRelevance,
       resolvedDimension: embedding.resolvedDimension,
       normalization: embedding.normalization,
       artifactSchemaVersion: SEMANTIC_VECTOR_ARTIFACT_SCHEMA_VERSION,

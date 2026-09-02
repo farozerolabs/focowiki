@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSemanticSearchOrchestrator } from
+import {
+  createSemanticSearchOrchestrator,
+  SEMANTIC_RANKING_CONTRACT_REVISION
+} from
   "../src/semantic/search/orchestrator.js";
 
 describe("semantic search orchestrator", () => {
+  it("freezes the provider-neutral weighted-RRF ranking revision", () => {
+    expect(SEMANTIC_RANKING_CONTRACT_REVISION)
+      .toBe("semantic-ranking-v2-provider-neutral-rrf");
+  });
+
   it("starts safe lanes concurrently, shares one query vector, and resolves active sources", async () => {
     const started: string[] = [];
     let releaseEmbedding!: () => void;
@@ -233,6 +241,34 @@ describe("semantic search orchestrator", () => {
       .resolves.toMatchObject({ items: [] });
   });
 
+  it("runs one bounded lexical relaxation only after every first-pass lane is empty", async () => {
+    const calls: Array<{ lane: string; relaxed: boolean }> = [];
+    const orchestrator = createSemanticSearchOrchestrator({
+      queryEmbedding: { embed: async () => [1, 0, 0] },
+      rankedLanes: {
+        run: async ({ lane, relaxedTermCoverage }) => {
+          calls.push({ lane, relaxed: relaxedTermCoverage === true });
+          return lane === "lexical" && relaxedTermCoverage === true
+            ? [candidate("file-relaxed", lane, 1)]
+            : [];
+        }
+      },
+      vectors: { query: async () => ({ hits: [], processingTimeMs: 0 }) },
+      vectorDocuments: vectorDocumentResolver(),
+      sources: sourceResolver()
+    });
+
+    const result = await orchestrator.search(request());
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ sourceFilePublicId: "file-relaxed" })
+    ]);
+    expect(calls.filter((call) => call.relaxed)).toEqual([
+      { lane: "lexical", relaxed: true },
+      { lane: "jieba", relaxed: true }
+    ]);
+  });
+
   it("drops deleted, cross-knowledge-base, stale-revision, and candidate-generation hits", async () => {
     const queriedGenerations: string[] = [];
     const orchestrator = createSemanticSearchOrchestrator({
@@ -284,15 +320,29 @@ describe("semantic search orchestrator", () => {
   });
 
   it("oversamples every eligible family by at least thirty independently of corpus size", async () => {
-    const requestedLimits: number[] = [];
+    const requestedLimits: Array<{
+      lane: string;
+      limit: number;
+      relaxed: boolean;
+    }> = [];
+    const vectorRequests: Array<Record<string, unknown>> = [];
     const orchestrator = createSemanticSearchOrchestrator({
       queryEmbedding: { embed: async () => [1, 0, 0] },
-      rankedLanes: { run: async ({ limit }) => {
-        requestedLimits.push(limit);
+      rankedLanes: { run: async ({ lane, limit, relaxedTermCoverage }) => {
+        requestedLimits.push({
+          lane,
+          limit,
+          relaxed: relaxedTermCoverage === true
+        });
         return [];
       } },
-      vectors: { query: async ({ limit }) => {
-        requestedLimits.push(limit);
+      vectors: { query: async (vectorRequest) => {
+        requestedLimits.push({
+          lane: `${vectorRequest.family}_vector`,
+          limit: vectorRequest.limit,
+          relaxed: false
+        });
+        vectorRequests.push(vectorRequest as unknown as Record<string, unknown>);
         return { hits: [], processingTimeMs: 0 };
       } },
       vectorDocuments: vectorDocumentResolver(),
@@ -300,8 +350,17 @@ describe("semantic search orchestrator", () => {
     });
 
     await orchestrator.search({ ...request(), limit: 1 });
-    expect(requestedLimits).toHaveLength(10);
-    expect(new Set(requestedLimits)).toEqual(new Set([30]));
+    const firstPass = requestedLimits.filter((value) => !value.relaxed);
+    expect(firstPass).toHaveLength(10);
+    expect(Object.fromEntries(firstPass.map(({ lane, limit }) => [lane, limit])))
+      .toMatchObject({
+        content_vector: 30,
+        entity_vector: 20,
+        relationship_vector: 20,
+        community_vector: 10
+      });
+    expect(vectorRequests.every((value) => !("minimumRelevance" in value)))
+      .toBe(true);
   });
 
   it("observes only bounded active source identities and stage ranks", async () => {
@@ -378,6 +437,108 @@ describe("semantic search orchestrator", () => {
         { sourceFilePublicId: "file-b", rank: 4 }
       ]
     });
+  });
+
+  it("expands at most five fused seeds into a bounded active one-hop neighborhood", async () => {
+    const expand = vi.fn(async ({ seedSourceFilePublicIds }) => {
+      expect(seedSourceFilePublicIds).toEqual(["file-seed"]);
+      return [candidate("file-neighbor", "file_relationship", 1)];
+    });
+    const orchestrator = createSemanticSearchOrchestrator({
+      queryEmbedding: { embed: async () => [1, 0, 0] },
+      rankedLanes: {
+        run: async ({ lane }) => lane === "lexical"
+          ? [candidate("file-seed", lane, 1)]
+          : []
+      },
+      vectors: { query: async () => ({ hits: [], processingTimeMs: 0 }) },
+      vectorDocuments: vectorDocumentResolver(),
+      graphNeighbors: { expand },
+      sources: sourceResolver()
+    });
+
+    const result = await orchestrator.search(request());
+
+    expect(result.items.map((item) => item.sourceFilePublicId)).toEqual([
+      "file-seed",
+      "file-neighbor"
+    ]);
+    expect(expand).toHaveBeenCalledWith(expect.objectContaining({
+      neighborsPerSeed: 5,
+      limit: 25
+    }));
+  });
+
+  it("caps the source-owned fusion window at one hundred before reranking", async () => {
+    const rerank = vi.fn(async ({ candidates: values, limit }) => {
+      expect(values).toHaveLength(100);
+      return {
+        candidates: values.slice(0, limit),
+        status: { state: "applied" as const, safeCode: null },
+        hasMore: true
+      };
+    });
+    const orchestrator = createSemanticSearchOrchestrator({
+      queryEmbedding: { embed: async () => [1, 0, 0] },
+      rankedLanes: {
+        run: async ({ lane }) => lane === "lexical"
+          ? Array.from({ length: 120 }, (_, index) =>
+              candidate(`file-${String(index).padStart(3, "0")}`, lane, index + 1))
+          : []
+      },
+      vectors: { query: async () => ({ hits: [], processingTimeMs: 0 }) },
+      vectorDocuments: vectorDocumentResolver(),
+      sources: sourceResolver(),
+      reranker: { rerank }
+    });
+
+    await orchestrator.search({
+      ...request(),
+      rerank: true,
+      rerankTopK: 30,
+      rerankScoreThreshold: 0
+    });
+
+    expect(rerank).toHaveBeenCalledOnce();
+  });
+
+  it("logs only redacted retrieval counts, states, and timings", async () => {
+    const info = vi.fn();
+    const orchestrator = createSemanticSearchOrchestrator({
+      queryEmbedding: { embed: async () => [1, 0, 0] },
+      rankedLanes: {
+        run: async ({ lane }) => lane === "lexical"
+          ? [candidate("file-private", lane, 1)] : []
+      },
+      vectors: { query: async () => ({ hits: [], processingTimeMs: 0 }) },
+      vectorDocuments: vectorDocumentResolver(),
+      sources: sourceResolver(),
+      logger: { info }
+    });
+
+    await orchestrator.search({
+      ...request(),
+      query: "private standalone question"
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      "semantic_search.retrieval_completed",
+      expect.objectContaining({
+        lexicalState: "completed",
+        lexicalCount: 1,
+        lexicalMs: expect.any(Number),
+        ownershipResolutionMs: expect.any(Number),
+        graphExpansionMs: expect.any(Number),
+        fusionMs: expect.any(Number),
+        rerankerMs: expect.any(Number),
+        thresholdRejectedCount: 0,
+        finalCount: 1,
+        durationMs: expect.any(Number)
+      })
+    );
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(
+      /private standalone question|file-private|snippet|credential|prompt|raw response/iu
+    );
   });
 
   it("reranks only after active-source resolution and keeps truthful evidence", async () => {

@@ -19,7 +19,6 @@ export type EmbeddingRevisionWrite = {
   minimumIntervalMs: number;
   concurrency: number;
   maximumResponseBytes: number;
-  minimumVectorRelevance: number;
   vectorProducingRevisionPublicId: string;
 };
 

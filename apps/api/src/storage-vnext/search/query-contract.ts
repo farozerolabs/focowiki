@@ -5,7 +5,7 @@ export const SEARCH_RESULT_DEFAULT_LIMIT = 10;
 export const SEARCH_RESULT_MAX_LIMIT = 50;
 export const SEARCH_RERANK_DEFAULT_TOP_K = 30;
 export const SEARCH_RERANK_MAX_TOP_K = 50;
-export const SEARCH_RERANK_DEFAULT_SCORE_THRESHOLD = 0.35;
+export const SEARCH_RERANK_DEFAULT_SCORE_THRESHOLD = 0;
 
 export type SearchQueryValidationError =
   | "required"

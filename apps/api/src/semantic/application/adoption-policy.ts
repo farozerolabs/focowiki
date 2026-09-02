@@ -7,8 +7,7 @@ import { semanticContractFingerprint } from "../domain/maintenance-contract.js";
 export type SemanticAdoptionMode =
   | "full"
   | "embedding_only"
-  | "provider_only"
-  | "query_policy_only";
+  | "provider_only";
 
 export function classifySemanticAdoption(
   active: SemanticActiveProjectionRecord | null,
@@ -25,12 +24,6 @@ export function classifySemanticAdoption(
       || active.mappingFingerprintSha256 !== target.mappingFingerprintSha256
     )
   ) return "provider_only";
-  if (hasCompatibleSemanticArtifacts(active, target)
-    && (
-      active.embeddingQueryPolicyRevisionPublicId
-        !== target.embeddingQueryPolicyRevisionPublicId
-      || active.minimumVectorRelevance !== target.minimumVectorRelevance
-    )) return "query_policy_only";
   if (
     hasCompatibleSemanticGraphFacts(active, target)
     && hasChangedVectorArtifactContract(active, target)

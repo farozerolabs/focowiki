@@ -374,9 +374,7 @@ export type EmbeddingConfiguration = {
   minimumIntervalMs: number;
   concurrency: number;
   maximumResponseBytes: number;
-  minimumVectorRelevance: number;
   vectorProducingRevisionPublicId: string;
-  queryPolicyRevisionPublicId: string;
   validationStatus: "not_tested" | "valid" | "invalid";
   validationFingerprintSha256: string | null;
   safeValidationErrorCode: string | null;
@@ -399,7 +397,6 @@ export type EmbeddingConfigurationDraft = Pick<
   | "minimumIntervalMs"
   | "concurrency"
   | "maximumResponseBytes"
-  | "minimumVectorRelevance"
 > & { apiKey: string | null };
 
 export type RerankerConfiguration = {

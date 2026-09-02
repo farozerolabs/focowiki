@@ -32,7 +32,7 @@ describe("storage vNext maintenance provider gate", () => {
       });
   });
 
-  it("compares vector-producing and query-policy revisions independently", async () => {
+  it("compares only the vector-producing embedding revision", async () => {
     const sources: string[] = [];
     const sql = sqlFixture((source) => {
       sources.push(source);
@@ -49,11 +49,8 @@ describe("storage vNext maintenance provider gate", () => {
     expect(source).toMatch(
       /semantic_contract\.embedding_configuration_revision_public_id\s+IS DISTINCT FROM\s+active_embedding\.vector_producing_revision_public_id/u
     );
-    expect(source).toMatch(
-      /semantic_contract\.embedding_query_policy_revision_public_id\s+IS DISTINCT FROM active_embedding\.query_policy_revision_public_id/u
-    );
-    expect(source).toMatch(
-      /semantic_contract\.minimum_vector_relevance\s+IS DISTINCT FROM active_embedding\.minimum_vector_relevance/u
+    expect(source).not.toMatch(
+      /embedding_query_policy_revision_public_id|minimum_vector_relevance/u
     );
   });
 

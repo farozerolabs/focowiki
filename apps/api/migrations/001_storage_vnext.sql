@@ -510,7 +510,6 @@ CREATE TABLE focowiki.embedding_configuration_revisions (
     minimum_interval_ms integer NOT NULL,
     concurrency integer NOT NULL,
     maximum_response_bytes integer CONSTRAINT embedding_configuration_revisio_maximum_response_bytes_not_null NOT NULL,
-    minimum_vector_relevance double precision CONSTRAINT embedding_configuration_revis_minimum_vector_relevance_not_null NOT NULL,
     vector_producing_revision_public_id text CONSTRAINT embedding_configuration_rev_vector_producing_revision__not_null NOT NULL,
     validation_status text NOT NULL,
     validation_fingerprint_sha256 text,
@@ -518,7 +517,7 @@ CREATE TABLE focowiki.embedding_configuration_revisions (
     validated_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT embedding_configuration_revisions_authentication_check CHECK ((((authentication_mode = 'api_key'::text) AND (encrypted_api_key IS NOT NULL)) OR ((authentication_mode = 'none'::text) AND (encrypted_api_key IS NULL)))),
-    CONSTRAINT embedding_configuration_revisions_bounds_check CHECK (((revision_number >= 1) AND ((maximum_input_tokens >= 1) AND (maximum_input_tokens <= 1048576)) AND ((batch_size >= 1) AND (batch_size <= 2048)) AND ((timeout_ms >= 100) AND (timeout_ms <= 300000)) AND ((retry_count >= 0) AND (retry_count <= 10)) AND ((minimum_interval_ms >= 0) AND (minimum_interval_ms <= 60000)) AND ((concurrency >= 1) AND (concurrency <= 64)) AND ((maximum_response_bytes >= 1024) AND (maximum_response_bytes <= 67108864)) AND (minimum_vector_relevance >= (0)::double precision) AND (minimum_vector_relevance <= (1)::double precision))),
+    CONSTRAINT embedding_configuration_revisions_bounds_check CHECK (((revision_number >= 1) AND ((maximum_input_tokens >= 1) AND (maximum_input_tokens <= 1048576)) AND ((batch_size >= 1) AND (batch_size <= 2048)) AND ((timeout_ms >= 100) AND (timeout_ms <= 300000)) AND ((retry_count >= 0) AND (retry_count <= 10)) AND ((minimum_interval_ms >= 0) AND (minimum_interval_ms <= 60000)) AND ((concurrency >= 1) AND (concurrency <= 64)) AND ((maximum_response_bytes >= 1024) AND (maximum_response_bytes <= 67108864)))),
     CONSTRAINT embedding_configuration_revisions_dimension_check CHECK ((((requested_dimension IS NULL) OR ((requested_dimension >= 1) AND (requested_dimension <= 65536))) AND ((resolved_dimension IS NULL) OR ((resolved_dimension >= 1) AND (resolved_dimension <= 65536))))),
     CONSTRAINT embedding_configuration_revisions_identity_check CHECK (((public_id <> ''::text) AND (octet_length(public_id) <= 255) AND (vector_producing_revision_public_id <> ''::text) AND (octet_length(vector_producing_revision_public_id) <= 255) AND (base_url <> ''::text) AND (octet_length(base_url) <= 2048) AND (model_name <> ''::text) AND (octet_length(model_name) <= 255))),
     CONSTRAINT embedding_configuration_revisions_normalization_check CHECK ((normalization = ANY (ARRAY['none'::text, 'l2'::text]))),
@@ -1469,8 +1468,6 @@ CREATE TABLE focowiki.semantic_projection_contracts (
     knowledge_base_id text NOT NULL,
     semantic_generation_public_id text CONSTRAINT semantic_projection_contrac_semantic_generation_public_not_null NOT NULL,
     embedding_configuration_revision_public_id text CONSTRAINT semantic_projection_contrac_embedding_configuration_re_not_null NOT NULL,
-    embedding_query_policy_revision_public_id text CONSTRAINT semantic_projection_contrac_embedding_query_policy_rev_not_null NOT NULL,
-    minimum_vector_relevance double precision NOT NULL,
     search_provider_kind text NOT NULL,
     resolved_dimension integer NOT NULL,
     normalization text NOT NULL,
@@ -1478,7 +1475,7 @@ CREATE TABLE focowiki.semantic_projection_contracts (
     vector_schema_version text NOT NULL,
     mapping_fingerprint_sha256 text CONSTRAINT semantic_projection_contrac_mapping_fingerprint_sha256_not_null NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT semantic_projection_contracts_contract_check CHECK (((search_provider_kind = ANY (ARRAY['meilisearch'::text, 'opensearch'::text])) AND ((resolved_dimension >= 1) AND (resolved_dimension <= 65536)) AND (minimum_vector_relevance >= (0)::double precision) AND (minimum_vector_relevance <= (1)::double precision) AND (normalization = ANY (ARRAY['none'::text, 'l2'::text])) AND (artifact_schema_version <> ''::text) AND (octet_length(artifact_schema_version) <= 128) AND (vector_schema_version <> ''::text) AND (octet_length(vector_schema_version) <= 128) AND (mapping_fingerprint_sha256 ~ '^[0-9a-f]{64}$'::text)))
+    CONSTRAINT semantic_projection_contracts_contract_check CHECK (((search_provider_kind = ANY (ARRAY['meilisearch'::text, 'opensearch'::text])) AND ((resolved_dimension >= 1) AND (resolved_dimension <= 65536)) AND (normalization = ANY (ARRAY['none'::text, 'l2'::text])) AND (artifact_schema_version <> ''::text) AND (octet_length(artifact_schema_version) <= 128) AND (vector_schema_version <> ''::text) AND (octet_length(vector_schema_version) <= 128) AND (mapping_fingerprint_sha256 ~ '^[0-9a-f]{64}$'::text)))
 );
 
 
@@ -4347,13 +4344,6 @@ ALTER TABLE ONLY focowiki.semantic_projection_contracts
 
 
 --
--- Name: semantic_projection_contracts semantic_projection_contracts_query_policy_revision_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.semantic_projection_contracts
-    ADD CONSTRAINT semantic_projection_contracts_query_policy_revision_fkey FOREIGN KEY (embedding_query_policy_revision_public_id) REFERENCES focowiki.embedding_configuration_revisions(public_id) ON DELETE RESTRICT;
-
-
 --
 -- Name: semantic_relationship_evidence semantic_relationship_evidence_evidence_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --

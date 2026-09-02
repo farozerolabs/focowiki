@@ -104,6 +104,7 @@ export type SearchProviderQueryRequest = {
   cropLength: number;
   deadlineMs: number;
   matchingStrategy: "all" | "last";
+  relaxedTermCoverage?: boolean;
   distinctBy: "sourceFilePublicId" | null;
 };
 
@@ -120,8 +121,6 @@ export type SearchProviderDocumentScanPage = {
 
 export type SearchProviderVectorFamily =
   | "content" | "entity" | "relationship" | "community";
-
-export const SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE = 0.7;
 
 export type SearchProviderVectorIndexDefinition = {
   schemaVersion: string;

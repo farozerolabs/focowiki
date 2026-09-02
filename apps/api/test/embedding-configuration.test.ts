@@ -39,10 +39,7 @@ describe("embedding configuration contract", () => {
     ["retryCount", 11],
     ["minimumIntervalMs", -1],
     ["concurrency", 0],
-    ["maximumResponseBytes", 100],
-    ["minimumVectorRelevance", -0.01],
-    ["minimumVectorRelevance", 1.01],
-    ["minimumVectorRelevance", Number.NaN]
+    ["maximumResponseBytes", 100]
   ] as const)("rejects invalid %s", (field, value) => {
     const input = { ...draft(), [field]: value } as EmbeddingConfigurationDraft;
     expect(validateEmbeddingConfigurationDraft(input))
@@ -86,21 +83,10 @@ describe("embedding configuration contract", () => {
     }
   );
 
-  it("validates nullable dimension, normalization, relevance, text, URL, and credential bounds", () => {
+  it("validates nullable dimension, normalization, text, URL, and credential bounds", () => {
     expect(validateEmbeddingConfigurationDraft({
-      ...draft(), requestedDimension: null, normalization: "none",
-      minimumVectorRelevance: 0
+      ...draft(), requestedDimension: null, normalization: "none"
     })).toEqual([]);
-    expect(validateEmbeddingConfigurationDraft({
-      ...draft(), minimumVectorRelevance: 1
-    })).toEqual([]);
-    for (const value of [-0.01, 1.01, Number.NaN, "0.5", null]) {
-      expect(validateEmbeddingConfigurationDraft({
-        ...draft(), minimumVectorRelevance: value
-      } as unknown as EmbeddingConfigurationDraft)).toContainEqual(
-        expect.objectContaining({ field: "minimumVectorRelevance" })
-      );
-    }
     expect(validateEmbeddingConfigurationDraft({
       ...draft(), displayName: "a".repeat(255), modelName: "b".repeat(255),
       apiKey: "k".repeat(16_384)
@@ -152,7 +138,6 @@ function draft(): EmbeddingConfigurationDraft {
     retryCount: 2,
     minimumIntervalMs: 20,
     concurrency: 4,
-    maximumResponseBytes: 8_388_608,
-    minimumVectorRelevance: 0.7
+    maximumResponseBytes: 8_388_608
   };
 }

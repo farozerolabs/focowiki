@@ -6,7 +6,6 @@ import type {
   SearchProviderVectorPort
 } from "../../application/ports/search-provider-runtime.js";
 import {
-  SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE,
   SearchProviderError,
   sameSearchProviderVectorIndexDefinition
 } from
@@ -114,9 +113,9 @@ export function createOpenSearchVectorPort(input: {
     },
     async query(request) {
       assertOpenSearchDimension(request.dimension);
-      const minimumRelevance = request.minimumRelevance
-        ?? SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE;
-      assertMinimumRelevance(minimumRelevance);
+      if (request.minimumRelevance !== undefined) {
+        assertMinimumRelevance(request.minimumRelevance);
+      }
       const response = await execute(() => input.client.search({
         index: request.indexUid,
         body: {
@@ -127,7 +126,13 @@ export function createOpenSearchVectorPort(input: {
             knn: {
               vector: {
                 vector: [...request.vector],
-                min_score: cosineSimilarityToOpenSearchScore(minimumRelevance),
+                ...(request.minimumRelevance === undefined ? {
+                  k: request.limit
+                } : {
+                  min_score: cosineSimilarityToOpenSearchScore(
+                    request.minimumRelevance
+                  )
+                }),
                 filter: {
                   bool: {
                     filter: scopeFilters(request)

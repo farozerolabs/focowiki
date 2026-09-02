@@ -8,7 +8,6 @@ import type {
   SearchProviderVectorPort
 } from "../../application/ports/search-provider-runtime.js";
 import {
-  SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE,
   SearchProviderError,
   sameSearchProviderVectorIndexDefinition
 } from
@@ -80,9 +79,9 @@ export function createMeilisearchVectorPort(input: {
     async query(request) {
       const definition = await requireDefinition(port, request.indexUid);
       if (definition.dimension !== request.dimension) throw mappingError();
-      const minimumRelevance = request.minimumRelevance
-        ?? SEARCH_PROVIDER_MINIMUM_VECTOR_RELEVANCE_SCORE;
-      assertMinimumRelevance(minimumRelevance);
+      if (request.minimumRelevance !== undefined) {
+        assertMinimumRelevance(request.minimumRelevance);
+      }
       const result = await execute(() => input.transport.search({
         indexUid: request.indexUid,
         query: "",
@@ -94,9 +93,11 @@ export function createMeilisearchVectorPort(input: {
         matchingStrategy: "all",
         vector: [...request.vector],
         hybrid: { embedder: embedderName(definition), semanticRatio: 1 },
-        rankingScoreThreshold: cosineSimilarityToMeilisearchScore(
-          minimumRelevance
-        )
+        ...(request.minimumRelevance === undefined ? {} : {
+          rankingScoreThreshold: cosineSimilarityToMeilisearchScore(
+            request.minimumRelevance
+          )
+        })
       }));
       return {
         hits: result.hits.map((hit, index) => parseHit(hit, index + 1)),

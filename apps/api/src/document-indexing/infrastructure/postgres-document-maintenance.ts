@@ -60,9 +60,6 @@ export function createPostgresDocumentMaintenance(input: {
         input.sql,
         context.knowledgeBaseId
       );
-      if (context.checkpoint.semanticAdoption?.mode === "query_policy_only") {
-        return { documentCount: 0 };
-      }
       await ensureDocumentMaintenanceSearchProjection({
         sql: input.sql,
         context,
@@ -147,7 +144,6 @@ export function createPostgresDocumentMaintenance(input: {
     },
 
     async validate(context) {
-      if (context.checkpoint.semanticAdoption?.mode === "query_policy_only") return;
       const rows = await input.sql<Array<{ valid: boolean }>>`
         SELECT NOT EXISTS (
           SELECT 1

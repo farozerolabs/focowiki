@@ -11,13 +11,11 @@ import { SearchProviderError } from
   "../../application/ports/search-provider-runtime.js";
 import type { OpenSearchClientPort } from "./opensearch-client-port.js";
 import { normalizeOpenSearchError } from "./opensearch-errors.js";
+import { createSearchTermPlan } from
+  "../../application/search/query-term-policy.js";
 
 const MAXIMUM_QUERY_BYTES = 4_096;
 const MAXIMUM_PAGE_SIZE = 1_000;
-const MAXIMUM_JIEBA_QUERY_TERMS = 64;
-const MAXIMUM_EXECUTION_TERMS = 32;
-const MAXIMUM_HAN_EXECUTION_CODE_POINTS = 64;
-const MAXIMUM_OTHER_EXECUTION_CODE_POINTS = 128;
 const CURSOR_VERSION = 1;
 const EVIDENCE_FAMILIES = new Set([
   "exact", "text", "phrase", "typo", "jieba", "graph"
@@ -43,10 +41,6 @@ const FIELD_BOOSTS: Readonly<Record<string, number>> = {
   searchText: 1,
   rankingTerms: 2
 };
-const HAN_QUERY_INTENT_TERMS = new Set([
-  "哪些", "什么", "如何", "怎么", "怎样", "为何", "为什么", "是否",
-  "文件", "文档", "内容", "主要", "属于", "类别", "相关", "对应"
-]);
 
 type QuerySort = readonly [number, string, string];
 type QueryContinuation = {
@@ -144,9 +138,22 @@ function buildEvidenceClauses(
     "text", "phrase", "typo", "jieba", "graph"
   ] as const)
     .some((family) => families.has(family));
-  const execution = needsLexicalQuery
-    ? buildExecutionQuery(tokenizer, request.query)
-    : { query: "", terms: [] };
+  let execution = {
+    executionQuery: "",
+    informativeTerms: [] as readonly string[],
+    minimumShouldMatch: 0
+  };
+  if (needsLexicalQuery) {
+    try {
+      execution = createSearchTermPlan({
+        query: request.query,
+        tokenizer,
+        relaxed: request.relaxedTermCoverage === true
+      });
+    } catch {
+      throw requestError();
+    }
+  }
   if (families.has("exact")) {
     const exact = normalizeExact(request.query);
     if (request.searchFields.includes("title")) {
@@ -159,13 +166,11 @@ function buildEvidenceClauses(
   if (families.has("text") && fields.length > 0) {
     clauses.push({
       multi_match: {
-        query: execution.query,
+        query: execution.executionQuery,
         fields,
         type: "best_fields",
-        operator: request.matchingStrategy === "all" ? "and" : "or",
-        ...(request.matchingStrategy === "last"
-          ? { minimum_should_match: "2<-70%" }
-          : {}),
+        operator: "or",
+        minimum_should_match: execution.minimumShouldMatch,
         tie_breaker: 0.2,
         boost: 4
       }
@@ -174,7 +179,7 @@ function buildEvidenceClauses(
   if (families.has("phrase") && fields.length > 0) {
     clauses.push({
       multi_match: {
-        query: execution.query,
+        query: execution.executionQuery,
         fields,
         type: "phrase",
         slop: 1,
@@ -184,11 +189,11 @@ function buildEvidenceClauses(
   }
   if (
     families.has("typo")
-    && isEligibleForFuzzyEvidence(request.query, execution.terms)
+    && isEligibleForFuzzyEvidence(request.query, execution.informativeTerms)
   ) {
     clauses.push({
       multi_match: {
-        query: execution.query,
+        query: execution.executionQuery,
         fields,
         type: "best_fields",
         fuzziness: "AUTO",
@@ -199,12 +204,13 @@ function buildEvidenceClauses(
     });
   }
   if (families.has("jieba")) {
-    if (execution.terms.length > 0) {
+    if (execution.informativeTerms.length > 0) {
       clauses.push({
         match: {
           _focowikiJiebaText: {
-            query: execution.query,
-            operator: request.matchingStrategy === "all" ? "and" : "or",
+            query: execution.executionQuery,
+            operator: "or",
+            minimum_should_match: execution.minimumShouldMatch,
             boost: 5
           }
         }
@@ -220,13 +226,11 @@ function buildEvidenceClauses(
     if (graphFields.length > 0) {
       clauses.push({
         multi_match: {
-          query: execution.query,
+          query: execution.executionQuery,
           fields: graphFields,
           type: "most_fields",
           operator: "or",
-          ...(request.matchingStrategy === "last"
-            ? { minimum_should_match: "2<-70%" }
-            : {}),
+          minimum_should_match: execution.minimumShouldMatch,
           boost: 3
         }
       });
@@ -238,18 +242,14 @@ function buildEvidenceClauses(
     && needsLexicalQuery
     && clauses.length > 0
   ) {
-    const meaningfulTerms = execution.terms.filter((term) =>
-      !HAN_QUERY_INTENT_TERMS.has(term));
-    const confidenceTerms = meaningfulTerms.length > 0
-      ? meaningfulTerms : execution.terms;
     return [{
       bool: {
         must: [{
           match: {
             _focowikiJiebaText: {
-              query: confidenceTerms.join(" "),
+              query: execution.executionQuery,
               operator: "or",
-              minimum_should_match: "2<-20%"
+              minimum_should_match: execution.minimumShouldMatch
             }
           }
         }],
@@ -259,53 +259,6 @@ function buildEvidenceClauses(
     }];
   }
   return clauses;
-}
-
-function buildExecutionQuery(
-  tokenizer: LexicalTokenizer,
-  query: string
-): { query: string; terms: string[] } {
-  const maximumCodePoints = /\p{Script=Han}/u.test(query)
-    ? MAXIMUM_HAN_EXECUTION_CODE_POINTS
-    : MAXIMUM_OTHER_EXECUTION_CODE_POINTS;
-  const sourceTerms = prioritizeMixedScriptTerms(
-    tokenizeQuery(tokenizer, query),
-    query
-  );
-  const terms: string[] = [];
-  let codePoints = 0;
-  for (const sourceTerm of sourceTerms) {
-    if (terms.length >= MAXIMUM_EXECUTION_TERMS) break;
-    const remaining = maximumCodePoints - codePoints;
-    if (remaining <= 0) break;
-    const sourceTermCodePoints = Array.from(sourceTerm).length;
-    if (sourceTermCodePoints > remaining) continue;
-    terms.push(sourceTerm);
-    codePoints += sourceTermCodePoints;
-  }
-  if (terms.length === 0) {
-    const fallback = Array.from(query).slice(0, maximumCodePoints).join("").trim();
-    if (!fallback) throw requestError();
-    return { query: fallback, terms: [fallback] };
-  }
-  return { query: terms.join(" "), terms };
-}
-
-function prioritizeMixedScriptTerms(
-  terms: readonly string[],
-  query: string
-): string[] {
-  if (!/\p{Script=Han}/u.test(query) || !/\p{Script=Latin}/u.test(query)) {
-    return [...terms];
-  }
-  const firstHan = terms.find((term) => /\p{Script=Han}/u.test(term));
-  const latinTerms = terms.filter((term) => /\p{Script=Latin}/u.test(term));
-  if (!firstHan || latinTerms.length === 0) return [...terms];
-  const prioritized = /\p{Script=Han}/u.test(terms[0] ?? "")
-    ? [firstHan, ...latinTerms]
-    : [...latinTerms, firstHan];
-  const prioritizedSet = new Set(prioritized);
-  return [...prioritized, ...terms.filter((term) => !prioritizedSet.has(term))];
 }
 
 function parseResult(
@@ -505,20 +458,6 @@ function normalizeRequest(request: SearchProviderQueryRequest) {
     searchFields,
     returnFields
   };
-}
-
-function tokenizeQuery(tokenizer: LexicalTokenizer, query: string): string[] {
-  let terms: string[];
-  try {
-    terms = tokenizer.tokenizeQuery(query, MAXIMUM_JIEBA_QUERY_TERMS);
-  } catch {
-    throw requestError();
-  }
-  if (
-    terms.length > MAXIMUM_JIEBA_QUERY_TERMS
-    || terms.some((term) => !term || /\s/u.test(term))
-  ) throw requestError();
-  return [...new Set(terms)];
 }
 
 function weightedFields(fields: readonly string[]): string[] {
