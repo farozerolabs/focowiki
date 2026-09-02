@@ -38,7 +38,7 @@ export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
 };
 
 export const DEFAULT_SEARCH_SETTINGS: RuntimeSearchSettings = {
-  requestTimeoutMs: 3_000,
+  requestTimeoutMs: 8_000,
   engineSearchCutoffMs: 1_000,
   overfetchFactor: 3,
   indexBatchDocumentCount: 10_000,

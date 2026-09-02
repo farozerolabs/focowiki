@@ -156,7 +156,7 @@ export function createRerankerGateway(input: {
           }
         };
       } catch (error) {
-        return degraded(fallback, safeErrorCode(error));
+        return degraded(fallback, safeErrorCode(error, request.signal));
       }
     }
   };
@@ -312,11 +312,23 @@ function degraded(
   return { candidates, status: { state: "degraded", safeCode } };
 }
 
-function safeErrorCode(error: unknown): string {
+function safeErrorCode(error: unknown, signal: AbortSignal | null): string {
   if (error instanceof RerankerTransportError) {
+    if (error.code === "aborted" && isDeadlineSignal(signal)) {
+      return "RERANKER_TIMEOUT";
+    }
     return `RERANKER_${error.code.toUpperCase()}`;
   }
   return "RERANKER_UNAVAILABLE";
+}
+
+function isDeadlineSignal(signal: AbortSignal | null): boolean {
+  if (!signal?.aborted || !signal.reason || typeof signal.reason !== "object") {
+    return false;
+  }
+  const code = "code" in signal.reason ? signal.reason.code : null;
+  return code === "semantic_search_deadline"
+    || code === "semantic_search_lane_timeout";
 }
 
 function assertPositive(value: number): void {

@@ -86,7 +86,7 @@ The same settings remain visible for both providers; changing `SEARCH_PROVIDER` 
 
 | Setting | Meilisearch behavior | OpenSearch behavior | Default |
 | --- | --- | --- | --- |
-| Search request timeout milliseconds | Bounds the complete application search request. | Bounds the complete application search request. | `3000` |
+| Search request timeout milliseconds | Bounds the complete application search request, including optional reranking. | Bounds the complete application search request, including optional reranking. | `8000` |
 | Search service timeout milliseconds | Native search cutoff and client deadline. | Provider request/query deadline and application cutoff. | `1000` |
 | Result refill factor | Overfetches candidates before hydration. | Overfetches collapsed candidates before hydration. | `3` |
 | Index update document count | Maximum documents in one indexing task. | Maximum documents in one Bulk request. | `10000` |
@@ -99,7 +99,7 @@ The same settings remain visible for both providers; changing `SEARCH_PROVIDER` 
 | Search cleanup batch size | Maximum old-index records cleaned at once. | Maximum exact-index records cleaned at once. | `1000` |
 | Search result excerpt length | Native crop length. | Maximum highlighted fragment and normalized excerpt length. | `1200` |
 
-Keep the search-service timeout below the total request timeout. Reduce update size or in-flight tasks when the selected provider's memory or disk latency rises.
+Keep the search-service timeout below the total request timeout. When reranking is enabled, Focowiki reserves 40% of the total request budget for reranking, up to 5 seconds, and bounds optional retrieval work to preserve that window. Fast requests return immediately without waiting for the budget to expire. Reduce update size or in-flight tasks when the selected provider's memory or disk latency rises.
 
 ## Semantic Search
 

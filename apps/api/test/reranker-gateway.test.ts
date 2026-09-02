@@ -4,6 +4,8 @@ import { createRerankerGateway } from
   "../src/semantic/reranker/gateway.js";
 import type { RerankerCandidate } from
   "../src/semantic/reranker/gateway.js";
+import { RerankerTransportError } from
+  "../src/semantic/reranker/openai-compatible-transport.js";
 import { encryptRuntimeSecret } from
   "../src/runtime-settings/encryption.js";
 
@@ -146,6 +148,62 @@ describe("bounded source-grounded reranker gateway", () => {
     });
     expect(result.status.state).toBe("degraded");
     expect(result.candidates).toEqual(candidates().slice(0, 3));
+  });
+
+  it("reports an internal search deadline as a reranker timeout", async () => {
+    const controller = new AbortController();
+    controller.abort(Object.assign(new Error("deadline"), {
+      code: "semantic_search_deadline"
+    }));
+    const gateway = createRerankerGateway({
+      resolveActiveConfiguration: async () => configuration(),
+      transport: { rerank: vi.fn(async () => {
+        throw new RerankerTransportError("aborted", false);
+      }) },
+      deploymentSecret: "deployment-secret"
+    });
+
+    const result = await gateway.rerank({
+      query: "Which source applies?",
+      knowledgeBaseId: "kb-a",
+      candidates: candidates(),
+      rerankTopK: 3,
+      rerankScoreThreshold: 0.5,
+      limit: 3,
+      signal: controller.signal
+    });
+
+    expect(result.status).toEqual({
+      state: "degraded",
+      safeCode: "RERANKER_TIMEOUT"
+    });
+  });
+
+  it("preserves an external caller cancellation as aborted", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("caller cancelled"));
+    const gateway = createRerankerGateway({
+      resolveActiveConfiguration: async () => configuration(),
+      transport: { rerank: vi.fn(async () => {
+        throw new RerankerTransportError("aborted", false);
+      }) },
+      deploymentSecret: "deployment-secret"
+    });
+
+    const result = await gateway.rerank({
+      query: "Which source applies?",
+      knowledgeBaseId: "kb-a",
+      candidates: candidates(),
+      rerankTopK: 3,
+      rerankScoreThreshold: 0.5,
+      limit: 3,
+      signal: controller.signal
+    });
+
+    expect(result.status).toEqual({
+      state: "degraded",
+      safeCode: "RERANKER_ABORTED"
+    });
   });
 
   it("reports when an explicit positive threshold removes every non-exact candidate", async () => {
