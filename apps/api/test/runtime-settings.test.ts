@@ -162,7 +162,7 @@ describe("runtime settings service", () => {
       hardDeleteFailedRetentionDays: 30
     });
     expect(snapshot.search).toEqual({
-      requestTimeoutMs: 3_000,
+      requestTimeoutMs: 8_000,
       engineSearchCutoffMs: 1_000,
       overfetchFactor: 3,
       indexBatchDocumentCount: 10_000,
