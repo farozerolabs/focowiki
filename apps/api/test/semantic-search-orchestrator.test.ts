@@ -706,6 +706,40 @@ describe("semantic search orchestrator", () => {
       }
     });
   });
+
+  it("reserves part of the overall deadline for reranking when optional lanes stall", async () => {
+    const orchestrator = createSemanticSearchOrchestrator({
+      queryEmbedding: { embed: async ({ signal }) => new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }) },
+      rankedLanes: {
+        run: async ({ lane }) => lane === "lexical"
+          ? [candidate("file-a", lane, 1)] : []
+      },
+      vectors: { query: vi.fn() },
+      vectorDocuments: vectorDocumentResolver(),
+      sources: sourceResolver(),
+      reranker: { rerank: async (rerankRequest) => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          candidates: rerankRequest.candidates,
+          status: { state: "applied" as const, safeCode: null },
+          hasMore: false
+        };
+      } }
+    });
+
+    const result = await orchestrator.search({
+      ...request(), limit: 1, rerank: true,
+      rerankTopK: 1, rerankScoreThreshold: 0,
+      overallDeadlineMs: 250, laneCutoffMs: 230
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ sourceFilePublicId: "file-a" })
+    ]);
+    expect(result.rerankerStatus).toEqual({ state: "applied", safeCode: null });
+  });
 });
 
 function request() {

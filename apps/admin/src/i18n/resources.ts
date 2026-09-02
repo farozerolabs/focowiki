@@ -230,7 +230,7 @@ export const resources = {
             hardDeleteFailedRetentionDays: "Days to keep failed backend cleanup job records for maintenance. Recommended: 30."
           },
           search: {
-            requestTimeoutMs: "Maximum end-to-end time for one search request. Recommended: 3000 ms.",
+            requestTimeoutMs: "Maximum end-to-end time for one search request, including optional reranking. Recommended: 8000 ms.",
             engineSearchCutoffMs: "Maximum time allocated to each bounded search-engine request. Keep it below the request timeout. Recommended: 1000 ms.",
             branchCandidateLimit: "Maximum candidates collected by one exact, strict, regular, or relaxed retrieval branch. Recommended: 100 to 200.",
             fusedCandidateLimit: "Maximum files retained after deterministic branch fusion. Keep it at or below the branch candidate limit. Recommended: 50 to 100.",
@@ -1211,7 +1211,7 @@ export const resources = {
             hardDeleteFailedRetentionDays: "后台清理失败记录保留天数，用于维护排查。推荐值 30。"
           },
           search: {
-            requestTimeoutMs: "单次搜索请求允许的端到端最长时间。推荐 3000 毫秒。",
+            requestTimeoutMs: "单次搜索请求（包括可选重排）允许的端到端最长时间。推荐 8000 毫秒。",
             engineSearchCutoffMs: "单个有界搜索引擎请求可使用的最长时间。该值应低于请求超时，推荐 1000 毫秒。",
             branchCandidateLimit: "精确、严格、常规或宽松检索分支各自最多收集的候选数。推荐 100 到 200。",
             fusedCandidateLimit: "确定性融合后最多保留的文件数。该值不得高于分支候选上限，推荐 50 到 100。",

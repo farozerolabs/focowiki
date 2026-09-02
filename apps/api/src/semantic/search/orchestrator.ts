@@ -18,6 +18,11 @@ import type {
   RerankerStatus
 } from "../reranker/gateway.js";
 import type { RuntimeLogger } from "../../logger.js";
+import {
+  createSemanticSearchBudget,
+  MAXIMUM_SEMANTIC_SEARCH_DEADLINE_MS,
+  remainingBudget
+} from "./budget.js";
 
 export type SemanticRankedLane =
   | "exact_path" | "exact_title" | "lexical" | "jieba"
@@ -207,6 +212,11 @@ export function createSemanticSearchOrchestrator(input: {
         }
       };
       const normalized = normalizeRequest(request);
+      const budget = createSemanticSearchBudget({
+        overallDeadlineMs: request.overallDeadlineMs,
+        laneCutoffMs: request.laneCutoffMs,
+        rerank: request.rerank
+      });
       const root = new AbortController();
       const abortFromCaller = () => root.abort(
         request.signal?.reason ?? searchError("semantic_search_cancelled")
@@ -227,7 +237,7 @@ export function createSemanticSearchOrchestrator(input: {
         });
         const rankedLaneLimit = plan.rankedCandidateLimit;
         const ranked = plan.rankedLanes.map((lane) =>
-          runLane(lane, request.laneCutoffMs, root.signal, (signal) =>
+          runLane(lane, budget.laneCutoffMs, root.signal, (signal) =>
             input.rankedLanes.run({
               lane,
               indexUid: request.projection.lexicalIndexUid
@@ -238,13 +248,13 @@ export function createSemanticSearchOrchestrator(input: {
               fileKind: request.fileKind,
               okfFilters: request.okfFilters,
               limit: rankedLaneLimit,
-              deadlineMs: request.laneCutoffMs,
+              deadlineMs: budget.laneCutoffMs,
               signal,
               relaxedTermCoverage: false
             })));
         const vectorDefinitions = plan.vectorLanes;
         const embedding = vectorDefinitions.length === 0 ? null : withDeadline({
-          deadlineMs: request.laneCutoffMs,
+          deadlineMs: budget.laneCutoffMs,
           parent: root.signal,
           operation: (signal) => input.queryEmbedding.embed({
             knowledgeBaseId: request.knowledgeBaseId,
@@ -255,12 +265,12 @@ export function createSemanticSearchOrchestrator(input: {
             dimension: request.projection.dimension,
             normalization: request.projection.normalization,
             query: normalized,
-            deadlineMs: request.laneCutoffMs,
+            deadlineMs: budget.laneCutoffMs,
             signal
           })
         });
         const vectors = vectorDefinitions.map(({ lane, family, candidateLimit }) =>
-          runLane(lane, request.laneCutoffMs, root.signal, async () => {
+          runLane(lane, budget.laneCutoffMs, root.signal, async () => {
             if (!embedding) throw searchError("semantic_query_embedding_unavailable");
             const vector = await embedding;
             const result = await input.vectors.query({
@@ -276,7 +286,7 @@ export function createSemanticSearchOrchestrator(input: {
               dimension: request.projection.dimension,
               vector,
               limit: candidateLimit,
-              deadlineMs: request.laneCutoffMs
+              deadlineMs: budget.laneCutoffMs
             });
             return result.hits.map((hit) => ({
               sourceFilePublicId: hit.sourceFilePublicId,
@@ -303,15 +313,17 @@ export function createSemanticSearchOrchestrator(input: {
           const relaxationLanes = plan.rankedLanes.filter((lane) =>
             lane === "lexical" || lane === "jieba"
           );
-          const remainingForRelaxation = request.overallDeadlineMs
-            - Math.max(0, Date.now() - startedAt);
+          const remainingForRelaxation = remainingBudget({
+            deadlineMs: budget.retrievalDeadlineMs,
+            startedAt
+          });
           if (relaxationLanes.length > 0 && remainingForRelaxation > 0) {
             relaxationApplied = true;
             const relaxationStartedAt = Date.now();
             const relaxed = await Promise.all(relaxationLanes.map((lane) =>
               runLane(
                 lane,
-                Math.min(request.laneCutoffMs, remainingForRelaxation),
+                Math.min(budget.laneCutoffMs, remainingForRelaxation),
                 root.signal,
                 (signal) => input.rankedLanes.run({
                   lane,
@@ -324,7 +336,7 @@ export function createSemanticSearchOrchestrator(input: {
                   okfFilters: request.okfFilters,
                   limit: rankedLaneLimit,
                   deadlineMs: Math.min(
-                    request.laneCutoffMs,
+                    budget.laneCutoffMs,
                     remainingForRelaxation
                   ),
                   signal,
@@ -349,8 +361,10 @@ export function createSemanticSearchOrchestrator(input: {
         const uniqueSourceIds = [...new Set(candidates.map(
           (candidate) => candidate.sourceFilePublicId
         ))].sort((left, right) => left.localeCompare(right, "en"));
-        const remainingMs = request.overallDeadlineMs
-          - Math.max(0, Date.now() - startedAt);
+        const remainingMs = remainingBudget({
+          deadlineMs: request.overallDeadlineMs,
+          startedAt
+        });
         if (remainingMs < 1 || root.signal.aborted) {
           throw searchError("semantic_search_deadline");
         }
@@ -402,10 +416,15 @@ export function createSemanticSearchOrchestrator(input: {
         let graphExpansionFailed = false;
         let graphExpandedCount = 0;
         let graphExpansionMs = 0;
+        const graphBudgetMs = remainingBudget({
+          deadlineMs: budget.retrievalDeadlineMs,
+          startedAt
+        });
         if (
           input.graphNeighbors
           && request.mode !== "file"
           && eligibleCandidates.length > 0
+          && graphBudgetMs > 0
         ) {
           const graphExpansionStartedAt = Date.now();
           const seeds = fuse(eligibleCandidates, active, request.scope)
@@ -415,7 +434,7 @@ export function createSemanticSearchOrchestrator(input: {
             const expanded = validateLaneCandidates(
               "file_relationship",
               await withDeadline({
-                deadlineMs: Math.min(request.laneCutoffMs, remainingMs),
+                deadlineMs: Math.min(budget.laneCutoffMs, graphBudgetMs),
                 parent: root.signal,
                 operation: (signal) => input.graphNeighbors!.expand({
                   knowledgeBaseId: request.knowledgeBaseId,
@@ -429,9 +448,16 @@ export function createSemanticSearchOrchestrator(input: {
             const expandedIds = [...new Set(expanded.map(
               (candidate) => candidate.sourceFilePublicId
             ))].filter((sourceFilePublicId) => !active.has(sourceFilePublicId));
-            if (expandedIds.length > 0) {
+            const expandedSourceBudgetMs = remainingBudget({
+              deadlineMs: budget.retrievalDeadlineMs,
+              startedAt
+            });
+            if (expandedIds.length > 0 && expandedSourceBudgetMs > 0) {
               const expandedSources = await withDeadline({
-                deadlineMs: Math.min(request.laneCutoffMs, remainingMs),
+                deadlineMs: Math.min(
+                  budget.laneCutoffMs,
+                  expandedSourceBudgetMs
+                ),
                 parent: root.signal,
                 operation: (signal) => input.sources.resolve({
                   knowledgeBaseId: request.knowledgeBaseId,
@@ -492,6 +518,10 @@ export function createSemanticSearchOrchestrator(input: {
           diversifiedCandidates.map((candidate) => candidate.sourceFilePublicId)
         );
         const rerankerStartedAt = Date.now();
+        const rerankerAvailableMs = Math.max(1, remainingBudget({
+          deadlineMs: request.overallDeadlineMs,
+          startedAt
+        }));
         const reranked = await applyReranker({
           reranker: input.reranker,
           request: {
@@ -502,10 +532,7 @@ export function createSemanticSearchOrchestrator(input: {
             rerankScoreThreshold: request.rerankScoreThreshold,
             limit: request.limit,
             signal: root.signal,
-            deadlineMs: Math.max(
-              1,
-              request.overallDeadlineMs - Math.max(0, Date.now() - startedAt)
-            )
+            deadlineMs: rerankerAvailableMs
           },
           candidates: diversifiedCandidates
         });
@@ -554,7 +581,10 @@ export function createSemanticSearchOrchestrator(input: {
           preRerankerCount: diversifiedCandidates.length,
           fusionMs,
           rerankerState: reranked.status.state,
+          rerankerSafeCode: reranked.status.safeCode,
           rerankerMs,
+          rerankerAvailableMs,
+          rerankerReservedMs: budget.rerankerReserveMs,
           rerankerWindowCount: reranked.metrics?.windowCount ?? 0,
           thresholdRejectedCount:
             reranked.metrics?.thresholdRejectedCount ?? 0,
@@ -951,7 +981,8 @@ function normalizeRequest(input: {
   if (!input.knowledgeBaseId || !query.ok
     || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 1_000
     || !Number.isSafeInteger(input.overallDeadlineMs)
-    || input.overallDeadlineMs < 1 || input.overallDeadlineMs > 3_000
+    || input.overallDeadlineMs < 1
+    || input.overallDeadlineMs > MAXIMUM_SEMANTIC_SEARCH_DEADLINE_MS
     || !Number.isSafeInteger(input.laneCutoffMs) || input.laneCutoffMs < 1
     || input.laneCutoffMs > input.overallDeadlineMs
     || !input.projection.vectorIndexUid
