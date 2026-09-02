@@ -3,6 +3,43 @@ import { createSemanticRankedLaneAdapter } from
   "../src/semantic/search/ranked-lanes.js";
 
 describe("semantic ranked lane adapter", () => {
+  it("resolves an exact generated page path against the source-owned search path", async () => {
+    const sourcePath = "05_local-rules/example-regulation__2015-11-26__amended__e262bf3ba4a4.md";
+    const generatedPath = `pages/${sourcePath}`;
+    const query = vi.fn(async () => ({
+      hits: [hit("file-a", 1, {
+        title: "Example regulation",
+        logicalPath: sourcePath,
+        searchText: "Example body"
+      })],
+      continuation: null,
+      processingTimeMs: 1
+    }));
+    const lanes = createSemanticRankedLaneAdapter({
+      query: { query },
+      relationshipDocuments: activeRelationshipDocuments()
+    });
+
+    await expect(lanes.run({
+      lane: "exact_path",
+      indexUid: "lexical-active",
+      knowledgeBaseId: "kb-main",
+      query: generatedPath,
+      limit: 10,
+      deadlineMs: 1000,
+      signal: new AbortController().signal
+    })).resolves.toEqual([
+      expect.objectContaining({
+        sourceFilePublicId: "file-a",
+        evidenceTargetPath: generatedPath
+      })
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.objectContaining({
+      query: sourcePath,
+      searchFields: ["logicalPath"]
+    }));
+  });
+
   it("uses bounded provider queries and keeps source-owned exact-title results", async () => {
     const query = vi.fn(async () => ({
       hits: [
