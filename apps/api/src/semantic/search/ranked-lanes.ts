@@ -63,7 +63,7 @@ export function createSemanticRankedLaneAdapter(input: {
       const branch = laneDefinition(request.lane, normalizedRequest.scope);
       const response = await input.query.query({
         indexUid: request.indexUid,
-        query: request.query,
+        query: providerQuery(request.lane, request.query),
         evidenceFamilies: branch.evidenceFamilies,
         filters: createFilters(normalizedRequest, branch),
         limit: request.limit,
@@ -114,7 +114,10 @@ export function createSemanticRankedLaneAdapter(input: {
         }
         const title = readString(hit.document, "title");
         const path = readString(hit.document, "logicalPath") ?? hit.logicalPath;
-        if (request.lane === "exact_path" && normalize(path) !== normalizedQuery) {
+        if (
+          request.lane === "exact_path"
+          && !matchesExactPath(path, normalizedQuery)
+        ) {
           return [];
         }
         if (
@@ -239,6 +242,21 @@ function createFilters(
 function normalize(value: string): string {
   return value.trim().normalize("NFKC").replace(/\s+/gu, " ")
     .toLocaleLowerCase("en-US");
+}
+
+function providerQuery(lane: SemanticRankedLane, query: string): string {
+  return lane === "exact_path" && query.startsWith("pages/")
+    ? query.slice("pages/".length)
+    : query;
+}
+
+function matchesExactPath(sourcePath: string, normalizedQuery: string): boolean {
+  if (normalize(sourcePath) === normalizedQuery) return true;
+  try {
+    return normalize(generatedPagePath(sourcePath)) === normalizedQuery;
+  } catch {
+    return false;
+  }
 }
 
 function readString(value: Readonly<Record<string, unknown>>, key: string) {
