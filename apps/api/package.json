@@ -23,7 +23,7 @@
     "@opensearch-project/opensearch": "3.6.0",
     "@smithy/node-http-handler": "4.9.1",
     "bcryptjs": "3.0.2",
-    "hono": "^4.12.25",
+    "hono": "^4.13.11",
     "meilisearch": "0.60.0",
     "nodejieba": "3.5.8",
     "postgres": "3.4.9",
