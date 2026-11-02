@@ -28,7 +28,7 @@
     "nodejieba": "3.5.8",
     "postgres": "3.4.9",
     "redis": "6.0.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "esbuild": "^0.28.1",
